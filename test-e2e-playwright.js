@@ -31,6 +31,20 @@ function assert(condition, msg) {
   if (!condition) throw new Error(msg || 'Assertion failed');
 }
 
+// Use this instead of page.goto(BASE + '#/packets') for any test that waits on packet rows.
+// A bare hash-change goto keeps the prior test's open detail pane in the DOM (hidden rows),
+// which causes waitForSelector('table tbody tr:not([id^=vscroll])') to time out in CI.
+// This helper always does a full reload so SPA state is clean before the test body runs.
+async function gotoPackets(page) {
+  await page.evaluate(() => {
+    localStorage.removeItem('meshcore-groupbyhash');
+    localStorage.setItem('meshcore-time-window', '525600');
+  });
+  await page.goto(`${BASE}/#/packets`, { waitUntil: 'domcontentloaded' });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForSelector('table tbody tr[data-hash]', { timeout: 15000 });
+}
+
 async function run() {
   console.log('Launching Chromium...');
   const browser = await chromium.launch({
@@ -2181,14 +2195,7 @@ async function run() {
 
   // Test: Expanded group children have unique observation ids (#866)
   await test('Expanded group children update detail pane per-observation', async () => {
-    await page.goto(`${BASE}/#/packets`, { waitUntil: 'domcontentloaded' });
-    // Ensure grouped mode and wide time window
-    await page.evaluate(() => {
-      localStorage.setItem('meshcore-time-window', '525600');
-      localStorage.setItem('meshcore-groupbyhash', 'true');
-    });
-    await page.reload({ waitUntil: 'load' });
-    await page.waitForSelector('table tbody tr:not([id^=vscroll])', { timeout: 15000 });
+    await gotoPackets(page);
 
     // Find a group row with observation_count > 1 (has expand button)
     const expandBtn = await page.$('table tbody tr .expand-btn, table tbody tr [data-expand]');
@@ -2261,8 +2268,7 @@ async function run() {
 
   // Test: per-observation raw_hex — hex pane updates when switching observations (#881)
   await test('Packet detail hex pane updates per observation', async () => {
-    await page.goto(BASE + '#/packets', { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('table tbody tr:not([id^=vscroll])', { timeout: 15000 });
+    await gotoPackets(page);
     await page.waitForTimeout(500);
 
     // Try clicking packet rows to find one with multiple observations
@@ -2303,8 +2309,7 @@ async function run() {
   // Test: path pill (top) and byte breakdown (bottom) agree on hop count
   // Regression for visual mismatch where badge said "1 hop" but path text listed N names
   await test('Packet detail path pill and byte breakdown agree on hop count', async () => {
-    await page.goto(BASE + '#/packets', { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('table tbody tr:not([id^=vscroll])', { timeout: 15000 });
+    await gotoPackets(page);
     await page.waitForTimeout(500);
 
     // Click rows until we find one whose detail pane renders a multi-hop path
@@ -2384,8 +2389,7 @@ async function run() {
   // Regression #891: server-supplied breakdown was computed once from top-level
   // raw_hex, so per-observation rendering had off-by-N highlights vs the labels.
   await test('Packet detail hex strip Path range matches hop row count', async () => {
-    await page.goto(BASE + '#/packets', { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('table tbody tr:not([id^=vscroll])', { timeout: 15000 });
+    await gotoPackets(page);
     await page.waitForTimeout(500);
 
     const rows = await page.$$('table tbody tr[data-action]');
@@ -2433,8 +2437,7 @@ async function run() {
   // Regression: observations of the same packet hash have different raw_hex (#882),
   // so picking a different obs must recompute the byte ranges, not reuse the old ones.
   await test('Packet detail switches consistently across observations', async () => {
-    await page.goto(BASE + '#/packets?groupByHash=1', { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('table tbody tr:not([id^=vscroll])', { timeout: 15000 });
+    await gotoPackets(page);
     await page.waitForTimeout(500);
 
     let opened = false;
@@ -2539,18 +2542,32 @@ async function run() {
   });
 
   await test('Packets table rows have border-left stripe when toggle ON', async () => {
+    // Set toggle before gotoPackets so the SPA picks it up on the reload.
     await page.evaluate(() => localStorage.setItem('meshcore-color-packets-by-hash', 'true'));
-    // Hard reload to re-init page handler with the new toggle state.
-    // page.goto with same hash URL is a no-op for re-rendering.
-    await page.goto(BASE + '#/packets', { waitUntil: 'domcontentloaded' });
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('table tbody tr[data-hash]', { timeout: 15000 });
+    await gotoPackets(page);  // full reload from scratch; waits for visible rows
+    // Diagnostic: capture actual DOM/LS state before asserting.
+    const stripeDebug = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('table tbody tr[data-hash]')];
+      return {
+        rowCount: rows.length,
+        hashColorDefined: !!window.HashColor,
+        colorLS: localStorage.getItem('meshcore-color-packets-by-hash'),
+        timeWindowLS: localStorage.getItem('meshcore-time-window'),
+        sampleRows: rows.slice(0, 3).map(r => ({
+          dataHash: r.getAttribute('data-hash'),
+          styleAttr: r.getAttribute('style') || '',
+          borderLeftWidth: r.style.borderLeftWidth,
+        })),
+      };
+    });
+    console.log('  [stripe-debug]', JSON.stringify(stripeDebug));
     // Wait for hash stripe to be applied (inline style set during render).
-    // Assert specifically 4px (per spec §2.10) so we don't false-pass on the
-    // 3px channel-color highlight which is independent of this toggle.
+    // Use style.borderLeftWidth (parsed value) not getAttribute('style') — Chromium
+    // normalizes the raw attribute string (e.g. adds spaces) making string-match unreliable.
+    // Check ALL rows, not just the first, since a row with empty data-hash has no stripe.
     const hasStripe = await page.waitForFunction(() => {
-      const row = document.querySelector('table tbody tr[data-hash]');
-      return row && (row.getAttribute('style') || '').includes('border-left:4px');
+      const rows = document.querySelectorAll('table tbody tr[data-hash]');
+      return Array.from(rows).some(r => r.style.borderLeftWidth === '4px');
     }, { timeout: 5000 }).then(() => true).catch(() => false);
     assert(hasStripe, 'At least one <tr> should have hash-color border-left:4px stripe when toggle ON');
   });
@@ -2566,13 +2583,11 @@ async function run() {
     await page.waitForTimeout(500);
     const noStripe = await page.evaluate(() => {
       const rows = document.querySelectorAll('table tbody tr[data-hash]');
-      for (const r of rows) {
-        // Hash stripe is 4px (per spec §2.10). Channel-color highlight uses
-        // 3px and is independent of the hash-color toggle. Only assert no
-        // 4px hash stripe is present.
-        if ((r.getAttribute('style') || '').includes('border-left:4px')) return false;
-      }
-      return true;
+      // Hash stripe is 4px (per spec §2.10). Channel-color highlight uses
+      // 3px and is independent of the hash-color toggle. Only assert no
+      // 4px hash stripe is present. Use style.borderLeftWidth (parsed value)
+      // not getAttribute('style') — Chromium normalizes the attribute string.
+      return !Array.from(rows).some(r => r.style.borderLeftWidth === '4px');
     });
     assert(noStripe, 'No <tr> should have hash-color border-left:4px stripe when toggle OFF');
     // Reset
