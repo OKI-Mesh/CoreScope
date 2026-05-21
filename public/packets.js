@@ -566,11 +566,11 @@
 
   var DEFAULT_TIME_WINDOW = 15;
 
-  function buildPacketsQuery(timeWindowMin, regionParam) {
+  function buildPacketsQuery(timeWindowMin, regionParam, skipHash) {
     var parts = [];
     if (timeWindowMin && timeWindowMin !== DEFAULT_TIME_WINDOW) parts.push('timeWindow=' + timeWindowMin);
     if (regionParam) parts.push('region=' + encodeURIComponent(regionParam));
-    if (filters.hash) parts.push('hash=' + encodeURIComponent(filters.hash));
+    if (!skipHash && filters.hash) parts.push('hash=' + encodeURIComponent(filters.hash));
     if (filters.node) parts.push('node=' + encodeURIComponent(filters.node));
     if (filters.observer) parts.push('observer=' + encodeURIComponent(filters.observer));
     if (filters.channel) parts.push('channel=' + encodeURIComponent(filters.channel));
@@ -593,7 +593,9 @@
     var subpath = '';
     var m = cur.match(/^#\/packets(\/[^?]*)?/);
     if (m && m[1]) subpath = m[1];
-    history.replaceState(null, '', '#/packets' + subpath + buildPacketsQuery(savedTimeWindowMin, RegionFilter.getRegionParam()));
+    // Don't double-encode filters.hash when it's already the path segment.
+    var skipHash = !!(filters.hash && subpath === '/' + filters.hash);
+    history.replaceState(null, '', '#/packets' + subpath + buildPacketsQuery(savedTimeWindowMin, RegionFilter.getRegionParam(), skipHash));
     // Update clear-filters button visibility
     var cb = document.getElementById('clearFiltersBtn');
     if (cb) {
@@ -1173,7 +1175,7 @@
   // suppresses ALL other filters (region, time window, observer, node,
   // channel). The user is asking for THAT packet regardless of saved
   // selections.
-  function buildPacketsParams({ filters, regionParam, windowMin, groupByHash, limit }) {
+  function buildPacketsParams({ filters, regionParam, areaParam, windowMin, groupByHash, limit }) {
     const params = new URLSearchParams();
     if (filters.hash) {
       params.set('hash', filters.hash);
@@ -1191,6 +1193,7 @@
     }
     params.set('limit', String(limit));
     if (regionParam) params.set('region', regionParam);
+    if (areaParam) params.set('area', areaParam);
     if (filters.node) params.set('node', filters.node);
     if (filters.observer) params.set('observer', filters.observer);
     if (filters.channel) params.set('channel', filters.channel);
@@ -1209,6 +1212,7 @@
       const params = buildPacketsParams({
         filters,
         regionParam: RegionFilter.getRegionParam(),
+        areaParam: AreaFilter.getAreaParam(),
         windowMin,
         groupByHash,
         limit: PACKET_LIMIT,
@@ -1374,6 +1378,7 @@
             <div class="multi-select-menu" id="observerMenu"></div>
           </div>
           <div id="packetsRegionFilter" class="region-filter-container" style="display:inline-block;vertical-align:middle"></div>
+          <div id="packetsAreaFilter" style="display:none;vertical-align:middle"></div>
           <div class="multi-select-wrap" id="typeFilterWrap">
             <button class="multi-select-trigger" id="typeTrigger" title="Filter by packet type">All Types ▾</button>
             <div class="multi-select-menu" id="typeMenu"></div>
@@ -1411,11 +1416,13 @@
 
     // Init shared RegionFilter component
     RegionFilter.init(document.getElementById('packetsRegionFilter'), { dropdown: true });
+    AreaFilter.init(document.getElementById('packetsAreaFilter'));
     if (_pendingUrlRegion) {
       RegionFilter.setSelected(_pendingUrlRegion.split(',').filter(Boolean));
       _pendingUrlRegion = null;
     }
     RegionFilter.onChange(function() { updatePacketsUrl(); loadPackets(); });
+    AreaFilter.onChange(function() { updatePacketsUrl(); loadPackets(); });
 
     // --- Packet Filter Language ---
     (function() {

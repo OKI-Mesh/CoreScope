@@ -192,6 +192,12 @@ type PacketStore struct {
 	regionObsMu        sync.Mutex
 	regionObsCache     map[string]map[string]bool
 	regionObsCacheTime time.Time
+	// Cached area key → node pubkey set (30s per-key TTL)
+	areaNodeMu         sync.RWMutex
+	areaNodeCache      map[string]map[string]bool
+	areaNodeCacheTimes map[string]time.Time
+	// Full server config — needed for Areas map in resolveAreaNodes.
+	config *Config
 	// Cached node list + prefix map (rebuilt on demand, shared across analytics)
 	nodeCache     []nodeInfo
 	nodePM        *prefixMap
@@ -516,6 +522,8 @@ func NewPacketStore(db *DB, cfg *PacketStoreConfig, cacheTTLs ...map[string]inte
 		lastSeenTouched: make(map[string]time.Time),
 		clockSkew:       NewClockSkewEngine(),
 		useResolvedPathIndex: true,
+		areaNodeCache:      make(map[string]map[string]bool),
+		areaNodeCacheTimes: make(map[string]time.Time),
 	}
 	ps.initResolvedPathIndex()
 	if cfg != nil {
@@ -767,9 +775,14 @@ func (s *PacketStore) Load() error {
 		}
 	}
 
-	// Post-load: pick best observation (longest path) for each transmission
+	// Post-load: pick best observation (longest path) for each transmission,
+	// then re-index so relay hops from resolved_path land in byNode.
+	// indexByNode was called earlier (on StoreTx creation) before observations
+	// were appended, so tx.ResolvedPath was nil at that point — call it again
+	// now that pickBestObservation has propagated the best path.
 	for _, tx := range s.packets {
 		pickBestObservation(tx)
+		s.indexByNode(tx)
 	}
 
 	// Build precomputed subpath index for O(1) analytics queries
@@ -1413,7 +1426,7 @@ func (s *PacketStore) QueryGroupedPackets(q PacketQuery) *PacketResult {
 	}
 
 	// Cache key covers all filter dimensions. Empty key = no filters.
-	cacheKey := q.Since + "|" + q.Until + "|" + q.Region + "|" + q.Node + "|" + q.Hash + "|" + q.Observer + "|" + q.Channel
+	cacheKey := q.Since + "|" + q.Until + "|" + q.Region + "|" + q.Area + "|" + q.Node + "|" + q.Hash + "|" + q.Observer + "|" + q.Channel
 	if q.Type != nil {
 		cacheKey += fmt.Sprintf("|t%d", *q.Type)
 	}
@@ -2723,7 +2736,7 @@ func (s *PacketStore) MaxObservationID() int {
 func (s *PacketStore) filterPackets(q PacketQuery) []*StoreTx {
 	// Fast path: single-key index lookups
 	if q.Hash != "" && q.Type == nil && q.Route == nil && q.Observer == "" &&
-		q.Region == "" && q.Node == "" && q.Channel == "" && q.Since == "" && q.Until == "" {
+		q.Region == "" && q.Area == "" && q.Node == "" && q.Channel == "" && q.Since == "" && q.Until == "" {
 		h := strings.ToLower(q.Hash)
 		tx := s.byHash[h]
 		if tx == nil {
@@ -2732,7 +2745,7 @@ func (s *PacketStore) filterPackets(q PacketQuery) []*StoreTx {
 		return []*StoreTx{tx}
 	}
 	if q.Observer != "" && q.Type == nil && q.Route == nil &&
-		q.Region == "" && q.Node == "" && q.Channel == "" && q.Hash == "" && q.Since == "" && q.Until == "" {
+		q.Region == "" && q.Area == "" && q.Node == "" && q.Channel == "" && q.Hash == "" && q.Since == "" && q.Until == "" {
 		return s.transmissionsForObserver(q.Observer, nil)
 	}
 
@@ -2778,6 +2791,12 @@ func (s *PacketStore) filterPackets(q PacketQuery) []*StoreTx {
 		}
 	}
 
+	// Pre-compute area node set.
+	var areaNodes map[string]bool
+	if q.Area != "" {
+		areaNodes = s.resolveAreaNodes(q.Area)
+	}
+
 	// Pre-compute node filter parameters.
 	var nodePK string
 	var nodeHashSet map[string]bool
@@ -2795,7 +2814,7 @@ func (s *PacketStore) filterPackets(q PacketQuery) []*StoreTx {
 	// filter is active and an index exists.
 	source := s.packets
 	if hasNode && !hasType && !hasRoute && q.Observer == "" &&
-		filterHash == "" && !hasSince && !hasUntil && q.Region == "" && filterChannel == "" {
+		filterHash == "" && !hasSince && !hasUntil && q.Region == "" && q.Area == "" && filterChannel == "" {
 		if indexed, ok := s.byNode[nodePK]; ok {
 			return indexed
 		}
@@ -2842,6 +2861,19 @@ func (s *PacketStore) filterPackets(q PacketQuery) []*StoreTx {
 				}
 			}
 			if !found {
+				return false
+			}
+		}
+		if areaNodes != nil {
+			// Only ADVERT packets carry the originator pubkey (public_key/pubKey).
+			// All other packet types (GRP_TXT, TXT_MSG, REQ, …) have encrypted
+			// senders so pk == "" and are excluded when an area filter is active.
+			d := tx.ParsedDecoded()
+			pk, _ := d["public_key"].(string)
+			if pk == "" {
+				pk, _ = d["pubKey"].(string)
+			}
+			if pk == "" || !areaNodes[pk] {
 				return false
 			}
 		}
@@ -2964,6 +2996,50 @@ func (s *PacketStore) fetchAndCacheRegionObs(region string) map[string]bool {
 		m[id] = true
 	}
 	s.regionObsCache[region] = m
+	return m
+}
+
+// resolveAreaNodes returns a set of node pubkeys whose GPS coordinates fall
+// inside the named area polygon. Returns nil if the area key is not in config.
+// Results are cached per-key for 30 seconds. Uses its own RWMutex so callers
+// holding s.mu won't deadlock.
+func (s *PacketStore) resolveAreaNodes(areaKey string) map[string]bool {
+	if s.config == nil || s.config.Areas == nil {
+		return nil
+	}
+	entry, ok := s.config.Areas[areaKey]
+	if !ok {
+		return nil
+	}
+
+	// Fast path: serve from cache if the per-key TTL is still valid.
+	s.areaNodeMu.RLock()
+	if t, ok := s.areaNodeCacheTimes[areaKey]; ok && time.Since(t) < 30*time.Second {
+		m := s.areaNodeCache[areaKey]
+		s.areaNodeMu.RUnlock()
+		return m
+	}
+	s.areaNodeMu.RUnlock()
+
+	// Slow path: query the DB outside any lock, then write back under Lock.
+	pks, err := s.db.GetNodePubkeysInArea(entry)
+	var m map[string]bool
+	if err == nil && len(pks) > 0 {
+		m = make(map[string]bool, len(pks))
+		for _, pk := range pks {
+			m[pk] = true
+		}
+	}
+
+	s.areaNodeMu.Lock()
+	// Re-check in case another goroutine already refreshed while we queried.
+	if t, ok := s.areaNodeCacheTimes[areaKey]; !ok || time.Since(t) >= 30*time.Second {
+		s.areaNodeCache[areaKey] = m
+		s.areaNodeCacheTimes[areaKey] = time.Now()
+	} else {
+		m = s.areaNodeCache[areaKey]
+	}
+	s.areaNodeMu.Unlock()
 	return m
 }
 
@@ -4767,14 +4843,14 @@ func (s *PacketStore) GetChannelMessages(channelHash string, limit, offset int, 
 }
 
 // GetAnalyticsChannels returns full channel analytics computed from in-memory packets.
-func (s *PacketStore) GetAnalyticsChannels(region string) map[string]interface{} {
-	return s.GetAnalyticsChannelsWithWindow(region, TimeWindow{})
+func (s *PacketStore) GetAnalyticsChannels(region, area string) map[string]interface{} {
+	return s.GetAnalyticsChannelsWithWindow(region, area, TimeWindow{})
 }
 
 // GetAnalyticsChannelsWithWindow returns channel analytics for the given region,
 // optionally bounded to a time window (issue #842). Zero TimeWindow = all data.
-func (s *PacketStore) GetAnalyticsChannelsWithWindow(region string, window TimeWindow) map[string]interface{} {
-	if region == "" && window.IsZero() {
+func (s *PacketStore) GetAnalyticsChannelsWithWindow(region, area string, window TimeWindow) map[string]interface{} {
+	if region == "" && area == "" && window.IsZero() {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompChannels
 		s.analyticsRecomputerMu.RUnlock()
@@ -4789,9 +4865,9 @@ func (s *PacketStore) GetAnalyticsChannelsWithWindow(region string, window TimeW
 			}
 		}
 	}
-	cacheKey := region
+	cacheKey := region + "|" + area
 	if !window.IsZero() {
-		cacheKey = region + "|" + window.CacheKey()
+		cacheKey += "|" + window.CacheKey()
 	}
 	s.cacheMu.Lock()
 	if cached, ok := s.chanCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
@@ -4802,7 +4878,7 @@ func (s *PacketStore) GetAnalyticsChannelsWithWindow(region string, window TimeW
 	s.cacheMisses++
 	s.cacheMu.Unlock()
 
-	result := s.computeAnalyticsChannels(region, window)
+	result := s.computeAnalyticsChannels(region, area, window)
 
 	s.cacheMu.Lock()
 	s.chanCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
@@ -4838,7 +4914,12 @@ func isPlaceholderName(name string) bool {
 	return err == nil
 }
 
-func (s *PacketStore) computeAnalyticsChannels(region string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsChannels(region, area string, window TimeWindow) map[string]interface{} {
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -4899,6 +4980,16 @@ func (s *PacketStore) computeAnalyticsChannels(region string, window TimeWindow)
 				}
 			}
 			if !match {
+				continue
+			}
+		}
+		if areaNodes != nil {
+			d := tx.ParsedDecoded()
+			pk, _ := d["public_key"].(string)
+			if pk == "" {
+				pk, _ = d["pubKey"].(string)
+			}
+			if pk == "" || !areaNodes[pk] {
 				continue
 			}
 		}
@@ -5029,14 +5120,14 @@ func (s *PacketStore) computeAnalyticsChannels(region string, window TimeWindow)
 }
 
 // GetAnalyticsRF returns full RF analytics computed from in-memory observations.
-func (s *PacketStore) GetAnalyticsRF(region string) map[string]interface{} {
-	return s.GetAnalyticsRFWithWindow(region, TimeWindow{})
+func (s *PacketStore) GetAnalyticsRF(region, area string) map[string]interface{} {
+	return s.GetAnalyticsRFWithWindow(region, area, TimeWindow{})
 }
 
 // GetAnalyticsRFWithWindow returns RF analytics bounded by an optional
 // time window (issue #842). Zero TimeWindow = all data (backwards compatible).
-func (s *PacketStore) GetAnalyticsRFWithWindow(region string, window TimeWindow) map[string]interface{} {
-	if region == "" && window.IsZero() {
+func (s *PacketStore) GetAnalyticsRFWithWindow(region, area string, window TimeWindow) map[string]interface{} {
+	if region == "" && area == "" && window.IsZero() {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompRF
 		s.analyticsRecomputerMu.RUnlock()
@@ -5051,9 +5142,9 @@ func (s *PacketStore) GetAnalyticsRFWithWindow(region string, window TimeWindow)
 			}
 		}
 	}
-	cacheKey := region
+	cacheKey := region + "|" + area
 	if !window.IsZero() {
-		cacheKey = region + "|" + window.CacheKey()
+		cacheKey += "|" + window.CacheKey()
 	}
 	s.cacheMu.Lock()
 	if cached, ok := s.rfCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
@@ -5064,7 +5155,7 @@ func (s *PacketStore) GetAnalyticsRFWithWindow(region string, window TimeWindow)
 	s.cacheMisses++
 	s.cacheMu.Unlock()
 
-	result := s.computeAnalyticsRF(region, window)
+	result := s.computeAnalyticsRF(region, area, window)
 
 	s.cacheMu.Lock()
 	s.rfCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
@@ -5073,7 +5164,12 @@ func (s *PacketStore) GetAnalyticsRFWithWindow(region string, window TimeWindow)
 	return result
 }
 
-func (s *PacketStore) computeAnalyticsRF(region string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsRF(region, area string, window TimeWindow) map[string]interface{} {
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -5117,6 +5213,16 @@ func (s *PacketStore) computeAnalyticsRF(region string, window TimeWindow) map[s
 				}
 				totalObs++
 				tx := s.byTxID[obs.TransmissionID]
+				if areaNodes != nil && tx != nil {
+					d := tx.ParsedDecoded()
+					pk, _ := d["public_key"].(string)
+					if pk == "" {
+						pk, _ = d["pubKey"].(string)
+					}
+					if pk == "" || !areaNodes[pk] {
+						continue
+					}
+				}
 				hash := ""
 				if tx != nil {
 					hash = tx.Hash
@@ -5205,6 +5311,16 @@ func (s *PacketStore) computeAnalyticsRF(region string, window TimeWindow) map[s
 			// filter below handles cases where individual obs timestamps differ.
 			if !window.Includes(tx.FirstSeen) {
 				continue
+			}
+			if areaNodes != nil {
+				d := tx.ParsedDecoded()
+				pk, _ := d["public_key"].(string)
+				if pk == "" {
+					pk, _ = d["pubKey"].(string)
+				}
+				if pk == "" || !areaNodes[pk] {
+					continue
+				}
 			}
 			hash := tx.Hash
 			if hash != "" {
@@ -6036,15 +6152,15 @@ func parsePathJSON(pathJSON string) []string {
 	return hops
 }
 
-func (s *PacketStore) GetAnalyticsTopology(region string) map[string]interface{} {
-	return s.GetAnalyticsTopologyWithWindow(region, TimeWindow{})
+func (s *PacketStore) GetAnalyticsTopology(region, area string) map[string]interface{} {
+	return s.GetAnalyticsTopologyWithWindow(region, area, TimeWindow{})
 }
 
 // GetAnalyticsTopologyWithWindow — see issue #842.
-// For default (region="", zero window), prefer the steady-state
+// For default (region="", area="", zero window), prefer the steady-state
 // recomputer snapshot if registered (issue #1240).
-func (s *PacketStore) GetAnalyticsTopologyWithWindow(region string, window TimeWindow) map[string]interface{} {
-	if region == "" && window.IsZero() {
+func (s *PacketStore) GetAnalyticsTopologyWithWindow(region, area string, window TimeWindow) map[string]interface{} {
+	if region == "" && area == "" && window.IsZero() {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompTopology
 		s.analyticsRecomputerMu.RUnlock()
@@ -6059,9 +6175,9 @@ func (s *PacketStore) GetAnalyticsTopologyWithWindow(region string, window TimeW
 			}
 		}
 	}
-	cacheKey := region
+	cacheKey := region + "|" + area
 	if !window.IsZero() {
-		cacheKey = region + "|" + window.CacheKey()
+		cacheKey += "|" + window.CacheKey()
 	}
 	s.cacheMu.Lock()
 	if cached, ok := s.topoCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
@@ -6072,7 +6188,7 @@ func (s *PacketStore) GetAnalyticsTopologyWithWindow(region string, window TimeW
 	s.cacheMisses++
 	s.cacheMu.Unlock()
 
-	result := s.computeAnalyticsTopology(region, window)
+	result := s.computeAnalyticsTopology(region, area, window)
 
 	s.cacheMu.Lock()
 	s.topoCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
@@ -6081,7 +6197,12 @@ func (s *PacketStore) GetAnalyticsTopologyWithWindow(region string, window TimeW
 	return result
 }
 
-func (s *PacketStore) computeAnalyticsTopology(region string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsTopology(region, area string, window TimeWindow) map[string]interface{} {
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -6165,6 +6286,23 @@ func (s *PacketStore) computeAnalyticsTopology(region string, window TimeWindow)
 			continue
 		}
 
+		// Area filter: skip this tx entirely from hop-count stats if none of its
+		// hops belong to an area node — keeps hopCounts histogram consistent with
+		// hopFreq, which already filters per-hop.
+		if areaNodes != nil {
+			hasAreaHop := false
+			for _, h := range hops {
+				r := resolveHop(h)
+				if r != nil && areaNodes[r.PublicKey] {
+					hasAreaHop = true
+					break
+				}
+			}
+			if !hasAreaHop {
+				continue
+			}
+		}
+
 		n := len(hops)
 		hopCounts[n]++
 		allHopsList = append(allHopsList, n)
@@ -6172,10 +6310,25 @@ func (s *PacketStore) computeAnalyticsTopology(region string, window TimeWindow)
 			hopSnr[n] = append(hopSnr[n], *tx.SNR)
 		}
 		for _, h := range hops {
+			// Area filter: only count hops belonging to nodes in the area.
+			if areaNodes != nil {
+				r := resolveHop(h)
+				if r == nil || !areaNodes[r.PublicKey] {
+					continue
+				}
+			}
 			hopFreq[h]++
 		}
 		for i := 0; i < len(hops)-1; i++ {
 			a, b := hops[i], hops[i+1]
+			// Area filter: only count pairs where both nodes are in the area.
+			if areaNodes != nil {
+				rA := resolveHop(a)
+				rB := resolveHop(b)
+				if rA == nil || !areaNodes[rA.PublicKey] || rB == nil || !areaNodes[rB.PublicKey] {
+					continue
+				}
+			}
 			if a > b {
 				a, b = b, a
 			}
@@ -6190,6 +6343,12 @@ func (s *PacketStore) computeAnalyticsTopology(region string, window TimeWindow)
 			perObserver[obsID] = map[string]*struct{ minDist, maxDist, count int }{}
 		}
 		for i, h := range hops {
+			if areaNodes != nil {
+				r := resolveHop(h)
+				if r == nil || !areaNodes[r.PublicKey] {
+					continue
+				}
+			}
 			dist := n - i
 			entry := perObserver[obsID][h]
 			if entry == nil {
@@ -6567,11 +6726,11 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 }
 
 // GetAnalyticsDistance returns the distance analytics map. For the
-// default (region="") query, prefer the steady-state recomputer
-// snapshot if one is registered (issue #1240). Region-keyed variants
+// default (region="", area="") query, prefer the steady-state recomputer
+// snapshot if one is registered (issue #1240). Region/area-keyed variants
 // continue to use the legacy TTL cache + on-request compute.
-func (s *PacketStore) GetAnalyticsDistance(region string) map[string]interface{} {
-	if region == "" {
+func (s *PacketStore) GetAnalyticsDistance(region, area string) map[string]interface{} {
+	if region == "" && area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompDistance
 		s.analyticsRecomputerMu.RUnlock()
@@ -6586,8 +6745,9 @@ func (s *PacketStore) GetAnalyticsDistance(region string) map[string]interface{}
 			}
 		}
 	}
+	cacheKey := region + "|" + area
 	s.cacheMu.Lock()
-	if cached, ok := s.distCache[region]; ok && time.Now().Before(cached.expiresAt) {
+	if cached, ok := s.distCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		s.cacheHits++
 		s.cacheMu.Unlock()
 		return cached.data
@@ -6595,16 +6755,16 @@ func (s *PacketStore) GetAnalyticsDistance(region string) map[string]interface{}
 	s.cacheMisses++
 	s.cacheMu.Unlock()
 
-	result := s.computeAnalyticsDistance(region)
+	result := s.computeAnalyticsDistance(region, area)
 
 	s.cacheMu.Lock()
-	s.distCache[region] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.distCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
 }
 
-func (s *PacketStore) computeAnalyticsDistance(region string) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsDistance(region, area string) map[string]interface{} {
 	// #1239: hold s.mu.RLock() only long enough to (a) snapshot the
 	// distHops/distPaths slice headers and (b) build the region match
 	// set (which reads tx.Observations, a field mutated by ingest under
@@ -6625,6 +6785,10 @@ func (s *PacketStore) computeAnalyticsDistance(region string) map[string]interfa
 		// resolveRegionObservers uses its own mutex (regionObsMu)
 		// and is safe to call without s.mu held.
 		regionObs = s.resolveRegionObservers(region)
+	}
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
 	}
 
 	s.mu.RLock()
@@ -6670,6 +6834,51 @@ func (s *PacketStore) computeAnalyticsDistance(region string) map[string]interfa
 	// Everything below operates on hopsSnap / pathsSnap / matchSet —
 	// no s.mu, no s.distHops / s.distPaths access. Safe to run while
 	// ingest writers reallocate the underlying store-owned slices.
+
+	// Additionally filter matchSet by area nodes
+	if areaNodes != nil && matchSet != nil {
+		for tx := range matchSet {
+			d := tx.ParsedDecoded()
+			pk, _ := d["public_key"].(string)
+			if pk == "" {
+				pk, _ = d["pubKey"].(string)
+			}
+			if pk == "" || !areaNodes[pk] {
+				delete(matchSet, tx)
+			}
+		}
+	} else if areaNodes != nil {
+		// No region filter but area filter: build matchSet from area nodes
+		matchSet = make(map[*StoreTx]bool)
+		for i := range s.distHops {
+			tx := s.distHops[i].tx
+			if matchSet[tx] {
+				continue
+			}
+			d := tx.ParsedDecoded()
+			pk, _ := d["public_key"].(string)
+			if pk == "" {
+				pk, _ = d["pubKey"].(string)
+			}
+			if pk != "" && areaNodes[pk] {
+				matchSet[tx] = true
+			}
+		}
+		for i := range s.distPaths {
+			tx := s.distPaths[i].tx
+			if matchSet[tx] {
+				continue
+			}
+			d := tx.ParsedDecoded()
+			pk, _ := d["public_key"].(string)
+			if pk == "" {
+				pk, _ = d["pubKey"].(string)
+			}
+			if pk != "" && areaNodes[pk] {
+				matchSet[tx] = true
+			}
+		}
+	}
 
 	// Filter precomputed hop records (copy to avoid mutating precomputed data during sort)
 	filteredHops := make([]distHopRecord, 0, len(hopsSnap))
@@ -6860,8 +7069,8 @@ func (s *PacketStore) computeAnalyticsDistance(region string) map[string]interfa
 
 // --- Hash Sizes Analytics ---
 
-func (s *PacketStore) GetAnalyticsHashSizes(region string) map[string]interface{} {
-	if region == "" {
+func (s *PacketStore) GetAnalyticsHashSizes(region, area string) map[string]interface{} {
+	if region == "" && area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompHashSizes
 		s.analyticsRecomputerMu.RUnlock()
@@ -6876,8 +7085,9 @@ func (s *PacketStore) GetAnalyticsHashSizes(region string) map[string]interface{
 			}
 		}
 	}
+	cacheKey := region + "|" + area
 	s.cacheMu.Lock()
-	if cached, ok := s.hashCache[region]; ok && time.Now().Before(cached.expiresAt) {
+	if cached, ok := s.hashCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		s.cacheHits++
 		s.cacheMu.Unlock()
 		return cached.data
@@ -6885,10 +7095,10 @@ func (s *PacketStore) GetAnalyticsHashSizes(region string) map[string]interface{
 	s.cacheMisses++
 	s.cacheMu.Unlock()
 
-	result := s.computeAnalyticsHashSizesWithCapability(region)
+	result := s.computeAnalyticsHashSizesWithCapability(region, area)
 
 	s.cacheMu.Lock()
-	s.hashCache[region] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.hashCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -6898,8 +7108,8 @@ func (s *PacketStore) GetAnalyticsHashSizes(region string) map[string]interface{
 // then layers in the multiByteCapability augmentation. Extracted so the
 // steady-state recomputer (issue #1240) produces the same shape as the
 // cached GetAnalyticsHashSizes call.
-func (s *PacketStore) computeAnalyticsHashSizesWithCapability(region string) map[string]interface{} {
-	result := s.computeAnalyticsHashSizes(region)
+func (s *PacketStore) computeAnalyticsHashSizesWithCapability(region, area string) map[string]interface{} {
+	result := s.computeAnalyticsHashSizes(region, area)
 	globalAdopterHS := make(map[string]int)
 	if region == "" {
 		if mbNodes, ok := result["multiByteNodes"].([]map[string]interface{}); ok {
@@ -6912,7 +7122,10 @@ func (s *PacketStore) computeAnalyticsHashSizesWithCapability(region string) map
 			}
 		}
 	} else {
-		globalRes := s.computeAnalyticsHashSizes("")
+		// Pull the global multiByteNodes set without the region/area filter.
+		// Use a separate compute call (not the cached path) to avoid
+		// recursive locking on hashCache and to keep this side-effect free.
+		globalRes := s.computeAnalyticsHashSizes("", "")
 		if mbNodes, ok := globalRes["multiByteNodes"].([]map[string]interface{}); ok {
 			for _, n := range mbNodes {
 				pk, _ := n["pubkey"].(string)
@@ -6927,13 +7140,17 @@ func (s *PacketStore) computeAnalyticsHashSizesWithCapability(region string) map
 	return result
 }
 
-func (s *PacketStore) computeAnalyticsHashSizes(region string) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsHashSizes(region, area string) map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var regionObs map[string]bool
 	if region != "" {
 		regionObs = s.resolveRegionObservers(region)
+	}
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
 	}
 
 	// #804: derive each node's HOME region from zero-hop direct adverts (the
@@ -7036,6 +7253,11 @@ func (s *PacketStore) computeAnalyticsHashSizes(region string) map[string]interf
 			if !match {
 				continue
 			}
+		}
+
+		// Area filter: skip ADVERT packets whose originator is not in the area.
+		if areaNodes != nil && advertParsed && !areaNodes[advertPK] {
+			continue
 		}
 
 		// Track originator from advert packets (including zero-hop adverts,
@@ -7213,8 +7435,8 @@ type hashSizeNodeInfo struct {
 
 // GetAnalyticsHashCollisions returns pre-computed hash collision analysis.
 // This moves the O(n²) distance computation from the frontend to the server.
-func (s *PacketStore) GetAnalyticsHashCollisions(region string) map[string]interface{} {
-	if region == "" {
+func (s *PacketStore) GetAnalyticsHashCollisions(region, area string) map[string]interface{} {
+	if region == "" && area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompHashCollisions
 		s.analyticsRecomputerMu.RUnlock()
@@ -7229,8 +7451,9 @@ func (s *PacketStore) GetAnalyticsHashCollisions(region string) map[string]inter
 			}
 		}
 	}
+	cacheKey := region + "|" + area
 	s.cacheMu.Lock()
-	if cached, ok := s.collisionCache[region]; ok && time.Now().Before(cached.expiresAt) {
+	if cached, ok := s.collisionCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		s.cacheHits++
 		s.cacheMu.Unlock()
 		return cached.data
@@ -7238,10 +7461,10 @@ func (s *PacketStore) GetAnalyticsHashCollisions(region string) map[string]inter
 	s.cacheMisses++
 	s.cacheMu.Unlock()
 
-	result := s.computeHashCollisions(region)
+	result := s.computeHashCollisions(region, area)
 
 	s.cacheMu.Lock()
-	s.collisionCache[region] = &cachedResult{data: result, expiresAt: time.Now().Add(s.collisionCacheTTL)}
+	s.collisionCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.collisionCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -7283,7 +7506,7 @@ type twoByteCellInfo struct {
 	CollisionCount  int                         `json:"collision_count"`
 }
 
-func (s *PacketStore) computeHashCollisions(region string) map[string]interface{} {
+func (s *PacketStore) computeHashCollisions(region, area string) map[string]interface{} {
 	// Get all nodes from DB
 	nodes := s.getAllNodes()
 	hashInfo := s.GetNodeHashSizeInfo()
@@ -7330,6 +7553,20 @@ func (s *PacketStore) computeHashCollisions(region string) map[string]interface{
 			filtered := make([]nodeInfo, 0, len(regionNodePKs))
 			for _, n := range nodes {
 				if regionNodePKs[n.PublicKey] {
+					filtered = append(filtered, n)
+				}
+			}
+			nodes = filtered
+		}
+	}
+
+	// If area is specified, filter to only nodes in the area
+	if area != "" {
+		areaNodes := s.resolveAreaNodes(area)
+		if areaNodes != nil {
+			filtered := make([]nodeInfo, 0, len(nodes))
+			for _, n := range nodes {
+				if areaNodes[n.PublicKey] {
 					filtered = append(filtered, n)
 				}
 			}
@@ -7711,7 +7948,7 @@ func (s *PacketStore) GetMultiByteCapMap() map[string]*MultiByteCapEntry {
 	s.hashSizeInfoMu.Unlock()
 
 	// Get adopter hash sizes from analytics for cross-referencing
-	analyticsData := s.GetAnalyticsHashSizes("")
+	analyticsData := s.GetAnalyticsHashSizes("", "")
 	adopterSizes := make(map[string]int)
 	if nodes, ok := analyticsData["nodes"].(map[string]map[string]interface{}); ok {
 		for pk, data := range nodes {
@@ -7930,7 +8167,12 @@ func (s *PacketStore) computeMultiByteCapability(adopterHashSizes map[string]int
 
 // --- Bulk Health (in-memory) ---
 
-func (s *PacketStore) GetBulkHealth(limit int, region string) []map[string]interface{} {
+func (s *PacketStore) GetBulkHealth(limit int, region, area string) []map[string]interface{} {
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -7961,10 +8203,10 @@ func (s *PacketStore) GetBulkHealth(limit int, region string) []map[string]inter
 		}
 	}
 
-	// Get nodes from DB
+	// Get nodes from DB — fetch more when filtering so we don't under-fill after exclusions
 	queryLimit := limit
-	if regionNodeKeys != nil {
-		queryLimit = 500
+	if regionNodeKeys != nil || areaNodes != nil {
+		queryLimit = 10000
 	}
 	rows, err := s.db.conn.Query("SELECT public_key, name, role, lat, lon FROM nodes ORDER BY last_seen DESC LIMIT ?", queryLimit)
 	if err != nil {
@@ -7985,15 +8227,19 @@ func (s *PacketStore) GetBulkHealth(limit int, region string) []map[string]inter
 		if regionNodeKeys != nil && !regionNodeKeys[pk] {
 			continue
 		}
+		if areaNodes != nil && !areaNodes[pk] {
+			continue
+		}
 		nodes = append(nodes, dbNode{
 			pk: pk, name: nullStrVal(name), role: nullStrVal(role),
 			lat: nullFloat(lat), lon: nullFloat(lon),
 		})
-		if regionNodeKeys == nil && len(nodes) >= limit {
+		if regionNodeKeys == nil && areaNodes == nil && len(nodes) >= limit {
 			break
 		}
 	}
-	if regionNodeKeys != nil && len(nodes) > limit {
+	// Only cap to limit in the global (no-filter) case; area/region returns full filtered set
+	if regionNodeKeys != nil && areaNodes == nil && len(nodes) > limit {
 		nodes = nodes[:limit]
 	}
 

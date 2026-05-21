@@ -721,27 +721,40 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 	}
 }
 
-// GetFleetClockSkew returns clock skew data for all nodes, preferring
-// the steady-state recomputer snapshot (issue #1265). Falls back to an
-// on-request compute if the recomputer is not yet running.
-func (s *PacketStore) GetFleetClockSkew() []*NodeClockSkew {
-	s.analyticsRecomputerMu.RLock()
-	rc := s.recompNodesClockSkew
-	s.analyticsRecomputerMu.RUnlock()
-	if rc != nil {
-		if v := rc.Load(); v != nil {
-			if r, ok := v.([]*NodeClockSkew); ok {
-				return r
+// GetFleetClockSkew returns clock skew data for all nodes, optionally
+// filtered to area. With no area, prefers the steady-state recomputer
+// snapshot (issue #1265). Must NOT be called with s.mu held.
+func (s *PacketStore) GetFleetClockSkew(area string) []*NodeClockSkew {
+	if area == "" {
+		s.analyticsRecomputerMu.RLock()
+		rc := s.recompNodesClockSkew
+		s.analyticsRecomputerMu.RUnlock()
+		if rc != nil {
+			if v := rc.Load(); v != nil {
+				if r, ok := v.([]*NodeClockSkew); ok {
+					return r
+				}
 			}
 		}
 	}
-	return s.computeFleetClockSkew()
+	return s.computeFleetClockSkewForArea(area)
 }
 
-// computeFleetClockSkew is the underlying compute used by the
-// recomputer and the on-request fallback. Must NOT be called with
+// computeFleetClockSkew wraps computeFleetClockSkewForArea with no area
+// filter; called by the steady-state recomputer. Must NOT be called with
 // s.mu held.
 func (s *PacketStore) computeFleetClockSkew() []*NodeClockSkew {
+	return s.computeFleetClockSkewForArea("")
+}
+
+// computeFleetClockSkewForArea is the underlying compute. Must NOT be
+// called with s.mu held.
+func (s *PacketStore) computeFleetClockSkewForArea(area string) []*NodeClockSkew {
+	var areaNodes map[string]bool
+	if area != "" {
+		areaNodes = s.resolveAreaNodes(area)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -754,6 +767,9 @@ func (s *PacketStore) computeFleetClockSkew() []*NodeClockSkew {
 
 	var results = []*NodeClockSkew{}
 	for pubkey := range s.byNode {
+		if areaNodes != nil && !areaNodes[pubkey] {
+			continue
+		}
 		cs := s.getNodeClockSkewLocked(pubkey)
 		if cs == nil {
 			continue

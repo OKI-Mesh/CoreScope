@@ -200,27 +200,27 @@ func (s *PacketStore) StartAnalyticsRecomputers(defaultInterval time.Duration, o
 	// bypass the legacy TTL cache layer — the recomputer IS the cache.
 	s.recompTopology = newAnalyticsRecomputer(
 		"topology", pickInterval(ov.Topology, defaultInterval),
-		func() interface{} { return s.computeAnalyticsTopology("", TimeWindow{}) },
+		func() interface{} { return s.computeAnalyticsTopology("", "", TimeWindow{}) },
 	)
 	s.recompRF = newAnalyticsRecomputer(
 		"rf", pickInterval(ov.RF, defaultInterval),
-		func() interface{} { return s.computeAnalyticsRF("", TimeWindow{}) },
+		func() interface{} { return s.computeAnalyticsRF("", "", TimeWindow{}) },
 	)
 	s.recompDistance = newAnalyticsRecomputer(
 		"distance", pickInterval(ov.Distance, defaultInterval),
-		func() interface{} { return s.computeAnalyticsDistance("") },
+		func() interface{} { return s.computeAnalyticsDistance("", "") },
 	)
 	s.recompChannels = newAnalyticsRecomputer(
 		"channels", pickInterval(ov.Channels, defaultInterval),
-		func() interface{} { return s.computeAnalyticsChannels("", TimeWindow{}) },
+		func() interface{} { return s.computeAnalyticsChannels("", "", TimeWindow{}) },
 	)
 	s.recompHashCollisions = newAnalyticsRecomputer(
 		"hash-collisions", pickInterval(ov.HashCollisions, defaultInterval),
-		func() interface{} { return s.computeHashCollisions("") },
+		func() interface{} { return s.computeHashCollisions("", "") },
 	)
 	s.recompHashSizes = newAnalyticsRecomputer(
 		"hash-sizes", pickInterval(ov.HashSizes, defaultInterval),
-		func() interface{} { return s.computeAnalyticsHashSizesWithCapability("") },
+		func() interface{} { return s.computeAnalyticsHashSizesWithCapability("", "") },
 	)
 	s.recompRoles = newAnalyticsRecomputer(
 		"roles", pickInterval(ov.Roles, defaultInterval),

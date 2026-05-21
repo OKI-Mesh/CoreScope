@@ -102,6 +102,7 @@
           <p class="text-muted">Deep dive into your mesh network data</p>
           <div class="analytics-filters">
             <div id="analyticsRegionFilter" class="region-filter-container"></div>
+            <div id="analyticsAreaFilter" style="display:none"></div>
             <select id="analyticsTimeWindow" class="analytics-time-window-select" data-testid="analytics-time-window" aria-label="Time window">
               <option value="">All data</option>
               <option value="1h">Last 1 hour</option>
@@ -136,6 +137,14 @@
         </div>
       </div>`;
 
+    // Tabs where the area filter is meaningful (transmitter GPS attribution)
+    const AREA_FILTER_TABS = new Set(['overview', 'rf', 'topology', 'hashsizes', 'collisions', 'nodes', 'clock-health']);
+
+    function setAreaFilterVisibility(tab) {
+      const el = document.getElementById('analyticsAreaFilter');
+      if (el) el.style.display = AREA_FILTER_TABS.has(tab) ? '' : 'none';
+    }
+
     // Tab handling
     const analyticsTabs = document.getElementById('analyticsTabs');
     initTabBar(analyticsTabs);
@@ -163,6 +172,7 @@
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       _currentTab = btn.dataset.tab;
+      setAreaFilterVisibility(_currentTab);
       // #1085 — Roles tab owns its own 60s auto-refresh; stop it on switch.
       if (_currentTab !== 'roles') _stopRolesRefresh();
       if (_currentTab !== 'scopes') _stopScopesRefresh();
@@ -190,7 +200,10 @@
     }
 
     RegionFilter.init(document.getElementById('analyticsRegionFilter'));
+    AreaFilter.init(document.getElementById('analyticsAreaFilter'));
+    setAreaFilterVisibility(_currentTab);
     RegionFilter.onChange(function () { loadAnalytics(); });
+    AreaFilter.onChange(function () { loadAnalytics(); });
 
     // Time-window picker (#842) — refresh analytics on change.
     const tw = document.getElementById('analyticsTimeWindow');
@@ -226,6 +239,7 @@
     try {
       _analyticsData = {};
       const rqs = RegionFilter.regionQueryString(); // "&region=..." or ""
+      const aqs = AreaFilter.areaQueryString();     // "&area=..." or ""
       // Time window picker (#842) — append &window=… when set.
       // NOTE: only the three window-aware endpoints (rf/topology/channels)
       // receive ?window=…; hash-sizes and hash-collisions are about node
@@ -233,15 +247,20 @@
       const twEl = document.getElementById('analyticsTimeWindow');
       const twVal = twEl ? twEl.value : '';
       const tws = twVal ? '&window=' + encodeURIComponent(twVal) : '';
-      const baseQS = rqs.slice(1); // drop leading '&', "" or "region=…"
+      // hash-sizes / hash-collisions: region + area, no window
+      const baseQS = (rqs + aqs).slice(1);
       const sepBase = baseQS ? '?' + baseQS : '';
-      const windowedQS = (rqs + tws).slice(1);
+      // rf / topology: region + area + window
+      const windowedQS = (rqs + aqs + tws).slice(1);
       const sepWin = windowedQS ? '?' + windowedQS : '';
+      // channels: region + window (no area per original PR intent)
+      const chanQS = (rqs + tws).slice(1);
+      const sepChan = chanQS ? '?' + chanQS : '';
       const [hashData, rfData, topoData, chanData, collisionData] = await Promise.all([
         api('/analytics/hash-sizes' + sepBase, { ttl: CLIENT_TTL.analyticsRF }),
         api('/analytics/rf' + sepWin, { ttl: CLIENT_TTL.analyticsRF }),
         api('/analytics/topology' + sepWin, { ttl: CLIENT_TTL.analyticsRF }),
-        api('/analytics/channels' + sepWin, { ttl: CLIENT_TTL.analyticsRF }),
+        api('/analytics/channels' + sepChan, { ttl: CLIENT_TTL.analyticsRF }),
         api('/analytics/hash-collisions' + sepBase, { ttl: CLIENT_TTL.analyticsRF }),
       ]);
       _analyticsData = { hashData, rfData, topoData, chanData, collisionData };
@@ -1990,7 +2009,7 @@
   async function renderNodesTab(el) {
     el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Loading node analytics…</div>';
     try {
-      const rq = RegionFilter.regionQueryString();
+      const rq = RegionFilter.regionQueryString() + AreaFilter.areaQueryString();
       const [nodesResp, bulkHealth] = await Promise.all([
         api('/nodes?limit=10000&sortBy=lastSeen' + rq, { ttl: CLIENT_TTL.nodeList }),
         api('/nodes/bulk-health?limit=50' + rq, { ttl: CLIENT_TTL.analyticsRF })
@@ -2723,7 +2742,7 @@ function destroy() { _stopRolesRefresh(); _stopScopesRefresh(); _analyticsData =
   async function renderPrefixTool(el) {
     el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Loading prefix data…</div>';
 
-    const rq = RegionFilter.regionQueryString();
+    const rq = RegionFilter.regionQueryString() + AreaFilter.areaQueryString();
     const regionLabel = rq ? (new URLSearchParams(rq.slice(1)).get('region') || '') : '';
 
     let nodesResp, hashSizesResp;
@@ -3820,7 +3839,8 @@ function destroy() { _stopRolesRefresh(); _stopScopesRefresh(); _analyticsData =
   async function renderClockHealthTab(el) {
     el.innerHTML = '<div class="text-center text-muted" style="padding:40px">Loading clock health data…</div>';
     try {
-      var data = await (await fetch('/api/nodes/clock-skew')).json();
+      const aqs = AreaFilter.areaQueryString();
+      var data = await (await fetch('/api/nodes/clock-skew' + (aqs ? '?' + aqs.slice(1) : ''))).json();
       if (!Array.isArray(data) || !data.length) {
         el.innerHTML = '<div class="text-center text-muted" style="padding:40px">No clock skew data available. Nodes need recent adverts for clock analysis.</div>';
         return;

@@ -156,7 +156,7 @@ func (s *PacketStore) computeAnalyticsRoles() RoleAnalyticsResponse {
 		roles[n.PublicKey] = n.Role
 	}
 	skewMap := make(map[string]*NodeClockSkew)
-	for _, cs := range s.GetFleetClockSkew() {
+	for _, cs := range s.GetFleetClockSkew("") {
 		if cs == nil {
 			continue
 		}
