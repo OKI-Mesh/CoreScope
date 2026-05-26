@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/meshcore-analyzer/mbcapqueue"
 )
 
 // payloadTypeNames maps payload_type int → human-readable name (firmware-standard).
@@ -232,6 +234,14 @@ type PacketStore struct {
 	// Cached multi-byte capability map (pubkey → entry), recomputed every 15s.
 	multiByteCapCache map[string]*MultiByteCapEntry
 	multiByteCapAt    time.Time
+
+	// Snapshot from the last analytics cycle + O(1) index, both under cacheMu.
+	// Populated by analytics + pre-populated from DB on Load (read-only path).
+	// Persistence to the DB is owned by the ingestor (#1289/#1324): the
+	// analytics cycle publishes a snapshot file via internal/mbcapqueue
+	// and the ingestor's RunMultibyteCapPersist applies it.
+	mbCapSnapshot []MultiByteCapEntry
+	mbCapIndex    map[string]MultiByteCapEntry
 
 	// Cached per-pubkey relay info + usefulness score maps (#1257). These
 	// fold the previously per-node GetRepeaterRelayInfo /
@@ -813,6 +823,7 @@ func (s *PacketStore) Load() error {
 		log.Printf("[store] Loaded %d transmissions (%d observations) in %v (tracked ~%.0fMB, heap ~%.0fMB)",
 			len(s.packets), s.totalObs, elapsed, s.trackedMemoryMB(), s.estimatedMemoryMB())
 	}
+	s.loadMultibyteCapFromDB()
 	return nil
 }
 
@@ -7182,7 +7193,24 @@ func (s *PacketStore) computeAnalyticsHashSizesWithCapability(region, area strin
 			}
 		}
 	}
-	result["multiByteCapability"] = s.computeMultiByteCapability(globalAdopterHS)
+	mbEntries := s.computeMultiByteCapability(globalAdopterHS)
+	result["multiByteCapability"] = mbEntries
+
+	// Publish snapshot + O(1) index under cacheMu, then persist to DB.
+	s.cacheMu.Lock()
+	s.mbCapSnapshot = mbEntries
+	mbIdx := make(map[string]MultiByteCapEntry, len(mbEntries))
+	for _, e := range mbEntries {
+		mbIdx[e.PublicKey] = e
+	}
+	s.mbCapIndex = mbIdx
+	s.cacheMu.Unlock()
+	// Publish snapshot to the on-disk handoff so the ingestor can
+	// persist it (#1289/#1324: server is read-only; persistence is the
+	// ingestor's job). Best-effort — a write failure here does not
+	// affect serving (the in-memory index above is the read path).
+	s.publishMultibyteCapSnapshot(mbEntries)
+
 	return result
 }
 
@@ -7980,6 +8008,104 @@ func EnrichNodeWithMultiByte(node map[string]interface{}, entry *MultiByteCapEnt
 	node["multi_byte_status"] = entry.Status
 	node["multi_byte_evidence"] = entry.Evidence
 	node["multi_byte_max_hash_size"] = entry.MaxHashSize
+}
+
+// GetMultibyteCapFor returns the capability entry for a single pubkey via an O(1) map
+// lookup into the snapshot rebuilt by each analytics cycle (and pre-populated from
+// the DB on cold start). Returns false when the pubkey has no known capability.
+func (s *PacketStore) GetMultibyteCapFor(pk string) (*MultiByteCapEntry, bool) {
+	s.cacheMu.Lock()
+	e, ok := s.mbCapIndex[pk]
+	s.cacheMu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	return &e, true
+}
+
+// multibyteStatusToInt is no longer defined here — the int mapping lives
+// in the ingestor's cmd/ingestor/multibyte_persist.go (the only place
+// that writes to the DB). The server only deals with the string
+// statuses ("confirmed" / "suspected" / "unknown") on its read path
+// and in the snapshot payload.
+
+// loadMultibyteCapFromDB pre-populates mbCapSnapshot and mbCapIndex from the nodes
+// table so cold starts serve the last-known capability without waiting for the first
+// analytics cycle (~15s).
+func (s *PacketStore) loadMultibyteCapFromDB() {
+	if !s.db.hasMultibyteSupCols {
+		return
+	}
+	rows, err := s.db.conn.Query(
+		`SELECT public_key, COALESCE(name,''), COALESCE(role,''), COALESCE(last_seen,''), multibyte_sup, COALESCE(multibyte_evidence,'')
+		 FROM nodes WHERE multibyte_sup > 0`)
+	if err != nil {
+		log.Printf("[multibyte] loadFromDB: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var entries []MultiByteCapEntry
+	for rows.Next() {
+		var pk, name, role, lastSeen, evidence string
+		var sup int
+		if err := rows.Scan(&pk, &name, &role, &lastSeen, &sup, &evidence); err != nil {
+			continue
+		}
+		status := "unknown"
+		switch sup {
+		case 2:
+			status = "confirmed"
+		case 1:
+			status = "suspected"
+		}
+		entries = append(entries, MultiByteCapEntry{
+			PublicKey: pk,
+			Name:      name,
+			Role:      role,
+			Status:    status,
+			Evidence:  evidence,
+			LastSeen:  lastSeen,
+		})
+	}
+	if len(entries) == 0 {
+		return
+	}
+	idx := make(map[string]MultiByteCapEntry, len(entries))
+	for _, e := range entries {
+		idx[e.PublicKey] = e
+	}
+	s.cacheMu.Lock()
+	s.mbCapSnapshot = entries
+	s.mbCapIndex = idx
+	s.cacheMu.Unlock()
+	log.Printf("[multibyte] loaded %d capability entries from DB", len(entries))
+}
+
+// publishMultibyteCapSnapshot writes the analytics-cycle output to the
+// on-disk handoff (internal/mbcapqueue). The ingestor's
+// RunMultibyteCapPersist consumes the file and writes confirmed /
+// suspected entries to the DB.
+//
+// INVARIANT (#1289/#1324): the server is the read path and opens
+// SQLite mode=ro. It MUST NOT execute any UPDATE on
+// nodes.multibyte_* — see readonly_invariant_test.go. This helper is
+// the only side-effect path for capability data leaving the server.
+func (s *PacketStore) publishMultibyteCapSnapshot(entries []MultiByteCapEntry) {
+	if s.db == nil || s.db.path == "" {
+		return
+	}
+	out := make([]mbcapqueue.Entry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, mbcapqueue.Entry{
+			PublicKey: e.PublicKey,
+			Status:    e.Status,
+			Evidence:  e.Evidence,
+		})
+	}
+	if err := mbcapqueue.WriteSnapshot(s.db.path, mbcapqueue.Snapshot{Entries: out}); err != nil {
+		log.Printf("[multibyte] publish snapshot: %v", err)
+	}
 }
 
 // GetMultiByteCapMap returns a cached pubkey → MultiByteCapEntry map.
