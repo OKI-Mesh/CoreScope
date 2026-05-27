@@ -554,8 +554,22 @@
     // overrides still flow through setRoleColorOverride() in customize.js.
     var nc = effectiveConfig.nodeColors;
     if (nc) {
+      // #1438 final: scope --mc-role-{role} writes to USER overrides only.
+      // Server-config nodeColors must stay out of --mc-role-* because
+      // ROLE_COLORS live getter (roles.js) reads from that var; writing
+      // server defaults there would re-introduce the #1412 bug (server
+      // legacy palette trapping cb-preset propagation).
+      var userNc = (userOverrides && userOverrides.nodeColors) || {};
       for (var role in nc) {
         root.setProperty('--node-' + role, nc[role]);
+        if (Object.prototype.hasOwnProperty.call(userNc, role)) {
+          // Operator picked this color → drive --mc-role-{role} so marker
+          // SVGs (fill="var(--mc-role-X)") and other CSS-var consumers
+          // pick it up on every page load. Without this the user pick
+          // sits in localStorage but --mc-role-{role} falls back to the
+          // active preset on reload, reverting marker fills.
+          root.setProperty('--mc-role-' + role, userNc[role]);
+        }
       }
     }
 
