@@ -1331,7 +1331,7 @@
           <button class="btn-icon" data-action="pkt-byop" title="Bring Your Own Packet" aria-label="Bring Your Own Packet - paste raw packet hex for analysis" aria-haspopup="dialog">📦 BYOP</button>
         </div>
       </div>
-      <div class="filter-group" style="flex:1;margin-bottom:8px;position:relative">
+      <div class="filter-group pkt-filter-expr" style="flex:1;margin-bottom:8px;position:relative">
         <input type="text" id="packetFilterInput" class="packet-filter-input"
           placeholder='Filter: type == Advert && snr > 5 · payload.name contains "Gilroy"'
           aria-label="Packet filter expression"
@@ -1406,9 +1406,9 @@
       </div>
       <div class="table-fluid-wrap"><table class="data-table" id="pktTable">
         <thead><tr>
-          <th scope="col" data-priority="1"></th><th scope="col" class="col-region" data-sort-key="region" data-priority="3">Region</th><th scope="col" class="col-time" data-sort-key="time" data-type="date" data-priority="1">Time</th><th scope="col" class="col-hash" data-sort-key="hash" data-priority="1">Hash</th><th scope="col" class="col-size" data-sort-key="size" data-type="numeric" data-priority="4">Size</th>
+          <th scope="col" class="col-expand" data-priority="1"></th><th scope="col" class="col-region" data-sort-key="region" data-priority="3">Region</th><th scope="col" class="col-time" data-sort-key="time" data-type="date" data-priority="1">Time</th><th scope="col" class="col-hash" data-sort-key="hash" data-priority="3">Hash</th><th scope="col" class="col-size" data-sort-key="size" data-type="numeric" data-priority="4">Size</th>
           <th scope="col" class="col-hashsize" data-sort-key="hb" data-type="numeric" data-priority="5">HB</th>
-          <th scope="col" class="col-type" data-sort-key="type" data-priority="1">Type</th><th scope="col" class="col-observer" data-sort-key="observer" data-priority="1">Observer</th><th scope="col" class="col-path" data-sort-key="path" data-priority="2">Path</th><th scope="col" class="col-rpt" data-sort-key="rpt" data-type="numeric" data-priority="4">Rpt</th><th scope="col" class="col-details" data-priority="2">Details</th>
+          <th scope="col" class="col-type" data-sort-key="type" data-priority="1">Type</th><th scope="col" class="col-observer" data-sort-key="observer" data-priority="3">Observer</th><th scope="col" class="col-path" data-sort-key="path" data-priority="5">Path</th><th scope="col" class="col-rpt" data-sort-key="rpt" data-type="numeric" data-priority="3">Rpt</th><th scope="col" class="col-details" data-priority="1">Details</th>
         </tr></thead>
         <tbody id="pktBody"></tbody>
       </table></div>
@@ -2017,7 +2017,7 @@
     const _grpHashStripe = _hashStripeStyle(p.hash);
     const _grpStyle = _grpHashStripe + _grpChanStyle;
     let html = `<tr class="${isSingle ? '' : 'group-header'} ${isExpanded ? 'expanded' : ''}" data-hash="${p.hash}" data-action="${isSingle ? 'select-hash' : 'toggle-select'}" data-value="${p.hash}" data-entry-idx="${entryIdx}" tabindex="0" role="row"${_grpStyle ? ' style="' + _grpStyle + '"' : ''}>
-          <td style="width:28px;text-align:center;cursor:pointer">${isSingle ? '' : (isExpanded ? '▼' : '▶')}</td>
+          <td class="col-expand" style="text-align:center;cursor:pointer">${isSingle ? '' : (isExpanded ? '▼' : '▶')}</td>
           <td class="col-region">${groupRegion ? `<span class="badge-region">${groupRegion}</span>` : '—'}</td>
           <td class="col-time">${renderTimestampCell(p.latest)}</td>
           <td class="mono col-hash" data-filter-field="hash" data-filter-value="${escapeHtml(p.hash || '')}">${truncate(p.hash || '—', 8)}</td>
@@ -2044,7 +2044,7 @@
         const childPathStr = renderPath(childPath, c.observer_id);
         const _childHashStripe = _hashStripeStyle(c.hash || p.hash);
         html += `<tr class="group-child" data-id="${c.id}" data-hash="${c.hash || ''}" data-action="select-observation" data-value="${c.id}" data-parent-hash="${p.hash}" data-entry-idx="${entryIdx}" tabindex="0" role="row"${_childHashStripe ? ' style="' + _childHashStripe + '"' : ''}>
-              <td></td><td class="col-region">${childRegion ? `<span class="badge-region">${childRegion}</span>` : '—'}</td>
+              <td class="col-expand"></td><td class="col-region">${childRegion ? `<span class="badge-region">${childRegion}</span>` : '—'}</td>
               <td class="col-time">${renderTimestampCell(c.timestamp)}</td>
               <td class="mono col-hash" data-filter-field="hash" data-filter-value="${escapeHtml(c.hash || '')}">${truncate(c.hash || '', 8)}</td>
               <td class="col-size" data-filter-field="size" data-filter-value="${size || ''}">${size}B</td>
@@ -2076,7 +2076,7 @@
     const _flatHashStripe = _hashStripeStyle(p.hash);
     const _flatStyle = _flatHashStripe + _chanStyle;
     return `<tr data-id="${p.id}" data-hash="${p.hash || ''}" data-action="select-hash" data-value="${p.hash || p.id}" data-entry-idx="${entryIdx}" tabindex="0" role="row" class="${selectedId === p.id ? 'selected' : ''}"${_flatStyle ? ' style="' + _flatStyle + '"' : ''}>
-        <td></td><td class="col-region">${region ? `<span class="badge-region">${region}</span>` : '—'}</td>
+        <td class="col-expand"></td><td class="col-region">${region ? `<span class="badge-region">${region}</span>` : '—'}</td>
         <td class="col-time">${renderTimestampCell(p.timestamp)}</td>
         <td class="mono col-hash" data-filter-field="hash" data-filter-value="${escapeHtml(p.hash || '')}">${truncate(p.hash || String(p.id), 8)}</td>
         <td class="col-size" data-filter-field="size" data-filter-value="${size || ''}">${size}B</td>
@@ -2920,22 +2920,37 @@
       rawCustomRow = `<dt>Raw Custom</dt><dd class="raw-custom-detail">Length: <code>${escapeHtml(rl)}</code> · First byte tag: <code>${escapeHtml(ft)}</code></dd>`;
     }
 
+    // #1458 P0-A — semantic identity header (type badge + decoded summary +
+    // src→dst). Replaces the prior byte-count title that buried packet
+    // identity behind a byte counter (#1458 P0-A).
+    const semanticSummary = getDetailPreview(decoded);
+    const srcLabel = decoded.sender || decoded.name || (decoded.srcHash ? decoded.srcHash.slice(0,8) : null) || (decoded.pubKey ? decoded.pubKey.slice(0,8) + '…' : null);
+    const dstLabel = decoded.recipient || (decoded.destHash ? decoded.destHash.slice(0,8) : null);
+    const srcDstHtml = (srcLabel || dstLabel)
+      ? `<div class="detail-srcdst">${escapeHtml(srcLabel || '?')} <span class="arrow">→</span> ${escapeHtml(dstLabel || (decoded.channel ? '#' + decoded.channel : '?'))}</div>`
+      : '';
+
     panel.innerHTML = `
       ${anomalyBanner}
-      <div class="detail-title">${hasRawHex ? `Packet Byte Breakdown (${size} bytes)` : typeName + ' Packet'}</div>
+      <div class="detail-title">
+        <span class="badge badge-${payloadTypeColor(pkt.payload_type)}">${typeName}</span>
+        ${semanticSummary ? `<span class="detail-summary">${semanticSummary}</span>` : ''}
+        ${displayHopCount > 0 ? `<span class="badge badge-info">${displayHopCount} hop${displayHopCount !== 1 ? 's' : ''}</span>` : ''}
+      </div>
+      ${srcDstHtml}
       <div class="detail-hash">${pkt.hash || 'Packet #' + pkt.id}${obsIndicator}</div>
       ${messageHtml}
       <dl class="detail-meta">
+        <dt>Payload Type</dt><dd><span class="badge badge-${payloadTypeColor(pkt.payload_type)}">${typeName}</span></dd>
+        <dt>Path</dt><dd>${displayHopCount > 0 ? `<span class="badge badge-info">${displayHopCount} hop${displayHopCount !== 1 ? 's' : ''}</span> ` + renderPath(pathHops, effectivePkt.observer_id) : '— (direct)'}</dd>
+        <dt>Timestamp</dt><dd>${renderTimestampCell(effectivePkt.timestamp)}</dd>
         <dt>Observer</dt><dd>${obsNameOnly(effectivePkt.observer_id)}${obsIataBadge(effectivePkt)}</dd>
         ${locationHtml ? `<dt>Location</dt><dd>${locationHtml}</dd>` : ''}
         <dt>SNR / RSSI</dt><dd>${snr != null ? snr + ' dB' : '—'} / ${rssi != null ? rssi + ' dBm' : '—'}</dd>
         <dt>Route Type</dt><dd>${routeTypeName(pkt.route_type)}</dd>
         ${pkt.scope_name != null ? `<dt>Scope</dt><dd>${pkt.scope_name !== '' ? escapeHtml(pkt.scope_name) : '<span style="color:var(--text-muted)">unknown scope</span>'}</dd>` : ''}
-        <dt>Payload Type</dt><dd><span class="badge badge-${payloadTypeColor(pkt.payload_type)}">${typeName}</span></dd>
         ${hashSize ? `<dt>Hash Size</dt><dd>${hashSize} byte${hashSize !== 1 ? 's' : ''}</dd>` : ''}
-        <dt>Timestamp</dt><dd>${renderTimestampCell(effectivePkt.timestamp)}</dd>
         <dt>Propagation</dt><dd>${propagationHtml}</dd>
-        <dt>Path</dt><dd>${displayHopCount > 0 ? `<span class="badge badge-info">${displayHopCount} hop${displayHopCount !== 1 ? 's' : ''}</span> ` + renderPath(pathHops, effectivePkt.observer_id) : '— (direct)'}</dd>
         ${transportCodesRow}
         ${rawCustomRow}
         ${effectivePkt.direction ? `<dt>Direction</dt><dd>${escapeHtml(effectivePkt.direction)}</dd>` : ''}
@@ -2947,10 +2962,13 @@
         <button class="replay-live-btn" title="Replay this packet on the live map">▶ Replay</button>
       </div>
 
-      ${hasRawHex ? `<div class="hex-legend">${buildHexLegend(ranges)}</div>
-      <div class="hex-dump">${createColoredHexDump(effectivePkt.raw_hex || pkt.raw_hex, ranges)}</div>` : ''}
+      ${(hasRawHex || Object.keys(decoded).length) ? `<details class="detail-technical"${(typeof window !== 'undefined' && window.innerWidth > 480) ? ' open' : ''}>
+        <summary>Show raw bytes</summary>
+        ${hasRawHex ? `<div class="hex-legend">${buildHexLegend(ranges)}</div>
+        <div class="hex-dump">${createColoredHexDump(effectivePkt.raw_hex || pkt.raw_hex, ranges)}</div>` : ''}
 
-      ${hasRawHex ? buildFieldTable(effectivePkt.raw_hex ? effectivePkt : pkt, decoded, pathHops, ranges) : buildDecodedTable(decoded)}
+        ${hasRawHex ? buildFieldTable(effectivePkt.raw_hex ? effectivePkt : pkt, decoded, pathHops, ranges) : buildDecodedTable(decoded)}
+      </details>` : ''}
 
       ${observations.length > 1 ? `
       <div class="detail-observations" style="margin-top:16px">
