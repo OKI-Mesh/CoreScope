@@ -182,6 +182,11 @@ See `config.example.json` in the repository for all available options including:
 - Region filters
 - Retention policies
 - Geo-filtering
+- Map tile providers (OSM, Stamen, Carto, etc.)
+
+### Map Tile Providers
+
+Map tile providers are enabled and configured via the `config.json` file. You can provide your custom API credentials (e.g. `osm_url`, `stamen_api_key`, `mapbox_api_key`) to activate external tile services. Once configured on the server, users can select their preferred tile provider from the Customizer UI on the client, and their choice will be persisted automatically.
 
 ---
 

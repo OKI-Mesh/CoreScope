@@ -55,8 +55,30 @@
     "opacity": 1,
     "_comment": "#1488/#1506 — outline around each map marker (live + map pages). Defaults restored to v3.7.2 visual (solid white, 2px). 'color' accepts any CSS color (hex, rgb, rgba); use rgba() or drop 'opacity' below ~0.5 to soften the outline when hundreds of nodes feel overwhelming. 'width' is the SVG stroke width (0 hides the outline entirely). Operators can override per-browser via the in-app Theme Customizer (Colors tab → Marker Stroke)."
   },
-  "mapDarkTileProvider": "carto-dark",
-  "_comment_mapDarkTileProvider": "Default dark-mode basemap provider. Allowed: 'carto-dark' (Carto dark_all — default), 'esri-darkgray-labels' (Esri Dark Gray Canvas + reference labels), 'voyager-inverted' (Carto Voyager with CSS invert filter), 'positron-inverted' (Carto Positron with CSS invert filter). Light mode is unaffected. Users can override per-browser via the in-app customizer (persisted to localStorage). #1420.",
+  "map": {
+    "tiles": {
+      "darkDefault": "carto-dark",
+      "lightDefault": "carto-light",
+      "providers": {
+        "_comment_carto": "Carto is the default free-tier provider. Optional: specify 'domain' for Carto enterprise (e.g. 'mycompany' for 'https://{s}.mycompany.cartocdn.com').",
+        "carto": {
+          "enabled": true,
+          "domain": ""
+        },
+        "_comment_osm": "OSM providers: 'mapbox', 'thunderforest', 'maptiler'. WARNING: Tokens are sent to the browser. Apply origin/referrer restrictions in your provider dashboard.",
+        "osm": {
+          "enabled": false,
+          "provider": "",
+          "token": ""
+        },
+        "_comment_stamen": "Stamen (hosted by Stadia). WARNING: Tokens are sent to the browser. Apply origin/referrer restrictions.",
+        "stamen": {
+          "enabled": false,
+          "token": ""
+        }
+      }
+    }
+  },
   "home": {
     "heroTitle": "CoreScope",
     "heroSubtitle": "Find your nodes to start monitoring them.",

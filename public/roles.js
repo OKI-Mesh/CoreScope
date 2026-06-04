@@ -452,14 +452,21 @@
       if (cfg.roles.sort) window.ROLE_SORT = cfg.roles.sort;
     }
     if (cfg.healthThresholds) Object.assign(HEALTH_THRESHOLDS, cfg.healthThresholds);
+    if (cfg.map) {
+      window.MC_MAP_CFG = cfg.map;
+    } else {
+      // Fallback for older configs
+      window.MC_MAP_CFG = { tiles: { providers: {} } };
+    }
+    // Backward compat for older tile URL overrides
     if (cfg.tiles) {
       if (cfg.tiles.dark) window.TILE_DARK = cfg.tiles.dark;
       if (cfg.tiles.light) window.TILE_LIGHT = cfg.tiles.light;
+    } else if (cfg.map && cfg.map.tiles) {
+      if (cfg.map.tiles.darkUrl) window.TILE_DARK = cfg.map.tiles.darkUrl;
+      if (cfg.map.tiles.lightUrl) window.TILE_LIGHT = cfg.map.tiles.lightUrl;
     }
-    // #1420 — server default for dark-tile provider picker.
-    if (typeof cfg.mapDarkTileProvider === 'string' && typeof window.MC_setServerDefaultTileProvider === 'function') {
-      window.MC_setServerDefaultTileProvider(cfg.mapDarkTileProvider);
-    }
+    if (typeof window.MC_initTileRegistry === 'function') window.MC_initTileRegistry(true);
     if (cfg.snrThresholds) Object.assign(SNR_THRESHOLDS, cfg.snrThresholds);
     if (cfg.distThresholds) Object.assign(DIST_THRESHOLDS, cfg.distThresholds);
     if (cfg.maxHopDist != null) window.MAX_HOP_DIST = cfg.maxHopDist;

@@ -396,7 +396,7 @@ func (s *Server) handleConfigClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, ClientConfigResponse{
 		Roles:               s.cfg.Roles,
 		HealthThresholds:    s.cfg.GetHealthThresholds().ToClientMs(),
-		Tiles:               s.cfg.Tiles,
+		Map:                 s.cfg.Map,
 		SnrThresholds:       s.cfg.SnrThresholds,
 		DistThresholds:      s.cfg.DistThresholds,
 		MaxHopDist:          s.cfg.MaxHopDist,
@@ -409,6 +409,7 @@ func (s *Server) handleConfigClient(w http.ResponseWriter, r *http.Request) {
 		Timestamps:          s.cfg.GetTimestampConfig(),
 		DebugAffinity:       s.cfg.DebugAffinity,
 		MapDarkTileProvider: s.cfg.MapDarkTileProvider,
+		Tiles:               s.cfg.Tiles,
 	})
 }
 

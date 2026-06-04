@@ -992,7 +992,8 @@ type MapConfigResponse struct {
 type ClientConfigResponse struct {
 	Roles              interface{} `json:"roles"`
 	HealthThresholds   interface{} `json:"healthThresholds"`
-	Tiles              interface{} `json:"tiles"`
+	Map                interface{} `json:"map"`
+	Tiles              interface{} `json:"tiles,omitempty"` // deprecated
 	SnrThresholds      interface{} `json:"snrThresholds"`
 	DistThresholds     interface{} `json:"distThresholds"`
 	MaxHopDist         interface{} `json:"maxHopDist"`
@@ -1004,9 +1005,7 @@ type ClientConfigResponse struct {
 	PropagationBufferMs float64         `json:"propagationBufferMs"`
 	Timestamps          TimestampConfig `json:"timestamps"`
 	DebugAffinity       bool            `json:"debugAffinity,omitempty"`
-	// #1420 — server default for dark-tile provider picker. Client uses this
-	// as the fallback when no localStorage override is set.
-	MapDarkTileProvider string `json:"mapDarkTileProvider,omitempty"`
+	MapDarkTileProvider string          `json:"mapDarkTileProvider,omitempty"` // deprecated. TODO: remove after v3.5.0
 }
 
 // ─── IATA Coords ───────────────────────────────────────────────────────────────

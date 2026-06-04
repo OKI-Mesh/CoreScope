@@ -1331,43 +1331,62 @@
     // #1420 — multi-provider dark-tile picker. Light mode unchanged.
     let _liveDarkRefLayer = null;
     function _liveResolveTile(dark) {
-      if (!dark) return { url: TILE_LIGHT, attribution: '© OpenStreetMap © CartoDB', refUrl: null };
       const reg = window.MC_TILE_PROVIDERS || {};
+      if (!dark) {
+        const lightId = (typeof window.MC_getLightTileProvider === 'function') ? window.MC_getLightTileProvider() : null;
+        const lp = lightId ? (reg[lightId] || null) : null;
+        if (lp && lp.url) {
+          return { url: (typeof lp.url === 'function' ? lp.url() : lp.url), attribution: lp.attribution || '© OpenStreetMap © CartoDB', refUrl: null };
+        }
+        return { url: TILE_LIGHT, attribution: '© OpenStreetMap © CartoDB', refUrl: null };
+      }
       const id  = (typeof window.MC_getDarkTileProvider === 'function') ? window.MC_getDarkTileProvider() : 'carto-dark';
       const p   = reg[id] || reg['carto-dark'] || {};
       return {
-        url: p.url || p.baseUrl || TILE_DARK,
+        url: (typeof p.url === 'function' ? p.url() : p.url) || (typeof p.baseUrl === 'function' ? p.baseUrl() : p.baseUrl) || TILE_DARK,
         attribution: p.attribution || '© OpenStreetMap © CartoDB',
         refUrl: p.refUrl || null
       };
     }
+    const liveAutoLayerGroup = L.layerGroup().addTo(map);
+
     function _liveSyncDarkTiles(dark) {
       const r = _liveResolveTile(dark);
       tileLayer.setUrl(r.url);
       if (tileLayer.options) tileLayer.options.attribution = r.attribution;
       if (dark && r.refUrl) {
         if (!_liveDarkRefLayer) {
-          _liveDarkRefLayer = L.tileLayer(r.refUrl, { maxZoom: 19, attribution: r.attribution }).addTo(map);
+          _liveDarkRefLayer = L.tileLayer(r.refUrl, { maxZoom: 19, attribution: r.attribution }).addTo(liveAutoLayerGroup);
         } else {
           _liveDarkRefLayer.setUrl(r.refUrl);
+          if (!liveAutoLayerGroup.hasLayer(_liveDarkRefLayer)) _liveDarkRefLayer.addTo(liveAutoLayerGroup);
         }
       } else if (_liveDarkRefLayer) {
-        map.removeLayer(_liveDarkRefLayer);
+        liveAutoLayerGroup.removeLayer(_liveDarkRefLayer);
         _liveDarkRefLayer = null;
       }
       if (typeof window.MC_applyTileFilter === 'function') window.MC_applyTileFilter();
       // #1420 parity with map.js — refresh visible attribution credit after provider swap.
-      if (map.attributionControl) {
+      // Make sure the map is loaded before trying to update the ui
+      if (map && map.attributionControl) {
         try { map.attributionControl._update && map.attributionControl._update(); } catch (_) {}
       }
     }
     const _liveInitTile = _liveResolveTile(isDark);
-    let tileLayer = L.tileLayer(_liveInitTile.url, { maxZoom: 19, attribution: _liveInitTile.attribution }).addTo(map);
+    let tileLayer = L.tileLayer(_liveInitTile.url, { maxZoom: 19, attribution: _liveInitTile.attribution }).addTo(liveAutoLayerGroup);
     if (isDark && _liveInitTile.refUrl) {
-      _liveDarkRefLayer = L.tileLayer(_liveInitTile.refUrl, { maxZoom: 19, attribution: _liveInitTile.attribution }).addTo(map);
+      _liveDarkRefLayer = L.tileLayer(_liveInitTile.refUrl, { maxZoom: 19, attribution: _liveInitTile.attribution }).addTo(liveAutoLayerGroup);
     }
     if (typeof window.MC_applyTileFilter === 'function') window.MC_applyTileFilter();
+  
+    // Add Zoom Control
+    L.control.zoom({ position: 'topright' }).addTo(map);
 
+    // Add Layer Control, passing 'topright' to put it on the right
+    if (typeof window.MC_createLayerControl === 'function') {
+      window.MC_createLayerControl(map, liveAutoLayerGroup, 'topright');
+    }
+    
     // Swap tiles when theme changes
     const _themeObs = new MutationObserver(function () {
       const dark = document.documentElement.getAttribute('data-theme') === 'dark' ||
@@ -1376,12 +1395,12 @@
     });
     _themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     // #1420 — re-render on customizer change.
-    window.addEventListener('mc-tile-provider-changed', function () {
+    window.addEventListener('mc-tile-provider-changed', function (e) {
       const dark = document.documentElement.getAttribute('data-theme') === 'dark' ||
         (document.documentElement.getAttribute('data-theme') !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      if (e && e.detail && e.detail.type && e.detail.type !== (dark ? 'dark' : 'light')) return;
       _liveSyncDarkTiles(dark);
     });
-    L.control.zoom({ position: 'topright' }).addTo(map);
 
     // #1485 — animations + trails need their own pane above markerPane.
     // PR #1334 moved node markers from L.circleMarker (overlayPane @ 400)
