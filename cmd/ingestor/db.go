@@ -81,6 +81,16 @@ type Store struct {
 
 	sampleIntervalSec int
 	backfillWg        sync.WaitGroup
+
+	// prefixIdx holds the prefix → pubkey index used by the
+	// resolved_path writer (#1547). Rebuilt on startup and once per
+	// neighbor-edges builder tick (60s).
+	prefixIdx prefixIdxHolder
+
+	// neighborGraph holds the in-memory NeighborGraph snapshot used
+	// by the context-aware resolver (#1560). Rebuilt on startup and
+	// once per neighbor-edges builder tick (60s).
+	neighborGraph neighborGraphHolder
 }
 
 // OpenStore opens or creates a SQLite DB at the given path, applying the
@@ -681,13 +691,14 @@ func (s *Store) prepareStatements() error {
 	}
 
 	s.stmtInsertObservation, err = s.db.Prepare(`
-		INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, raw_hex)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, raw_hex, resolved_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(transmission_id, observer_idx, COALESCE(path_json, '')) DO UPDATE SET
-			snr     = COALESCE(excluded.snr,     snr),
-			rssi    = COALESCE(excluded.rssi,    rssi),
-			score   = COALESCE(excluded.score,   score),
-			raw_hex = COALESCE(excluded.raw_hex, raw_hex)
+			snr           = COALESCE(excluded.snr,           snr),
+			rssi          = COALESCE(excluded.rssi,          rssi),
+			score         = COALESCE(excluded.score,         score),
+			raw_hex       = COALESCE(excluded.raw_hex,       raw_hex),
+			resolved_path = COALESCE(excluded.resolved_path, resolved_path)
 	`)
 	if err != nil {
 		return err
@@ -842,10 +853,25 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 		epochTs = t.Unix()
 	}
 
+	// Resolve hop prefixes to full pubkeys for `observations.resolved_path`.
+	// Per #1547: this writer was lost in the #1289 refactor and lives in
+	// the ingestor now. Per #1560: use the context-aware resolver so
+	// 1-byte prefix collisions are disambiguated via NeighborGraph
+	// adjacency (anchored on from_pubkey for ADVERTs, previous hop
+	// otherwise). Empty resolved JSON → NULL via nilIfEmpty.
+	resolved := resolvePathWithContext(
+		parsePathArray(data.PathJSON),
+		strings.ToLower(data.FromPubkey),
+		s.neighborGraph.load(),
+		s.prefixIdx.load(),
+	)
+	resolvedJSON := marshalResolvedPath(resolved)
+
 	_, err = s.stmtInsertObservation.Exec(
 		txID, observerIdx, data.Direction,
 		data.SNR, data.RSSI, data.Score,
 		data.PathJSON, epochTs, nilIfEmpty(data.RawHex),
+		nilIfEmpty(resolvedJSON),
 	)
 	if err != nil {
 		s.Stats.WriteErrors.Add(1)
