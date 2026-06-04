@@ -6387,3 +6387,64 @@ Promise.allSettled(pendingTests).then(() => {
   console.error('Failed waiting for async tests:', e);
   process.exit(1);
 });
+
+// ===== observers.js: healthStatus (#1552) =====
+console.log('\n=== observers.js: healthStatus (configurable thresholds) ===');
+{
+  // Extract the healthStatus function body from observers.js so we can test
+  // it standalone (the file is an IIFE that depends on many page globals).
+  const src = fs.readFileSync('public/observers.js', 'utf8');
+  const m = src.match(/function healthStatus\s*\([^)]*\)\s*\{[\s\S]*?\n  \}/);
+  if (!m) throw new Error('healthStatus not found in public/observers.js');
+  const healthStatusSrc = m[0];
+
+  function runHealthStatus(lastSeen, healthThresholds) {
+    const ctx = { window: {}, Date };
+    if (healthThresholds) ctx.window.HEALTH_THRESHOLDS = healthThresholds;
+    vm.createContext(ctx);
+    vm.runInContext(healthStatusSrc + '\n; result = healthStatus(lastSeen);', Object.assign(ctx, { lastSeen, result: null }));
+    return ctx.result;
+  }
+
+  test('observer 20min old with 30min override → Online', () => {
+    const ts = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const r = runHealthStatus(ts, { observerOnlineMs: 30 * 60 * 1000, observerStaleMs: 120 * 60 * 1000 });
+    assert.strictEqual(r.cls, 'health-green', 'expected Online with 30min override, got ' + JSON.stringify(r));
+  });
+
+  test('observer 20min old with default thresholds → Online (new 1h default, #1552)', () => {
+    const ts = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const r = runHealthStatus(ts, null);
+    assert.strictEqual(r.cls, 'health-green', 'expected Online with 1h default, got ' + JSON.stringify(r));
+  });
+
+  test('observer 30min old with NO HEALTH_THRESHOLDS → Online (#1552 default raised to 1h)', () => {
+    const ts = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const r = runHealthStatus(ts, null);
+    assert.strictEqual(r.cls, 'health-green', 'expected Online with new 1h default, got ' + JSON.stringify(r));
+  });
+
+  test('observer 2h old with default thresholds → Stale (new 24h stale default, #1552)', () => {
+    const ts = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const r = runHealthStatus(ts, null);
+    assert.strictEqual(r.cls, 'health-yellow', 'expected Stale with 24h default, got ' + JSON.stringify(r));
+  });
+
+  test('observer 25h old with default thresholds → Offline (>24h, #1552)', () => {
+    const ts = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    const r = runHealthStatus(ts, null);
+    assert.strictEqual(r.cls, 'health-red', 'expected Offline beyond 24h stale default, got ' + JSON.stringify(r));
+  });
+
+  test('observer 90min old with 2h stale override → Stale', () => {
+    const ts = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+    const r = runHealthStatus(ts, { observerOnlineMs: 30 * 60 * 1000, observerStaleMs: 120 * 60 * 1000 });
+    assert.strictEqual(r.cls, 'health-yellow', 'expected Stale (90min < 120min stale), got ' + JSON.stringify(r));
+  });
+
+  test('null lastSeen → Unknown', () => {
+    const r = runHealthStatus(null, null);
+    assert.strictEqual(r.cls, 'health-red');
+    assert.strictEqual(r.label, 'Unknown');
+  });
+}

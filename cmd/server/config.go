@@ -325,6 +325,10 @@ type HealthThresholds struct {
 	// repeater to be considered "actively relaying" vs only "alive
 	// (advert-only)". See issue #662. Defaults to 24h.
 	RelayActiveHours float64 `json:"relayActiveHours"`
+	// Issue #1552 — observer health classification thresholds (minutes).
+	// Defaults match prior hardcoded behavior in public/observers.js (10/60).
+	ObserverOnlineMinutes int `json:"observerOnlineMinutes"`
+	ObserverStaleMinutes  int `json:"observerStaleMinutes"`
 }
 
 // ThemeFile mirrors theme.json overlay.
@@ -415,6 +419,18 @@ func (c *Config) GetHealthThresholds() HealthThresholds {
 		if c.HealthThresholds.RelayActiveHours > 0 {
 			h.RelayActiveHours = c.HealthThresholds.RelayActiveHours
 		}
+		if c.HealthThresholds.ObserverOnlineMinutes > 0 {
+			h.ObserverOnlineMinutes = c.HealthThresholds.ObserverOnlineMinutes
+		}
+		if c.HealthThresholds.ObserverStaleMinutes > 0 {
+			h.ObserverStaleMinutes = c.HealthThresholds.ObserverStaleMinutes
+		}
+	}
+	if h.ObserverOnlineMinutes <= 0 {
+		h.ObserverOnlineMinutes = 60
+	}
+	if h.ObserverStaleMinutes <= 0 {
+		h.ObserverStaleMinutes = 1440
 	}
 	return h
 }
@@ -431,11 +447,14 @@ func (h HealthThresholds) GetHealthMs(role string) (degradedMs, silentMs int) {
 // ToClientMs returns the thresholds as ms for the frontend.
 func (h HealthThresholds) ToClientMs() map[string]int {
 	const hourMs = 3600000
+	const minMs = 60000
 	return map[string]int{
-		"infraDegradedMs": int(h.InfraDegradedHours * hourMs),
-		"infraSilentMs":   int(h.InfraSilentHours * hourMs),
-		"nodeDegradedMs":  int(h.NodeDegradedHours * hourMs),
-		"nodeSilentMs":    int(h.NodeSilentHours * hourMs),
+		"infraDegradedMs":  int(h.InfraDegradedHours * hourMs),
+		"infraSilentMs":    int(h.InfraSilentHours * hourMs),
+		"nodeDegradedMs":   int(h.NodeDegradedHours * hourMs),
+		"nodeSilentMs":     int(h.NodeSilentHours * hourMs),
+		"observerOnlineMs": h.ObserverOnlineMinutes * minMs,
+		"observerStaleMs":  h.ObserverStaleMinutes * minMs,
 	}
 }
 

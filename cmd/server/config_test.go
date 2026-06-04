@@ -387,3 +387,71 @@ func TestObserverDaysOrDefault(t *testing.T) {
 		})
 	}
 }
+
+// Issue #1552 — observer health thresholds configurable.
+
+func TestObserverThresholdsOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfgData := map[string]interface{}{
+		"healthThresholds": map[string]interface{}{
+			"observerOnlineMinutes": 30,
+			"observerStaleMinutes":  120,
+		},
+	}
+	data, _ := json.Marshal(cfgData)
+	os.WriteFile(filepath.Join(dir, "config.json"), data, 0644)
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.GetHealthThresholds()
+	if h.ObserverOnlineMinutes != 30 {
+		t.Errorf("ObserverOnlineMinutes = %d, want 30", h.ObserverOnlineMinutes)
+	}
+	if h.ObserverStaleMinutes != 120 {
+		t.Errorf("ObserverStaleMinutes = %d, want 120", h.ObserverStaleMinutes)
+	}
+	m := h.ToClientMs()
+	if m["observerOnlineMs"] != 30*60*1000 {
+		t.Errorf("observerOnlineMs = %d, want %d", m["observerOnlineMs"], 30*60*1000)
+	}
+	if m["observerStaleMs"] != 120*60*1000 {
+		t.Errorf("observerStaleMs = %d, want %d", m["observerStaleMs"], 120*60*1000)
+	}
+}
+
+func TestObserverThresholdsDefaults(t *testing.T) {
+	cfg := &Config{}
+	h := cfg.GetHealthThresholds()
+	if h.ObserverOnlineMinutes != 60 {
+		t.Errorf("default ObserverOnlineMinutes = %d, want 60", h.ObserverOnlineMinutes)
+	}
+	if h.ObserverStaleMinutes != 1440 {
+		t.Errorf("default ObserverStaleMinutes = %d, want 1440", h.ObserverStaleMinutes)
+	}
+	m := h.ToClientMs()
+	if m["observerOnlineMs"] != 3600000 {
+		t.Errorf("default observerOnlineMs = %d, want 3600000", m["observerOnlineMs"])
+	}
+	if m["observerStaleMs"] != 86400000 {
+		t.Errorf("default observerStaleMs = %d, want 86400000", m["observerStaleMs"])
+	}
+}
+
+// Loading a config with no healthThresholds block at all must still produce
+// the new 60 / 1440 defaults (not zero, not the old 10 / 60).
+func TestObserverThresholdsDefaultsFromEmptyConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"port": 3000}`), 0644)
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.GetHealthThresholds()
+	if h.ObserverOnlineMinutes != 60 {
+		t.Errorf("empty-config ObserverOnlineMinutes = %d, want 60 (new default)", h.ObserverOnlineMinutes)
+	}
+	if h.ObserverStaleMinutes != 1440 {
+		t.Errorf("empty-config ObserverStaleMinutes = %d, want 1440 (new default)", h.ObserverStaleMinutes)
+	}
+}

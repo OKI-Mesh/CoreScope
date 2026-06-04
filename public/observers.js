@@ -122,10 +122,19 @@ window.ObserversNaiveChip = {
     if (!lastSeen) return { cls: 'health-red', label: 'Unknown' };
     const ago = Date.now() - new Date(lastSeen).getTime();
     const tolerance = 30000; // 30s tolerance for clock skew
-    if (ago < 600000 + tolerance) return { cls: 'health-green', label: 'Online' };    // < 10 min + tolerance
-    if (ago < 3600000 + tolerance) return { cls: 'health-yellow', label: 'Stale' };   // < 1 hour + tolerance
+    // Issue #1552 — thresholds are operator-configurable via config.json
+    // healthThresholds.observerOnlineMinutes / observerStaleMinutes, surfaced
+    // to the client through window.HEALTH_THRESHOLDS. Defaults are 60 min
+    // Online / 1440 min (24h) Stale, matching node thresholds (#1552).
+    const th = (typeof window !== 'undefined' && window.HEALTH_THRESHOLDS) || {};
+    const onlineMs = th.observerOnlineMs || 3600000;
+    const staleMs = th.observerStaleMs || 86400000;
+    if (ago < onlineMs + tolerance) return { cls: 'health-green', label: 'Online' };
+    if (ago < staleMs + tolerance) return { cls: 'health-yellow', label: 'Stale' };
     return { cls: 'health-red', label: 'Offline' };
   }
+  // Issue #1552 — exposed for tests and external callers.
+  window.observerHealthStatus = healthStatus;
 
   function packetBadge(o) {
     if (!o.last_packet_at) return '<span title="No packets ever observed">📡⚠ never</span>';
