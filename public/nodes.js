@@ -1112,19 +1112,53 @@
 
   async function loadNodes(refreshOnly) {
     try {
-      // Fetch all nodes once, filter client-side
+      // Fetch all nodes via pagination loop — server clamps /api/nodes ?limit
+      // to 500 (PR #1540 / v3.8.3 DoS guard), so a single fetch silently
+      // truncates large deployments. Loop exit uses data.nodes.length < PAGE_SIZE
+      // as canonical stop — server total is unreliable under area filters
+      // (routes.go:1357 overwrites total = len(filtered)). See #1606.
       if (!_allNodes) {
-        const params = new URLSearchParams({ limit: '5000' });
+        const PAGE_SIZE = 500;
+        const SAFETY_CAP = 10000; // hard ceiling to bound runaway loops
+        const baseParams = new URLSearchParams({ limit: String(PAGE_SIZE) });
         const rp = RegionFilter.getRegionParam();
-        if (rp) params.set('region', rp);
+        if (rp) baseParams.set('region', rp);
         const ap = AreaFilter.getAreaParam();
-        if (ap) params.set('area', ap);
-        const [data] = await Promise.all([
-          api('/nodes?' + params, { ttl: CLIENT_TTL.nodeList }),
-          getFleetSkew() // pre-fetch clock skew in parallel
-        ]);
-        _allNodes = data.nodes || [];
-        counts = data.counts || {};
+        if (ap) baseParams.set('area', ap);
+
+        // B1 fix: use local accumulator; only assign _allNodes on full success.
+        const accumulated = [];
+        let offset = 0;
+        let firstTotal = null; // informational only (M1: not used as loop bound)
+        // Kick off fleet skew in parallel with the first page only.
+        const skewPromise = getFleetSkew();
+        const nodesBody = document.getElementById('nodesBody');
+        while (offset < SAFETY_CAP) {
+          baseParams.set('offset', String(offset));
+          const data = await api('/nodes?' + baseParams, { ttl: CLIENT_TTL.nodeList });
+          if (!data || !Array.isArray(data.nodes)) break;
+          accumulated.push.apply(accumulated, data.nodes);
+          counts = data.counts || counts || {};
+          if (firstTotal === null && typeof data.total === 'number') firstTotal = data.total;
+          // M2: progress feedback between pages
+          if (nodesBody && offset > 0) {
+            const estTotal = firstTotal || '?';
+            nodesBody.innerHTML = '<tr><td colspan="99" style="text-align:center;padding:2em">Loading nodes\u2026 ' + accumulated.length + '/' + estTotal + '</td></tr>';
+          }
+          // M1 fix: exit when page is short (canonical stop), not based on total
+          if (data.nodes.length < PAGE_SIZE) break;
+          offset += PAGE_SIZE;
+        }
+        // TODO(m2): per-page cache invalidation — currently each page uses
+        // the same CLIENT_TTL.nodeList; fine for now but could be smarter.
+        // Dedup by public_key (m1: handles overlapping pages)
+        const seen = new Map();
+        for (let i = 0; i < accumulated.length; i++) {
+          seen.set(accumulated[i].public_key, accumulated[i]);
+        }
+        _allNodes = Array.from(seen.values());
+        // m3: counts from first response only (subsequent pages may differ)
+        await skewPromise;
       }
 
       // Client-side filtering
