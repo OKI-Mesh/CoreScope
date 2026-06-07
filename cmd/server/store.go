@@ -247,6 +247,19 @@ type PacketStore struct {
 	spIndex      map[string]int        // "hop1,hop2" → count
 	spTxIndex    map[string][]*StoreTx // "hop1,hop2" → transmissions containing this subpath
 	spTotalPaths int                   // transmissions with paths >= 2 hops
+	// Background-build ready gates for spIndex/spTxIndex and byPathHop
+	// (#1008). Flipped from false→true exactly once by the goroutine
+	// kicked off in Load() (or synchronously by the background chunk
+	// loader). Handlers gate reads via SubpathIndexReady() /
+	// PathHopIndexReady(); while false, they respond 503 + Retry-After.
+	subpathReady atomic.Bool
+	pathHopReady atomic.Bool
+	// indexReadyChan is closed exactly once when BOTH subpathReady
+	// and pathHopReady are true (#1008 review m6). Replaces the
+	// previous 2ms poll in WaitIndexesReady. Lazily allocated by
+	// indexReadyCh / maybeCloseIndexReadyCh in index_ready_1008.go.
+	indexReadyChMu sync.Mutex
+	indexReadyChan chan struct{}
 	// Precomputed distance analytics: hop distances and path totals.
 	// Built LAZILY on first /api/analytics/distance request (#1011) —
 	// previously eager in Load() at startup, which was O(n²) work for
@@ -837,10 +850,15 @@ func (s *PacketStore) Load() error {
 	}
 
 	// Build precomputed subpath index for O(1) analytics queries
-	s.buildSubpathIndex()
+	// — DEFERRED to a background goroutine (#1008). Same rationale
+	// as the distance index (#1011): synchronous build under s.mu
+	// blocks HTTP readiness ~60s at Cascadia scale. The goroutine is
+	// started AFTER s.loaded = true below.
+	// s.buildSubpathIndex()
 
 	// Build path-hop index for O(1) node path lookups
-	s.buildPathHopIndex()
+	// — DEFERRED to a background goroutine (#1008).
+	// s.buildPathHopIndex()
 
 	// Precompute distance analytics (hop distances, path totals)
 	// — DEFERRED to first /api/analytics/distance request (#1011).
@@ -869,6 +887,12 @@ func (s *PacketStore) Load() error {
 			len(s.packets), s.totalObs, elapsed, s.trackedMemoryMB(), s.estimatedMemoryMB())
 	}
 	s.loadMultibyteCapFromDB()
+	// Kick off background subpath + path-hop index builds (#1008).
+	// The goroutine acquires s.mu.Lock() and so will block until Load's
+	// deferred Unlock fires when this function returns. HTTP handlers
+	// gate reads behind SubpathIndexReady() / PathHopIndexReady() and
+	// respond 503 + Retry-After: 5 until the builds finish.
+	s.startBackgroundIndexBuilds()
 	return nil
 }
 
@@ -1282,6 +1306,13 @@ func (s *PacketStore) loadBackgroundChunks() {
 	s.distLazyOnce = sync.Once{}
 	s.distLazyMu.Unlock()
 	s.mu.Unlock()
+	// #1008 review m3: flip the ready flags after the synchronous
+	// rebuild for symmetry with startBackgroundIndexBuilds. Safe
+	// today because the chunk loader runs after Load() has already
+	// kicked the goroutines that set these to true; this is a
+	// belt-and-suspenders against a future reorder where the chunk
+	// loader could be the first writer.
+	s.markIndexesReadySync()
 
 	s.backgroundLoadDone.Store(true)
 	if chunkErrors > 0 {
