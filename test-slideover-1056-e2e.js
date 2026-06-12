@@ -93,7 +93,7 @@ const PAGES = [
         td.dispatchEvent(ev);
         return {
           ok: true,
-          rowCount: rows.length,
+          rowCount: candidates.length,
           rowAction: row.getAttribute('data-action') || null,
           rowValue: row.getAttribute('data-value') || null,
           hasSlideOver: typeof window.SlideOver !== 'undefined',
