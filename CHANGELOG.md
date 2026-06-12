@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [3.9.1] — 2026-06-12
+
+Patch release on top of v3.9.0 — v3.9.0's container image never published (Playwright flake gated Docker build). See [docs/release-notes/v3.9.1.md](docs/release-notes/v3.9.1.md).
+
+### 🎨 Accessibility
+- **WCAG AA contrast pass** (#1676, f0addfda) — two-tier CSS palette; muted-text ≥4.5:1 in both themes; unknown-repeater chip fixed (2.75:1 → 4.95:1). Closes #1671. Partial fix for #1668.
+
+### 🧪 Test stability
+- **Slideover E2E flake fix** (#1663+followups, f06359d7) — tightened selectors, bumped data-row wait. Fixes #1662.
+
 ## [3.9.0] — 2026-06-12
 
 See [docs/release-notes/v3.9.0.md](docs/release-notes/v3.9.0.md) for the full notes. 257 commits since v3.8.3 (72 substantive + 185 coverage bumps).
