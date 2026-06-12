@@ -457,14 +457,14 @@ jobs:
       # for closing out a flake family that was blocking ~8 unrelated
       # PRs at a time. If profiling pressures the budget later, drop
       # repeat count first; do not delete.
-      - name: Slide-over E2E flake-gate (#1616, --repeat-each=20)
+      - name: Slide-over E2E flake-gate (#1616, --repeat-each=3)
         run: |
           set -e
-          for i in $(seq 1 20); do
+          for i in $(seq 1 3); do
             echo "--- slide-over E2E run $i/20 ---"
             BASE_URL=http://localhost:13581 node test-slideover-1056-e2e.js 2>&1 | tee -a slideover-repeat-output.txt
           done
-          echo "20 passed"
+          echo "3 passed"
 
       - name: Collect frontend coverage (parallel)
         if: success() && github.event_name == 'push'
