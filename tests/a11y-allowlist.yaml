@@ -1,20 +1,111 @@
-# a11y allowlist — operator-flagged false-positives or temporary suppressions.
+# a11y allowlist — operator-flagged false-positives / temporary suppressions.
 #
-# Each entry MUST cite a GH issue # that tracks the eventual fix.
-# Format (YAML list of objects):
+# Governance (M5 0-violation baseline policy, re-stated here per PR #1711):
+#   - The CI gate's net floor is ZERO. Every entry in this file CONSUMES
+#     one notional "I owe an a11y fix" credit.
+#   - No wildcards. Each entry MUST pin a specific node via either:
+#       selector: '...'                # exact axe target string (legacy)
+#       selector_pattern: '...'        # JS RegExp; requires count_max: N
+#   - selector_pattern + count_max (PR #1711, finding #1): when a single
+#     class of nodes can repeat under live data (table rows, fleet lists),
+#     use a pattern with an EXPLICIT cap. If matches exceed count_max,
+#     the gate FAILS so unbounded growth re-trips CI for a human review.
+#   - Every entry MUST cite a GH issue # tracking the underlying fix.
+#   - expires_at: YYYY-MM-DD is LOAD-BEARING. expires_at <= today is a
+#     HARD FAIL (filterAllowlist throws). Do NOT soften to a warning —
+#     the harness relies on this to prevent "sed forward" rot.
+#   - strict_unused (PR #1711, finding #4): when set to true, any entry
+#     that matches NOTHING during a CI run FAILS the gate. Default WARN.
+#     Env override: A11Y_STRICT_UNUSED=1 promotes WARN → FAIL.
+#   - Rolling expiry: do NOT all share one date. New contributions should
+#     stagger (e.g. +30d / +60d from authoring date) so the gate's
+#     re-trip cadence is steady, not cliff-shaped.
 #
-#   - route: '/some/route'           # exact hash route, e.g. '/' or '/analytics?tab=channels'
-#     selector: '.some-css-selector' # axe-core "target" string for the violation node
-#     rule: color-contrast           # axe rule id (M5 = only color-contrast)
-#     issue: 1234                    # GH issue tracking the fix
-#     expires_at: 2026-09-01         # YYYY-MM-DD; after this date the suppression
-#                                    # is refused and the test fails again — forces a revisit
+# Match semantics: route + rule + (selector == target OR selector_pattern.test(target)).
+# Substring matching is REFUSED (`.btn` never suppresses `.btn-primary`).
 #
-# Rules:
-#   - Suppression matches when route + rule + (any of) selector strings all match.
-#   - Missing issue or expires_at = refused (treated as no allowlist match).
-#   - Expired expires_at = warning logged, suppression refused.
-#
-# M5 baseline: 0 entries. Every entry added in the future must have a tracking issue.
+# Entry shape:
+#   - route: '/analytics?tab=X'
+#     selector: '.foo'                 # OR selector_pattern: '^\.foo:nth-child' + count_max: 50
+#     rule: color-contrast
+#     issue: 1234
+#     expires_at: 2026-09-11
 
-[]
+strict_unused: false
+
+- route: '/analytics?tab=subpaths'
+  selector: 'a[href$="#sp-pairs"]'
+  rule: color-contrast
+  issue: 1713
+  expires_at: 2026-09-11
+- route: '/analytics?tab=subpaths'
+  selector: 'a[href$="#sp-triples"]'
+  rule: color-contrast
+  issue: 1713
+  expires_at: 2026-09-11
+- route: '/analytics?tab=subpaths'
+  selector: 'a[href$="#sp-quads"]'
+  rule: color-contrast
+  issue: 1713
+  expires_at: 2026-09-11
+- route: '/analytics?tab=subpaths'
+  selector: 'a[href$="#sp-long"]'
+  rule: color-contrast
+  issue: 1713
+  expires_at: 2026-09-11
+- route: '/analytics?tab=nodes'
+  selector: '.analytics-stat-card:nth-child(1) > div:nth-child(1)'
+  rule: color-contrast
+  issue: 1714
+  expires_at: 2026-09-11
+- route: '/analytics?tab=neighbor-graph'
+  selector: '#ngRoleChecks > label:nth-child(1) > span'
+  rule: color-contrast
+  issue: 1715
+  expires_at: 2026-09-11
+- route: '/analytics?tab=neighbor-graph'
+  selector: '#ngRoleChecks > label:nth-child(2) > span'
+  rule: color-contrast
+  issue: 1715
+  expires_at: 2026-09-11
+- route: '/analytics?tab=neighbor-graph'
+  selector: '#ngRoleChecks > label:nth-child(5) > span'
+  rule: color-contrast
+  issue: 1715
+  expires_at: 2026-09-11
+- route: '/analytics?tab=neighbor-graph'
+  selector: 'label:nth-child(3) > span'
+  rule: color-contrast
+  issue: 1715
+  expires_at: 2026-09-11
+- route: '/analytics?tab=neighbor-graph'
+  selector: 'label:nth-child(4) > span'
+  rule: color-contrast
+  issue: 1715
+  expires_at: 2026-09-11
+- route: '/analytics?tab=rf-health'
+  selector: 'button[data-range="24h"]'
+  rule: color-contrast
+  issue: 1716
+  expires_at: 2026-09-11
+- route: '/analytics?tab=clock-health'
+  selector: 'button[data-filter="all"]'
+  rule: color-contrast
+  issue: 1717
+  expires_at: 2026-09-11
+- route: '/analytics?tab=clock-health'
+  selector_pattern: '^\.clock-fleet-row--no_clock:nth-child\(\d+\) > td:nth-child\(3\) > \.skew-badge\.skew-badge--no_clock$'
+  count_max: 300
+  rule: color-contrast
+  issue: 1717
+  expires_at: 2026-10-09
+- route: '/analytics?tab=prefix-tool'
+  selector: '#ptCheckBtn'
+  rule: color-contrast
+  issue: 1718
+  expires_at: 2026-09-11
+- route: '/analytics?tab=prefix-tool'
+  selector: '#ptGenBtn'
+  rule: color-contrast
+  issue: 1718
+  expires_at: 2026-09-11

@@ -56,6 +56,19 @@ for (const r of ['/', '/packets', '/nodes', '/live', '/map', '/analytics?tab=col
   assert.ok(mod.ROUTES.includes(r), `ROUTES missing ${r}`);
 }
 
+// #1706: ROUTES must cover ALL analytics tabs registered in REGISTERED_ANALYTICS_TABS.
+// The gate previously covered 7 of 14 analytics tabs (overview, rf, topology,
+// channels, hashsizes, collisions, roles) — the other 7 plus prefix-tool could
+// regress on contrast/aria without CI noticing. This assertion enforces full
+// coverage so any new tab added to analytics.js forces a ROUTES entry too.
+for (const tab of mod.REGISTERED_ANALYTICS_TABS) {
+  const route = `/analytics?tab=${tab}`;
+  assert.ok(
+    mod.ROUTES.includes(route),
+    `#1706: ROUTES missing analytics tab coverage for "${route}" — every REGISTERED_ANALYTICS_TABS entry must be gated`
+  );
+}
+
 // ---- ROUTES reciprocity vs registered pages / analytics tabs ----------------
 // Forces a build break if someone adds a route without covering it, OR removes
 // a registered page/tab without dropping it from ROUTES (silent skip).
@@ -128,9 +141,16 @@ if (fs.existsSync(publicDir)) {
 }
 
 // ---- parser: empty + flow ---------------------------------------------------
-assert.deepStrictEqual(mod.parseAllowlistYaml('[]'), [], 'empty flow list');
-assert.deepStrictEqual(mod.parseAllowlistYaml(''),   [], 'empty string');
-assert.deepStrictEqual(mod.parseAllowlistYaml('# only a comment\n'), [], 'comment-only');
+// #1706 finding 4: parser now decorates the returned array with .topLevel
+// and .entries properties (back-compat: still array-iterable). Check shape +
+// length rather than deepStrictEqual to allow the metadata.
+const emptyFlow = mod.parseAllowlistYaml('[]');
+assert.ok(Array.isArray(emptyFlow) && emptyFlow.length === 0, 'empty flow list');
+assert.deepStrictEqual(emptyFlow.topLevel, {}, 'empty flow has empty topLevel');
+const emptyStr = mod.parseAllowlistYaml('');
+assert.ok(Array.isArray(emptyStr) && emptyStr.length === 0, 'empty string');
+const emptyComment = mod.parseAllowlistYaml('# only a comment\n');
+assert.ok(Array.isArray(emptyComment) && emptyComment.length === 0, 'comment-only');
 
 // ---- parser: block list with two entries ------------------------------------
 const sample = `
@@ -259,12 +279,118 @@ assert.throws(
   'today must be YYYY-MM-DD'
 );
 
+// ---- #1706 finding 2: analyticsTabOf helper --------------------------------
+assert.strictEqual(mod.analyticsTabOf('/analytics?tab=subpaths'), 'subpaths');
+assert.strictEqual(mod.analyticsTabOf('/analytics?tab=neighbor-graph&section=foo'), 'neighbor-graph');
+assert.strictEqual(mod.analyticsTabOf('/analytics'), null);
+assert.strictEqual(mod.analyticsTabOf('/packets'), null);
+assert.strictEqual(mod.analyticsTabOf('/'), null);
+
+// ---- #1706 finding 1: selector_pattern + count_max -------------------------
+// Pattern entry requires count_max>0.
+assert.throws(
+  () => mod.filterAllowlist(
+    [{ route: '/x', selector_pattern: '^\\.foo', rule: 'color-contrast', issue: 1, expires_at: '2099-01-01' }],
+    '2026-06-12'
+  ),
+  /selector_pattern requires count_max/,
+  'selector_pattern missing count_max must throw'
+);
+// selector + selector_pattern mutually exclusive.
+assert.throws(
+  () => mod.filterAllowlist(
+    [{ route: '/x', selector: '.s', selector_pattern: '^\\.s', count_max: 5,
+       rule: 'color-contrast', issue: 1, expires_at: '2099-01-01' }],
+    '2026-06-12'
+  ),
+  /mutually exclusive/,
+  'selector + selector_pattern together must throw'
+);
+// Invalid regex rejected.
+assert.throws(
+  () => mod.filterAllowlist(
+    [{ route: '/x', selector_pattern: '[bad-regex(', count_max: 5,
+       rule: 'color-contrast', issue: 1, expires_at: '2099-01-01' }],
+    '2026-06-12'
+  ),
+  /invalid regex/,
+  'invalid selector_pattern regex must throw'
+);
+// Pattern match: counts up, allowed until count_max, then overflow flagged.
+const patAllow = mod.filterAllowlist(
+  [{ route: '/x', selector_pattern: '^\\.row:nth-child\\(\\d+\\) \\.badge$',
+     count_max: 2, rule: 'color-contrast', issue: 1, expires_at: '2099-01-01' }],
+  '2026-06-12'
+);
+let m1 = mod.matchViolation('/x', 'color-contrast',
+  { target: ['.row:nth-child(1) .badge'] }, patAllow);
+assert.strictEqual(m1.allowed, true, 'pattern match #1 allowed');
+assert.strictEqual(m1.overflow, false, 'pattern match #1 not overflow');
+let m2 = mod.matchViolation('/x', 'color-contrast',
+  { target: ['.row:nth-child(2) .badge'] }, patAllow);
+assert.strictEqual(m2.allowed, true, 'pattern match #2 allowed');
+assert.strictEqual(m2.overflow, false, 'pattern match #2 not overflow (== count_max)');
+let m3 = mod.matchViolation('/x', 'color-contrast',
+  { target: ['.row:nth-child(3) .badge'] }, patAllow);
+assert.strictEqual(m3.allowed, true, 'pattern match #3 allowed');
+assert.strictEqual(m3.overflow, true, 'pattern match #3 must overflow (> count_max)');
+// Pattern that does not match returns allowed=false.
+const m4 = mod.matchViolation('/x', 'color-contrast',
+  { target: ['.unrelated'] }, patAllow);
+assert.strictEqual(m4.allowed, false, 'non-matching target must not be allowed');
+
+// ---- #1706 finding 4: stale-allowlist detection & strict_unused -----------
+const staleAllow = mod.filterAllowlist(
+  [
+    { route: '/used', selector: '.s', rule: 'color-contrast', issue: 1, expires_at: '2099-01-01' },
+    { route: '/dead', selector: '.never-matched', rule: 'color-contrast', issue: 2, expires_at: '2099-01-01' },
+  ],
+  '2026-06-12'
+);
+// Match the first only.
+mod.matchViolation('/used', 'color-contrast', { target: ['.s'] }, staleAllow);
+const warnReport = mod.reportStaleAllowlist(staleAllow, { strict_unused: false });
+assert.strictEqual(warnReport.stale.length, 1, 'one stale entry');
+assert.strictEqual(warnReport.stale[0].route, '/dead', 'stale entry must be /dead');
+assert.strictEqual(warnReport.fail, false, 'WARN must not fail by default');
+// Promote to strict.
+const failReport = mod.reportStaleAllowlist(staleAllow, { strict_unused: true });
+assert.strictEqual(failReport.fail, true, 'strict_unused=true must request FAIL');
+
+// ---- #1706 finding 4: top-level YAML config parsed (strict_unused) -------
+const cfgYaml = `
+strict_unused: true
+- route: /a
+  selector: .s
+  rule: color-contrast
+  issue: 1
+  expires_at: 2099-01-01
+`;
+const cfgParsed = mod.parseAllowlistYaml(cfgYaml);
+assert.strictEqual(cfgParsed.length, 1, 'cfg+entry parsed length');
+assert.strictEqual(cfgParsed.topLevel.strict_unused, true, 'top-level strict_unused parsed');
+
+// ---- #1706 finding 6: expires_at hard-fails CI (defense-in-depth) --------
+// Explicit "well before today" test using the date the finding cites.
+assert.throws(
+  () => mod.filterAllowlist(
+    [{ route: '/x', selector: '.s', rule: 'color-contrast', issue: 1, expires_at: '2020-01-01' }],
+    '2026-06-12'
+  ),
+  /REFUSED \(expired/,
+  'expires_at 2020-01-01 must hard-fail loader'
+);
+
 // ---- repo allowlist file: shape sanity --------------------------------------
 const allowPath = path.join(__dirname, 'tests', 'a11y-allowlist.yaml');
 assert.ok(fs.existsSync(allowPath), `tests/a11y-allowlist.yaml missing at ${allowPath}`);
 const entries = mod.loadAllowlist();
 for (const e of entries) {
-  assert.ok(e.route && e.selector && e.rule && e.issue && e.expires_at,
+  assert.ok(e.route && (e.selector || e.selector_pattern) && e.rule && e.issue && e.expires_at,
     `allowlist entry missing required field: ${JSON.stringify(e)}`);
+  if (e.selector_pattern) {
+    assert.ok(typeof e.count_max === 'number' && e.count_max > 0,
+      `selector_pattern entry missing count_max: ${JSON.stringify(e)}`);
+  }
 }
 console.log(`PASS: a11y-axe-1668 selftest — routes=${mod.ROUTES.length} themes=${mod.THEMES.length} allowlist=${entries.length}`);
