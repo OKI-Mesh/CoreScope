@@ -34,6 +34,10 @@
   let packetCount = 0;
   let activeAnims = 0;
   const MAX_CONCURRENT_ANIMS = 20;
+  // Perf caps for the animation overlay (see updateAnimCanvas / renderAnimations).
+  const ANIM_MAX_DPR = 1.5;       // cap backing-store pixels on hi-DPI displays
+  const ANIM_MIN_FRAME_MS = 15;   // don't redraw faster than ~60fps (high-refresh guard)
+  let _lastAnimFrame = 0;
   let nodeActivity = {};
   let recentPaths = [];
   let showGhostHops = localStorage.getItem('live-ghost-hops') !== 'false';
@@ -1294,7 +1298,11 @@
       const w = size.x + padX * 2;
       const h = size.y + padY * 2;
 
-    const dpr = window.devicePixelRatio || 1;
+    // Cap the backing-store DPR. The animation canvas is ~1.4x the screen area
+    // (20% pad per side); at native devicePixelRatio 2-3 that means clearing and
+    // redrawing 5-12x the screen's pixels every frame. Capping at 1.5 keeps lines
+    // crisp while cutting per-frame fill cost by up to ~4x on hi-DPI displays.
+    const dpr = Math.min(window.devicePixelRatio || 1, ANIM_MAX_DPR);
 
       // Updating width/height automatically clears the canvas
       animCanvas.width = w * dpr;
@@ -3886,6 +3894,17 @@
     }
 
     const isPaused = VCR.mode === 'PAUSED' || VCR.speed === 0;
+
+    // High-refresh guard: cap redraw at ~60fps. Progress is time-based
+    // (tickDt reads each object's own elapsed delta, itself capped at 32ms),
+    // so skipping a frame preserves motion exactly — this only stops 120/144Hz
+    // displays from doing 2-2.4x the per-frame work for no visible benefit.
+    // Skip only while running; paused frames fall through to the sleep path below.
+    if (!isPaused && now - _lastAnimFrame < ANIM_MIN_FRAME_MS) {
+      requestAnimationFrame(renderAnimations);
+      return;
+    }
+    _lastAnimFrame = now;
 
     // Clear the canvas for this frame
     animCtx.clearRect(0, 0, animCanvas.clientWidth, animCanvas.clientHeight);
