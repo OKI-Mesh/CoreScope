@@ -1347,6 +1347,18 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		// — safe to call regardless of needsRelay, and we want the
 		// score on repeater rows specifically.
 		bridgeMap := s.store.GetBridgeScoreMap()
+		// Coverage + Redundancy axes (#672 axes 3 & 4). Atomic snapshots,
+		// same discipline as the bridge map.
+		coverageMap := s.store.GetCoverageScoreMap()
+		redundancyMap := s.store.GetRedundancyScoreMap()
+		// Whether the structural-axis recomputer has produced a snapshot yet:
+		// distinguishes a genuinely isolated repeater (real "F") from cold
+		// start (grade withheld) for the all-zero node (#1762 MAJOR-4).
+		axesComputed := s.store.UsefulnessAxesComputed()
+		// Population max of the raw Traffic axis, used to max-normalize
+		// traffic into the composite (the other three axes are already
+		// max-normalized; #1762 review).
+		maxUseful := maxFloat(usefulMap)
 		for _, node := range nodes {
 			if pk, ok := node["public_key"].(string); ok {
 				EnrichNodeWithHashSize(node, hashInfo[pk])
@@ -1367,16 +1379,21 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 					if len(info.TransportedScopes) > 0 {
 						node["transported_scopes"] = info.TransportedScopes
 					}
-					// usefulness_score retained for API compat; new
-					// consumers should read traffic_share_score
-					// (issue #1456). When the #672 composite ships
-					// usefulness_score will become the composite
-					// and traffic_share_score will keep the
-					// per-axis value.
-					us := lookupUsefulnessScore(usefulMap, pk)
-					node["usefulness_score"] = us
-					node["traffic_share_score"] = us
-					node["bridge_score"] = lookupUsefulnessScore(bridgeMap, pk)
+					// #672 4-axis usefulness. traffic_share_score keeps the
+					// raw per-axis Traffic value (#1456); the structural axes
+					// are surfaced individually; the composite uses the
+					// max-normalized traffic so its 0.20 weight is real.
+					trafficRaw := lookupUsefulnessScore(usefulMap, pk)
+					trafficNorm := 0.0
+					if maxUseful > 0 {
+						trafficNorm = trafficRaw / maxUseful
+					}
+					enrichNodeUsefulness(node, trafficRaw, usefulnessAxes{
+						Traffic:    trafficNorm,
+						Bridge:     lookupUsefulnessScore(bridgeMap, pk),
+						Coverage:   lookupUsefulnessScore(coverageMap, pk),
+						Redundancy: lookupUsefulnessScore(redundancyMap, pk),
+					}, axesComputed)
 				}
 			}
 		}
@@ -1558,12 +1575,22 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 			if len(info.TransportedScopes) > 0 {
 				node["transported_scopes"] = info.TransportedScopes
 			}
-			// usefulness_score retained for API compat; new
-			// consumers should read traffic_share_score (#1456).
-			us := s.store.GetRepeaterUsefulnessScore(pubkey)
-			node["usefulness_score"] = us
-			node["traffic_share_score"] = us
-			node["bridge_score"] = s.store.GetBridgeScore(pubkey)
+			// #672 4-axis usefulness (see handleNodes for the field
+			// contract). traffic_share_score keeps the raw per-axis
+			// Traffic value (#1456); the composite uses the
+			// population-max-normalized traffic (#1762 review).
+			usefulMap := s.store.GetRepeaterUsefulnessScoreMap()
+			trafficRaw := lookupUsefulnessScore(usefulMap, pubkey)
+			trafficNorm := 0.0
+			if mx := maxFloat(usefulMap); mx > 0 {
+				trafficNorm = trafficRaw / mx
+			}
+			enrichNodeUsefulness(node, trafficRaw, usefulnessAxes{
+				Traffic:    trafficNorm,
+				Bridge:     s.store.GetBridgeScore(pubkey),
+				Coverage:   s.store.GetCoverageScore(pubkey),
+				Redundancy: s.store.GetRedundancyScore(pubkey),
+			}, s.store.UsefulnessAxesComputed())
 		}
 	}
 

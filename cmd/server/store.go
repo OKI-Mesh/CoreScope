@@ -338,6 +338,23 @@ type PacketStore struct {
 	// path in handleNodes (same discipline as #1248).
 	bridgeScoreMap atomic.Pointer[map[string]float64]
 
+	// Coverage + Redundancy axes (issue #672 axes 3 & 4 of 4): atomic
+	// snapshots of pubkey → 0..1 score over the current neighbor graph.
+	// Coverage = normalized harmonic reach centrality; Redundancy =
+	// articulation-point fragmentation criticality. Populated by the
+	// usefulness-axes recomputer (usefulness_axes_recomputer.go); nil until
+	// the first compute lands. Read path is a single atomic pointer load,
+	// matching the bridge axis.
+	coverageScoreMap   atomic.Pointer[map[string]float64]
+	redundancyScoreMap atomic.Pointer[map[string]float64]
+
+	// Start-once latch for the usefulness-axes recomputer
+	// (usefulness_axes_recomputer.go). Per-store rather than package-global so
+	// independent PacketStores each run their own recomputer; guards the
+	// idempotent StartUsefulnessAxesRecomputer (a second call no-ops).
+	usefulnessAxesRecompMu      sync.Mutex
+	usefulnessAxesRecompStarted bool
+
 	// Precomputed distinct advert pubkey count (refcounted for eviction correctness).
 	// Updated incrementally during Load/Ingest/Evict — avoids JSON parsing in GetPerfStoreStats.
 	advertPubkeys map[string]int // pubkey → number of advert packets referencing it
