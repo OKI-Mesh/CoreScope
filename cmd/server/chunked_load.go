@@ -8,6 +8,12 @@ package main
 //     first chunk is merged into the store, FirstChunkReady is closed.
 //     main.go binds the HTTP listener on that signal and serves
 //     partial data while remaining chunks stream in the background.
+//   * RunStartupLoad is the orchestrator: it runs LoadChunked
+//     synchronously, then on success runs loadBackgroundChunks
+//     synchronously so s.oldestLoaded is guaranteed set before the
+//     background loader reads it (#1809). main.go typically invokes
+//     RunStartupLoad inside its own goroutine and waits on
+//     FirstChunkReady() in parallel to bind the HTTP listener.
 //   * loadStatusMiddleware stamps X-CoreScope-Load-Status on every
 //     response: "loading; progress=<rows>" until LoadComplete()
 //     reports true, then "ready". Dashboards and probes can read the
@@ -35,6 +41,16 @@ import (
 
 // dbLoadConfig is the server-package alias for dbconfig.LoadConfig (#1009).
 type dbLoadConfig = dbconfig.LoadConfig
+
+// invariantViolation is the production-time handler for #1809-class
+// invariant failures (see loadBackgroundChunks). In prod it logs a
+// FATAL line and calls os.Exit(1) via log.Fatalf — a clean shutdown
+// with no goroutine-stack noise. Tests override it to panic so they
+// can recover() and assert the invariant message without crashing the
+// test runner. adv #6 (PR #1811).
+var invariantViolation = func(msg string) {
+	log.Fatalf("invariant violation: %s", msg)
+}
 
 // DBLoadChunkSize returns the configured chunk size for chunked
 // startup load (config: db.load.chunkSize), or 10000 default (#1009).
@@ -103,6 +119,122 @@ func (s *PacketStore) fireChunkCallbacks(rowsThisChunk, totalRows int) {
 			cb(rowsThisChunk, totalRows)
 		}()
 	}
+}
+
+// RunStartupLoad orchestrates the startup load sequence:
+//  1. run LoadChunked synchronously (FirstChunkReady is signaled
+//     internally so callers waiting on it in parallel can bind HTTP)
+//  2. on success, run loadBackgroundChunks synchronously so
+//     s.oldestLoaded is guaranteed set before the bg loader reads
+//     it (#1809).
+//
+// chunkSize=0 uses the LoadChunked default. The function blocks until
+// LoadChunked AND any background loader have finished. Callers that
+// want to bind the HTTP listener at FirstChunkReady should run this
+// in a goroutine and wait on FirstChunkReady() themselves.
+//
+// SYNCHRONOUS-CALL DEADLOCK WARNING (adv #10): callers that block on
+// FirstChunkReady() from the SAME goroutine that calls RunStartupLoad
+// will deadlock — LoadChunked only closes firstChunkReady from within
+// this call, and RunStartupLoad does not return until ALL chunks
+// (including the background loader) have finished. main.go's pattern
+// is correct: spawn RunStartupLoad in a goroutine and wait on
+// FirstChunkReady() on the parent stack. Do not call RunStartupLoad
+// inline.
+//
+// SINGLE-CALL INVARIANT (adv #7): RunStartupLoad is invoked exactly
+// once per process from main.go boot. Tests open a fresh store per
+// test. Re-entry would observe a stale backgroundLoadErr from a
+// previous failed call until the new LoadChunked or
+// loadBackgroundChunks rewrote it. We clear backgroundLoadErr on
+// entry to make repeat invocations in tests safe; a panic on
+// reentrant concurrent calls is not added because the production
+// invariant (one call per boot) is already documented above
+// LoadChunked.
+//
+// Steady-state contracts post-return:
+//   - LoadChunked error: backgroundLoadFailed=true, backgroundLoadDone
+//     is also set true (terminal observable state — see dij #1).
+//     backgroundLoadErr non-empty. Returns the error.
+//   - hotStartupHours == 0: backgroundLoadDone=true, failed=false
+//     (no background work was needed). Coverage is computed against
+//     row count so /api/perf does not report ratio=0.0 (dij #2).
+//   - hotStartupHours > 0 success: terminal state is whatever
+//     loadBackgroundChunks set (done=true on full coverage,
+//     failed=true on partial / chunk errors — see #1690).
+//
+// Issue #1809 root cause: previously main.go spawned loadBackgroundChunks
+// at FirstChunkReady while LoadChunked was still merging the remainder
+// of the hot window. s.oldestLoaded is only assigned at the end of
+// LoadChunked, so the bg loader read "" and bailed → coverage gate
+// trips → backgroundLoadFailed=true. Running the bg loader after
+// LoadChunked returns preserves the FirstChunkReady HTTP-bind
+// parallelism while ensuring oldestLoaded has a valid floor when the
+// bg loader starts.
+func (s *PacketStore) RunStartupLoad(chunkSize int) error {
+	// Clear any stale error from a previous invocation (single-call
+	// invariant — see godoc above). Production never re-enters but
+	// test fixtures may construct fresh stores that share no state;
+	// keeping this explicit avoids surprising "ghost error" reads
+	// across test runs that share a store.
+	s.bgErrMu.Lock()
+	s.backgroundLoadErr = ""
+	s.bgErrMu.Unlock()
+
+	if err := s.LoadChunked(chunkSize); err != nil {
+		// Pick a terminal state on the error path so /api/healthz +
+		// backgroundLoadComplete don't stay undefined forever. Both
+		// done AND failed are set true: the LoadChunked read-protocol
+		// contract documented in store.go says `done` is the primary
+		// observable terminal signal and `failed` qualifies it (read
+		// done first, then check failed). See dij #1.
+		s.bgErrMu.Lock()
+		s.backgroundLoadErr = fmt.Sprintf("LoadChunked failed: %v", err)
+		s.bgErrMu.Unlock()
+		s.backgroundLoadFailed.Store(true)
+		s.backgroundLoadDone.Store(true)
+		return err
+	}
+	if s.hotStartupHours <= 0 {
+		// No bg work required → terminal steady state is done=true,
+		// failed=false. Without this the healthz probe would see
+		// backgroundLoadComplete=false indefinitely. dij #2: compute
+		// coverage so /api/perf doesn't report ratio=0 on the
+		// "no-work" path — empty DB is 1.0, otherwise everything in
+		// the DB is what we already loaded into memory.
+		s.mu.RLock()
+		loadedCount := int64(len(s.packets))
+		s.mu.RUnlock()
+		var totalInDB int64
+		if err := s.db.conn.QueryRow(`SELECT COUNT(*) FROM transmissions`).Scan(&totalInDB); err != nil {
+			totalInDB = -1
+		}
+		var ratio float64
+		switch {
+		case totalInDB <= 0:
+			// Empty DB (0) or count failed (-1) → treat as fully covered.
+			ratio = 1.0
+		case loadedCount >= totalInDB:
+			ratio = 1.0
+		default:
+			ratio = float64(loadedCount) / float64(totalInDB)
+		}
+		s.bgErrMu.Lock()
+		s.loadCoverageRatio = ratio
+		s.bgErrMu.Unlock()
+		log.Printf("[store] RunStartupLoad: hotStartupHours=0 — background fill loader SKIPPED (coverage=%.1f%%, loaded=%d, totalInDB=%d)",
+			ratio*100, loadedCount, totalInDB)
+		s.backgroundLoadDone.Store(true)
+		s.backgroundLoadProgress.Store(100)
+		return nil
+	}
+	// INFO signal between LoadChunked completion and the bg loader
+	// kick-off. The post-mortem of #1809 needed exactly this line to
+	// confirm the bg loader actually started after oldestLoaded was set.
+	log.Printf("[store] LoadChunked complete (oldestLoaded=%q) — starting background fill loader (retentionHours=%gh, hotStartupHours=%gh)",
+		s.oldestLoaded, s.retentionHours, s.hotStartupHours)
+	s.loadBackgroundChunks()
+	return nil
 }
 
 // LoadChunked streams transmissions + observations from SQLite into

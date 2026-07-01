@@ -421,6 +421,21 @@ type PacketStore struct {
 	//     Read order MUST be: load backgroundLoadDone first; only if true
 	//     is backgroundLoadFailed meaningful.
 	// 0 = disabled (current behavior). Background loader fills the rest.
+	//
+	// IMMUTABILITY: hotStartupHours is set ONCE in NewPacketStore (with
+	// optional clamp against retentionHours) and is NEVER mutated
+	// afterward. Readers (LoadChunked, RunStartupLoad,
+	// loadBackgroundChunks, GetPerfStoreStats) intentionally read it
+	// without s.mu. Do not add a write path without also adding the
+	// lock to every reader — see #1809 / #1811.
+	//
+	// ENFORCEMENT (dij #5): immutability is enforced indirectly. A
+	// mutation that left oldestLoaded inconsistent with the new
+	// hotStartupHours would trip the loadBackgroundChunks invariant
+	// (see store.go ~line 1442 — the invariantViolation() guard).
+	// That guard is the runtime backstop; this comment is the
+	// compile-time discipline. If you genuinely need to mutate
+	// hotStartupHours at runtime, audit every reader above first.
 	hotStartupHours        float64
 	backgroundLoadDone     atomic.Bool
 	backgroundLoadFailed   atomic.Bool
@@ -428,8 +443,13 @@ type PacketStore struct {
 
 	// #1690: backgroundLoadError captures the human-readable reason when
 	// backgroundLoadFailed flips true (e.g. "loaded 12.3% of 1000 rows").
-	// Guarded by bgErrMu so the perf endpoint can read it without
-	// synchronising on s.mu (held by chunk-merge writers).
+	// Guarded by bgErrMu (RWMutex) so the perf endpoint can read it
+	// without synchronising on s.mu (held by chunk-merge writers).
+	// CONCURRENCY (dij #4): EVERY read and write of backgroundLoadErr
+	// MUST hold bgErrMu (RLock for reads, Lock for writes). Do not
+	// promote to atomic.Pointer without also auditing the two call
+	// sites in chunked_load.go's RunStartupLoad and store.go's
+	// loadBackgroundChunks + GetPerfStoreStats + BackgroundLoadError.
 	bgErrMu            sync.RWMutex
 	backgroundLoadErr  string
 	// loadCoverageRatio: totalLoaded / totalInDB (0.0–1.0). Updated by
@@ -467,6 +487,12 @@ type PacketStore struct {
 	statsCacheTime time.Time
 	statsLastHour  int
 	statsLast24h   int
+
+	// Test-only hook fired at the very start of loadBackgroundChunks
+	// (after the #1809 invariant check). Nil in production. Used by
+	// ordering tests to capture the bg-loader entry timestamp/signal
+	// without polling. See runstartup_load_test.go.
+	bgLoaderEntryHook func()
 }
 
 // Precomputed distance records for fast analytics aggregation.
@@ -1418,6 +1444,37 @@ func (s *PacketStore) loadChunk(from, to time.Time) error {
 // chunks are merged it rebuilds analytics indexes once. Chunk errors are
 // handled by advancing past the failed window so the loop always terminates.
 func (s *PacketStore) loadBackgroundChunks() {
+	// #1809 invariant: oldestLoaded MUST be set before the bg loader
+	// runs whenever the in-memory store has packets. The original bug
+	// was a parallel spawn that read oldestLoaded="" and silently
+	// bailed → coverage gate trips → backgroundLoadFailed=true. Encode
+	// the precondition here so a future refactor that re-introduces
+	// the race fails loudly instead of silently shipping the same
+	// regression. Empty store + empty oldestLoaded is the legitimate
+	// "empty DB" path and is allowed.
+	s.mu.RLock()
+	oldestAtEntry := s.oldestLoaded
+	packetCountAtEntry := len(s.packets)
+	s.mu.RUnlock()
+	if oldestAtEntry == "" && packetCountAtEntry > 0 {
+		// adv #6 (PR #1811): in prod, a panic dumps every goroutine
+		// stack and exits non-zero with `goroutine X [running]:` noise.
+		// log.Fatalf is the cleaner shutdown: single-line "FATAL"
+		// log, os.Exit(1), no stack spew, supervisor-friendly. Tests
+		// override invariantViolation to panic so they can recover()
+		// and assert the invariant message without crashing the test
+		// runner. The invariant itself (refuse to silently bail on
+		// the #1809 race) is preserved regardless of the handler.
+		invariantViolation(fmt.Sprintf("loadBackgroundChunks: oldestLoaded=\"\" with %d packets in store — LoadChunked must run to completion first (#1809)", packetCountAtEntry))
+		return
+	}
+
+	// Test-only entry hook. Production stores leave bgLoaderEntryHook
+	// nil and pay the nil-check cost only.
+	if s.bgLoaderEntryHook != nil {
+		s.bgLoaderEntryHook()
+	}
+
 	if s.retentionHours <= 0 {
 		s.backgroundLoadDone.Store(true)
 		return

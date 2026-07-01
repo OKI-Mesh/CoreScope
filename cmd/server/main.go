@@ -215,34 +215,57 @@ func main() {
 		log.Printf("[neighbor] loaded persisted neighbor graph")
 	}
 
-	// #1009: chunked Load with early HTTP readiness. LoadChunked runs
+	// #1009: chunked Load with early HTTP readiness. RunStartupLoad runs
 	// asynchronously and signals FirstChunkReady after the first chunk
 	// is merged so the HTTP listener can bind without waiting for the
 	// full multi-minute scan to finish. loadStatusMiddleware (wired
 	// below) advertises loading|ready via X-CoreScope-Load-Status.
+	//
+	// #1809: the background fill loader (loadBackgroundChunks) used to
+	// be spawned here at FirstChunkReady, but at that point LoadChunked
+	// has not yet set s.oldestLoaded → bg loader read "" and bailed →
+	// coverage gate trips. RunStartupLoad now gates the bg loader on
+	// LoadChunked completion, preserving FirstChunkReady's parallelism
+	// for the HTTP listener bind.
 	chunkSize := cfg.DBLoadChunkSize()
+	// loadErrCh is buffered(1) and is the SOLE consumer slot for the
+	// RunStartupLoad goroutine's terminal error. We have exactly ONE
+	// reader path below: either the select consumes the error (fast
+	// empty-DB path) OR we hand it off to a single late-reader goroutine
+	// (slow path: bg loader still running after FirstChunkReady fired).
+	// The pre-#1811 code spawned a late-reader unconditionally, which
+	// leaked a goroutine forever after the select had already drained
+	// the channel. See PR #1811 adv #1.
 	loadErrCh := make(chan error, 1)
 	go func() {
-		loadErrCh <- store.LoadChunked(chunkSize)
+		loadErrCh <- store.RunStartupLoad(chunkSize)
 	}()
+	firstChunkPath := false
 	select {
 	case <-store.FirstChunkReady():
+		firstChunkPath = true
 		log.Printf("[store] first chunk ready (chunkSize=%d) — HTTP listener may bind", chunkSize)
 	case err := <-loadErrCh:
 		if err != nil {
-			log.Fatalf("[store] LoadChunked failed before first chunk: %v", err)
+			log.Fatalf("[store] RunStartupLoad failed before first chunk: %v", err)
 		}
-		log.Printf("[store] LoadChunked completed before first-chunk signal (empty DB?)")
+		log.Printf("[store] RunStartupLoad completed before first-chunk signal (empty DB?)")
 	}
-	go func() {
-		if err := <-loadErrCh; err != nil {
-			log.Printf("[store] LoadChunked background error: %v", err)
-		}
-	}()
 	if store.hotStartupHours > 0 {
-		log.Printf("[store] starting background load: filling retentionHours=%gh from hotStartupHours=%gh",
-			store.retentionHours, store.hotStartupHours)
-		go store.loadBackgroundChunks()
+		log.Printf("[store] hot-startup window configured: hotStartupHours=%gh, retentionHours=%gh (background fill loader runs after LoadChunked succeeds — see RunStartupLoad)",
+			store.hotStartupHours, store.retentionHours)
+	} else {
+		log.Printf("[store] hot-startup disabled (hotStartupHours=0) — no background fill loader will run")
+	}
+	if firstChunkPath {
+		// Only spawn the late-reader if the select did NOT already drain
+		// loadErrCh. Otherwise this goroutine would block forever on an
+		// empty channel (goroutine leak — adv #1).
+		go func() {
+			if err := <-loadErrCh; err != nil {
+				log.Printf("[store] RunStartupLoad background error: %v", err)
+			}
+		}()
 	}
 
 	// Neighbor graph: the persisted snapshot (if present) was already
