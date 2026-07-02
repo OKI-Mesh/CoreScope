@@ -3,14 +3,16 @@ on:
   issues:
     types: [labeled]          # labeled only — a removed board label is ambiguous
 
-permissions:
-  contents: read
-  issues: read
+permissions: {}               # all API calls use the App token minted below
 
 jobs:
   sync:
     if: startsWith(github.event.label.name, 'board:')
     runs-on: ubuntu-latest
+    concurrency:
+      # serialize per issue so concurrent board:* labels don't race; newest wins
+      group: board-sync-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: true
     steps:
       - name: Mint short-lived App token
         id: app
@@ -35,10 +37,22 @@ jobs:
             if (!target) { core.info(`No mapping for ${label}; skip`); return; }
 
             const q = `query($id:ID!){ node(id:$id){ ... on Issue {
-              projectItems(first:20){ nodes{ id project{ id title
+              projectItems(first:100){ nodes{ id project{ id title
                 field(name:"Status"){ ... on ProjectV2SingleSelectField{ id options{ id name } } } } } } } } }`;
             const data = await github.graphql(q, { id: context.payload.issue.node_id });
+
+            // Guard: a null node means the App couldn't read the issue (likely missing
+            // Repository -> Issues: Read). Fail loudly with the cause, don't TypeError.
+            if (!data || !data.node) {
+              core.setFailed(`Could not resolve issue node ${context.payload.issue.node_id} `
+                + `— the GitHub App likely lacks Repository -> Issues: Read. Grant it and re-run.`);
+              return;
+            }
+
             const items = data.node.projectItems.nodes;
+            if (items.length === 100) {
+              core.warning('Issue is on 100+ projects; some may not be updated (API page limit).');
+            }
             if (!items.length) { core.info('Issue not on any project; nothing to do'); return; }
 
             for (const it of items) {
