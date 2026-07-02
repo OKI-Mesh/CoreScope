@@ -1,0 +1,54 @@
+name: Sync board labels to project Status
+on:
+  issues:
+    types: [labeled]          # labeled only — a removed board label is ambiguous
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  sync:
+    if: startsWith(github.event.label.name, 'board:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint short-lived App token
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PROJECTS_APP_ID }}
+          private-key: ${{ secrets.PROJECTS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Set Status on every project the issue is on
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const label = context.payload.label.name;
+            const MAP = {
+              'board:backlog':'Backlog','board:todo':'Todo','board:ready':'Ready',
+              'board:in-progress':'In Progress','board:testing':'Testing',
+              'board:deferred':'Deferred','board:done':'Done'
+            };
+            const target = MAP[label];
+            if (!target) { core.info(`No mapping for ${label}; skip`); return; }
+
+            const q = `query($id:ID!){ node(id:$id){ ... on Issue {
+              projectItems(first:20){ nodes{ id project{ id title
+                field(name:"Status"){ ... on ProjectV2SingleSelectField{ id options{ id name } } } } } } } } }`;
+            const data = await github.graphql(q, { id: context.payload.issue.node_id });
+            const items = data.node.projectItems.nodes;
+            if (!items.length) { core.info('Issue not on any project; nothing to do'); return; }
+
+            for (const it of items) {
+              const f = it.project.field;
+              if (!f) { core.warning(`"${it.project.title}" has no Status field; skip`); continue; }
+              const opt = f.options.find(o => o.name === target);
+              if (!opt) { core.warning(`"${it.project.title}" has no Status option "${target}"; skip`); continue; }
+              await github.graphql(`mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
+                updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,
+                  value:{singleSelectOptionId:$o}}){ projectV2Item{ id } } }`,
+                { p: it.project.id, i: it.id, f: f.id, o: opt.id });
+              core.info(`Set "${it.project.title}" Status -> ${target}`);
+            }
