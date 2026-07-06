@@ -69,6 +69,35 @@ func readCgroupMemoryMB() int64 {
 	return 0
 }
 
+const (
+	// failClosedRetentionHours is the age bound applied when the packet store
+	// has NEITHER a retention nor a memory bound configured. 7 days — matches
+	// the value shipped in config.example.json.
+	failClosedRetentionHours = 168.0
+	// failClosedStaticMemoryMB is the memory bound applied in that same
+	// unconfigured case when the container cgroup limit can't be read (bare
+	// metal / non-Linux). Conservative floor; operators raise it explicitly.
+	failClosedStaticMemoryMB = 1024
+	// minFailClosedMemoryMB is the lowest value failClosedMemoryMB may derive
+	// from a cgroup limit. Guards against int truncation of (cg*2/3) yielding 0,
+	// which NewPacketStore would read as "unlimited" — reintroducing the OOM.
+	minFailClosedMemoryMB = 32
+)
+
+// failClosedMemoryMB returns the maxMemoryMB to apply when the packet store
+// would otherwise be unbounded: ~2/3 of the container cgroup memory limit
+// (never below minFailClosedMemoryMB), or failClosedStaticMemoryMB when that
+// limit is unreadable. See applyFailClosedDefaults and incidents #836/#1010/#1264.
+func failClosedMemoryMB() int {
+	if cg := readCgroupMemoryMBFn(); cg > 0 {
+		if derived := int(cg * 2 / 3); derived >= minFailClosedMemoryMB {
+			return derived
+		}
+		return minFailClosedMemoryMB
+	}
+	return failClosedStaticMemoryMB
+}
+
 // memlimitUnderprovisioned reports whether effectiveMB is less than half of
 // cgroupMB. Extracted for unit testing the comparison boundary.
 func memlimitUnderprovisioned(effectiveMB, cgroupMB int64) bool {

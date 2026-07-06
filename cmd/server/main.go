@@ -109,6 +109,12 @@ func main() {
 		log.Printf("[security] WARNING: API key is weak or a known default — write endpoints are vulnerable")
 	}
 
+	// Resolve the packet-store bounding policy up front (#44): fail-closed
+	// defaults when neither retentionHours nor maxMemoryMB is configured, so the
+	// in-memory store never runs unbounded (the OOM/reboot cause, #836/#1010/#1264).
+	// Used for both the GOMEMLIMIT derivation below and the store itself.
+	psCfg := applyFailClosedDefaults(cfg.PacketStore)
+
 	// Apply Go runtime soft memory limit (#836, #1010).
 	// Precedence: GOMEMLIMIT env > runtime.maxMemoryMB > derived from packetStore.maxMemoryMB.
 	{
@@ -117,10 +123,7 @@ func main() {
 		if cfg.Runtime != nil {
 			runtimeMaxMB = cfg.Runtime.MaxMemoryMB
 		}
-		maxMB := 0
-		if cfg.PacketStore != nil {
-			maxMB = cfg.PacketStore.MaxMemoryMB
-		}
+		maxMB := psCfg.MaxMemoryMB
 		// runtime.maxMemoryMB (explicit) wins over packetStore-derived (implicit).
 		effectiveMB := maxMB
 		usedRuntimeCfg := false
@@ -195,8 +198,8 @@ func main() {
 		log.Fatalf("[db] schema not ready (ingestor must run migrations first): %v", err)
 	}
 
-	// In-memory packet store
-	store := NewPacketStore(database, cfg.PacketStore, cfg.CacheTTL)
+	// In-memory packet store (psCfg carries fail-closed bounds — see #44)
+	store := NewPacketStore(database, psCfg, cfg.CacheTTL)
 	store.config = cfg
 
 	// Load the persisted neighbor graph BEFORE the packet load so the

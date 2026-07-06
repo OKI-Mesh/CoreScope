@@ -705,6 +705,67 @@ func NewPacketStore(db *DB, cfg *PacketStoreConfig, cacheTTLs ...map[string]inte
 	return ps
 }
 
+// applyFailClosedDefaults resolves the packet-store bounding policy (#44) and
+// is applied at the composition root before constructing the store.
+//
+// A store with NEITHER an age bound (retentionHours) nor a memory bound
+// (maxMemoryMB) grows unbounded and gets OOM-killed under the container memory
+// cap — the crash/reboot cycle documented in #836/#1010/#1264. Because an
+// omitted config field is the zero value 0, a missing/partial packetStore
+// section historically ran unbounded.
+//
+// Per-axis semantics for RetentionHours / MaxMemoryMB:
+//   - > 0: explicit bound (returned unchanged)
+//   - 0 / omitted: candidate for a safe fail-closed default
+//   - < 0: explicit opt-out — genuinely unlimited (normalized to 0)
+//
+// A single explicit positive bound already caps growth, so if EITHER axis is
+// positively bounded the other is left alone. Otherwise each unset (0) axis is
+// defaulted INDEPENDENTLY — an explicit negative on one axis does not disable
+// the safety default on the other (so {retentionHours:-1, maxMemoryMB:0} still
+// bounds memory). The input is never mutated; the returned config carries the
+// resolved bounds and is used for BOTH store construction and the GOMEMLIMIT
+// derivation in main.go (so the runtime is bounded whenever the store is).
+// Always non-nil.
+func applyFailClosedDefaults(cfg *PacketStoreConfig) *PacketStoreConfig {
+	out := &PacketStoreConfig{}
+	if cfg != nil {
+		*out = *cfg
+	}
+	// Remember per-axis "explicit unlimited" opt-outs, then normalize the
+	// negative sentinel to the store's internal "unlimited" (0).
+	retUnlimited := out.RetentionHours < 0
+	memUnlimited := out.MaxMemoryMB < 0
+	if retUnlimited {
+		out.RetentionHours = 0
+	}
+	if memUnlimited {
+		out.MaxMemoryMB = 0
+	}
+	// An explicit positive bound on either axis already caps growth.
+	if out.RetentionHours > 0 || out.MaxMemoryMB > 0 {
+		return out
+	}
+	// No positive bound anywhere: default each axis that is unset (0) and was
+	// not an explicit unlimited opt-out.
+	applied := false
+	if out.RetentionHours == 0 && !retUnlimited {
+		out.RetentionHours = failClosedRetentionHours
+		applied = true
+	}
+	if out.MaxMemoryMB == 0 && !memUnlimited {
+		out.MaxMemoryMB = failClosedMemoryMB()
+		applied = true
+	}
+	if applied {
+		log.Printf("[store] WARN: packetStore bounds not configured; applying fail-closed "+
+			"defaults (retentionHours=%g, maxMemoryMB=%d) to prevent unbounded-memory OOM. "+
+			"Set explicit positive values, or a negative value to opt into unlimited. "+
+			"See issues #836/#1010/#1264.", out.RetentionHours, out.MaxMemoryMB)
+	}
+	return out
+}
+
 // Load reads transmissions + observations from SQLite into memory.
 // When maxMemoryMB > 0, loads only the newest N transmissions that fit
 // within the memory budget, avoiding OOM on large databases.
