@@ -300,8 +300,8 @@ type ObserversCacheConfig struct {
 
 // PacketStoreConfig controls in-memory packet store limits.
 type PacketStoreConfig struct {
-	RetentionHours                float64 `json:"retentionHours"`                // max age of packets in hours (>0 bound; 0/omitted = fail-closed default; <0 = unlimited) — see applyFailClosedDefaults (#44)
-	MaxMemoryMB                   int     `json:"maxMemoryMB"`                   // hard memory ceiling in MB (>0 bound; 0/omitted = fail-closed default; <0 = unlimited) — see applyFailClosedDefaults (#44)
+	RetentionHours                float64 `json:"retentionHours"`                // max age of packets in hours (0 = unlimited; never defaulted — an age bound is not a memory guarantee)
+	MaxMemoryMB                   int     `json:"maxMemoryMB"`                   // hard memory ceiling in MB (>0 bound; 0/omitted = fail-closed default; <0 = explicit unlimited) — see applyFailClosedDefaults (#44)
 	MaxResolvedPubkeyIndexEntries int     `json:"maxResolvedPubkeyIndexEntries"` // warning threshold for index size (0 = 5M default)
 	HotStartupHours               float64 `json:"hotStartupHours"`               // load only this many hours synchronously; 0 = disabled
 }

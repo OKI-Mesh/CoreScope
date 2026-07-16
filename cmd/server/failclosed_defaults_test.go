@@ -2,71 +2,94 @@ package main
 
 import "testing"
 
-// #44: fail-closed packet-store bounding policy, applied at the composition
-// root (see main.go) via applyFailClosedDefaults.
+// #44: fail-closed packet-store MEMORY default, applied at the composition root
+// (see main.go) via applyFailClosedDefaults.
 //
-// The store CONSTRUCTOR keeps its original contract (0 = unlimited); the POLICY
-// of substituting a safe bound when nothing is configured lives here, so it
-// protects the production path without surprising the many tests that build a
-// raw store with a nil config.
+// ONLY MaxMemoryMB is defaulted. RetentionHours is an age policy, not a memory
+// guarantee (24h of a busy mesh can still exhaust RAM), so defaulting it would
+// silently delete data WITHOUT preventing the OOM. It is left exactly as
+// configured.
 //
-// Contract for RetentionHours / MaxMemoryMB:
+// Contract for MaxMemoryMB:
 //   >0  explicit bound (unchanged)
-//   0   unset/omitted -> safe fail-closed default
+//   0   unset/omitted -> fail-closed default (see failClosedMemoryMB)
 //   <0  explicit opt-out -> genuinely unlimited (normalized to 0)
-// Fail-closed only triggers when BOTH axes are unset — a single configured
-// bound already caps growth.
 
-func TestApplyFailClosedDefaults_NilConfig(t *testing.T) {
+func TestApplyFailClosedDefaults_NilConfigBoundsMemoryOnly(t *testing.T) {
 	out := applyFailClosedDefaults(nil)
 	if out == nil {
 		t.Fatal("must return a non-nil config")
 	}
-	if out.RetentionHours <= 0 || out.MaxMemoryMB <= 0 {
-		t.Fatalf("nil config must fail closed; got retentionHours=%g maxMemoryMB=%d",
-			out.RetentionHours, out.MaxMemoryMB)
+	if out.MaxMemoryMB <= 0 {
+		t.Fatalf("nil config must fail closed on memory; got maxMemoryMB=%d", out.MaxMemoryMB)
+	}
+	if out.RetentionHours != 0 {
+		t.Fatalf("retention must be left untouched (0), got %g", out.RetentionHours)
 	}
 }
 
-func TestApplyFailClosedDefaults_EmptyConfig(t *testing.T) {
+func TestApplyFailClosedDefaults_EmptyConfigBoundsMemoryOnly(t *testing.T) {
 	out := applyFailClosedDefaults(&PacketStoreConfig{})
-	if out.RetentionHours <= 0 || out.MaxMemoryMB <= 0 {
-		t.Fatalf("empty config must fail closed; got retentionHours=%g maxMemoryMB=%d",
-			out.RetentionHours, out.MaxMemoryMB)
+	if out.MaxMemoryMB <= 0 {
+		t.Fatalf("empty config must fail closed on memory; got maxMemoryMB=%d", out.MaxMemoryMB)
+	}
+	if out.RetentionHours != 0 {
+		t.Fatalf("retention must be left untouched (0), got %g", out.RetentionHours)
 	}
 }
 
-func TestApplyFailClosedDefaults_NegativeSentinelIsUnlimited(t *testing.T) {
-	out := applyFailClosedDefaults(&PacketStoreConfig{RetentionHours: -1, MaxMemoryMB: -1})
-	if out.RetentionHours != 0 || out.MaxMemoryMB != 0 {
-		t.Fatalf("negative sentinel must normalize to unlimited (0); got retentionHours=%g maxMemoryMB=%d",
-			out.RetentionHours, out.MaxMemoryMB)
-	}
-}
-
-// A single explicit bound already caps growth — the other axis is left alone.
-func TestApplyFailClosedDefaults_MemoryOnlyNotOverridden(t *testing.T) {
+func TestApplyFailClosedDefaults_ExplicitMemoryBoundRespected(t *testing.T) {
 	out := applyFailClosedDefaults(&PacketStoreConfig{MaxMemoryMB: 512})
 	if out.MaxMemoryMB != 512 {
 		t.Fatalf("expected maxMemoryMB=512, got %d", out.MaxMemoryMB)
 	}
-	if out.RetentionHours != 0 {
-		t.Fatalf("expected retentionHours left at 0 when memory is bounded, got %g", out.RetentionHours)
+}
+
+func TestApplyFailClosedDefaults_NegativeMemoryIsExplicitUnlimited(t *testing.T) {
+	out := applyFailClosedDefaults(&PacketStoreConfig{MaxMemoryMB: -1})
+	if out.MaxMemoryMB != 0 {
+		t.Fatalf("negative sentinel must normalize to unlimited (0), got %d", out.MaxMemoryMB)
 	}
 }
 
-func TestApplyFailClosedDefaults_RetentionOnlyNotOverridden(t *testing.T) {
+// An age bound is NOT a memory guarantee: 24h of a busy mesh can still exhaust
+// RAM. A configured retention must therefore not suppress the memory default.
+func TestApplyFailClosedDefaults_RetentionBoundStillBoundsMemory(t *testing.T) {
 	out := applyFailClosedDefaults(&PacketStoreConfig{RetentionHours: 24})
 	if out.RetentionHours != 24 {
-		t.Fatalf("expected retentionHours=24, got %g", out.RetentionHours)
+		t.Fatalf("expected retentionHours=24 preserved, got %g", out.RetentionHours)
 	}
-	if out.MaxMemoryMB != 0 {
-		t.Fatalf("expected maxMemoryMB left at 0 when retention is bounded, got %d", out.MaxMemoryMB)
+	if out.MaxMemoryMB <= 0 {
+		t.Fatalf("an age bound must not suppress the memory default; got maxMemoryMB=%d", out.MaxMemoryMB)
 	}
 }
 
-// The resolver must not mutate the caller's config — main.go reads the original
-// for the GOMEMLIMIT derivation.
+// Retention must NEVER be defaulted: a config-less server must not silently
+// start deleting data by age. (Imposing 168h is what evicted the E2E fixture's
+// seeded row on #46.)
+func TestApplyFailClosedDefaults_NeverImposesRetention(t *testing.T) {
+	cases := []*PacketStoreConfig{
+		nil,
+		{},
+		{MaxMemoryMB: 512},
+		{MaxMemoryMB: -1},
+	}
+	for _, cfg := range cases {
+		out := applyFailClosedDefaults(cfg)
+		if out.RetentionHours != 0 {
+			t.Fatalf("retention must never be defaulted; got %g for cfg %+v", out.RetentionHours, cfg)
+		}
+	}
+}
+
+func TestApplyFailClosedDefaults_NegativeRetentionNormalized(t *testing.T) {
+	out := applyFailClosedDefaults(&PacketStoreConfig{RetentionHours: -1, MaxMemoryMB: 512})
+	if out.RetentionHours != 0 {
+		t.Fatalf("negative retention must normalize to 0, got %g", out.RetentionHours)
+	}
+}
+
+// The resolver must not mutate the caller's config.
 func TestApplyFailClosedDefaults_DoesNotMutateInput(t *testing.T) {
 	in := &PacketStoreConfig{}
 	_ = applyFailClosedDefaults(in)
@@ -76,46 +99,51 @@ func TestApplyFailClosedDefaults_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
-// A negative "unlimited" opt-out on ONE axis must NOT disable the fail-closed
-// default on the OTHER, unconfigured axis — otherwise {retentionHours:-1,
-// maxMemoryMB:0} silently runs fully unbounded (the exact OOM we prevent).
-func TestApplyFailClosedDefaults_UnlimitedRetentionStillBoundsMemory(t *testing.T) {
-	out := applyFailClosedDefaults(&PacketStoreConfig{RetentionHours: -1, MaxMemoryMB: 0})
-	if out.RetentionHours != 0 {
-		t.Fatalf("expected retention normalized to unlimited (0), got %g", out.RetentionHours)
-	}
-	if out.MaxMemoryMB <= 0 {
-		t.Fatalf("expected unset memory to get a fail-closed bound, got %d", out.MaxMemoryMB)
-	}
-}
-
-func TestApplyFailClosedDefaults_UnlimitedMemoryStillBoundsRetention(t *testing.T) {
-	out := applyFailClosedDefaults(&PacketStoreConfig{RetentionHours: 0, MaxMemoryMB: -1})
-	if out.MaxMemoryMB != 0 {
-		t.Fatalf("expected memory normalized to unlimited (0), got %d", out.MaxMemoryMB)
-	}
-	if out.RetentionHours <= 0 {
-		t.Fatalf("expected unset retention to get a fail-closed bound, got %g", out.RetentionHours)
-	}
-}
-
 // The cgroup-derived memory bound must never truncate to 0 (NewPacketStore
-// reads 0 as "unlimited"), and must fall back to the static default when no
-// cgroup limit is readable.
+// reads 0 as "unlimited"), must honour the minFailClosedMemoryMB floor at its
+// exact boundary, and must fall back to the static default when no cgroup limit
+// is readable.
 func TestFailClosedMemoryMB(t *testing.T) {
 	orig := readCgroupMemoryMBFn
 	defer func() { readCgroupMemoryMBFn = orig }()
 
-	readCgroupMemoryMBFn = func() int64 { return 0 } // no cgroup -> static fallback
-	if got := failClosedMemoryMB(); got != failClosedStaticMemoryMB {
-		t.Errorf("cg=0: expected static %d, got %d", failClosedStaticMemoryMB, got)
+	cases := []struct {
+		name     string
+		cgroupMB int64
+		want     int
+	}{
+		{"no cgroup readable -> static fallback", 0, failClosedStaticMemoryMB},
+		{"normal cgroup -> two thirds", 3000, 2000},
+		{"pathologically tiny -> floor, never 0", 1, minFailClosedMemoryMB},
+		{"derives just below floor (47*2/3=31)", 47, minFailClosedMemoryMB},
+		{"derives exactly at floor (48*2/3=32)", 48, minFailClosedMemoryMB},
 	}
-	readCgroupMemoryMBFn = func() int64 { return 3000 } // 2/3 = 2000
-	if got := failClosedMemoryMB(); got != 2000 {
-		t.Errorf("cg=3000: expected 2000, got %d", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			readCgroupMemoryMBFn = func() int64 { return tc.cgroupMB }
+			if got := failClosedMemoryMB(); got != tc.want {
+				t.Errorf("cg=%d: want %d, got %d", tc.cgroupMB, tc.want, got)
+			}
+		})
 	}
-	readCgroupMemoryMBFn = func() int64 { return 1 } // pathologically tiny — must never be 0
-	if got := failClosedMemoryMB(); got <= 0 {
-		t.Errorf("cg=1: expected non-zero floored bound, got %d", got)
+}
+
+// End-to-end wiring: a cgroup limit must actually flow through the resolver and
+// bound an unconfigured store (the resolver tests above otherwise only exercise
+// the static-fallback path, since dev machines have no cgroup).
+func TestApplyFailClosedDefaults_BoundsMemoryFromCgroup(t *testing.T) {
+	orig := readCgroupMemoryMBFn
+	defer func() { readCgroupMemoryMBFn = orig }()
+	readCgroupMemoryMBFn = func() int64 { return 3000 } // -> 2000
+
+	if out := applyFailClosedDefaults(nil); out.MaxMemoryMB != 2000 {
+		t.Errorf("nil config: expected cgroup-derived 2000, got %d", out.MaxMemoryMB)
+	}
+	if out := applyFailClosedDefaults(&PacketStoreConfig{}); out.MaxMemoryMB != 2000 {
+		t.Errorf("empty config: expected cgroup-derived 2000, got %d", out.MaxMemoryMB)
+	}
+	// An explicit bound must still win over the cgroup derivation.
+	if out := applyFailClosedDefaults(&PacketStoreConfig{MaxMemoryMB: 512}); out.MaxMemoryMB != 512 {
+		t.Errorf("explicit bound must beat cgroup derivation, got %d", out.MaxMemoryMB)
 	}
 }

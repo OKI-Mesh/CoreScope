@@ -70,13 +70,9 @@ func readCgroupMemoryMB() int64 {
 }
 
 const (
-	// failClosedRetentionHours is the age bound applied when the packet store
-	// has NEITHER a retention nor a memory bound configured. 7 days — matches
-	// the value shipped in config.example.json.
-	failClosedRetentionHours = 168.0
-	// failClosedStaticMemoryMB is the memory bound applied in that same
-	// unconfigured case when the container cgroup limit can't be read (bare
-	// metal / non-Linux). Conservative floor; operators raise it explicitly.
+	// failClosedStaticMemoryMB is the memory bound applied when maxMemoryMB is
+	// unconfigured and the container cgroup limit can't be read (bare metal /
+	// non-Linux). Conservative floor; operators raise it explicitly.
 	failClosedStaticMemoryMB = 1024
 	// minFailClosedMemoryMB is the lowest value failClosedMemoryMB may derive
 	// from a cgroup limit. Guards against int truncation of (cg*2/3) yielding 0,
