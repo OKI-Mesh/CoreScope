@@ -90,7 +90,7 @@ jobs:
         id: edge
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/kpa-clawbot/corescope"
+          IMAGE="ghcr.io/oki-mesh/corescope"
           EDGE_REF="${IMAGE}:edge"
           # crane config returns the OCI image config JSON; the revision label
           # is set by docker/metadata-action on the master-edge build.
@@ -124,7 +124,7 @@ jobs:
         if: steps.edge.outputs.no_edge == 'false' && steps.edge.outputs.edge_revision == steps.semver.outputs.targetSha
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/kpa-clawbot/corescope"
+          IMAGE="ghcr.io/oki-mesh/corescope"
           SRC="${IMAGE}:edge"
           TAG="${{ steps.semver.outputs.tag }}"
           echo "SHA match — fast-path re-tag from $SRC"
