@@ -473,6 +473,10 @@ jobs:
       - name: Run Playwright E2E tests (fail-fast)
         run: |
           echo "=== E2E SUITE: test-e2e-playwright.js ==="
+          # Flake guard (issue #61): run the whole E2E suite in a child
+          # bash -eo pipefail so fail-fast is preserved; on failure, retry ONCE.
+          # A genuinely failing test still reds the build after the retry.
+          run_e2e_suite() { bash -eo pipefail -c '
           BASE_URL=http://localhost:13581 node tests/e2e/test-e2e-playwright.js 2>&1 | tee e2e-output.txt
           # M5+M6 of #1668 — axe-core CI gate.
           # M5: color-contrast on desktop dark+light.
@@ -484,8 +488,8 @@ jobs:
           # Allowlist: tests/a11y-allowlist.yaml (0 entries — hard pass policy).
           # Per-viewport summary printed at the end; any net>0 fails the build.
           BASE_URL=http://localhost:13581 AXE_SCREENSHOT_DIR=/tmp/axe-1668 \
-            echo "=== E2E SUITE: test-a11y-axe-1668.js ==="
-            node tests/e2e/test-a11y-axe-1668.js 2>&1 | tee -a e2e-output.txt
+          echo "=== E2E SUITE: test-a11y-axe-1668.js ==="
+          node tests/e2e/test-a11y-axe-1668.js 2>&1 | tee -a e2e-output.txt
           echo "=== E2E SUITE: test-filter-ux-e2e.js ==="
           BASE_URL=http://localhost:13581 node tests/e2e/test-filter-ux-e2e.js 2>&1 | tee -a e2e-output.txt
           echo "=== E2E SUITE: test-channel-issue-1087-e2e.js ==="

@@ -137,7 +137,12 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
     await page.evaluate(() =>
       window.ChannelColorPicker.show('#navchan', 100, 100));
     await page.waitForSelector('.cc-picker-popover');
-    // Wait a tick for setTimeout(0) focus
+    // Deterministically focus the first swatch rather than relying on the
+    // component's setTimeout(0) initial focus for keyboard-event routing
+    // (issue #61: under CI load the ArrowRight keydown could land off-target
+    // before the deferred focus settled, so focus never moved).
+    await page.waitForSelector('.cc-swatch');
+    await page.evaluate(() => document.querySelector('.cc-swatch').focus());
     await page.waitForFunction(() => {
       const el = document.activeElement;
       return el && el.classList && el.classList.contains('cc-swatch');
