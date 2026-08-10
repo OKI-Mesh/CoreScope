@@ -38,9 +38,13 @@ env:
   STAGING_SERVICE: staging-go
   STAGING_CONTAINER: corescope-staging-go
 
-# Pipeline (sequential, fail-fast):
-#   go-test → e2e-test → build-and-publish → deploy → publish-badges
-#   PRs stop after build-and-publish (no GHCR push). Master continues to deploy + badges.
+# Pipeline:
+#   go-test ─┬→ e2e-test  (advisory signal — does NOT gate build/deploy; see #66 / #65)
+#            └→ build-and-publish → deploy → publish-badges
+#   build-and-publish depends on go-test (not e2e) so a flaky E2E can't block the image
+#   build or the dev deploy. PRs stop after build-and-publish (no GHCR push). Master
+#   continues to deploy + badges. TEMPORARY decouple — restore an E2E deploy gate once
+#   the flakes are fixed (#65).
 
 jobs:
   # ───────────────────────────────────────────────────────────────
@@ -815,7 +819,11 @@ jobs:
   # comparison failed, and the fallback ran for the first time.
   build-and-publish:
     name: "🏗️ Build & Publish Docker Image"
-    needs: [e2e-test, changes]
+    # Decoupled from e2e-test (#66, per diagnostic #65): build off go-test so a flaky
+    # E2E can't block the image build or the dev deploy. e2e-test still runs (needs:
+    # go-test) as an advisory signal. TEMPORARY — restore an E2E deploy gate once the
+    # E2E flakes are fixed (#65).
+    needs: [go-test]
     runs-on: ubuntu-latest
     if: needs.changes.outputs.code == 'true' && !(startsWith(github.ref, 'refs/tags/v') && inputs.images_published)
     steps:
