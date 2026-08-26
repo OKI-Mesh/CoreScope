@@ -16,17 +16,17 @@
 (function () {
   'use strict';
 
-  var STORAGE_KEY = 'mc-dark-tile-provider';
+  var STORAGE_KEY  = 'mc-dark-tile-provider';
   var STORAGE_KEY_LIGHT = 'mc-light-tile-provider';
 
-  var DEFAULT_ID = 'carto-dark';
+  var DEFAULT_ID   = 'carto-dark';
   var DEFAULT_ID_LIGHT = 'carto-light';
-  var EVENT_NAME = 'mc-tile-provider-changed';
-
+  var EVENT_NAME   = 'mc-tile-provider-changed';
+  
   var _serverDefault = null;
   var _serverDefaultLight = null;
-
-  var INVERT_CSS = 'invert(1) hue-rotate(180deg) brightness(0.9) contrast(1.05)';
+  
+  var INVERT_CSS   = 'invert(1) hue-rotate(180deg) brightness(0.9) contrast(1.05)';
 
   var _cfg = null;
 
@@ -71,7 +71,7 @@
     return typeof id === 'string' && Object.prototype.hasOwnProperty.call(REGISTRY, id);
   }
 
-  window.MC_initTileRegistry = function (fromAsync) {
+  window.MC_initTileRegistry = function(fromAsync) {
     _cfg = (typeof window !== 'undefined' && window.MC_MAP_CFG && window.MC_MAP_CFG.tiles) ? window.MC_MAP_CFG.tiles : null;
 
     var HAS_CARTO = !_cfg || !_cfg.providers || !_cfg.providers.carto || _cfg.providers.carto.enabled !== false;
@@ -105,7 +105,7 @@
           ? new CustomEvent('mc-tile-provider-changed', { detail: { fromConfig: true } })
           : { type: 'mc-tile-provider-changed', detail: { fromConfig: true } };
         window.dispatchEvent(ev);
-      } catch (_) { }
+      } catch (_) {}
     }
   };
 
@@ -121,12 +121,12 @@
     } catch (_) { return false; }
   }
 
-
+  
   function getActiveId() {
     try {
       var stored = window.localStorage && window.localStorage.getItem(STORAGE_KEY);
       if (_hasId(stored) && REGISTRY[stored].type === 'dark') return stored;
-    } catch (_) { }
+    } catch (_) {}
     if (_cfg && _cfg.darkDefault && _hasId(_cfg.darkDefault)) return _cfg.darkDefault;
     if (_hasId(_serverDefault)) return _serverDefault;
     return DEFAULT_ID;
@@ -136,12 +136,12 @@
     try {
       var stored = window.localStorage && window.localStorage.getItem(STORAGE_KEY_LIGHT);
       if (_hasId(stored) && REGISTRY[stored].type === 'light') return stored;
-    } catch (_) { }
+    } catch (_) {}
     if (_cfg && _cfg.lightDefault && _hasId(_cfg.lightDefault)) return _cfg.lightDefault;
     if (_hasId(_serverDefaultLight)) return _serverDefaultLight;
     return DEFAULT_ID_LIGHT;
   }
-
+  
   function setActive(id, type) {
     if (!_hasId(id)) return false;
     if (REGISTRY[id].type !== type) return false;
@@ -164,7 +164,7 @@
   function setServerDefault(id) { if (_hasId(id)) _serverDefault = id; }
   function setServerDefaultLight(id) { if (_hasId(id)) _serverDefaultLight = id; }
 
-
+  
   function _isDarkEffective() {
     return _isDark();
   }
@@ -182,22 +182,22 @@
 
     var isDark = _isDarkEffective();
     var id = isDark ? getActiveId() : getActiveLightId();
-    var p = REGISTRY[id];
+    var p  = REGISTRY[id];
     pane.style.filter = (isDark && p && p.invertFilter) ? p.invertFilter : '';
   }
 
 
   // ── Public surface ──────────────────────────────────────────────────────
-
-  window.MC_DARK_TILE_DEFAULT = DEFAULT_ID;
-  window.MC_TILE_PROVIDERS = REGISTRY; // initial ref; MC_initTileRegistry keeps this in sync
-  window.MC_setDarkTileProvider = function (id) { return setActive(id, 'dark'); };
-  window.MC_setLightTileProvider = function (id) { return setActive(id, 'light'); };
-  window.MC_getDarkTileProvider = getActiveId;
-  window.MC_getLightTileProvider = getActiveLightId;
+  
+  window.MC_DARK_TILE_DEFAULT           = DEFAULT_ID;
+  window.MC_TILE_PROVIDERS              = REGISTRY; // initial ref; MC_initTileRegistry keeps this in sync
+  window.MC_setDarkTileProvider         = function(id) { return setActive(id, 'dark'); };
+  window.MC_setLightTileProvider        = function(id) { return setActive(id, 'light'); };
+  window.MC_getDarkTileProvider         = getActiveId;
+  window.MC_getLightTileProvider        = getActiveLightId;
   window.MC_setServerDefaultTileProvider = setServerDefault;
   window.MC_setServerDefaultLightTileProvider = setServerDefaultLight;
-  window.MC_applyTileFilter = applyTileFilter;
+  window.MC_applyTileFilter             = applyTileFilter;
 
   /**
    * Resolve a registry id to a concrete tile-URL string, invoking function-typed
@@ -222,61 +222,61 @@
    * @param {L.Map} map - The Leaflet map instance
    * @param {L.LayerGroup} autoLayerGroup - Existing group managed by _syncDarkTiles
    */
-  window.MC_createLayerControl = function (map, autoLayerGroup, position) {
+  window.MC_createLayerControl = function(map, autoLayerGroup, position) {
     if (typeof L === 'undefined') return null;
-
+    
     // Set a default position just in case it isn't provided
     var controlPosition = position || 'topleft';
 
-    var AUTO_KEY = '__auto__';
+    var AUTO_KEY   = '__auto__';
     var AUTO_LABEL = ' <span title="Follows the app\'s current light/dark theme">Auto</span>';
-    var _control = null;  // current L.control.layers instance
-    var _layerMap = {};    // provider-id → L.tileLayer
-    var _isAuto = true;  // true when "Auto" is the active selection
+    var _control   = null;  // current L.control.layers instance
+    var _layerMap  = {};    // provider-id → L.tileLayer
+    var _isAuto    = true;  // true when "Auto" is the active selection
     var _overrideLightId = null;
-    var _overrideDarkId = null;
+    var _overrideDarkId  = null;
 
     // Restore the auto tile group and kick _syncDarkTiles
     function _activateAuto() {
       _isAuto = true;
-      try {
+      try { 
         var pane = map.getPane('tilePane');
         if (pane) pane.removeAttribute('data-explicit-layer');
-      } catch (_) { }
-      try { if (autoLayerGroup && !map.hasLayer(autoLayerGroup)) map.addLayer(autoLayerGroup); } catch (_) { }
-
+      } catch (_) {}
+      try { if (autoLayerGroup && !map.hasLayer(autoLayerGroup)) map.addLayer(autoLayerGroup); } catch (_) {}
+      
       try {
         var ev = (typeof CustomEvent === 'function')
           ? new CustomEvent('mc-tile-provider-changed', { detail: { auto: true } })
           : { type: 'mc-tile-provider-changed', detail: { auto: true } };
         window.dispatchEvent(ev);
-      } catch (_) { }
-
+      } catch (_) {}
+      
       if (typeof applyTileFilter === 'function') applyTileFilter();
     }
 
     function _buildControl() {
       // Tear down existing control + explicit tile layers
-      if (_control) { try { _control.remove(); } catch (_) { } _control = null; }
+      if (_control) { try { _control.remove(); } catch (_) {} _control = null; }
       Object.keys(_layerMap).forEach(function (id) {
-        try { map.removeLayer(_layerMap[id]); } catch (_) { }
+        try { map.removeLayer(_layerMap[id]); } catch (_) {}
       });
       _layerMap = {};
       // Remove stale baselayerchange listeners by cloning off event (Leaflet re-adds on new control)
       if (map._mcBaselayerchangeHandler) {
-        try { map.off('baselayerchange', map._mcBaselayerchangeHandler); } catch (_) { }
+        try { map.off('baselayerchange', map._mcBaselayerchangeHandler); } catch (_) {}
       }
 
-      var isDark = _isDarkEffective();
-      var activeDarkId = _overrideDarkId || getActiveId();
+      var isDark       = _isDarkEffective();
+      var activeDarkId  = _overrideDarkId || getActiveId();
       var activeLightId = _overrideLightId || getActiveLightId();
 
       // Light providers first, then dark — natural grouping in the UI
       var lightIds = Object.keys(REGISTRY).filter(function (id) { return REGISTRY[id].type === 'light'; });
-      var darkIds = Object.keys(REGISTRY).filter(function (id) { return REGISTRY[id].type === 'dark'; });
+      var darkIds  = Object.keys(REGISTRY).filter(function (id) { return REGISTRY[id].type === 'dark';  });
 
       function _makeLayer(id) {
-        var p = REGISTRY[id];
+        var p   = REGISTRY[id];
         var url = typeof p.url === 'function' ? p.url() : p.url;
 <<<<<<< HEAD
         var opts = { attribution: p.attribution || '', maxZoom: p.maxZoom || 19 };
@@ -293,8 +293,12 @@
         
 =======
         var layer = L.tileLayer(url, { attribution: p.attribution || '', maxZoom: p.maxZoom || 19 });
+<<<<<<< HEAD
 
 >>>>>>> b47f2ae1 (Hotfix/fix carto (#89))
+=======
+        
+>>>>>>> 907f9493 (Revert "Hotfix/fix carto (#89)" (#98))
         // Every explicit layer enforces its own filter and locks the pane
         layer.on('add', function () {
           var pane = map.getPane('tilePane');
@@ -313,7 +317,7 @@
       baseMaps[AUTO_KEY] = autoLayerGroup;
 
       lightIds.forEach(function (id) { baseMaps[id] = _makeLayer(id); });
-      darkIds.forEach(function (id) { baseMaps[id] = _makeLayer(id); });
+      darkIds.forEach(function  (id) { baseMaps[id] = _makeLayer(id); });
 
       // Use the dynamic controlPosition variable instead of a hardcoded string
       _control = L.control.layers(baseMaps, null, { position: controlPosition }).addTo(map);
@@ -329,24 +333,24 @@
           if (spans.length === 0) continue;
 
           // Target the last span to avoid nuking Leaflet's radio <input>
-          var span = spans[spans.length - 1];
+          var span = spans[spans.length - 1]; 
 
           var id = span.textContent.trim();
           labelEl.setAttribute('data-tile-id', id);
-
+          
           if (id === AUTO_KEY) {
             span.innerHTML = AUTO_LABEL;
           } else if (REGISTRY[id]) {
             span.innerHTML = ' ' + (REGISTRY[id].label || id);
           }
-
+          
           if (id === firstDarkId && lightIds.length > 0) {
             var sep = document.createElement('div');
             sep.className = 'leaflet-control-layers-separator';
             labelEl.parentNode.insertBefore(sep, labelEl);
           }
         }
-      } catch (_) { }
+      } catch (_) {}
 
       // Decide initial active layer
       if (_isAuto) {
@@ -358,7 +362,7 @@
         var prevLayer = _layerMap[prevId];
         if (prevLayer) {
           map.addLayer(prevLayer);
-          try { if (autoLayerGroup && map.hasLayer(autoLayerGroup)) map.removeLayer(autoLayerGroup); } catch (_) { }
+          try { if (autoLayerGroup && map.hasLayer(autoLayerGroup)) map.removeLayer(autoLayerGroup); } catch (_) {}
         } else {
           _activateAuto(); // fallback
         }
@@ -375,18 +379,18 @@
         if (!REGISTRY[selectedId]) return;
 
         _isAuto = false;
-        try {
+        try { 
           var pane = map.getPane('tilePane');
           // Contract: mark the pane as explicit so applyTileFilter skips auto-theme CSS filters
           if (pane) pane.setAttribute('data-explicit-layer', 'true');
-        } catch (_) { }
+        } catch (_) {}
 
         // Hide autoLayerGroup while an explicit layer is active
-        try { if (autoLayerGroup && map.hasLayer(autoLayerGroup)) map.removeLayer(autoLayerGroup); } catch (_) { }
+        try { if (autoLayerGroup && map.hasLayer(autoLayerGroup)) map.removeLayer(autoLayerGroup); } catch (_) {}
 
         var p = REGISTRY[selectedId];
         if (p.type === 'light') _overrideLightId = selectedId;
-        else _overrideDarkId = selectedId;
+        else                    _overrideDarkId  = selectedId;
 
         // CSS invert filter is handled by the layer's own add/remove events above
       };
