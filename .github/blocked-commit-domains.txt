@@ -1,0 +1,12 @@
+# Commit author/committer emails using these domains fail the
+# "Commit Author Hygiene" CI check (.github/workflows/commit-author-hygiene.yml).
+#
+# Purpose: keep employer / corporate email addresses out of commit metadata.
+# A corporate domain in the git author field attributes the work to that
+# employer (IP concern) and — when the address isn't linked to the author's
+# GitHub account — trips the "require extra approval for unattributed changes"
+# branch rule, stalling the PR at the merge gate. See issue #96.
+#
+# One domain per line. Comments (#) and blank lines are ignored. Matching is
+# case-insensitive against the part after the last '@'. A leading '@' is optional.
+mercy.com
