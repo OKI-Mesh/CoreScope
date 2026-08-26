@@ -1,0 +1,101 @@
+name: Commit Author Hygiene
+
+# Fails a PR whose commits carry a blocked (employer/corporate) author email,
+# or that GitHub cannot attribute to an account ("unattributed" — the exact
+# condition that trips the require_extra_approval_for_unattributed_changes rule
+# on the Protect Main ruleset). Catch it at PR time with clear remediation,
+# instead of a mystery BLOCKED at the merge gate. See issue #96.
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  author-hygiene:
+    name: "🕵️ Commit Author Email Check"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for the blocklist file)
+        uses: actions/checkout@v5
+
+      - name: Check PR commit author/committer emails
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          BLOCKFILE=.github/blocked-commit-domains.txt
+          blocked=()
+          if [[ -f "$BLOCKFILE" ]]; then
+            while IFS= read -r line; do
+              line="${line%%#*}"                       # strip inline/whole-line comments
+              line="$(echo "$line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+              line="${line#@}"                          # tolerate a leading '@'
+              [[ -n "$line" ]] && blocked+=("$line")
+            done < "$BLOCKFILE"
+          fi
+          echo "Blocked domains: ${blocked[*]:-(none)}"
+
+          # Use the PR-commits API: it exposes GitHub attribution (.author == null
+          # means unattributed) alongside the raw git author/committer emails.
+          commits="$(gh api "repos/$REPO/pulls/$PR/commits" --paginate)"
+
+          fail=0
+          while IFS=$'\t' read -r sha alogin aemail cemail; do
+            short="${sha:0:9}"
+            ael="${aemail,,}"   # lowercase (bash 4+ param expansion)
+            cel="${cemail,,}"
+
+            # 1) unattributed to any GitHub account
+            if [[ -z "$alogin" ]]; then
+              echo "::error::Commit $short is UNATTRIBUTED — its author email ($aemail) is not linked to any GitHub account. This trips the extra-approval rule at merge time."
+              fail=1
+            fi
+
+            # 2) blocked (employer/corporate) domain in author or committer email
+            for d in "${blocked[@]:-}"; do
+              [[ -z "$d" ]] && continue
+              if [[ "$ael" == *"@$d" ]]; then
+                echo "::error::Commit $short author email uses blocked domain '@$d' ($aemail). Keep employer/corporate addresses out of commit metadata."
+                fail=1
+              fi
+              if [[ "$cel" == *"@$d" ]]; then
+                echo "::error::Commit $short committer email uses blocked domain '@$d' ($cemail)."
+                fail=1
+              fi
+            done
+          done < <(echo "$commits" | jq -r '.[] | [.sha, (.author.login // ""), .commit.author.email, .commit.committer.email] | @tsv')
+
+          if [[ "$fail" -ne 0 ]]; then
+            echo ""
+            echo "─────────────────────────────────────────────────────────────"
+            echo "How to fix"
+            echo "─────────────────────────────────────────────────────────────"
+            echo "Set a repo-local author email (does NOT touch your global/work git config):"
+            echo ""
+            echo "  # run inside this repo folder"
+            echo "  git config --local user.email \"<ID>+<user>@users.noreply.github.com\""
+            echo "  git config --local user.name  \"<your-github-username>\""
+            echo ""
+            echo "Find your noreply address at GitHub -> Settings -> Emails -> \"Keep my"
+            echo "email addresses private\". It attributes commits to your account with no"
+            echo "personal or corporate email in the history. A verified personal email works too."
+            echo ""
+            echo "Then rewrite the commits already on this branch and force-push:"
+            echo ""
+            echo "  git rebase origin/master --exec 'git commit --amend --no-edit --reset-author'"
+            echo "  git push --force-with-lease"
+            echo ""
+            echo "If the branch has a complex history (merge commits) and the rebase"
+            echo "balks, git-filter-repo is the heavier-duty way to rewrite author info."
+            echo "─────────────────────────────────────────────────────────────"
+            exit 1
+          fi
+
+          echo "All commit author/committer emails are attributed and unblocked. ✅"
