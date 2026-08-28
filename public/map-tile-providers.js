@@ -30,6 +30,12 @@
 
   var _cfg = null;
 
+
+  var _getCartoKeyParam = function() {
+  return (_cfg && _cfg.providers && _cfg.providers.carto && _cfg.providers.carto.token)
+    ? '?api_key=' + encodeURIComponent(_cfg.providers.carto.token)
+    : '';
+};
   var _getCartoBase = function() { return (_cfg && _cfg.providers && _cfg.providers.carto && _cfg.providers.carto.domain) ? 'https://{s}.' + _cfg.providers.carto.domain + '.cartocdn.com' : 'https://{s}.basemaps.cartocdn.com'; };
   // Carto started requiring an API key in 2026-08: unauthenticated tiles come back
   // stamped "API KEY REQUIRED". The key is a query param on the same host, so it is
