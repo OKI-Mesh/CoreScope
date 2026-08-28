@@ -26,6 +26,8 @@ jobs:
   retag-or-fallback:
     name: "🏷️ Re-tag :edge → :vX.Y.Z (fast) or dispatch deploy.yml (fallback)"
     runs-on: ubuntu-latest
+    outputs:
+      fast_path: ${{ steps.edge.outputs.fast_path }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -69,6 +71,7 @@ jobs:
           if ! CONFIG="$(crane config "$EDGE_REF" 2>/dev/null)"; then
             echo "edge_revision=" >> "$GITHUB_OUTPUT"
             echo "no_edge=true"   >> "$GITHUB_OUTPUT"
+            echo "fast_path=false" >> "$GITHUB_OUTPUT"
             echo ":edge not found in registry — will use fallback path"
             exit 0
           fi
@@ -76,7 +79,14 @@ jobs:
           echo "edge_revision=$REV" >> "$GITHUB_OUTPUT"
           echo "no_edge=false"      >> "$GITHUB_OUTPUT"
           echo ":edge org.opencontainers.image.revision = $REV"
-          echo "tag SHA (github.sha)               = ${{ github.sha }}"
+          echo "tag SHA (github.sha)               = $GITHUB_SHA"
+          # fast_path drives the prod deploy job below: true only when the
+          # tagged commit is exactly what built :edge (no rebuild needed).
+          if [ -n "$REV" ] && [ "$REV" = "$GITHUB_SHA" ]; then
+            echo "fast_path=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "fast_path=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # ─────────── FAST PATH: SHAs match, metadata-only retag ───────────
       - name: Re-tag :edge → :vX.Y.Z + :vX.Y + :vX + :latest (fast path)
@@ -110,3 +120,16 @@ jobs:
             --repo "${{ github.repository }}" \
             --ref "${{ github.ref }}"
           echo "Dispatched deploy.yml against ${{ github.ref }}"
+
+  # ─────────── Deploy prod on the FAST PATH (#103) ───────────
+  # The fast path only re-tagged the GHCR image; it doesn't touch deadbeef.
+  # Deploy the freshly-tagged :vX.Y.Z here via the shared reusable workflow.
+  # On the FALLBACK path this is skipped (fast_path=false) — the dispatched
+  # deploy.yml run performs the prod deploy instead, so prod deploys exactly
+  # once either way. Single source of truth: deploy-prod.yml.
+  deploy-prod:
+    needs: [retag-or-fallback]
+    if: needs.retag-or-fallback.outputs.fast_path == 'true'
+    uses: ./.github/workflows/deploy-prod.yml
+    with:
+      version: ${{ github.ref_name }}

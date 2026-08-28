@@ -799,80 +799,17 @@ jobs:
   #   PREREQ (one-time): /opt/corescope/docker-compose.yml image must be the
   #   local tag `corescope:prod` (NOT :edge), seeded to the current image.
   # ───────────────────────────────────────────────────────────────
+  # Fallback-dispatch path only: release-fast-path.yml dispatches deploy.yml
+  # (with the tag ref) when :edge doesn't match the tagged commit; that run
+  # builds :vX.Y.Z above, then this deploys it. The fast path calls the same
+  # reusable workflow directly from release-fast-path.yml. Single source of
+  # truth for the rollback logic: .github/workflows/deploy-prod.yml (#103).
   deploy-prod:
-    name: "🛡️ Deploy Prod (deadbeef)"
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-and-publish]
-    runs-on: [self-hosted, corescope-prod]
-    env:
-      PROD_CONTAINER: corescope
-      IMAGE: ghcr.io/oki-mesh/corescope
-      LOCAL_TAG: "corescope:prod"     # prod compose references this local tag
-      ROLLBACK_KEEP: "3"
-    steps:
-      - name: Resolve version + pull tagged image
-        run: |
-          VER="${GITHUB_REF#refs/tags/}"
-          echo "VER=$VER" >> "$GITHUB_ENV"
-          echo "Deploying prod → $IMAGE:$VER"
-          docker pull "$IMAGE:$VER"
-
-      - name: Tag-before-replace (create rollback point)
-        run: |
-          STAMP="$(date -u +%Y%m%d-%H%M%S)"
-          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
-          CUR="$(docker inspect "$PROD_CONTAINER" --format '{{.Image}}')"
-          docker tag "$CUR" "corescope:rollback-$STAMP"
-          echo "🔒 Rollback point: corescope:rollback-$STAMP -> $CUR"
-
-      - name: Promote + recreate corescope
-        working-directory: /opt/corescope
-        run: |
-          docker tag "$IMAGE:$VER" "$LOCAL_TAG"
-          docker compose up -d "$PROD_CONTAINER"
-
-      - name: Healthcheck (auto-rollback on failure)
-        working-directory: /opt/corescope
-        run: |
-          healthy() {
-            for i in $(seq 1 "$1"); do
-              H="$(docker inspect "$PROD_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null || echo starting)"
-              [ "$H" = healthy ] && return 0
-              sleep 1
-            done
-            return 1
-          }
-          if healthy 120; then
-            echo "✅ Prod healthy on $VER"
-          else
-            echo "❌ Prod unhealthy on $VER after 120s — ROLLING BACK to corescope:rollback-$STAMP"
-            docker logs "$PROD_CONTAINER" --tail 50 || true
-            docker tag "corescope:rollback-$STAMP" "$LOCAL_TAG"
-            docker compose up -d "$PROD_CONTAINER"
-            if healthy 90; then
-              echo "↩️ Rolled back to previous image (healthy). Failing the job so the bad release is visible."
-            else
-              echo "🚨 Rollback ALSO unhealthy — manual intervention required on deadbeef."
-            fi
-            exit 1
-          fi
-
-      - name: Smoke test prod API
-        run: |
-          if curl -sf http://localhost:3000/api/stats | grep -q engine; then
-            echo "✅ Prod /api/stats verified (engine field present)"
-          else
-            echo "❌ Prod smoke test failed"
-            exit 1
-          fi
-
-      - name: Prune old rollback tags (keep last ROLLBACK_KEEP) + dangling
-        if: always()
-        run: |
-          docker images corescope --format '{{.Tag}}' \
-            | grep '^rollback-' | sort -r | tail -n +"$(( ROLLBACK_KEEP + 1 ))" \
-            | sed 's|^|corescope:|' | xargs -r docker rmi 2>/dev/null || true
-          docker image prune -f 2>/dev/null || true
+    uses: ./.github/workflows/deploy-prod.yml
+    with:
+      version: ${{ github.ref_name }}
 
   # ───────────────────────────────────────────────────────────────
   # 5. Publish Badges & Summary (master only)

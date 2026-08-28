@@ -1,0 +1,104 @@
+name: Deploy Prod (reusable)
+
+# Reusable prod deploy for deadbeef — the single source of truth for the
+# tag-before-replace + healthcheck + auto-rollback logic (#90, #103).
+# Called by:
+#   • release-fast-path.yml — fast path, after :edge is re-tagged :vX.Y.Z
+#   • deploy.yml            — fallback dispatch (SHA mismatch), after build
+# PREREQ (one-time): /opt/corescope/docker-compose.yml image must be the
+# local tag `corescope:prod` (NOT :edge), seeded to the current image.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Image tag to deploy (e.g. v0.1.0)"
+        required: true
+        type: string
+
+jobs:
+  deploy-prod:
+    name: "🛡️ Deploy Prod (deadbeef)"
+    runs-on: [self-hosted, corescope-prod]
+    env:
+      PROD_CONTAINER: corescope
+      IMAGE: ghcr.io/oki-mesh/corescope
+      LOCAL_TAG: "corescope:prod"     # prod compose references this local tag
+      ROLLBACK_KEEP: "3"
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Resolve version + pull tagged image
+        run: |
+          VER="$VERSION"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "Deploying prod → $IMAGE:$VER"
+          docker pull "$IMAGE:$VER"
+
+      - name: Tag-before-replace (create rollback point)
+        run: |
+          STAMP="$(date -u +%Y%m%d-%H%M%S)"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          # First deploy (or a manually-removed container) has nothing to
+          # snapshot — tolerate a missing container instead of aborting.
+          if CUR="$(docker inspect "$PROD_CONTAINER" --format '{{.Image}}' 2>/dev/null)"; then
+            docker tag "$CUR" "corescope:rollback-$STAMP"
+            echo "HAVE_ROLLBACK=true" >> "$GITHUB_ENV"
+            echo "🔒 Rollback point: corescope:rollback-$STAMP -> $CUR"
+          else
+            echo "HAVE_ROLLBACK=false" >> "$GITHUB_ENV"
+            echo "ℹ️ No existing $PROD_CONTAINER container (first deploy) — no rollback point created."
+          fi
+
+      - name: Promote + recreate corescope
+        working-directory: /opt/corescope
+        run: |
+          docker tag "$IMAGE:$VER" "$LOCAL_TAG"
+          docker compose up -d "$PROD_CONTAINER"
+
+      - name: Healthcheck (auto-rollback on failure)
+        working-directory: /opt/corescope
+        run: |
+          healthy() {
+            for i in $(seq 1 "$1"); do
+              H="$(docker inspect "$PROD_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null || echo starting)"
+              [ "$H" = healthy ] && return 0
+              sleep 1
+            done
+            return 1
+          }
+          if healthy 120; then
+            echo "✅ Prod healthy on $VER"
+          else
+            echo "❌ Prod unhealthy on $VER after 120s"
+            docker logs "$PROD_CONTAINER" --tail 50 || true
+            if [ "${HAVE_ROLLBACK:-false}" = "true" ]; then
+              echo "↩️ ROLLING BACK to corescope:rollback-$STAMP"
+              docker tag "corescope:rollback-$STAMP" "$LOCAL_TAG"
+              docker compose up -d "$PROD_CONTAINER"
+              if healthy 90; then
+                echo "↩️ Rolled back to previous image (healthy). Failing the job so the bad release is visible."
+              else
+                echo "🚨 Rollback ALSO unhealthy — manual intervention required on deadbeef."
+              fi
+            else
+              echo "🚨 No rollback point (first deploy) — leaving the new image up for inspection. Manual intervention required."
+            fi
+            exit 1
+          fi
+
+      - name: Smoke test prod API
+        run: |
+          if curl -sf http://localhost:3000/api/stats | grep -q engine; then
+            echo "✅ Prod /api/stats verified (engine field present)"
+          else
+            echo "❌ Prod smoke test failed"
+            exit 1
+          fi
+
+      - name: Prune old rollback tags (keep last ROLLBACK_KEEP) + dangling
+        if: always()
+        run: |
+          docker images corescope --format '{{.Tag}}' \
+            | grep '^rollback-' | sort -r | tail -n +"$(( ROLLBACK_KEEP + 1 ))" \
+            | sed 's|^|corescope:|' | xargs -r docker rmi 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true
