@@ -31,7 +31,7 @@
 
   var _getCartoKeyParam = function() {
   return (_cfg && _cfg.providers && _cfg.providers.carto && _cfg.providers.carto.token)
-    ? '?api_key=' + encodeURIComponent(_cfg.providers.carto.token)
+    ? '?key=' + encodeURIComponent(_cfg.providers.carto.token)
     : '';
 };
   var _getCartoBase = function() { return (_cfg && _cfg.providers && _cfg.providers.carto && _cfg.providers.carto.domain) ? 'https://{s}.' + _cfg.providers.carto.domain + '.cartocdn.com' : 'https://{s}.basemaps.cartocdn.com'; };
