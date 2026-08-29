@@ -88,8 +88,11 @@
 <script>
 const map = L.map('map').setView([50.5, 4.4], 8);
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  attribution: '© OpenStreetMap © CartoDB',
+// #105: standalone tool with no config/token access — Carto now requires a
+// key and would show the "API key required" watermark. Use keyless OSM
+// (a drawing aid; basemap style is not functionally important here).
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap contributors',
   maxZoom: 19
 }).addTo(map);
 
