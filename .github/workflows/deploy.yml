@@ -621,16 +621,20 @@ jobs:
           docker compose -f "$STAGING_COMPOSE_FILE" -p corescope-staging build "$STAGING_SERVICE"
           echo "Built Go staging image ✅"
 
+      # #107: publish on a normal master push AND on a tag-ref workflow_dispatch
+      # (the release-fast-path fallback), so the fallback actually pushes
+      # :vX.Y.Z for deploy-prod to pull. Without the dispatch case these steps
+      # skipped on the fallback and the prod pull 404'd.
       - name: Set up Docker Buildx
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
         uses: docker/setup-buildx-action@v3
 
       - name: Set up QEMU (arm64 runtime stage)
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
         uses: docker/setup-qemu-action@v3
 
       - name: Log in to GHCR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -638,20 +642,24 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
         id: docker-meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/oki-mesh/corescope
+          # #107: the type=raw ref_name tag fires for a tag ref under ANY event
+          # (push OR the workflow_dispatch fallback), unlike type=semver which
+          # the dispatch fallback leaves unpopulated — so :vX.Y.Z always exists.
           tags: |
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
+            type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=edge,branch=master
 
       - name: Build and push to GHCR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
         uses: docker/build-push-action@v6
         with:
           context: .
