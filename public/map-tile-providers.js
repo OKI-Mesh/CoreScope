@@ -182,6 +182,10 @@
   
   window.MC_DARK_TILE_DEFAULT           = DEFAULT_ID;
   window.MC_TILE_PROVIDERS              = REGISTRY; // initial ref; MC_initTileRegistry keeps this in sync
+  // #105: single source of truth for the Carto "?key=" param so hardcoded
+  // carto URLs outside the registry (roles.js fallbacks, customizer draw maps)
+  // can thread the key too and avoid the "API key required" watermark.
+  window.MC_getCartoKeyParam            = _getCartoKeyParam;
   window.MC_setDarkTileProvider         = function(id) { return setActive(id, 'dark'); };
   window.MC_setLightTileProvider        = function(id) { return setActive(id, 'light'); };
   window.MC_getDarkTileProvider         = getActiveId;

@@ -586,6 +586,20 @@
       if (cfg.map.tiles.darkUrl) window.TILE_DARK = cfg.map.tiles.darkUrl;
       if (cfg.map.tiles.lightUrl) window.TILE_LIGHT = cfg.map.tiles.lightUrl;
     }
+    // #105: the hardcoded carto TILE_DARK/TILE_LIGHT fallbacks bypass the
+    // registry's key-threading (_getCartoKeyParam), so once Carto started
+    // requiring a key they render the "API key required" watermark on every
+    // map that uses getTileUrl() (node detail/reach right-pane, analytics).
+    // Append the same ?key= param here. Skip if the operator overrode the URL
+    // to a non-carto host, or it already carries a query string.
+    try {
+      var _carto = cfg.map && cfg.map.tiles && cfg.map.tiles.providers && cfg.map.tiles.providers.carto;
+      var _cartoKey = (_carto && _carto.token) ? '?key=' + encodeURIComponent(_carto.token) : '';
+      if (_cartoKey) {
+        if (/cartocdn\.com/.test(window.TILE_DARK) && window.TILE_DARK.indexOf('?') === -1) window.TILE_DARK += _cartoKey;
+        if (/cartocdn\.com/.test(window.TILE_LIGHT) && window.TILE_LIGHT.indexOf('?') === -1) window.TILE_LIGHT += _cartoKey;
+      }
+    } catch (_e) {}
     if (typeof window.MC_initTileRegistry === 'function') window.MC_initTileRegistry(true);
     if (cfg.snrThresholds) Object.assign(SNR_THRESHOLDS, cfg.snrThresholds);
     if (cfg.distThresholds) Object.assign(DIST_THRESHOLDS, cfg.distThresholds);
