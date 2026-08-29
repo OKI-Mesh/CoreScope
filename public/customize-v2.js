@@ -1841,9 +1841,13 @@
     var modalClosingLine = null;
 
     _gfModalMap = L.map(mapDiv, { zoomControl: true });
+<<<<<<< HEAD
     L.tileLayer(window.MC_tileUrlById
       ? window.MC_tileUrlById('carto-light', 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png')
       : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+=======
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' + (window.MC_getCartoKeyParam ? window.MC_getCartoKeyParam() : ''), {
+>>>>>>> 6695b4de (fix(map): thread Carto key through non-registry tile URLs (#105) (#106))
       attribution: '© OpenStreetMap © CartoDB', maxZoom: 19
     }).addTo(_gfModalMap);
 
