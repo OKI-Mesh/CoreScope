@@ -2,6 +2,8 @@ node_modules/
 data/
 *.bak
 *.db
+*.db-shm
+*.db-wal
 *.db-journal
 config.json
 .env
