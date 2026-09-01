@@ -3,7 +3,7 @@
 # BUILDPLATFORM is auto-set by buildx; default to linux/amd64 so plain
 # `docker build` (without buildx) doesn't fail on an empty platform string.
 ARG BUILDPLATFORM=linux/amd64
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG APP_VERSION=unknown
 ARG GIT_COMMIT=unknown
@@ -20,15 +20,15 @@ COPY . .
 
 # Build server (pure-Go sqlite — no CGO needed, cross-compiles cleanly)
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-server .
+    go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-server ./cmd/server
 
 # Build ingestor
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /corescope-ingestor .
+    go build -o /corescope-ingestor ./cmd/ingestor
 
 # Build decrypt CLI
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o /corescope-decrypt .
+    go build -ldflags="-s -w" -o /corescope-decrypt ./cmd/decrypt
 
 # Runtime image
 FROM alpine:3.20
