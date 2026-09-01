@@ -1,0 +1,36 @@
+name: CI (docs-only)
+
+# #113 companion to deploy.yml's paths-ignore. deploy.yml skips the real
+# pipeline for docs-only / .gitignore PRs, but the "Protect Main" ruleset still
+# requires the "✅ Go Build & Test" check — a required check that never runs
+# leaves the PR BLOCKED/unmergeable. This reports that SAME check name as a
+# pass for docs-only changes so the gate is satisfied without a full build.
+#
+# The job name below MUST stay exactly "✅ Go Build & Test" to match the
+# required status-check context in the ruleset.
+#
+# Mixed PRs (docs + code) trigger BOTH workflows: deploy.yml runs the real
+# build (code paths aren't ignored) and this reports a redundant pass — both
+# green, so the gate is still satisfied.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    name: "✅ Go Build & Test"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docs-only change — report required check as passed
+        run: |
+          echo "Docs-only / .gitignore change: build & tests are not affected."
+          echo "Reporting the required '✅ Go Build & Test' check as passed (#113)."

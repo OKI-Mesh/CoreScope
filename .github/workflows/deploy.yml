@@ -7,8 +7,23 @@ on:
   # of the earlier paths-ignore + duplicate stub check.
   push:
     branches: [master]
+    # #113: docs-only / .gitignore changes don't affect the image or tests, so
+    # skip the whole build+deploy pipeline for them (no staging/prod churn).
+    # NOTE: never add build-affecting paths here (.github/workflows, public,
+    # cmd, Dockerfiles, compose). The docs-only required-check gate is kept
+    # green by ci-docs-skip.yml.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
     branches: [master]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
