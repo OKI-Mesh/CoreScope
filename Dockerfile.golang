@@ -8,17 +8,13 @@ ARG BUILD_TIME=unknown
 
 # Build server
 WORKDIR /build/server
-COPY cmd/server/go.mod cmd/server/go.sum ./
-RUN go mod download
 COPY cmd/server/ ./
 RUN go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-server .
 
 # Build ingestor
 WORKDIR /build/ingestor
-COPY cmd/ingestor/go.mod cmd/ingestor/go.sum ./
-RUN go mod download
 COPY cmd/ingestor/ ./
-RUN go build -o /corescope-ingestor .
+RUN go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-ingestor .
 
 # Runtime image
 FROM alpine:3.20
