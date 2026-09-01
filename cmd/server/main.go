@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 	"github.com/gorilla/mux"
-	"github.com/meshcore-analyzer/dbschema"
 )
 
 // Set via -ldflags at build time
@@ -73,11 +73,11 @@ func main() {
 	}
 
 	var (
-		configDir  string
-		port       int
-		dbPath     string
-		publicDir  string
-		pollMs     int
+		configDir string
+		port      int
+		dbPath    string
+		publicDir string
+		pollMs    int
 	)
 
 	flag.StringVar(&configDir, "config-dir", ".", "Directory containing config.json")

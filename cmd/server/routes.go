@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 	"github.com/gorilla/mux"
-	"github.com/meshcore-analyzer/packetpath"
-	"github.com/meshcore-analyzer/prunequeue"
 )
 
 // memBreakdownNote is the static accounting caveat attached to the opt-in

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // TestPruneOldClientReceptions verifies the retention reaper bounds the coverage

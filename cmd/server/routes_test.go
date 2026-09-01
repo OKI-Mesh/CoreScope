@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 	"github.com/gorilla/mux"
-	"github.com/meshcore-analyzer/prunequeue"
 )
 
 func setupTestServer(t *testing.T) (*Server, *mux.Router) {

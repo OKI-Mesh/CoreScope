@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-analyzer/prunequeue"
+	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 )
 
 func TestRunPendingPruneRequests(t *testing.T) {

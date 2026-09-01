@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/meshcore-analyzer/lora"
+	"github.com/OKI-Mesh/CoreScope/internal/lora"
 )
 
 // newRelayAirtimeShareTestStore builds a minimal PacketStore for testing

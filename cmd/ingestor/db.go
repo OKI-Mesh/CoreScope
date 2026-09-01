@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-analyzer/dbschema"
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 	_ "modernc.org/sqlite"
 )
 
@@ -342,14 +342,37 @@ func applySchema(db *sql.DB) error {
 				path_json TEXT,
 				timestamp INTEGER NOT NULL
 			);
-			CREATE INDEX idx_observations_transmission_id ON observations(transmission_id);
-			CREATE INDEX idx_observations_observer_idx ON observations(observer_idx);
-			CREATE INDEX idx_observations_timestamp ON observations(timestamp);
-			CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_dedup ON observations(transmission_id, observer_idx, COALESCE(path_json, ''));
 		`
 		if _, err := db.Exec(obs); err != nil {
 			return fmt.Errorf("observations schema: %w", err)
 		}
+	}
+
+	// Indexes are ensured unconditionally (IF NOT EXISTS), regardless of
+	// whether the table itself needed creating above — fixes a bug where
+	// a database with a pre-existing (but index-less) observations table
+	// never got these indexes added, since they were previously bundled
+	// inside the `if !obsExists` gate and only ran on fresh table creation.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_observations_transmission_id ON observations(transmission_id)`); err != nil {
+		return fmt.Errorf("idx_observations_transmission_id: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_observations_observer_idx ON observations(observer_idx)`); err != nil {
+		return fmt.Errorf("idx_observations_observer_idx: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_observations_timestamp ON observations(timestamp)`); err != nil {
+		return fmt.Errorf("idx_observations_timestamp: %w", err)
+	}
+	if _, err := db.Exec(`
+		DELETE FROM observations
+		WHERE id NOT IN (
+			SELECT MIN(id) FROM observations
+			GROUP BY transmission_id, observer_idx, COALESCE(path_json, '')
+		)
+	`); err != nil {
+		return fmt.Errorf("dedup observations before unique index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_dedup ON observations(transmission_id, observer_idx, COALESCE(path_json, ''))`); err != nil {
+		return fmt.Errorf("idx_observations_dedup: %w", err)
 	}
 
 	// Create/rebuild packets_v view (v3 schema: observer_idx → observers.rowid)

@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meshcore-analyzer/channel"
+	"github.com/OKI-Mesh/CoreScope/internal/channel"
 	_ "modernc.org/sqlite"
 )
 
