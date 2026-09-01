@@ -100,9 +100,15 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '${{ env.GO_VERSION }}'
-          cache-dependency-path: |
-            cmd/server/go.sum
-            cmd/ingestor/go.sum
+          cache-dependency-path: go.sum
+
+      - name: Test internal packages
+        run: |
+          set -e -o pipefail
+          cd internal
+          go test -timeout 20m -coverprofile=internal-coverage.out ./... 2>&1 | tee internal-test.log
+          echo "--- Go Internal Packages Coverage ---"
+          go tool cover -func=internal-coverage.out | tail -1
 
       - name: Build and test Go server (with coverage)
         run: |
@@ -134,6 +140,8 @@ jobs:
           CGO_ENABLED=0 go build -ldflags="-s -w" -o corescope-decrypt .
           go test ./...
           echo "--- Decrypt CLI tests passed ---"
+
+
 
       - name: Staging disk-monitor unit tests (issue #1684)
         run: bash scripts/staging/test-disk-monitor.sh
@@ -317,7 +325,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '${{ env.GO_VERSION }}'
-          cache-dependency-path: cmd/server/go.sum
+          cache-dependency-path: go.sum
 
       - name: Build Go server
         run: |
