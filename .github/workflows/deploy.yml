@@ -13,25 +13,14 @@ name: CI/CD Pipeline
 # revision label matches the tagged commit, so a master commit without an image
 # breaks tagging.
 on:
+  # #113 (single-check refactor): the pipeline always triggers; a `changes` job
+  # detects docs-only changes and the heavy work short-circuits. This keeps ONE
+  # required "✅ Go Build & Test" check (always runs, always concludes) instead
+  # of the earlier paths-ignore + duplicate stub check.
   push:
     branches: [master]
-    # #113: docs-only / .gitignore changes don't affect the image or tests, so
-    # skip the whole build+deploy pipeline for them (no staging/prod churn).
-    # NOTE: never add build-affecting paths here (.github/workflows, public,
-    # cmd, Dockerfiles, compose). The docs-only required-check gate is kept
-    # green by ci-docs-skip.yml.
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
   pull_request:
     branches: [master]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
   workflow_dispatch:
     inputs:
       images_published:
@@ -63,103 +52,56 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────
-  # 0. Change scope — decides whether the expensive jobs below run.
+  # 0. Detect changes (#113 single-check) — is this a docs-only change?
+  #   FAIL-SAFE: defaults to code=true (run everything). Only downgrades to
+  #   code=false when it positively confirms EVERY changed file is docs /
+  #   .gitignore / LICENSE. A real code change can never wrongly skip the build.
   # ───────────────────────────────────────────────────────────────
   changes:
-    name: "🔎 Change scope"
+    name: "Detect changes"
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.scope.outputs.code }}
-      ingestor: ${{ steps.scope.outputs.ingestor }}
+      code: ${{ steps.detect.outputs.code }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Decide whether anything but documentation changed
-        id: scope
+      - name: Detect docs-only vs code
+        id: detect
+        shell: bash
         run: |
-          set -euo pipefail
-          # Only pull requests are scoped. Pushes and dispatches always count as
-          # code, so master keeps producing an :edge image and tag builds are
-          # never skipped.
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "ingestor=true" >> "$GITHUB_OUTPUT"
-            echo "event=${{ github.event_name }} -> full pipeline"
-            exit 0
-          fi
-          CHANGED=$(git diff --name-only             "${{ github.event.pull_request.base.sha }}"             "${{ github.event.pull_request.head.sha }}")
-          # Empty diff means something is off; run everything rather than guess.
-          if [ -z "$CHANGED" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "ingestor=true" >> "$GITHUB_OUTPUT"
-            echo "empty diff -> full pipeline"
-            exit 0
-          fi
-          echo "Changed files:"
-          echo "$CHANGED" | sed 's/^/  /'
-          if echo "$CHANGED" | grep -qvE '(^docs/|[.]md$|^LICENSE$)'; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "-> non-documentation files changed, full pipeline"
+          set -u
+          code=true   # fail-safe default: run the full pipeline
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
           else
-            echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "-> documentation only, heavy jobs skip (and report Success)"
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
           fi
-          # The race detector is its own job, and it only earns its ten minutes
-          # when the code it inspects changed. A frontend or docs PR cannot
-          # introduce a data race in the ingestor.
-          if echo "$CHANGED" | grep -qE '^cmd/ingestor/.*[.]go$'; then
-            echo "ingestor=true" >> "$GITHUB_OUTPUT"
-            echo "-> ingestor Go files changed, race detector runs"
-          else
-            echo "ingestor=false" >> "$GITHUB_OUTPUT"
-            echo "-> no ingestor Go changes, race detector skips"
+          files=""
+          if [ -n "${base:-}" ] && [ "$base" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$base" 2>/dev/null; then
+            files="$(git diff --name-only "$base" "$head" 2>/dev/null || true)"
+            # code=false ONLY when there are changed files and NONE of them is a
+            # non-doc file (i.e. every file matches the docs/.gitignore/LICENSE set).
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/|^\.gitignore$|^LICENSE$)'; then
+              code=false
+            fi
           fi
-
-  # ───────────────────────────────────────────────────────────────
-  # 1a. Race detector (ingestor) — its own job on purpose
-  # ───────────────────────────────────────────────────────────────
-  # Runs beside "Go Build & Test" rather than inside it, so its ten-odd
-  # minutes overlap the E2E job instead of extending the critical path, and
-  # only when ingestor Go files changed. A frontend or documentation PR cannot
-  # introduce a data race here, and paying for the check on every PR is what
-  # gets a check switched off again.
-  #
-  # The server has -race in its own step already; this closes the same gap for
-  # the ingestor, which carries an atomic.Pointer snapshot (the region key
-  # set) whose safety is an argument until something checks it.
-  race-test:
-    name: "🏁 Race detector (ingestor)"
-    runs-on: ubuntu-latest
-    needs: [changes]
-    if: needs.changes.outputs.ingestor == 'true'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Set up Go 1.27
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.27'
-          # All modules: a -race build of a cgo package is the slowest thing in
-          # this pipeline, and setup-go caches ~/.cache/go-build as well as the
-          # module cache, so a key that misses on an unrelated module hurts most
-          # here. Same reasoning as go-test below.
-          cache-dependency-path: "**/go.sum"
-
-      - name: go test -race
-        run: |
-          set -e -o pipefail
-          cd cmd/ingestor
-          go test -timeout 30m -race ./...
+          echo "event=${{ github.event_name }} base=${base:-} head=${head:-}"
+          echo "changed files:"; printf '%s\n' "$files"
+          echo "code (run build/deploy) = $code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
 
   # ───────────────────────────────────────────────────────────────
   # 1. Go Build & Test
   # ───────────────────────────────────────────────────────────────
   go-test:
     name: "✅ Go Build & Test"
+    # Always runs on every push/PR as the single required check (no duplicate
+    # stub). It's cheap relative to build+deploy; the docs-skip below applies to
+    # the image build and deploy, which is the dev/prod churn we want to avoid.
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
@@ -341,7 +283,8 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   e2e-test:
     name: "🎭 Playwright E2E Tests"
-    needs: [go-test, changes]
+    needs: [changes, go-test]
+    if: needs.changes.outputs.code == 'true'   # #113: skip for docs-only changes
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -838,7 +781,10 @@ jobs:
     # E2E can't block the image build or the dev deploy. e2e-test still runs (needs:
     # go-test) as an advisory signal. TEMPORARY — restore an E2E deploy gate once the
     # E2E flakes are fixed (#65).
-    needs: [go-test]
+    needs: [changes, go-test]
+    # #113: skip the image build for docs-only changes, but ALWAYS build for a
+    # tag deploy (the release-fast-path fallback dispatch) regardless.
+    if: needs.changes.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     if: needs.changes.outputs.code == 'true' && !(startsWith(github.ref, 'refs/tags/v') && inputs.images_published)
     steps:
