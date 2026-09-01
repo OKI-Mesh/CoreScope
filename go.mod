@@ -1,6 +1,6 @@
 module github.com/OKI-Mesh/CoreScope
 
-go 1.25.14
+go 1.26
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
