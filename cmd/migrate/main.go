@@ -18,7 +18,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/meshcore-analyzer/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 	_ "modernc.org/sqlite"
 )
 

@@ -3,7 +3,7 @@
 # BUILDPLATFORM is auto-set by buildx; default to linux/amd64 so plain
 # `docker build` (without buildx) doesn't fail on an empty platform string.
 ARG BUILDPLATFORM=linux/amd64
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 ARG APP_VERSION=unknown
 ARG GIT_COMMIT=unknown
@@ -12,47 +12,23 @@ ARG BUILD_TIME=unknown
 ARG TARGETOS
 ARG TARGETARCH
 
-# Build server (pure-Go sqlite — no CGO needed, cross-compiles cleanly)
-WORKDIR /build/server
-COPY cmd/server/go.mod cmd/server/go.sum ./
-COPY internal/geofilter/ ../../internal/geofilter/
-COPY internal/sigvalidate/ ../../internal/sigvalidate/
-COPY internal/packetpath/ ../../internal/packetpath/
-COPY internal/dbconfig/ ../../internal/dbconfig/
-COPY internal/dbschema/ ../../internal/dbschema/
-COPY internal/prunequeue/ ../../internal/prunequeue/
-COPY internal/perfio/ ../../internal/perfio/
-COPY internal/mbcapqueue/ ../../internal/mbcapqueue/
-COPY internal/lora/ ../../internal/lora/
+# Setup the build environment
+WORKDIR /build
+COPY go.mod go.sum ./
 RUN go mod download
-COPY cmd/server/ ./
+COPY . .
+
+# Build server (pure-Go sqlite — no CGO needed, cross-compiles cleanly)
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-server .
+    go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-server ./cmd/server
 
 # Build ingestor
-WORKDIR /build/ingestor
-COPY cmd/ingestor/go.mod cmd/ingestor/go.sum ./
-COPY internal/geofilter/ ../../internal/geofilter/
-COPY internal/sigvalidate/ ../../internal/sigvalidate/
-COPY internal/packetpath/ ../../internal/packetpath/
-COPY internal/dbconfig/ ../../internal/dbconfig/
-COPY internal/dbschema/ ../../internal/dbschema/
-COPY internal/prunequeue/ ../../internal/prunequeue/
-COPY internal/perfio/ ../../internal/perfio/
-COPY internal/mbcapqueue/ ../../internal/mbcapqueue/
-RUN go mod download
-COPY cmd/ingestor/ ./
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /corescope-ingestor .
+    go build -o /corescope-ingestor ./cmd/ingestor
 
 # Build decrypt CLI
-WORKDIR /build/decrypt
-COPY cmd/decrypt/go.mod cmd/decrypt/go.sum ./
-COPY internal/channel/ ../../internal/channel/
-RUN go mod download
-COPY cmd/decrypt/ ./
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags="-s -w" -o /corescope-decrypt .
+    go build -ldflags="-s -w" -o /corescope-decrypt ./cmd/decrypt
 
 # Runtime image
 FROM alpine:3.20

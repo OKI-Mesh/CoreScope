@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-analyzer/dbconfig"
-	"github.com/meshcore-analyzer/geofilter"
+	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
+	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 )
 
 // AreaEntry defines a geographic area by polygon or bounding box.

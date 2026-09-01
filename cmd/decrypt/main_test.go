@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/meshcore-analyzer/channel"
+	"github.com/OKI-Mesh/CoreScope/internal/channel"
 )
 
 func TestExtractGRPPayload(t *testing.T) {

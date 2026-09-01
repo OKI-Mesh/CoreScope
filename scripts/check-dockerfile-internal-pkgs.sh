@@ -7,7 +7,7 @@
 # needs it.
 #
 # This catches the recurring class of Docker build failure (issue #1316):
-#   go: github.com/meshcore-analyzer/<pkg>: reading ../../internal/<pkg>/go.mod:
+#   go: github.com/OKI-Mesh/CoreScope/internal/<pkg>: reading ../../internal/<pkg>/go.mod:
 #   open /internal/<pkg>/go.mod: no such file or directory
 #
 # The bug pattern: a PR adds a new internal/<pkg>, updates both go.mod files

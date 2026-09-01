@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-analyzer/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 	_ "modernc.org/sqlite"
 )
 

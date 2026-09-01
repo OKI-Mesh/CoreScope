@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/meshcore-analyzer/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 )
 
 // PruneOldPackets deletes transmissions (and their child observations)

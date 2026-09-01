@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/meshcore-analyzer/mbcapqueue"
+	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
 )
 
 // TestRunMultibyteCapPersist_AppliesSnapshot enforces the architectural

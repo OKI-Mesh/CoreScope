@@ -36,7 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-analyzer/dbconfig"
+	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
 )
 
 // dbLoadConfig is the server-package alias for dbconfig.LoadConfig (#1009).
