@@ -1,25 +1,14 @@
 name: CI/CD Pipeline
 
 on:
+  # #113 (single-check refactor): the pipeline always triggers; a `changes` job
+  # detects docs-only changes and the heavy work short-circuits. This keeps ONE
+  # required "✅ Go Build & Test" check (always runs, always concludes) instead
+  # of the earlier paths-ignore + duplicate stub check.
   push:
     branches: [master]
-    # #113: docs-only / .gitignore changes don't affect the image or tests, so
-    # skip the whole build+deploy pipeline for them (no staging/prod churn).
-    # NOTE: never add build-affecting paths here (.github/workflows, public,
-    # cmd, Dockerfiles, compose). The docs-only required-check gate is kept
-    # green by ci-docs-skip.yml.
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
   pull_request:
     branches: [master]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
@@ -46,10 +35,56 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────
+  # 0. Detect changes (#113 single-check) — is this a docs-only change?
+  #   FAIL-SAFE: defaults to code=true (run everything). Only downgrades to
+  #   code=false when it positively confirms EVERY changed file is docs /
+  #   .gitignore / LICENSE. A real code change can never wrongly skip the build.
+  # ───────────────────────────────────────────────────────────────
+  changes:
+    name: "Detect changes"
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Detect docs-only vs code
+        id: detect
+        shell: bash
+        run: |
+          set -u
+          code=true   # fail-safe default: run the full pipeline
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          files=""
+          if [ -n "${base:-}" ] && [ "$base" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$base" 2>/dev/null; then
+            files="$(git diff --name-only "$base" "$head" 2>/dev/null || true)"
+            # code=false ONLY when there are changed files and NONE of them is a
+            # non-doc file (i.e. every file matches the docs/.gitignore/LICENSE set).
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/|^\.gitignore$|^LICENSE$)'; then
+              code=false
+            fi
+          fi
+          echo "event=${{ github.event_name }} base=${base:-} head=${head:-}"
+          echo "changed files:"; printf '%s\n' "$files"
+          echo "code (run build/deploy) = $code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────────────────────────────────────────────
   # 1. Go Build & Test
   # ───────────────────────────────────────────────────────────────
   go-test:
     name: "✅ Go Build & Test"
+    # Always runs on every push/PR as the single required check (no duplicate
+    # stub). It's cheap relative to build+deploy; the docs-skip below applies to
+    # the image build and deploy, which is the dev/prod churn we want to avoid.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -260,7 +295,8 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   e2e-test:
     name: "🎭 Playwright E2E Tests"
-    needs: [go-test]
+    needs: [changes, go-test]
+    if: needs.changes.outputs.code == 'true'   # #113: skip for docs-only changes
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -607,7 +643,10 @@ jobs:
     # E2E can't block the image build or the dev deploy. e2e-test still runs (needs:
     # go-test) as an advisory signal. TEMPORARY — restore an E2E deploy gate once the
     # E2E flakes are fixed (#65).
-    needs: [go-test]
+    needs: [changes, go-test]
+    # #113: skip the image build for docs-only changes, but ALWAYS build for a
+    # tag deploy (the release-fast-path fallback dispatch) regardless.
+    if: needs.changes.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
