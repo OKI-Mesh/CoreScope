@@ -24,6 +24,7 @@ env:
   STAGING_COMPOSE_FILE: docker-compose.staging.yml
   STAGING_SERVICE: staging-go
   STAGING_CONTAINER: corescope-staging-go
+  GO_VERSION: '1.26'
 
 # Pipeline:
 #   go-test ─┬→ e2e-test  (advisory signal — does NOT gate build/deploy; see #66 / #65)
@@ -95,10 +96,10 @@ jobs:
       - name: Clean Go module cache
         run: rm -rf ~/go/pkg/mod 2>/dev/null || true
 
-      - name: Set up Go 1.22
+      - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '${{ env.GO_VERSION }}'
           cache-dependency-path: |
             cmd/server/go.sum
             cmd/ingestor/go.sum
@@ -312,10 +313,10 @@ jobs:
       - name: Clean Go module cache
         run: rm -rf ~/go/pkg/mod 2>/dev/null || true
 
-      - name: Set up Go 1.22
+      - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
+          go-version: '${{ env.GO_VERSION }}'
           cache-dependency-path: cmd/server/go.sum
 
       - name: Build Go server
@@ -739,10 +740,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Set up Go 1.22
+      - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
+          go-version: '${{ env.GO_VERSION }}'
 
       - name: Build corescope-decrypt (static, linux/amd64)
         run: |
