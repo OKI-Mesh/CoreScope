@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/meshcore-analyzer/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	_ "modernc.org/sqlite"
 )
 
 // fixtureCandidates lists possible locations of the committed e2e

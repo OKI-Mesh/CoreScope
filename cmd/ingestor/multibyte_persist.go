@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/meshcore-analyzer/mbcapqueue"
+	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
 )
 
 // MultibyteCapPersistStats holds counts for /api/healthz exposure / logging.

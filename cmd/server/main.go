@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 	"github.com/gorilla/mux"
-	"github.com/meshcore-analyzer/dbschema"
 )
 
 // Set via -ldflags at build time

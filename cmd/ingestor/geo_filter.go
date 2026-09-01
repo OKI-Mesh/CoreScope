@@ -1,6 +1,6 @@
 package main
 
-import "github.com/meshcore-analyzer/geofilter"
+import "github.com/OKI-Mesh/CoreScope/internal/geofilter"
 
 // NodePassesGeoFilter returns true if the node should be kept.
 // Nodes with no GPS coordinates are always allowed.

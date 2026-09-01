@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 func tempDBPath(t *testing.T) string {
@@ -1965,7 +1965,7 @@ func TestExtractObserverMetaNewFields(t *testing.T) {
 // TestInsertObservationSNRFillIn verifies that when the same observation is
 // received twice — first without SNR, then with SNR — the SNR is filled in
 // rather than silently discarded. The unique dedup index is
-// (transmission_id, observer_idx, COALESCE(path_json, '')); observer_idx must
+// (transmission_id, observer_idx, COALESCE(path_json, ”)); observer_idx must
 // be non-NULL for the conflict to fire (SQLite treats NULL != NULL).
 //
 // (Blank line above is deliberate: gofmt's Go-1.19+ doc-comment formatter

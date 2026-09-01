@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/meshcore-analyzer/packetpath"
-	"github.com/meshcore-analyzer/sigvalidate"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/sigvalidate"
 )
 
 func TestDecodeHeaderRoutTypes(t *testing.T) {

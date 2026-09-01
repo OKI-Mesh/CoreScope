@@ -14,10 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/meshcore-analyzer/dbschema"
-	"github.com/meshcore-analyzer/geofilter"
 	"golang.org/x/sync/singleflight"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
+	_ "modernc.org/sqlite"
 )
 
 // routeTypeTransport covers TRANSPORT_FLOOD (0) and TRANSPORT_DIRECT (3) —
@@ -142,8 +142,13 @@ type channelMessagesCacheEntry struct {
 // connection; it sits outside GOMEMLIMIT, so it is bounded here rather than
 // left to the driver's default (see memlimit.go).
 func OpenDB(path string) (*DB, error) {
+<<<<<<< HEAD
 	dsn := fmt.Sprintf("file:%s?mode=ro&_cache_size=-2000", path)
 	conn, err := sql.Open("sqlite3", dsn)
+=======
+	dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000", path)
+	conn, err := sql.Open("sqlite", dsn)
+>>>>>>> d5ae0232 (Removing low level go modules and making it one module (#116))
 	if err != nil {
 		return nil, err
 	}
@@ -1051,6 +1056,7 @@ func (db *DB) GetObservationsForHash(hash string) []map[string]interface{} {
 	return obsByTx[txID]
 }
 
+<<<<<<< HEAD
 // ObservationRawHexForHash returns the stored wire bytes per observation id for
 // one transmission, keyed by observations.id. Empty when the schema has no
 // observations.raw_hex column (#881 made it optional) or nothing is stored.
@@ -1101,6 +1107,8 @@ func (db *DB) ObservationRawHexForHash(hash string) map[int]string {
 	return out
 }
 
+=======
+>>>>>>> d5ae0232 (Removing low level go modules and making it one module (#116))
 // GetNodes returns filtered, paginated node list.
 func (db *DB) GetNodes(limit, offset int, role, search, before, lastHeard, sortBy, region string) ([]map[string]interface{}, int, map[string]int, error) {
 	var where []string

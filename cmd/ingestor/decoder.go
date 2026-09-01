@@ -12,8 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/meshcore-analyzer/packetpath"
-	"github.com/meshcore-analyzer/sigvalidate"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/sigvalidate"
 )
 
 // Route type constants (header bits 1-0)
@@ -148,14 +148,15 @@ type Payload struct {
 	// srcPubKey so store.go's node indexer picks it up and it resolves to a
 	// node name; frontend also reads legacy ephemeralPubKey for pre-rename
 	// packets (#1864).
-	SrcPubKey  string    `json:"srcPubKey,omitempty"`
-	PathData   string    `json:"pathData,omitempty"`
-	SNRValues  []float64 `json:"snrValues,omitempty"`
-	Tag        uint32    `json:"tag,omitempty"`
-	AuthCode   uint32    `json:"authCode,omitempty"`
-	TraceFlags *int      `json:"traceFlags,omitempty"`
-	RawHex     string    `json:"raw,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	SrcPubKey       string    `json:"srcPubKey,omitempty"`
+	PathData        string    `json:"pathData,omitempty"`
+	SNRValues       []float64 `json:"snrValues,omitempty"`
+	Tag             uint32    `json:"tag,omitempty"`
+	AuthCode        uint32    `json:"authCode,omitempty"`
+	TraceFlags      *int      `json:"traceFlags,omitempty"`
+	RawHex          string    `json:"raw,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	EphemeralPubKey string    `json:"ephemeralPubKey,omitempty"`
 	// MULTIPART (PAYLOAD_TYPE_MULTIPART=0x0A) inner fields, decoded per
 	// firmware/src/Mesh.cpp:289 — byte0 = (remaining<<4) | inner_type.
 	Remaining     *int   `json:"remaining,omitempty"`

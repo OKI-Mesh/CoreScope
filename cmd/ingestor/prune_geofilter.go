@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meshcore-analyzer/prunequeue"
+	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 )
 
 // DeleteNodesByPubkeys deletes nodes by public key. Returns the count deleted.

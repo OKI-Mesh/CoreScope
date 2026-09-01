@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/meshcore-analyzer/channel"
+	"github.com/OKI-Mesh/CoreScope/internal/channel"
+	_ "modernc.org/sqlite"
 )
 
 // Version info (set via ldflags).

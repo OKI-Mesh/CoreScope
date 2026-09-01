@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-analyzer/perfio"
+	"github.com/OKI-Mesh/CoreScope/internal/perfio"
 )
 
 // PerfIOResponse holds per-process disk I/O metrics derived from /proc/self/io.

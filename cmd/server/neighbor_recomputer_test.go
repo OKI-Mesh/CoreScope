@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/meshcore-analyzer/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	_ "modernc.org/sqlite"
 )
 
 // TestNeighborGraphRecomputerLoadsSnapshot enforces #1287 Option 4:

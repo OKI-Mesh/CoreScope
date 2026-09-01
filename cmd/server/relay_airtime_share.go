@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/meshcore-analyzer/lora"
+	"github.com/OKI-Mesh/CoreScope/internal/lora"
 )
 
 // relay_airtime_share.go — issues #1359 + #1768

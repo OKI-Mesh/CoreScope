@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // clientPubkeyRe validates the companion pubkey taken from the MQTT topic

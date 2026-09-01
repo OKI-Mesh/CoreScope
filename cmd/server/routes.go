@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 	"github.com/gorilla/mux"
-	"github.com/meshcore-analyzer/prunequeue"
 	"golang.org/x/sync/singleflight"
 )
 

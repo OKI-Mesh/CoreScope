@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meshcore-analyzer/packetpath"
-	"github.com/meshcore-analyzer/sigvalidate"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/sigvalidate"
 )
 
 // Route type constants (header bits 1-0)
@@ -111,14 +111,15 @@ type Payload struct {
 	// srcPubKey so store.go's node indexer picks it up and it resolves to a
 	// node name; frontend also reads legacy ephemeralPubKey for pre-rename
 	// packets (#1864).
-	SrcPubKey  string    `json:"srcPubKey,omitempty"`
-	PathData   string    `json:"pathData,omitempty"`
-	Tag        uint32    `json:"tag,omitempty"`
-	AuthCode   uint32    `json:"authCode,omitempty"`
-	TraceFlags *int      `json:"traceFlags,omitempty"`
-	SNRValues  []float64 `json:"snrValues,omitempty"`
-	RawHex     string    `json:"raw,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	SrcPubKey       string    `json:"srcPubKey,omitempty"`
+	PathData        string    `json:"pathData,omitempty"`
+	Tag             uint32    `json:"tag,omitempty"`
+	AuthCode        uint32    `json:"authCode,omitempty"`
+	TraceFlags      *int      `json:"traceFlags,omitempty"`
+	SNRValues       []float64 `json:"snrValues,omitempty"`
+	RawHex          string    `json:"raw,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	EphemeralPubKey string    `json:"ephemeralPubKey,omitempty"`
 	// GRP_TXT/GRP_DATA channel envelope helpers — see
 	// firmware/src/helpers/BaseChatMesh.cpp:376-391.
 	ChannelHashHex   string `json:"channelHashHex,omitempty"`

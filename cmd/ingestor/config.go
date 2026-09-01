@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/meshcore-analyzer/dbconfig"
-	"github.com/meshcore-analyzer/geofilter"
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
+	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // MQTTSource represents a single MQTT broker connection.

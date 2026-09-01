@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/meshcore-analyzer/mbcapqueue"
+	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
 	"golang.org/x/sync/singleflight"
 )
 

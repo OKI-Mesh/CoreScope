@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/meshcore-analyzer/perfio"
+	"github.com/OKI-Mesh/CoreScope/internal/perfio"
 )
 
 // PerfIOSample is the canonical per-process I/O rate sample, sourced from the
