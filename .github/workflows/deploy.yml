@@ -360,7 +360,27 @@ jobs:
         # server against the committed e2e fixture — so we run the
         # standalone migrate tool here to bring the fixture up to the
         # required shape before the server boots.
-        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db        
+        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db
+
+      - name: Seed observer IATA codes (post-migration-reconstruction fixture repair)
+        # observers.iata values were lost when the column had to be dropped
+        # and re-added to fix a migration-ordering collision during the goose
+        # migration reconstruction (see PR #XXXX). Re-seeding here — rather
+        # than baking values into the committed fixture — means this step
+        # also verifies the migration chain actually produces a working
+        # observers.iata column on every CI run, not just once.
+        run: |
+          sqlite3 test-fixtures/e2e-fixture.db <<'SQL'
+          UPDATE observers
+          SET iata = CASE (rowid % 5)
+            WHEN 0 THEN 'IND'
+            WHEN 1 THEN 'FWA'
+            WHEN 2 THEN 'EVV'
+            WHEN 3 THEN 'CVG'
+            WHEN 4 THEN 'DAY'
+          END
+          WHERE iata IS NULL OR iata = '';
+          SQL            
 
       - name: Seed grouped-packet row for #1486 collapse test
         # The committed fixture has 499 packets, each with exactly ONE
