@@ -51,15 +51,15 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
   // Discover an observer_id in SJC from the API (drives test from real data).
   let sjcObserverId = null;
   let allObservers = [];
-  await step('GET /api/observers returns {observers:[...]} shape with SJC entries', async () => {
+  await step('GET /api/observers returns {observers:[...]} shape with CVG entries', async () => {
     const res = await page.request.get(BASE + '/api/observers');
     assert(res.ok(), 'API returned non-OK: ' + res.status());
     const body = await res.json();
     assert(body && Array.isArray(body.observers), 'response must have .observers array (the bug-1136 root cause)');
     allObservers = body.observers;
-    const sjc = body.observers.filter(function (o) { return o && o.iata === 'SJC' && o.id; });
-    assert(sjc.length > 0, 'fixture must contain at least one SJC observer (got ' + sjc.length + ')');
-    sjcObserverId = sjc[0].id;
+    const cvg = body.observers.filter(function (o) { return o && o.iata === 'CVG' && o.id; });
+    assert(cvg.length > 0, 'fixture must contain at least one CVG observer (got ' + cvg.length + ')');
+    sjcObserverId = cvg[0].id;
   });
 
   await step('navigate to /#/live and wait for live module to register', async () => {
@@ -82,20 +82,20 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
     const sample = await page.evaluate((oid) => {
       const m = window._liveGetObserverIataMap();
       return { size: Object.keys(m).length, iataForOid: m[oid] || null };
-    }, sjcObserverId);
+    }, cvg[0].id);
     assert(sample.size > 0, 'observerIataMap should be populated from /api/observers (was empty — #1136 bug)');
-    assert(sample.iataForOid === 'SJC', 'observerIataMap[' + sjcObserverId + '] should be "SJC", got ' + sample.iataForOid);
+    assert(sample.iataForOid === 'CVG', 'observerIataMap[' + cvg[0].id + '] should be "CVG", got ' + sample.iataForOid);
   });
 
-  await step('select SJC region in RegionFilter, verify selection took effect', async () => {
+  await step('select CVG region in RegionFilter, verify selection took effect', async () => {
     await page.evaluate(() => {
-      window.RegionFilter.setSelected(['SJC']);
+      window.RegionFilter.setSelected(['CVG']);
     });
     const sel = await page.evaluate(() => window.RegionFilter.getSelected());
-    assert(Array.isArray(sel) && sel.indexOf('SJC') !== -1, 'RegionFilter selected should include SJC, got ' + JSON.stringify(sel));
+    assert(Array.isArray(sel) && sel.indexOf('CVG') !== -1, 'RegionFilter selected should include CVG, got ' + JSON.stringify(sel));
   });
 
-  await step('packet with SJC observer renders to live feed when SJC region selected', async () => {
+  await step('packet with CVG observer renders to live feed when CVG region selected', async () => {
     const targetHash = 'fixture-1136-' + Date.now().toString(16);
     await page.evaluate(function (args) {
       const pkt = {
@@ -115,7 +115,7 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
       };
       // Push through the same buffer entry point the WS handler uses.
       window._liveBufferPacket(pkt);
-    }, { hash: targetHash, oid: sjcObserverId });
+    }, { hash: targetHash, oid: cvg[0].id });
 
     // Allow the (non-realistic-propagation) immediate renderPacketTree to land.
     await page.waitForFunction((h) => {
@@ -123,7 +123,7 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
     }, targetHash, { timeout: 5000 }).catch(() => {});
 
     const found = await page.evaluate((h) => !!document.querySelector('.live-feed-item[data-hash="' + h + '"]'), targetHash);
-    assert(found, 'expected .live-feed-item[data-hash=' + targetHash + '] to render with SJC selected (#1136: filter wiped feed)');
+    assert(found, 'expected .live-feed-item[data-hash=' + targetHash + '] to render with CVG selected (#1136: filter wiped feed)');
   });
 
   await page.evaluate(() => { try { window.RegionFilter.setSelected([]); } catch(e) {} });
