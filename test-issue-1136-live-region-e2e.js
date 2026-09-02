@@ -48,8 +48,8 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
 
   console.log('\n=== #1136 live region filter E2E against ' + BASE + ' ===');
 
-  // Discover an observer_id in SJC from the API (drives test from real data).
-  let sjcObserverId = null;
+  // Discover an observer_id in CVG from the API (drives test from real data).
+  let cvgObserverId = null;
   let allObservers = [];
   await step('GET /api/observers returns {observers:[...]} shape with CVG entries', async () => {
     const res = await page.request.get(BASE + '/api/observers');
@@ -59,7 +59,7 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
     allObservers = body.observers;
     const cvg = body.observers.filter(function (o) { return o && o.iata === 'CVG' && o.id; });
     assert(cvg.length > 0, 'fixture must contain at least one CVG observer (got ' + cvg.length + ')');
-    sjcObserverId = cvg[0].id;
+    cvgObserverId = cvg[0].id;
   });
 
   await step('navigate to /#/live and wait for live module to register', async () => {
@@ -82,9 +82,9 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
     const sample = await page.evaluate((oid) => {
       const m = window._liveGetObserverIataMap();
       return { size: Object.keys(m).length, iataForOid: m[oid] || null };
-    }, cvg[0].id);
+    }, cvgObserverId);
     assert(sample.size > 0, 'observerIataMap should be populated from /api/observers (was empty — #1136 bug)');
-    assert(sample.iataForOid === 'CVG', 'observerIataMap[' + cvg[0].id + '] should be "CVG", got ' + sample.iataForOid);
+    assert(sample.iataForOid === 'CVG', 'observerIataMap[' + cvgObserverId + '] should be "CVG", got ' + sample.iataForOid);
   });
 
   await step('select CVG region in RegionFilter, verify selection took effect', async () => {
@@ -115,7 +115,7 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
       };
       // Push through the same buffer entry point the WS handler uses.
       window._liveBufferPacket(pkt);
-    }, { hash: targetHash, oid: cvg[0].id });
+    }, { hash: targetHash, oid: cvgObserverId });
 
     // Allow the (non-realistic-propagation) immediate renderPacketTree to land.
     await page.waitForFunction((h) => {
