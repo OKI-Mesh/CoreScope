@@ -353,6 +353,15 @@ jobs:
       - name: Freshen fixture timestamps
         run: bash tools/freshen-fixture.sh test-fixtures/e2e-fixture.db
 
+      - name: Migrate fixture DB to current schema (#1287)
+        # Server now ASSERTs schema is migrated and refuses to start
+        # otherwise (cmd/server/main.go: dbschema.AssertReady). In prod
+        # the ingestor owns dbschema.Apply, but CI starts only the
+        # server against the committed e2e fixture — so we run the
+        # standalone migrate tool here to bring the fixture up to the
+        # required shape before the server boots.
+        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db        
+
       - name: Seed grouped-packet row for #1486 collapse test
         # The committed fixture has 499 packets, each with exactly ONE
         # observation, so the packets-page renders only flat
@@ -421,15 +430,6 @@ jobs:
           INSERT INTO observations(transmission_id,observer_idx,direction,snr,rssi,score,path_json,timestamp,resolved_path) VALUES
             (-1000000,1,'rx',7.0,-88,0,'[]',CAST(strftime('%s','now') AS INTEGER),'[]');
           SQL
-
-      - name: Migrate fixture DB to current schema (#1287)
-        # Server now ASSERTs schema is migrated and refuses to start
-        # otherwise (cmd/server/main.go: dbschema.AssertReady). In prod
-        # the ingestor owns dbschema.Apply, but CI starts only the
-        # server against the committed e2e fixture — so we run the
-        # standalone migrate tool here to bring the fixture up to the
-        # required shape before the server boots.
-        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db
 
       - name: Start Go server with fixture DB
         run: |

@@ -18,10 +18,11 @@ import (
 	"flag"
 	"log"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
+// cmd/migrate/main.go
 func main() {
 	dbPath := flag.String("db", "", "path to SQLite database to migrate (required)")
 	flag.Parse()
@@ -43,12 +44,16 @@ func main() {
 		log.Fatalf("ping %s: %v", *dbPath, err)
 	}
 
-	if err := dbschema.Apply(db, log.Printf); err != nil {
-		log.Fatalf("dbschema.Apply: %v", err)
+	if err := database.RunMigrations(db); err != nil {
+		log.Fatalf("run migrations: %v", err)
 	}
 
-	if err := dbschema.AssertReady(db); err != nil {
-		log.Fatalf("dbschema.AssertReady after Apply: %v (this is a bug — Apply did not produce a ready schema)", err)
+	if err := database.NormalizePublicKeyCasing(db); err != nil {
+		log.Fatalf("normalize public_key casing: %v", err)
+	}
+
+	if err := database.AssertReady(db); err != nil {
+		log.Fatalf("database not ready even after migrations: %v (this indicates a bug in the migration set)", err)
 	}
 
 	log.Printf("OK: %s is migrated and ready", *dbPath)
