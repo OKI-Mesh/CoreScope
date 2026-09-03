@@ -783,86 +783,54 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/master'
     needs: [build-and-publish]
-    runs-on: [self-hosted, meshcore-runner-2]
+    # #125: staging moved off pi5 (that box is the reliable call-button/assistive
+    # link and can't host CoreScope) to offband. Deploys offband's existing
+    # corescope-dev (tailnet netns, 2g mem_limit, /opt/corescope-dev/data) by
+    # pointing its corescope:dev tag at the CI-built :edge image.
+    runs-on: [self-hosted, corescope-dev-offband]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
+      - name: Pull edge image from GHCR
+        run: docker pull ghcr.io/oki-mesh/corescope:edge
 
-      - name: Pull latest image from GHCR
+      - name: Deploy to offband corescope-dev
+        working-directory: /opt/corescope-dev
         run: |
-          # Try to pull the edge image from GHCR and tag for docker-compose compatibility
-          if docker pull ghcr.io/oki-mesh/corescope:edge; then
-            docker tag ghcr.io/oki-mesh/corescope:edge corescope-go:latest
-            echo "Pulled and tagged GHCR edge image ✅"
-          else
-            echo "⚠️ GHCR pull failed — falling back to locally built image"
-          fi
+          docker tag ghcr.io/oki-mesh/corescope:edge corescope:dev
+          docker compose -f docker-compose.yml -p corescope-dev up -d --force-recreate corescope
+          echo "Recreated corescope-dev on the CI :edge image ✅"
 
-      - name: Deploy staging
+      - name: Healthcheck corescope-dev
         run: |
-          # Force-remove the staging container regardless of how it was created
-          # (compose-managed OR manually created via docker run)
-          docker stop corescope-staging-go 2>/dev/null || true
-          docker rm -f corescope-staging-go 2>/dev/null || true
-          docker compose -f "$STAGING_COMPOSE_FILE" -p corescope-staging down --timeout 30 2>/dev/null || true
-
-          # Wait for container to be fully gone and OS to reclaim memory (3GB limit)
-          for i in $(seq 1 15); do
-            if ! docker ps -a --format '{{.Names}}' | grep -q 'corescope-staging-go'; then
-              break
-            fi
-            sleep 1
-          done
-          sleep 5  # extra pause for OS memory reclaim
-
-          # Ensure staging data dir exists (config.json lives here, no separate file mount)
-          STAGING_DATA="${STAGING_DATA_DIR:-$HOME/meshcore-staging-data}"
-          mkdir -p "$STAGING_DATA"
-
-          # If no config exists, copy the example (CI doesn't have a real prod config)
-          if [ ! -f "$STAGING_DATA/config.json" ]; then
-            echo "Staging config missing — copying config.example.json"
-            cp config.example.json "$STAGING_DATA/config.json" 2>/dev/null || true
-          fi
-
-          docker compose -f "$STAGING_COMPOSE_FILE" -p corescope-staging up -d staging-go
-
-      - name: Healthcheck staging container
-        run: |
-          for i in $(seq 1 120); do
-            HEALTH=$(docker inspect corescope-staging-go --format '{{.State.Health.Status}}' 2>/dev/null || echo "starting")
+          for i in $(seq 1 90); do
+            HEALTH=$(docker inspect corescope-dev --format '{{.State.Health.Status}}' 2>/dev/null || echo "starting")
             if [ "$HEALTH" = "healthy" ]; then
-              echo "Staging healthy after ${i}s"
+              echo "corescope-dev healthy after ${i}s"
               break
             fi
-            if [ "$i" -eq 120 ]; then
-              echo "Staging failed health check after 120s"
-              docker logs corescope-staging-go --tail 50
+            if [ "$i" -eq 90 ]; then
+              echo "corescope-dev failed health check after 90s"
+              docker logs corescope-dev --tail 50
               exit 1
             fi
             sleep 1
           done
 
-      - name: Smoke test staging API
+      - name: Smoke test API
         run: |
-          PORT="${STAGING_GO_HTTP_PORT:-80}"
-          if curl -sf "http://localhost:${PORT}/api/stats" | grep -q engine; then
+          # corescope shares the tailscale sidecar's netns, so :3000 lives inside
+          # the container — reach it via docker exec, not host localhost.
+          if docker exec corescope-dev wget -qO- http://localhost:3000/api/stats | grep -q engine; then
             echo "Staging verified — engine field present ✅"
           else
-            echo "Staging /api/stats did not return engine field (port ${PORT})"
+            echo "Staging /api/stats did not return engine field"
+            docker logs corescope-dev --tail 30
             exit 1
           fi
 
       - name: Clean up old Docker images
         if: always()
         run: |
-          # Remove dangling images and images older than 24h (keeps current build)
-          echo "--- Docker disk usage before cleanup ---"
-          docker system df
           docker image prune -af --filter "until=24h" 2>/dev/null || true
-          docker builder prune -f --keep-storage=1GB 2>/dev/null || true
-          echo "--- Docker disk usage after cleanup ---"
-          docker system df
 
   # ───────────────────────────────────────────────────────────────
   # 4c. Deploy Prod (deadbeef) — TAG-triggered, bulletproof (#90)
