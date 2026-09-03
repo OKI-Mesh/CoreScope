@@ -66,16 +66,23 @@ jobs:
             done
             return 1
           }
-          if healthy 120; then
+          # #127: prod's ~8 GB meshcore.db cold-start (neighbor-graph load +
+          # hash migration + cache rebuild) takes ~3 min before the container's
+          # own healthcheck flips to "healthy". 120s/90s marked a healthy
+          # release as failed and rolled back (v0.1.2). Windows sized to prod's
+          # real cold-start with margin — do NOT tune down without measuring a
+          # prod-scale boot. (Dev/offband boots in seconds only because its DB
+          # is ~25 MB and unseeded; it is not representative of prod startup.)
+          if healthy 300; then
             echo "✅ Prod healthy on $VER"
           else
-            echo "❌ Prod unhealthy on $VER after 120s"
+            echo "❌ Prod unhealthy on $VER after 300s"
             docker logs "$PROD_CONTAINER" --tail 50 || true
             if [ "${HAVE_ROLLBACK:-false}" = "true" ]; then
               echo "↩️ ROLLING BACK to corescope:rollback-$STAMP"
               docker tag "corescope:rollback-$STAMP" "$LOCAL_TAG"
               docker compose up -d "$PROD_CONTAINER"
-              if healthy 90; then
+              if healthy 240; then
                 echo "↩️ Rolled back to previous image (healthy). Failing the job so the bad release is visible."
               else
                 echo "🚨 Rollback ALSO unhealthy — manual intervention required on deadbeef."
