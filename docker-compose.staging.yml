@@ -32,6 +32,10 @@ services:
     image: corescope-go:latest
     container_name: corescope-staging-go
     restart: unless-stopped
+    # #123: hard memory cap (matches prod's 5g) so an unbounded corescope-serve
+    # can't exhaust the host and trigger a watchdog reboot loop. Paired with the
+    # GOMEMLIMIT soft target below. See prod (deadbeef): mem 5g + maxMemoryMB=2700.
+    mem_limit: 5g
     stop_grace_period: 30s
     stop_signal: SIGTERM
     extra_hosts:
@@ -64,6 +68,9 @@ services:
       # snippet above so external clients can reach it.
       - DISABLE_MOSQUITTO=${DISABLE_MOSQUITTO:-true}
       - DISABLE_CADDY=${DISABLE_CADDY:-false}
+      # #123: Go soft memory limit (matches prod runtime.maxMemoryMB=2700). Lets
+      # the GC bound the heap (~4g like prod) under the 5g hard cap above.
+      - GOMEMLIMIT=${GOMEMLIMIT:-2700MiB}
     networks:
       # Default compose network for intra-stack DNS (unchanged).
       default: {}
