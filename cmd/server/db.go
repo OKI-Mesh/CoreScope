@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 	_ "modernc.org/sqlite"
 )
@@ -1157,24 +1156,13 @@ func (db *DB) getObservationsForTransmissions(txIDs []int) map[int][]map[string]
 
 // GetObservers returns active observers (not soft-deleted) sorted by last_seen DESC.
 func (db *DB) GetObservers() ([]Observer, error) {
-	// Issue #1290: can_relay is read via COALESCE(can_relay, 1). The
-	// column is added by internal/dbschema; older test fixtures and
-	// pre-migration DBs may lack it, so we probe and fall back.
-	// PR #1624 MAJOR-2: can_relay_seen is the tri-state sentinel — 1
-	// means the ingestor explicitly wrote a value, 0 means "unknown"
-	// and the server returns CanRelay=nil so the UI shows no badge.
-	canRelayClause := "COALESCE(can_relay, 1)"
-	canRelaySeenClause := "0"
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay"); !hasCol {
-		canRelayClause = "1"
-	}
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay_seen"); hasCol {
-		canRelaySeenClause = "COALESCE(can_relay_seen, 0)"
-	}
+	// can_relay/can_relay_seen are guaranteed present — AssertReady
+	// refuses server startup on any DB below goose v29, which includes
+	// these columns (migration 00028_can_relay_columns.sql).
 	rows, err := db.conn.Query(`SELECT id, name, iata, last_seen, first_seen, packet_count,
 		model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor, last_packet_at,
 		clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at,
-		` + canRelayClause + `, ` + canRelaySeenClause + `
+		COALESCE(can_relay, 1), COALESCE(can_relay_seen, 0)
 		FROM observers WHERE inactive IS NULL OR inactive = 0 ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, err
@@ -1225,12 +1213,10 @@ func (db *DB) GetObservers() ([]Observer, error) {
 // from the candidate set. Inactive observers are excluded for
 // consistency with GetObservers; reactivation flips can_relay only on
 // the next status message.
+//
+// can_relay is guaranteed present — AssertReady refuses server startup
+// on any database below goose v29 (migration 00028_can_relay_columns.sql).
 func (db *DB) GetNonRelayObserverPubkeys() ([]string, error) {
-	// Graceful no-op when can_relay column is absent (legacy DB / older
-	// test fixture). Avoids noisy schema-degradation log spam.
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay"); !hasCol {
-		return nil, nil
-	}
 	rows, err := db.conn.Query(`SELECT LOWER(id) FROM observers
 		WHERE COALESCE(can_relay, 1) = 0
 		  AND (inactive IS NULL OR inactive = 0)`)
@@ -1253,10 +1239,11 @@ func (db *DB) GetNonRelayObserverPubkeys() ([]string, error) {
 // value (can_relay_seen=1). PR #1624 MAJOR-2: the badge surface uses
 // this to render tri-state — observers NOT in this set are "unknown"
 // and the UI shows no badge.
+//
+// can_relay_seen is guaranteed present — AssertReady refuses server
+// startup on any database below goose v29 (migration
+// 00028_can_relay_columns.sql).
 func (db *DB) GetCanRelaySeenObserverPubkeys() ([]string, error) {
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay_seen"); !hasCol {
-		return nil, nil
-	}
 	rows, err := db.conn.Query(`SELECT LOWER(id) FROM observers
 		WHERE COALESCE(can_relay_seen, 0) = 1
 		  AND (inactive IS NULL OR inactive = 0)`)
@@ -1274,25 +1261,19 @@ func (db *DB) GetCanRelaySeenObserverPubkeys() ([]string, error) {
 	return out, rows.Err()
 }
 
-// GetObserverByID returns a single observer.
+// GetObserverByID returns a single observer. can_relay/can_relay_seen
+// are guaranteed present — AssertReady refuses server startup on any
+// database below goose v29 (migration 00028_can_relay_columns.sql).
 func (db *DB) GetObserverByID(id string) (*Observer, error) {
 	var o Observer
 	var batteryMv, uptimeSecs, clockSkewSec sql.NullInt64
 	var clockSkewCount sql.NullInt64
 	var noiseFloor sql.NullFloat64
 	var canRelay, canRelaySeen int
-	canRelayClause := "COALESCE(can_relay, 1)"
-	canRelaySeenClause := "0"
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay"); !hasCol {
-		canRelayClause = "1"
-	}
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay_seen"); hasCol {
-		canRelaySeenClause = "COALESCE(can_relay_seen, 0)"
-	}
 	err := db.conn.QueryRow(`SELECT id, name, iata, last_seen, first_seen, packet_count,
 		model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor, last_packet_at,
 		clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at,
-		`+canRelayClause+`, `+canRelaySeenClause+`
+		COALESCE(can_relay, 1), COALESCE(can_relay_seen, 0)
 		FROM observers WHERE id = ?`, id).
 		Scan(&o.ID, &o.Name, &o.IATA, &o.LastSeen, &o.FirstSeen, &o.PacketCount,
 			&o.Model, &o.Firmware, &o.ClientVersion, &o.Radio, &batteryMv, &uptimeSecs, &noiseFloor, &o.LastPacketAt,
@@ -2740,32 +2721,27 @@ func (db *DB) GetSignatureDropCount() int64 {
 	return count
 }
 
+// GetScopeStats returns scope/region statistics for the given time
+// window. scope_name is guaranteed present — AssertReady refuses server
+// startup on any database below goose v29 (migration 00019_scope_name_v1.sql).
 func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
-	if !db.hasScopeName {
-		return nil, fmt.Errorf("scope_name column not present — run ingestor to apply migrations")
-	}
-
 	var since string
 	var bucketExpr string
 	switch window {
 	case "1h":
 		since = time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
-		// 5-minute buckets
 		bucketExpr = `strftime('%Y-%m-%dT%H:', first_seen) || printf('%02d', (CAST(strftime('%M', first_seen) AS INTEGER) / 5) * 5) || ':00Z'`
 	case "7d":
 		since = time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339)
-		// 6-hour buckets
 		bucketExpr = `strftime('%Y-%m-%dT', first_seen) || printf('%02d', (CAST(strftime('%H', first_seen) AS INTEGER) / 6) * 6) || ':00:00Z'`
 	default: // "24h"
 		window = "24h"
 		since = time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
-		// 1-hour buckets
 		bucketExpr = `strftime('%Y-%m-%dT%H:00:00Z', first_seen)`
 	}
 
 	resp := &ScopeStatsResponse{Window: window}
 
-	// Summary counts
 	row := db.conn.QueryRow(`
 		SELECT
 			COUNT(*) AS transport_total,
@@ -2784,7 +2760,6 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 		return nil, fmt.Errorf("scope summary query: %w", err)
 	}
 
-	// Per-region counts (named regions only)
 	rows, err := db.conn.Query(`
 		SELECT scope_name, COUNT(*) AS cnt
 		FROM transmissions
@@ -2809,7 +2784,6 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 		resp.ByRegion = []ScopeRegionCount{}
 	}
 
-	// Time series
 	tsQuery := fmt.Sprintf(`
 		SELECT %s AS bucket,
 			COUNT(scope_name) AS scoped,

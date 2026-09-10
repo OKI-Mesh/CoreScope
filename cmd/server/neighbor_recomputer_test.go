@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -129,4 +129,4 @@ func assertReadyForTest(d *DB) error {
 // dbschemaAssertReadyShim wraps the package import so tests don't
 // directly depend on the import being present (production wires it
 // via main.go).
-func dbschemaAssertReadyShim(d *DB) error { return dbschema.AssertReady(d.conn) }
+func dbschemaAssertReadyShim(d *DB) error { return database.AssertReady(d.conn) }

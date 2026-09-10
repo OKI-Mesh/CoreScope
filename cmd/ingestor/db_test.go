@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
@@ -1436,10 +1437,14 @@ func TestTelemetryMigrationAddsColumns(t *testing.T) {
 		t.Errorf("inactive_nodes table should have battery_mv and temperature_c columns: %v", err)
 	}
 
-	var count int
-	s.db.QueryRow("SELECT COUNT(*) FROM _migrations WHERE name = 'node_telemetry_v1'").Scan(&count)
-	if count != 1 {
-		t.Errorf("migration node_telemetry_v1 should be recorded, count=%d", count)
+	// node_telemetry_v1 is now goose migration 00006_node_telemetry_v1.sql,
+	// tracked via goose_db_version rather than the legacy _migrations table.
+	applied, err := database.SchemaVersionApplied(s.db, 6)
+	if err != nil {
+		t.Fatalf("checking goose version 6: %v", err)
+	}
+	if !applied {
+		t.Error("goose migration 00006_node_telemetry_v1 should be applied")
 	}
 }
 
@@ -1608,20 +1613,22 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 			t.Error("idx_observations_timestamp should exist on a new DB")
 		}
 
-		var migCount int
-		err = s.db.QueryRow(
-			"SELECT COUNT(*) FROM _migrations WHERE name='obs_timestamp_index_v1'",
-		).Scan(&migCount)
+		// idx_observations_timestamp is created by goose migration
+		// 00002_observations_v3.sql on a fresh DB — 00007 is the
+		// idempotent re-add for older DBs missing it. On a fresh DB both
+		// apply as part of the full replay, so just confirm the chain
+		// reached its final version.
+		version, err := database.CurrentSchemaVersion(s.db)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("checking schema version: %v", err)
 		}
-		// On a new DB the index is created inline (not via migration), so the
-		// migration row may or may not be recorded — just verify the index exists.
-		_ = migCount
+		if version != 29 {
+			t.Errorf("expected fresh DB to be fully migrated (v29), got v%d", version)
+		}
 	})
 
 	// Case 2: existing DB that has the observations table but lacks the index
-	// and lacks the _migrations entry — simulates an older installation.
+	// and lacks any goose stamp — simulates an older installation.
 	t.Run("MigrationPath", func(t *testing.T) {
 		path := tempDBPath(t)
 
@@ -1632,7 +1639,6 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = db.Exec(`
-			CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY);
 			CREATE TABLE IF NOT EXISTS transmissions (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				raw_hex TEXT NOT NULL,
@@ -1660,7 +1666,6 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 			db.Close()
 			t.Fatal(err)
 		}
-		// Confirm the index is absent before OpenStore runs.
 		var preCount int
 		db.QueryRow(
 			"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_observations_timestamp'",
@@ -1670,7 +1675,7 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 			t.Fatalf("pre-condition failed: idx_observations_timestamp should not exist yet, got count=%d", preCount)
 		}
 
-		// Now open via OpenStore — the migration should add the index.
+		// Now open via OpenStore — detection + migration should add the index.
 		s, err := OpenStore(path)
 		if err != nil {
 			t.Fatal(err)
@@ -1688,15 +1693,12 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 			t.Error("idx_observations_timestamp should exist after migration on old DB")
 		}
 
-		var migCount int
-		err = s.db.QueryRow(
-			"SELECT COUNT(*) FROM _migrations WHERE name='obs_timestamp_index_v1'",
-		).Scan(&migCount)
+		version, err := database.CurrentSchemaVersion(s.db)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("checking schema version: %v", err)
 		}
-		if migCount != 1 {
-			t.Errorf("migration obs_timestamp_index_v1 should be recorded, got count=%d", migCount)
+		if version != 29 {
+			t.Errorf("expected old DB to be fully migrated (v29) after OpenStore, got v%d", version)
 		}
 	})
 }
@@ -2412,7 +2414,6 @@ func TestBackfillPathJsonFromRawHex(t *testing.T) {
 func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
 	path := tempDBPath(t)
 
-	// Create a bare-bones DB with legacy bad data
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
@@ -2426,8 +2427,7 @@ func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
 		payload_type INTEGER,
 		payload_version INTEGER,
 		decoded_json TEXT,
-		created_at TEXT DEFAULT (datetime('now')),
-		channel_hash TEXT DEFAULT NULL
+		created_at TEXT DEFAULT (datetime('now'))
 	)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS observations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2440,39 +2440,44 @@ func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
 		path_json TEXT,
 		timestamp INTEGER NOT NULL
 	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS nodes (public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0, battery_mv INTEGER, temperature_c REAL)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS observers (id TEXT PRIMARY KEY, name TEXT, iata TEXT, last_seen TEXT, first_seen TEXT, packet_count INTEGER DEFAULT 0, model TEXT, firmware TEXT, client_version TEXT, radio TEXT, battery_mv INTEGER, uptime_secs INTEGER, noise_floor REAL, inactive INTEGER DEFAULT 0, last_packet_at TEXT DEFAULT NULL)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS nodes (
+		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
+		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS inactive_nodes (
+		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
+		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS observers (
+		id TEXT PRIMARY KEY, name TEXT, last_seen TEXT, first_seen TEXT,
+		packet_count INTEGER DEFAULT 0, model TEXT, firmware TEXT,
+		client_version TEXT, radio TEXT, battery_mv INTEGER, uptime_secs INTEGER,
+		noise_floor REAL
+	)`)
 
-	// Insert good transmission
 	db.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, 'aabb', 'abc123', '2024-01-01T00:00:00Z')`)
 	db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (1, 1, 1704067200)`)
 
-	// Insert bad: empty hash
 	db.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (2, 'ccdd', '', '2024-01-01T00:00:00Z')`)
 	db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (2, 1, 1704067200)`)
 
-	// Insert bad: empty first_seen
 	db.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (3, 'eeff', 'def456', '')`)
 	db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (3, 2, 1704067200)`)
 
 	db.Close()
 
-	// Now open via OpenStore which should run the migration
 	s, err := OpenStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 
-	// Good transmission should remain
 	var count int
 	s.db.QueryRow("SELECT COUNT(*) FROM transmissions WHERE id = 1").Scan(&count)
 	if count != 1 {
 		t.Error("good transmission should not be deleted")
 	}
 
-	// Bad transmissions should be gone
 	s.db.QueryRow("SELECT COUNT(*) FROM transmissions WHERE id = 2").Scan(&count)
 	if count != 0 {
 		t.Errorf("transmission with empty hash should be deleted, got count=%d", count)
@@ -2482,26 +2487,24 @@ func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
 		t.Errorf("transmission with empty first_seen should be deleted, got count=%d", count)
 	}
 
-	// Observations for bad transmissions should be gone
 	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE transmission_id IN (2, 3)").Scan(&count)
 	if count != 0 {
 		t.Errorf("observations for bad transmissions should be deleted, got count=%d", count)
 	}
 
-	// Observation for good transmission should remain
 	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE transmission_id = 1").Scan(&count)
 	if count != 1 {
 		t.Error("observation for good transmission should remain")
 	}
 
-	// Migration marker should exist
-	var migCount int
-	s.db.QueryRow("SELECT COUNT(*) FROM _migrations WHERE name = 'cleanup_legacy_null_hash_ts'").Scan(&migCount)
-	if migCount != 1 {
-		t.Error("migration marker cleanup_legacy_null_hash_ts should be recorded")
+	applied, err := database.SchemaVersionApplied(s.db, 15)
+	if err != nil {
+		t.Fatalf("checking goose version 15: %v", err)
+	}
+	if !applied {
+		t.Error("goose migration 00015_cleanup_legacy_null_hash_ts should be applied")
 	}
 
-	// Idempotent: opening again should not error
 	s.Close()
 	s2, err := OpenStore(path)
 	if err != nil {

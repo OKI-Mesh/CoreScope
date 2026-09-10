@@ -7,110 +7,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
-// setupTestDB creates an in-memory SQLite database with the v3 schema.
 func setupTestDB(t *testing.T) *DB {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Force single connection so all goroutines share the same in-memory DB
 	conn.SetMaxOpenConns(1)
 
-	// Create schema matching MeshCore Analyzer v3
-	schema := `
-		CREATE TABLE nodes (
-			public_key TEXT PRIMARY KEY,
-			name TEXT,
-			role TEXT,
-			lat REAL,
-			lon REAL,
-			last_seen TEXT,
-			first_seen TEXT,
-			advert_count INTEGER DEFAULT 0,
-			battery_mv INTEGER,
-			temperature_c REAL,
-			foreign_advert INTEGER DEFAULT 0
-		);
+	if err := database.RunMigrations(conn); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
 
-		CREATE TABLE observers (
-			id TEXT PRIMARY KEY,
-			name TEXT,
-			iata TEXT,
-			last_seen TEXT,
-			first_seen TEXT,
-			packet_count INTEGER DEFAULT 0,
-			model TEXT,
-			firmware TEXT,
-			client_version TEXT,
-			radio TEXT,
-			battery_mv INTEGER,
-			uptime_secs INTEGER,
-			noise_floor REAL,
-			inactive INTEGER DEFAULT 0,
-			last_packet_at TEXT DEFAULT NULL,
-			clock_skew_seconds INTEGER DEFAULT NULL,
-			clock_skew_count_24h INTEGER DEFAULT 0,
-			clock_last_naive_at TEXT DEFAULT NULL
-		);
-
-		CREATE TABLE transmissions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			raw_hex TEXT NOT NULL,
-			hash TEXT NOT NULL UNIQUE,
-			first_seen TEXT NOT NULL,
-			route_type INTEGER,
-			payload_type INTEGER,
-			payload_version INTEGER,
-			decoded_json TEXT,
-			channel_hash TEXT DEFAULT NULL,
-			from_pubkey TEXT DEFAULT NULL,
-			created_at TEXT DEFAULT (datetime('now'))
-		);
-
-		CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-			observer_idx INTEGER,
-			direction TEXT,
-			snr REAL,
-			rssi REAL,
-			score INTEGER,
-			path_json TEXT,
-			timestamp INTEGER NOT NULL,
-			resolved_path TEXT,
-			raw_hex TEXT
-		);
-
-		CREATE TABLE IF NOT EXISTS observer_metrics (
-			observer_id TEXT NOT NULL,
-			timestamp TEXT NOT NULL,
-			noise_floor REAL,
-			tx_air_secs INTEGER,
-			rx_air_secs INTEGER,
-			recv_errors INTEGER,
-			battery_mv INTEGER,
-			packets_sent INTEGER,
-			packets_recv INTEGER,
-			PRIMARY KEY (observer_id, timestamp)
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_observer_metrics_timestamp ON observer_metrics(timestamp);
-
-		-- Auto-populate from_pubkey for ADVERT rows so existing test fixtures
-		-- (which only set decoded_json) still attribute correctly under #1143's
-		-- exact-match column. Production migration handles legacy data; the
-		-- ingestor sets the column at write time.
-		--
-		-- m4 alignment: prod ingest leaves from_pubkey NULL when pubKey is
-		-- missing or empty (cmd/ingestor/db.go ~1289 guards PubKey != empty-string).
-		-- The trigger mirrors that: only assign when json_extract yields a
-		-- non-empty string. json_extract returns NULL for missing keys, so
-		-- the explicit IS NOT NULL AND <> empty-string guard catches the empty-string
-		-- case too. UPDATE only when we have something to write.
+	if _, err := conn.Exec(`
 		CREATE TRIGGER IF NOT EXISTS test_from_pubkey_advert
 		AFTER INSERT ON transmissions
 		FOR EACH ROW
@@ -122,23 +35,13 @@ func setupTestDB(t *testing.T) *DB {
 			SET from_pubkey = json_extract(NEW.decoded_json, '$.pubKey')
 			WHERE id = NEW.id;
 		END;
-		CREATE INDEX IF NOT EXISTS idx_transmissions_from_pubkey ON transmissions(from_pubkey);
-
-		-- Mirror prod indexes from internal/dbschema/dbschema.go so query plans
-		-- in tests match prod. idx_observations_transmission_id is required by
-		-- GetChannelMessages's grouped MAX(timestamp) per tx aggregate
-		-- (issue #1366 / PR #1368): without it the perf test on 1500 tx × 50 obs
-		-- blows the 1.5s budget under -race.
-		CREATE INDEX IF NOT EXISTS idx_observations_transmission_id ON observations(transmission_id);
-		CREATE INDEX IF NOT EXISTS idx_observations_timestamp ON observations(timestamp);
-		CREATE INDEX IF NOT EXISTS idx_observations_tx_ts ON observations(transmission_id, timestamp);
-		CREATE INDEX IF NOT EXISTS idx_transmissions_channel_hash ON transmissions(channel_hash);
-	`
-	if _, err := conn.Exec(schema); err != nil {
-		t.Fatal(err)
+	`); err != nil {
+		t.Fatalf("create test-only from_pubkey trigger: %v", err)
 	}
 
-	return &DB{conn: conn, isV3: true, hasResolvedPath: true}
+	db := &DB{conn: conn}
+	db.detectSchema()
+	return db
 }
 
 func seedTestData(t *testing.T, db *DB) {

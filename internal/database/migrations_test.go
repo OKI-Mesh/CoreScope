@@ -185,3 +185,35 @@ func copyFileForTest(t *testing.T, src, dst string) {
 		t.Fatalf("copy: %v", err)
 	}
 }
+
+func TestRunMigrations_AllowsGenuinelyFreshDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// No tables at all — guard should pass through, full replay proceeds normally.
+	if err := RunMigrations(conn); err != nil {
+		t.Fatalf("RunMigrations on genuinely fresh DB should succeed, got: %v", err)
+	}
+}
+
+func TestRunMigrations_AllowsAlreadyStampedDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stamped.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Run once for real, so it's both schema-complete AND stamped —
+	// then confirm a second call is unaffected by the guard.
+	if err := RunMigrations(conn); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	if err := RunMigrations(conn); err != nil {
+		t.Fatalf("RunMigrations on already-stamped DB should succeed, got: %v", err)
+	}
+}
