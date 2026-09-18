@@ -1348,21 +1348,20 @@ func TestGetNetworkStatusDateFormats(t *testing.T) {
 }
 
 func TestOpenDBValid(t *testing.T) {
-	// Create a real SQLite database file
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	// Create DB with a table using a writable connection first
-	conn, err := sql.Open("sqlite", dbPath)
+	// Bring the database fully under goose's control before OpenDB —
+	// it now asserts readiness via database.AssertReady rather than
+	// accepting any file with a "transmissions" table.
+	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT)`)
-	if err != nil {
-		conn.Close()
-		t.Fatal(err)
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
 	}
-	conn.Close()
+	migrateConn.Close()
 
 	// Now test OpenDB (read-only)
 	database, err := OpenDB(dbPath)
@@ -1389,29 +1388,24 @@ func TestOpenDBInvalidPath(t *testing.T) {
 // hasDefaultScope via the real detectSchema path when the columns are present.
 // The existing ScopeStats tests set these flags manually — this test ensures
 // the flag-setting code itself is covered.
-func TestDetectSchemaScopeName(t *testing.T) {
+func TestDetectSchema_FlagsTrueOnFullyMigratedDB(t *testing.T) {
+	// Every schema feature flag detectSchema() sets is guaranteed true
+	// on any database that passes OpenDB's AssertReady check, since the
+	// full goose migration chain unconditionally adds these
+	// columns/tables. These flags are legacy — remove this test (and
+	// the flags themselves) as each dependent query is converted to
+	// sqlc; see DB struct comment.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "detect.db")
 
-	// Create file-based DB with the scope_name and default_scope columns.
-	conn, err := sql.Open("sqlite", dbPath)
+	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn.SetMaxOpenConns(1)
-	if _, err := conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT, scope_name TEXT)`); err != nil {
-		conn.Close()
-		t.Fatalf("create transmissions: %v", err)
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
 	}
-	if _, err := conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY, default_scope TEXT)`); err != nil {
-		conn.Close()
-		t.Fatalf("create nodes: %v", err)
-	}
-	if _, err := conn.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY)`); err != nil {
-		conn.Close()
-		t.Fatalf("create observations: %v", err)
-	}
-	conn.Close()
+	migrateConn.Close()
 
 	db, err := OpenDB(dbPath)
 	if err != nil {
@@ -1420,35 +1414,10 @@ func TestDetectSchemaScopeName(t *testing.T) {
 	defer db.Close()
 
 	if !db.hasScopeName {
-		t.Error("hasScopeName should be true when scope_name column exists")
+		t.Error("hasScopeName should be true on a fully migrated database")
 	}
 	if !db.hasDefaultScope {
-		t.Error("hasDefaultScope should be true when default_scope column exists")
-	}
-
-	// Verify the flags stay false when the columns are absent.
-	dbPath2 := filepath.Join(dir, "detect2.db")
-	conn2, err := sql.Open("sqlite", dbPath2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn2.SetMaxOpenConns(1)
-	conn2.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT)`)
-	conn2.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
-	conn2.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY)`)
-	conn2.Close()
-
-	db2, err := OpenDB(dbPath2)
-	if err != nil {
-		t.Fatalf("OpenDB2: %v", err)
-	}
-	defer db2.Close()
-
-	if db2.hasScopeName {
-		t.Error("hasScopeName should be false when scope_name column is absent")
-	}
-	if db2.hasDefaultScope {
-		t.Error("hasDefaultScope should be false when default_scope column is absent")
+		t.Error("hasDefaultScope should be true on a fully migrated database")
 	}
 }
 

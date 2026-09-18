@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // PruneOldPackets deletes transmissions (and their child observations)
@@ -85,7 +85,7 @@ func (s *Store) PruneOldClientReceptions(days int) (int64, error) {
 // inactive=1 so they are hidden from API responses. Owned by ingestor
 // per #1287. Runs once at startup.
 func (s *Store) SoftDeleteBlacklistedObservers(blacklist []string) {
-	n, err := dbschema.SoftDeleteBlacklistedObservers(s.db, blacklist)
+	n, err := database.SoftDeleteBlacklistedObservers(s.db, blacklist)
 	if err != nil {
 		log.Printf("[observer-blacklist] warning: soft-delete failed: %v", err)
 		return

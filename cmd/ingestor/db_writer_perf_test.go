@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
 // TestWriterStarvationVisibleInPerf reproduces the #1339 class of bug:
@@ -30,7 +32,7 @@ func TestWriterStarvationVisibleInPerf(t *testing.T) {
 	// follower samples can't move p99 above 50s.
 	ResetWriterStatsForTest()
 
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

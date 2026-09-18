@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS transmissions (
 	payload_version INTEGER,
 	decoded_json TEXT,
 	created_at TEXT DEFAULT (datetime('now'))
+
 );
 CREATE INDEX IF NOT EXISTS idx_transmissions_hash ON transmissions(hash);
 CREATE INDEX IF NOT EXISTS idx_transmissions_first_seen ON transmissions(first_seen);

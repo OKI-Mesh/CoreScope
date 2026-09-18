@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 	_ "modernc.org/sqlite"
 )
@@ -24,24 +25,34 @@ func createTestDBMultiDay(t *testing.T, numDays, txPerDay int) string {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 
-	execOrFail := func(s string) {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatalf("createTestDBMultiDay setup: %v", err)
-		}
+	// Real observers row so the LEFT JOIN observers ON obs.rowid =
+	// o.observer_idx resolves — without this, ObserverID/byObserver
+	// silently come back empty (LEFT JOIN with no match).
+	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
+	if err != nil {
+		t.Fatalf("createTestDBMultiDay insert observer: %v", err)
 	}
-	execOrFail(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT, route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT)`)
-	execOrFail(`CREATE TABLE observations (id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT, observer_name TEXT, direction TEXT, snr REAL, rssi REAL, score INTEGER, path_json TEXT, timestamp TEXT, raw_hex TEXT)`)
-	execOrFail(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`)
-	execOrFail(`CREATE TABLE nodes (pubkey TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, first_seen TEXT, frequency REAL)`)
-	execOrFail(`CREATE TABLE schema_version (version INTEGER)`)
-	execOrFail(`INSERT INTO schema_version (version) VALUES (1)`)
-	execOrFail(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
+	observerRowID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("createTestDBMultiDay observer rowid: %v", err)
+	}
 
 	id := 1
 	now := time.Now().UTC()
@@ -51,12 +62,18 @@ func createTestDBMultiDay(t *testing.T, numDays, txPerDay int) string {
 		// E.g. for numDays=3: day3 starts at now-71.5h, day2 at now-47.5h, day1 at now-23.5h.
 		base := now.Add(-time.Duration(day)*24*time.Hour + 30*time.Minute)
 		for i := 0; i < txPerDay; i++ {
-			ts := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
+			txTime := base.Add(time.Duration(i) * time.Minute)
+			ts := txTime.Format(time.RFC3339)
+			unixTs := txTime.Unix()
 			hash := fmt.Sprintf("hash%06d", id)
-			if _, err := conn.Exec("INSERT INTO transmissions VALUES (?,?,?,?,0,4,1,?)", id, "aa", hash, ts, `{}`); err != nil {
+			if _, err := conn.Exec(`INSERT INTO transmissions
+				(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+				VALUES (?,?,?,?,0,4,1,?,?)`, id, "aa", hash, ts, `{}`, unixTs); err != nil {
 				t.Fatalf("createTestDBMultiDay insert tx: %v", err)
 			}
-			if _, err := conn.Exec("INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?)", id, id, "obs1", "Obs1", "RX", -10.0, -80.0, 5, `[]`, ts, ""); err != nil {
+			if _, err := conn.Exec(`INSERT INTO observations
+				(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
+				VALUES (?,?,?,?,?,?,?,?,?)`, id, id, observerRowID, "RX", -10.0, -80.0, 5, `[]`, unixTs); err != nil {
 				t.Fatalf("createTestDBMultiDay insert obs: %v", err)
 			}
 			id++

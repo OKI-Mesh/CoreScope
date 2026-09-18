@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // hmacSHA256 computes HMAC-SHA256 for test use.
@@ -1028,9 +1030,9 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
 		t.Fatalf("checking goose version: %v", err)
 	}
-	const expectedVersion = 29
-	if version != expectedVersion {
-		t.Errorf("expected goose version %d, got %d", expectedVersion, version)
+
+	if version != database.GooseAdoptionVersion {
+		t.Errorf("expected goose version %d, got %d", database.GooseAdoptionVersion, version)
 	}
 
 	var tblName string

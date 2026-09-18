@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
 // #1483: server's GetNodeLocationsByKeys lookup relies on stored
@@ -11,7 +13,7 @@ import (
 // The ingestor must normalize any legacy uppercase rows on boot so
 // the lookup remains correct.
 func TestPublicKeyLowercaseNormalizationMigration(t *testing.T) {
-	dbPath := tempDBPath(t)
+	dbPath := testfixtures.TempDBPath(t)
 	s, err := OpenStore(dbPath)
 	if err != nil {
 		t.Fatalf("first OpenStore: %v", err)

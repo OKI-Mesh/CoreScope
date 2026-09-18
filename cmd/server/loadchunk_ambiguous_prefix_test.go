@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -24,6 +25,17 @@ func createTestDBAmbiguousPrefix(t *testing.T, relayA, relayB, hop, firstSeen st
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
@@ -36,35 +48,16 @@ func createTestDBAmbiguousPrefix(t *testing.T, relayA, relayB, hop, firstSeen st
 		}
 	}
 
-	// PREFLIGHT: async=true reason="test fixture: in-memory t.TempDir SQLite, never touches a real DB."
-	exec(`CREATE TABLE transmissions (
-		id INTEGER PRIMARY KEY,
-		raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER,
-		decoded_json TEXT
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY,
-		transmission_id INTEGER,
-		observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER,
-		path_json TEXT, timestamp TEXT,
-		raw_hex TEXT,
-		resolved_path TEXT
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE schema_version (version INTEGER)`)
-	exec(`INSERT INTO schema_version (version) VALUES (1)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
+	// Real observers row so the LEFT JOIN observers ON obs.rowid =
+	// o.observer_idx resolves.
+	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
+	if err != nil {
+		t.Fatalf("insert observer: %v", err)
+	}
+	observerRowID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("observer rowid: %v", err)
+	}
 
 	// Two repeaters sharing the same 2-char prefix `hop`.
 	// Different advert_counts so tier-4 tiebreak deterministically picks one
@@ -75,10 +68,20 @@ func createTestDBAmbiguousPrefix(t *testing.T, relayA, relayB, hop, firstSeen st
 		relayB, "Relay B", "repeater", 10)
 
 	// Aged 48h so it lands in the background window (loadChunk path).
-	exec("INSERT INTO transmissions VALUES (?,?,?,?,0,4,1,?)",
-		1, "aa", "hashamb_1", firstSeen, `{}`)
-	exec("INSERT INTO observations (id, transmission_id, observer_id, observer_name, direction, snr, rssi, score, path_json, timestamp, raw_hex, resolved_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)",
-		1, 1, "obs1", "Obs1", "RX", -10.0, -80.0, 5, fmt.Sprintf(`[%q]`, hop), firstSeen, "")
+	firstSeenTime, err := time.Parse(time.RFC3339, firstSeen)
+	if err != nil {
+		t.Fatalf("parsing firstSeen %q: %v", firstSeen, err)
+	}
+	lastSeenUnix := firstSeenTime.Unix()
+
+	exec(`INSERT INTO transmissions
+		(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+		VALUES (?,?,?,?,0,4,1,?,?)`,
+		1, "aa", "hashamb_1", firstSeen, `{}`, lastSeenUnix)
+	exec(`INSERT INTO observations
+		(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, resolved_path)
+		VALUES (?,?,?,?,?,?,?,?,?,NULL)`,
+		1, 1, observerRowID, "RX", -10.0, -80.0, 5, fmt.Sprintf(`[%q]`, hop), lastSeenUnix)
 
 	return dbPath
 }

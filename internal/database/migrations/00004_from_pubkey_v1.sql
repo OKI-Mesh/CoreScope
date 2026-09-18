@@ -3,7 +3,7 @@
 -- path with an exact-match indexed column. Row-level backfill historically
 -- ran async from the server side (cmd/server/from_pubkey_migration.go) —
 -- not part of this schema migration.
-ALTER TABLE transmissions ADD COLUMN from_pubkey TEXT;
+ALTER TABLE transmissions ADD COLUMN from_pubkey TEXT DEFAULT NULL;
 CREATE INDEX IF NOT EXISTS idx_transmissions_from_pubkey ON transmissions(from_pubkey);
 
 -- +goose Down

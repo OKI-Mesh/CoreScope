@@ -14,27 +14,11 @@ import (
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
-func tempDBPath(t *testing.T) string {
-	t.Helper()
-	dir := filepath.Join(".", "testdata")
-	os.MkdirAll(dir, 0o755)
-	p := filepath.Join(dir, t.Name()+".db")
-	// Clean up any previous test DB
-	os.Remove(p)
-	os.Remove(p + "-wal")
-	os.Remove(p + "-shm")
-	t.Cleanup(func() {
-		os.Remove(p)
-		os.Remove(p + "-wal")
-		os.Remove(p + "-shm")
-	})
-	return p
-}
-
 func TestOpenStore(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +64,7 @@ func TestOpenStore(t *testing.T) {
 }
 
 func TestInsertTransmission(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +114,7 @@ func TestInsertTransmission(t *testing.T) {
 }
 
 func TestPacketsViewQueryable(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +162,7 @@ func TestPacketsViewQueryable(t *testing.T) {
 }
 
 func TestUpsertNode(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +201,7 @@ func TestUpsertNode(t *testing.T) {
 }
 
 func TestUpsertObserver(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +222,7 @@ func TestUpsertObserver(t *testing.T) {
 }
 
 func TestUpsertObserverWithMeta(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +297,7 @@ func TestUpsertObserverWithMeta(t *testing.T) {
 }
 
 func TestUpsertObserverMetaPreservesExisting(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +438,7 @@ func TestExtractObserverMeta(t *testing.T) {
 }
 
 func TestSchemaNoiseFloorIsReal(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +471,7 @@ func TestSchemaNoiseFloorIsReal(t *testing.T) {
 }
 
 func TestInsertTransmissionWithObserver(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +507,7 @@ func TestInsertTransmissionWithObserver(t *testing.T) {
 // #463: Verify that inserting a packet updates the observer's last_seen,
 // so low-traffic observers don't incorrectly appear offline.
 func TestInsertTransmissionUpdatesObserverLastSeen(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +563,7 @@ func TestInsertTransmissionUpdatesObserverLastSeen(t *testing.T) {
 }
 
 func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +626,7 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 }
 
 func TestEndToEndIngest(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +672,7 @@ func TestEndToEndIngest(t *testing.T) {
 }
 
 func TestInsertTransmissionEmptyHash(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +696,7 @@ func TestInsertTransmissionEmptyHash(t *testing.T) {
 }
 
 func TestInsertTransmissionEmptyTimestamp(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +721,7 @@ func TestInsertTransmissionEmptyTimestamp(t *testing.T) {
 }
 
 func TestInsertTransmissionEarlierFirstSeen(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -773,7 +757,7 @@ func TestInsertTransmissionEarlierFirstSeen(t *testing.T) {
 }
 
 func TestInsertTransmissionLaterFirstSeenNotUpdated(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,7 +792,7 @@ func TestInsertTransmissionLaterFirstSeenNotUpdated(t *testing.T) {
 }
 
 func TestInsertTransmissionNilSNRRSSI(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -927,7 +911,7 @@ func TestBuildPacketDataNilSNRRSSI(t *testing.T) {
 }
 
 func TestUpsertNodeEmptyLastSeen(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -949,7 +933,7 @@ func TestUpsertNodeEmptyLastSeen(t *testing.T) {
 
 func TestOpenStoreTwice(t *testing.T) {
 	// Opening same DB twice tests the "observations already exists" path in applySchema
-	path := tempDBPath(t)
+	path := testfixtures.TempDBPath(t)
 	s1, err := OpenStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -972,7 +956,7 @@ func TestOpenStoreTwice(t *testing.T) {
 }
 
 func TestInsertTransmissionDedupObservation(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1006,7 +990,7 @@ func TestInsertTransmissionDedupObservation(t *testing.T) {
 }
 
 func TestSchemaCompatibility(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1070,7 +1054,7 @@ func TestSchemaCompatibility(t *testing.T) {
 }
 
 func TestConcurrentWrites(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1168,7 +1152,7 @@ func TestConcurrentWrites(t *testing.T) {
 }
 
 func TestDBStats(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1232,7 +1216,7 @@ func TestDBStats(t *testing.T) {
 }
 
 func TestLoadTestThroughput(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1373,7 +1357,7 @@ func TestLoadTestThroughput(t *testing.T) {
 }
 
 func TestUpdateNodeTelemetry(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1421,7 +1405,7 @@ func TestUpdateNodeTelemetry(t *testing.T) {
 }
 
 func TestTelemetryMigrationAddsColumns(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1439,7 +1423,7 @@ func TestTelemetryMigrationAddsColumns(t *testing.T) {
 
 	// node_telemetry_v1 is now goose migration 00006_node_telemetry_v1.sql,
 	// tracked via goose_db_version rather than the legacy _migrations table.
-	applied, err := database.SchemaVersionApplied(s.db, 6)
+	applied, err := database.MigrationApplied(s.db, 6)
 	if err != nil {
 		t.Fatalf("checking goose version 6: %v", err)
 	}
@@ -1596,7 +1580,7 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 	// Case 1: new DB — OpenStore should create idx_observations_timestamp as part
 	// of the observations table schema.
 	t.Run("NewDB", func(t *testing.T) {
-		s, err := OpenStore(tempDBPath(t))
+		s, err := OpenStore(testfixtures.TempDBPath(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1622,15 +1606,15 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("checking schema version: %v", err)
 		}
-		if version != 29 {
-			t.Errorf("expected fresh DB to be fully migrated (v29), got v%d", version)
+		if version < database.GooseAdoptionVersion {
+			t.Errorf("expected fresh DB to be fully migrated (v31), got v%d", version)
 		}
 	})
 
 	// Case 2: existing DB that has the observations table but lacks the index
 	// and lacks any goose stamp — simulates an older installation.
 	t.Run("MigrationPath", func(t *testing.T) {
-		path := tempDBPath(t)
+		path := testfixtures.TempDBPath(t)
 
 		// Build a bare-bones DB that mimics an old installation:
 		// observations table exists but idx_observations_timestamp does NOT.
@@ -1638,33 +1622,15 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = db.Exec(`
-			CREATE TABLE IF NOT EXISTS transmissions (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				raw_hex TEXT NOT NULL,
-				hash TEXT NOT NULL UNIQUE,
-				first_seen TEXT NOT NULL,
-				route_type INTEGER,
-				payload_type INTEGER,
-				payload_version INTEGER,
-				decoded_json TEXT,
-				created_at TEXT DEFAULT (datetime('now'))
-			);
-			CREATE TABLE IF NOT EXISTS observations (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-				observer_idx INTEGER,
-				direction TEXT,
-				snr REAL,
-				rssi REAL,
-				score INTEGER,
-				path_json TEXT,
-				timestamp INTEGER NOT NULL
-			);
-		`)
-		if err != nil {
-			db.Close()
-			t.Fatal(err)
+		if err := database.SeedUnstampedSchema(db, 1); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+		// Debug: what actually got applied?
+		rows, _ := db.Query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+		for rows.Next() {
+			var name string
+			rows.Scan(&name)
+			t.Logf("table present: %s", name)
 		}
 		var preCount int
 		db.QueryRow(
@@ -1675,7 +1641,21 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 			t.Fatalf("pre-condition failed: idx_observations_timestamp should not exist yet, got count=%d", preCount)
 		}
 
-		// Now open via OpenStore — detection + migration should add the index.
+		// NEW: bring the raw schema under goose's control before
+		// OpenStore, matching production (migrate -baseline-and-stamp
+		// runs before the ingestor starts). OpenStore itself no longer
+		// auto-detects/stamps pre-existing schema.
+		baselineConn, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
+			t.Fatalf("baseline+migrate: %v", err)
+		}
+		baselineConn.Close()
+
+		// Now open via OpenStore — remaining migrations (including the
+		// idx_observations_timestamp re-add) should apply.
 		s, err := OpenStore(path)
 		if err != nil {
 			t.Fatal(err)
@@ -1697,8 +1677,8 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("checking schema version: %v", err)
 		}
-		if version != 29 {
-			t.Errorf("expected old DB to be fully migrated (v29) after OpenStore, got v%d", version)
+		if version < database.GooseAdoptionVersion {
+			t.Errorf("expected old DB to be fully migrated (v%d) after OpenStore, got v%d", database.GooseAdoptionVersion, version)
 		}
 	})
 }
@@ -1741,7 +1721,7 @@ func TestBuildPacketDataNilScoreDirection(t *testing.T) {
 }
 
 func TestInsertTransmissionWithScoreAndDirection(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1807,7 +1787,7 @@ func TestRoundToInterval(t *testing.T) {
 }
 
 func TestInsertMetrics(t *testing.T) {
-	store, err := OpenStore(tempDBPath(t))
+	store, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1851,7 +1831,7 @@ func TestInsertMetrics(t *testing.T) {
 }
 
 func TestInsertMetricsIdempotent(t *testing.T) {
-	store, err := OpenStoreWithInterval(tempDBPath(t), 300)
+	store, err := OpenStoreWithInterval(testfixtures.TempDBPath(t), 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1881,7 +1861,7 @@ func TestInsertMetricsIdempotent(t *testing.T) {
 }
 
 func TestInsertMetricsNullFields(t *testing.T) {
-	store, err := OpenStore(tempDBPath(t))
+	store, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1910,7 +1890,7 @@ func TestInsertMetricsNullFields(t *testing.T) {
 }
 
 func TestPruneOldMetrics(t *testing.T) {
-	store, err := OpenStore(tempDBPath(t))
+	store, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1970,7 +1950,7 @@ func TestExtractObserverMetaNewFields(t *testing.T) {
 // (transmission_id, observer_idx, COALESCE(path_json, ”)); observer_idx must
 // be non-NULL for the conflict to fire (SQLite treats NULL != NULL).
 func TestInsertObservationSNRFillIn(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2053,7 +2033,7 @@ func TestInsertObservationSNRFillIn(t *testing.T) {
 // TestPerObservationRawHex verifies that two MQTT packets for the same hash
 // from different observers store distinct raw_hex per observation (#881).
 func TestPerObservationRawHex(t *testing.T) {
-	store, err := OpenStore(tempDBPath(t))
+	store, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2330,7 +2310,7 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 // --- Issue #888: Backfill path_json from raw_hex ---
 
 func TestBackfillPathJsonFromRawHex(t *testing.T) {
-	dbPath := tempDBPath(t)
+	dbPath := testfixtures.TempDBPath(t)
 	s, err := OpenStore(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -2412,7 +2392,7 @@ func TestBackfillPathJsonFromRawHex(t *testing.T) {
 }
 
 func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
-	path := tempDBPath(t)
+	path := testfixtures.TempDBPath(t)
 
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -2466,6 +2446,16 @@ func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
 
 	db.Close()
 
+	// NEW: bring the raw schema under goose's control before OpenStore.
+	baselineConn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	baselineConn.Close()
+
 	s, err := OpenStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2497,12 +2487,12 @@ func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
 		t.Error("observation for good transmission should remain")
 	}
 
-	applied, err := database.SchemaVersionApplied(s.db, 15)
+	applied, err := database.MigrationApplied(s.db, 17)
 	if err != nil {
-		t.Fatalf("checking goose version 15: %v", err)
+		t.Fatalf("checking goose version 17: %v", err)
 	}
 	if !applied {
-		t.Error("goose migration 00015_cleanup_legacy_null_hash_ts should be applied")
+		t.Error("goose migration 00017_cleanup_legacy_null_hash_ts should be applied")
 	}
 
 	s.Close()
@@ -2545,12 +2535,10 @@ func TestBackfillPathJSONAsync(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "async_test.db")
 
-	// Bootstrap schema manually so we can insert test data BEFORE OpenStore
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Create tables manually (minimal schema for this test)
 	_, err = db.Exec(`
 		CREATE TABLE _migrations (name TEXT PRIMARY KEY);
 		CREATE TABLE transmissions (
@@ -2562,8 +2550,7 @@ func TestBackfillPathJSONAsync(t *testing.T) {
 			payload_type INTEGER,
 			payload_version INTEGER,
 			decoded_json TEXT,
-			created_at TEXT DEFAULT (datetime('now')),
-			channel_hash TEXT
+			created_at TEXT DEFAULT (datetime('now'))
 		);
 		CREATE TABLE observers (
 			id TEXT PRIMARY KEY,
@@ -2579,7 +2566,6 @@ func TestBackfillPathJSONAsync(t *testing.T) {
 			battery_mv INTEGER,
 			uptime_secs INTEGER,
 			noise_floor REAL,
-			inactive INTEGER DEFAULT 0,
 			last_packet_at TEXT
 		);
 		CREATE TABLE nodes (
@@ -2613,7 +2599,6 @@ func TestBackfillPathJSONAsync(t *testing.T) {
 			timestamp TEXT NOT NULL,
 			noise_floor REAL, tx_air_secs INTEGER, rx_air_secs INTEGER,
 			recv_errors INTEGER, battery_mv INTEGER,
-			packets_sent INTEGER, packets_recv INTEGER,
 			PRIMARY KEY (observer_id, timestamp)
 		);
 		CREATE TABLE dropped_packets (
@@ -2639,23 +2624,32 @@ func TestBackfillPathJSONAsync(t *testing.T) {
 		db.Exec(`INSERT INTO _migrations (name) VALUES (?)`, m)
 	}
 
-	// Insert a transmission + observations with NULL path_json and valid raw_hex
-	// raw_hex "0102AABBCCDD0000" has 2-hop path decodable by packetpath
 	rawHex := "41020304AABBCCDD05060708"
 	_, err = db.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type) VALUES (?, 'hash1', '2025-01-01T00:00:00Z', 4)`, rawHex)
 	if err != nil {
 		t.Fatal("insert tx:", err)
 	}
-	// Insert 100 observations needing backfill
 	for i := 0; i < 100; i++ {
 		_, err = db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp, raw_hex, path_json) VALUES (1, ?, ?, ?, NULL)`,
 			i+1, 1700000000+i, rawHex)
 		if err != nil {
-			// dedup index might fire — use unique observer_idx
 			t.Fatalf("insert obs %d: %v", i, err)
 		}
 	}
 	db.Close()
+
+	// Bring the pre-existing schema fully under goose's control before
+	// opening via the real ingestor path — matches production, where
+	// `migrate -baseline-and-stamp` (plus filling any gaps) runs before
+	// the ingestor ever starts. OpenStore itself only asserts readiness.
+	baselineConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
+		t.Fatalf("baseline+migrate: %v", err)
+	}
+	baselineConn.Close()
 
 	// Now open store via OpenStore — this must return QUICKLY (non-blocking)
 	start := time.Now()
@@ -2733,8 +2727,6 @@ func TestBackfillPathJSONAsync_BracketRowsTerminate(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "bracket_terminate.db")
 
-	// Bootstrap a minimal schema directly so we can seed pre-existing '[]' rows
-	// before OpenStore runs.
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
@@ -2750,8 +2742,7 @@ func TestBackfillPathJSONAsync_BracketRowsTerminate(t *testing.T) {
 			payload_type INTEGER,
 			payload_version INTEGER,
 			decoded_json TEXT,
-			created_at TEXT DEFAULT (datetime('now')),
-			channel_hash TEXT
+			created_at TEXT DEFAULT (datetime('now'))
 		);
 		CREATE TABLE observers (
 			id TEXT PRIMARY KEY, name TEXT, iata TEXT,
@@ -2813,9 +2804,6 @@ func TestBackfillPathJSONAsync_BracketRowsTerminate(t *testing.T) {
 		db.Exec(`INSERT INTO _migrations (name) VALUES (?)`, m)
 	}
 
-	// raw_hex producing ZERO hops via DecodePathFromRawHex:
-	// DIRECT route (type=2), payload_type=2, version=0 → header 0x0A; path byte 0x00.
-	// (See internal/packetpath/path_test.go: TestDecodePathFromRawHex_ZeroHops.)
 	rawHex := "0A00DEADBEEF"
 	_, err = db.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type) VALUES (?, 'h_brackets', '2025-01-01T00:00:00Z', 2)`, rawHex)
 	if err != nil {
@@ -2830,6 +2818,17 @@ func TestBackfillPathJSONAsync_BracketRowsTerminate(t *testing.T) {
 		}
 	}
 	db.Close()
+
+	// Bring the pre-existing schema fully under goose's control before
+	// opening via the real ingestor path.
+	baselineConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
+		t.Fatalf("baseline+migrate: %v", err)
+	}
+	baselineConn.Close()
 
 	store, err := OpenStoreWithInterval(dbPath, 300)
 	if err != nil {
@@ -2961,4 +2960,114 @@ func TestUpdateNodeDefaultScope_EmptyScopeIsNoop(t *testing.T) {
 	if gotInactive != "#belgium" {
 		t.Errorf("inactive_nodes.default_scope after empty-scope call = %q, want #belgium (DB-layer guard missing — #1534)", gotInactive)
 	}
+}
+
+// --- Startup failure behavior (goose adoption, #????) ---
+
+// TestOpenStore_RefusesUnbaselinedPreexistingSchema verifies that a
+// database with real, pre-existing raw-SQL schema — but never run
+// through `migrate -baseline-and-stamp` — is refused at startup with a
+// clear, actionable error, rather than silently auto-detected and
+// fixed (that auto-fix behavior moved out of the ingestor entirely).
+func TestOpenStore_RefusesUnbaselinedPreexistingSchema(t *testing.T) {
+	path := testfixtures.TempDBPath(t)
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SeedUnstampedSchema(db, 1)
+
+	db.Close()
+
+	s, err := OpenStore(path)
+	if err == nil {
+		s.Close()
+		t.Fatal("expected OpenStore to fail against a pre-existing, unbaselined schema")
+	}
+	if !strings.Contains(err.Error(), "baseline") {
+		t.Errorf("expected error to mention baselining as the fix, got: %v", err)
+	}
+}
+
+// TestOpenStore_RefusesCorruptFile verifies startup fails gracefully
+// (returns an error, doesn't panic) when the path isn't a valid SQLite
+// file at all.
+func TestOpenStore_RefusesCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/corrupt.db"
+	if err := os.WriteFile(path, []byte("not a sqlite database, just garbage bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := OpenStore(path)
+	if err == nil {
+		s.Close()
+		t.Fatal("expected OpenStore to fail against a corrupt/non-SQLite file")
+	}
+}
+
+// TestOpenStore_FailureLeavesNoOpenConnection verifies that a failed
+// OpenStore doesn't leak a database connection or stale lock — the
+// ingestor may retry opening on a supervised restart loop, and a
+// leaked handle could cause a misleading second failure.
+func TestOpenStore_FailureLeavesNoOpenConnection(t *testing.T) {
+	path := testfixtures.TempDBPath(t)
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if _, err := OpenStore(path); err == nil {
+		t.Fatal("expected OpenStore to fail")
+	}
+
+	verify, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verify.Close()
+	if _, err := verify.Exec(`INSERT INTO nodes (public_key) VALUES ('test')`); err != nil {
+		t.Errorf("expected to be able to write after failed OpenStore (no stale lock/connection), got: %v", err)
+	}
+}
+
+// TestOpenStore_SucceedsAfterBaselineAndStamp is the positive-path
+// companion to the refusal tests above — confirms the documented fix
+// (running migrate -baseline-and-stamp first) actually resolves the
+// failure.
+func TestOpenStore_SucceedsAfterBaselineAndStamp(t *testing.T) {
+	path := testfixtures.TempDBPath(t)
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SeedUnstampedSchema(db, 1)
+	db.Close()
+
+	if s, err := OpenStore(path); err == nil {
+		s.Close()
+		t.Fatal("precondition failed: expected OpenStore to fail before baselining")
+	}
+
+	baselineConn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
+		t.Fatalf("baseline+migrate: %v", err)
+	}
+	baselineConn.Close()
+
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("expected OpenStore to succeed after baselining, got: %v", err)
+	}
+	defer s.Close()
 }

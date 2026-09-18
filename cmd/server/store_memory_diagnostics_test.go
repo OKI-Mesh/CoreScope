@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // decodedJSONFixtureBytes is the size of the synthetic decoded_json payload used
@@ -95,42 +97,48 @@ func TestObsRawHexNotRetainedOnLoad(t *testing.T) {
 	const txHex = "deadbeefcafe"
 	const obsHex = "c0ffee0102" // distinct from txHex: proves we DON'T keep it
 
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stmts := []string{
-		`CREATE TABLE transmissions (
-			id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT,
-			route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT
-		)`,
-		`CREATE TABLE observations (
-			id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT,
-			observer_name TEXT, direction TEXT, snr REAL, rssi REAL, score INTEGER,
-			path_json TEXT, timestamp TEXT, raw_hex TEXT
-		)`,
-		`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`,
-		`CREATE TABLE nodes (
-			pubkey TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-			last_seen TEXT, first_seen TEXT, frequency REAL
-		)`,
-		`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`,
+
+	// Real observers row so the LEFT JOIN observers ON obs.rowid =
+	// o.observer_idx resolves.
+	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
+	if err != nil {
+		t.Fatalf("insert observer: %v", err)
 	}
-	for _, st := range stmts {
-		if _, err := conn.Exec(st); err != nil {
-			t.Fatalf("schema exec: %v\nSQL: %s", err, st)
-		}
+	observerRowID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("observer rowid: %v", err)
 	}
+
 	now := time.Now().UTC().Truncate(time.Second)
+	txTime := now.Add(-time.Minute)
 	if _, err := conn.Exec(
-		`INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		1, txHex, "hashobs", now.Add(-time.Minute).Format(time.RFC3339), 1, 5, 0, `{"type":"CHAN"}`); err != nil {
+		`INSERT INTO transmissions
+			(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, txHex, "hashobs", txTime.Format(time.RFC3339), 1, 5, 0, `{"type":"CHAN"}`, txTime.Unix()); err != nil {
 		t.Fatalf("insert tx: %v", err)
 	}
 	// Observation carries its OWN non-empty raw_hex in the DB.
 	if _, err := conn.Exec(
-		`INSERT INTO observations (id, transmission_id, observer_id, observer_name, direction, snr, rssi, score, path_json, timestamp, raw_hex) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		1, 1, "obs1", "Obs1", "rx", 5.0, -95.0, 0, `["AA"]`, now.Add(-time.Minute).Unix(), obsHex); err != nil {
+		`INSERT INTO observations
+			(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, raw_hex)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, 1, observerRowID, "rx", 5.0, -95.0, 0, `["AA"]`, txTime.Unix(), obsHex); err != nil {
 		t.Fatalf("insert obs: %v", err)
 	}
 	conn.Close()

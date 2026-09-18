@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 	_ "modernc.org/sqlite"
 )
@@ -22,15 +23,20 @@ const routeTypeTransportSQL = "route_type IN (0, 3)"
 
 // DB wraps a read-only connection to the MeshCore SQLite database.
 type DB struct {
-	conn                *sql.DB
-	path                string // filesystem path to the database file
-	isV3                bool   // v3 schema: observer_idx in observations (vs observer_id in v2)
-	hasResolvedPath     bool   // observations table has resolved_path column
-	hasObsRawHex        bool   // observations table has raw_hex column (#881)
-	hasScopeName        bool   // transmissions.scope_name column exists (#899)
-	hasDefaultScope     bool   // nodes.default_scope column exists (#899)
-	hasMultibyteSupCols bool   // nodes/inactive_nodes have multibyte_sup/multibyte_evidence (#903)
-	hasLastSeen         bool   // transmissions.last_seen column exists (#1690)
+	conn *sql.DB
+	path string // filesystem path to the database file
+	// Schema feature-detection flags. Now that database.OpenReadOnlyDB
+	// guarantees the schema is fully migrated (AssertReady, goose
+	// versions 1-31+), these are very likely always true — but a lot of
+	// hand-written SQL still branches on them. Remove each flag as its
+	// dependent query is converted to sqlc; don't bulk-delete.
+	isV3                bool // v3 schema: observer_idx in observations (vs observer_id in v2)
+	hasResolvedPath     bool // observations table has resolved_path column
+	hasObsRawHex        bool // observations table has raw_hex column (#881)
+	hasScopeName        bool // transmissions.scope_name column exists (#899)
+	hasDefaultScope     bool // nodes.default_scope column exists (#899)
+	hasMultibyteSupCols bool // nodes/inactive_nodes have multibyte_sup/multibyte_evidence (#903)
+	hasLastSeen         bool // transmissions.last_seen column exists (#1690)
 
 	// Channel list cache (60s TTL) — avoids repeated GROUP BY scans (#762)
 	channelsCacheMu  sync.Mutex
@@ -41,17 +47,17 @@ type DB struct {
 
 // OpenDB opens a read-only SQLite connection with WAL mode.
 func OpenDB(path string) (*DB, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000", path)
-	conn, err := sql.Open("sqlite", dsn)
+	conn, err := database.OpenReadOnly(path)
 	if err != nil {
 		return nil, err
 	}
+	if err := database.AssertReady(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("database not ready: %w", err)
+	}
 	conn.SetMaxOpenConns(4)
 	conn.SetMaxIdleConns(2)
-	if err := conn.Ping(); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("ping failed: %w", err)
-	}
+
 	d := &DB{conn: conn, path: path}
 	d.detectSchema()
 	return d, nil
