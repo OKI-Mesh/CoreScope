@@ -151,9 +151,7 @@ var schemaChecks = map[int64]schemaCheck{
 			"pubkey": "TEXT", "name": "TEXT", "last_seen": "TEXT",
 		}),
 	)},
-	2: {Check: all(hasColumn("transmissions", "from_pubkey", "TEXT"),
-		hasIndex("idx_transmissions_from_pubkey"))},
-	3: {Check: all(
+	2: {Check: all(
 		hasTable("observations", map[string]string{
 			"transmission_id": "INTEGER", "observer_idx": "INTEGER", "direction": "TEXT",
 			"snr": "REAL", "rssi": "REAL",
@@ -166,10 +164,12 @@ var schemaChecks = map[int64]schemaCheck{
 		hasIndex("idx_observations_dedup"),
 		hasIndex("idx_observations_tx_ts"),
 	)},
-	4: {Check: hasView("packets_v")},
+	3: {Check: hasView("packets_v")},
+	4: {Check: all(hasColumn("transmissions", "from_pubkey", "TEXT"),
+		hasIndex("idx_transmissions_from_pubkey"))},
 	5: {LegacyName: "advert_count_unique_v1"},
-	6: {LegacyName: "noise_floor_real_v1"},
-	7: {LegacyName: "node_telemetry_v1"},
+	6: {LegacyName: "node_telemetry_v1"},
+	7: {LegacyName: "noise_floor_real_v1"},
 	8: {Check: hasIndex("idx_observations_timestamp")},
 	9: {Check: hasTable("observer_metrics", map[string]string{
 		"observer_id": "TEXT", "timestamp": "TEXT", "noise_floor": "REAL",
@@ -177,9 +177,9 @@ var schemaChecks = map[int64]schemaCheck{
 		"recv_errors": "INTEGER", "battery_mv": "INTEGER",
 	})},
 	10: {Check: hasIndex("idx_observer_metrics_timestamp")},
-	11: {Check: hasColumn("observers", "inactive", "INTEGER")},
-	12: {Check: all(hasColumn("observer_metrics", "packets_sent", "INTEGER"),
+	11: {Check: all(hasColumn("observer_metrics", "packets_sent", "INTEGER"),
 		hasColumn("observer_metrics", "packets_recv", "INTEGER"))},
+	12: {Check: hasColumn("observers", "inactive", "INTEGER")},
 	13: {Check: all(hasColumn("transmissions", "channel_hash", "TEXT"),
 		hasIndex("idx_tx_channel_hash"),
 	)},
@@ -300,7 +300,7 @@ type BaselineResult struct {
 // (schemaChecks) or the old system's _migrations table — without
 // writing anything to the  This is the shared core used by
 // Baseline, BaselineAndStamp, and BaselineStampMigrate.
-func detectBaseline(db *sql.DB, log func(format string, args ...any)) (result BaselineResult, toStamp []int64, err error) {
+func detectBaseline(db *sql.DB, log func(format string, args ...any), disableVersioning bool) (result BaselineResult, toStamp []int64, err error) {
 	if log == nil {
 		log = func(string, ...any) {}
 	}
@@ -310,7 +310,7 @@ func detectBaseline(db *sql.DB, log func(format string, args ...any)) (result Ba
 		return BaselineResult{}, nil, err
 	}
 
-	provider, err := NewMigrationProvider(db, false, false)
+	provider, err := NewMigrationProvider(db, false, disableVersioning)
 	if err != nil {
 		return BaselineResult{}, nil, fmt.Errorf("creating goose provider: %w", err)
 	}
@@ -364,7 +364,7 @@ func detectBaseline(db *sql.DB, log func(format string, args ...any)) (result Ba
 // this to inspect what BaselineAndStamp would do before committing to
 // it.
 func Baseline(db *sql.DB, log func(format string, args ...any)) (BaselineResult, error) {
-	result, _, err := detectBaseline(db, log)
+	result, _, err := detectBaseline(db, log, true)
 	return result, err
 }
 
@@ -374,7 +374,7 @@ func Baseline(db *sql.DB, log func(format string, args ...any)) (BaselineResult,
 // can't be confirmed are left pending for a later Up (e.g. run by the
 // ingestor at startup) to apply for real.
 func BaselineAndStamp(db *sql.DB, log func(format string, args ...any)) (BaselineResult, error) {
-	result, toStamp, err := detectBaseline(db, log)
+	result, toStamp, err := detectBaseline(db, log, false)
 	if err != nil {
 		return BaselineResult{}, err
 	}
