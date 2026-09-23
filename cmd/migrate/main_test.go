@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -71,14 +71,14 @@ func TestMigrateBringsFixtureToReady(t *testing.T) {
 	// migration column. If this stops being true, either someone
 	// pre-migrated the fixture (and this test no longer protects #1289)
 	// or AssertReady's required set changed.
-	if err := dbschema.AssertReady(db); err == nil {
+	if err := database.AssertReady(db); err == nil {
 		t.Logf("note: fixture already passes AssertReady; skipping pre-condition assertion")
 	}
 
-	if err := dbschema.Apply(db, t.Logf); err != nil {
-		t.Fatalf("Apply: %v", err)
+	if err := database.RunMigrations(db); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
 	}
-	if err := dbschema.AssertReady(db); err != nil {
-		t.Fatalf("AssertReady after Apply: %v", err)
+	if err := database.AssertReady(db); err != nil {
+		t.Fatalf("AssertReady after RunMigrations: %v", err)
 	}
 }

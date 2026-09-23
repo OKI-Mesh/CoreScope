@@ -23,18 +23,6 @@ import (
 func TestObservers_CanRelayTriState_Issue1290(t *testing.T) {
 	srv, router := setupTestServer(t)
 
-	// Add the can_relay column (matches dbschema migration) PLUS the
-	// can_relay_seen tracking column so the read layer can distinguish
-	// "ingestor explicitly wrote a value" from "default sentinel".
-	for _, ddl := range []string{
-		`ALTER TABLE observers ADD COLUMN can_relay INTEGER DEFAULT 1`,
-		`ALTER TABLE observers ADD COLUMN can_relay_seen INTEGER DEFAULT 0`,
-	} {
-		if _, err := srv.store.db.conn.Exec(ddl); err != nil {
-			t.Fatalf("alter: %v", err)
-		}
-	}
-
 	now := time.Now().UTC().Format(time.RFC3339)
 	// Legacy: never received repeat field. can_relay=DEFAULT 1, seen=0.
 	if _, err := srv.store.db.conn.Exec(

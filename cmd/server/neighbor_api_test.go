@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 	"github.com/gorilla/mux"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -463,21 +465,28 @@ func TestNeighborGraphAPI_ResponseShape(t *testing.T) {
 // ─── Tests: buildNodeInfoMap observer enrichment (#753) ────────────────────────
 
 func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
-	// Create a temp SQLite DB with nodes and observers tables.
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/test.db"
 
-	conn, err := sql.Open("sqlite3", dbPath)
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
 
-	// Create tables
+	conn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed real nodes/observers rows (real schema — no manual CREATE TABLE needed).
 	for _, stmt := range []string{
-		"CREATE TABLE nodes (public_key TEXT, name TEXT, role TEXT, lat REAL, lon REAL)",
-		"CREATE TABLE observers (id TEXT, name TEXT, iata TEXT, inactive INTEGER)",
-		"INSERT INTO nodes VALUES ('AAAA1111', 'Repeater-1', 'repeater', 0, 0)",
+		"INSERT INTO nodes (public_key, name, role, lat, lon) VALUES ('AAAA1111', 'Repeater-1', 'repeater', 0, 0)",
 		"INSERT INTO observers (id, name, iata) VALUES ('BBBB2222', 'Observer-Alpha', '')",
 		"INSERT INTO observers (id, name, iata) VALUES ('AAAA1111', 'Obs-also-repeater', '')",
 	} {
@@ -497,7 +506,9 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 
 	// Build a PacketStore with this DB (minimal — just need getCachedNodesAndPM)
 	store := NewPacketStore(db, nil)
-	store.Load()
+	if err := store.Load(); err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
 
 	srv := &Server{
 		db:        db,
@@ -539,8 +550,15 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 // existing 30s node cache, both calls return the original value — same as
 // every other nodeInfo field that comes from getAllNodes().
 func TestBuildNodeInfoMap_FirstSeenIsCached(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	testfixtures.NewDB(t, dbPath)
+	testfixtures.InsertNode(t, dbPath, testfixtures.Node{
+		PublicKey: "AAAA1111",
+		Name:      "Repeater-1",
+		Role:      "repeater",
+		FirstSeen: "2024-01-01T00:00:00Z",
+	})
 
 	// Seed via rw connection.
 	rw, err := sql.Open("sqlite3", dbPath)
@@ -548,16 +566,6 @@ func TestBuildNodeInfoMap_FirstSeenIsCached(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rw.Close()
-	for _, stmt := range []string{
-		"CREATE TABLE nodes (public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, first_seen TEXT, advert_count INTEGER)",
-		"CREATE TABLE observers (id TEXT, name TEXT, iata TEXT, inactive INTEGER)",
-		"INSERT INTO nodes VALUES ('AAAA1111', 'Repeater-1', 'repeater', 0, 0, '', '2024-01-01T00:00:00Z', 0)",
-	} {
-		if _, err := rw.Exec(stmt); err != nil {
-			t.Fatalf("seed exec %q: %v", stmt, err)
-		}
-	}
-	ensurePreparable(t, rw)
 
 	db, err := OpenDB(dbPath)
 	if err != nil {
@@ -609,12 +617,18 @@ func TestGetAllNodes_FirstSeenSchemaFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/test.db"
 
-	// Seed a nodes table WITHOUT first_seen (advert_count + last_seen present).
-	rw, err := sql.Open("sqlite3", dbPath)
+	// This test exercises getAllNodes' 4-rung schema-degradation
+	// fallback (see #1197) for a missing nodes.first_seen column — a
+	// real, still-live code path. OpenDB can no longer produce this
+	// state on a live database, since AssertReady requires the full
+	// goose chain (which unconditionally adds first_seen via
+	// migration 1). We construct *DB directly instead, bypassing
+	// OpenDB's readiness gate on purpose, to keep exercising the
+	// fallback logic itself in isolation.
+	rw, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rw.Close()
 	for _, stmt := range []string{
 		"CREATE TABLE nodes (public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, advert_count INTEGER)",
 		"CREATE TABLE observers (id TEXT, name TEXT, iata TEXT, inactive INTEGER)",
@@ -624,13 +638,15 @@ func TestGetAllNodes_FirstSeenSchemaFallback(t *testing.T) {
 			t.Fatalf("seed exec %q: %v", stmt, err)
 		}
 	}
-	ensurePreparable(t, rw)
+	rw.Close()
 
-	db, err := OpenDB(dbPath)
+	conn, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer conn.Close()
+	db := &DB{conn: conn, path: dbPath}
+	db.detectSchema()
 
 	store := NewPacketStore(db, nil)
 	nodes := store.getAllNodes()

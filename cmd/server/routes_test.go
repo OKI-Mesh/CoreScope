@@ -4272,10 +4272,6 @@ func TestPacketDetailPrefersStoreOverDB(t *testing.T) {
 
 func TestHandleScopeStats(t *testing.T) {
 	srv, _ := setupTestServer(t)
-	if _, err := srv.db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT DEFAULT NULL`); err != nil {
-		t.Fatalf("add scope_name column: %v", err)
-	}
-	srv.db.hasScopeName = true
 
 	// Clear seed transmissions so this test isolates scope-stats math.
 	if _, err := srv.db.conn.Exec(`DELETE FROM transmissions`); err != nil {
@@ -4283,7 +4279,6 @@ func TestHandleScopeStats(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	// 2 scoped (known region), 1 unknown-scoped (empty string), 1 unscoped (NULL)
 	rows := []struct {
 		hash  string
 		scope string
@@ -4299,7 +4294,7 @@ func TestHandleScopeStats(t *testing.T) {
 	for i, r := range rows {
 		var scopeArg interface{} = r.scope
 		if i == 3 {
-			scopeArg = nil // unscoped (NULL)
+			scopeArg = nil
 		}
 		if _, err := srv.db.conn.Exec(
 			`INSERT INTO transmissions (raw_hex,hash,first_seen,route_type,payload_type,scope_name) VALUES (?,?,?,?,5,?)`,
@@ -4326,7 +4321,7 @@ func TestHandleScopeStats(t *testing.T) {
 	if resp.Summary.TransportTotal != 4 {
 		t.Errorf("transportTotal = %d, want 4", resp.Summary.TransportTotal)
 	}
-	if resp.Summary.Scoped != 3 { // 2 named + 1 unknown-scoped (empty string, non-NULL)
+	if resp.Summary.Scoped != 3 {
 		t.Errorf("scoped = %d, want 3", resp.Summary.Scoped)
 	}
 	if resp.Summary.Unscoped != 3 { // 1 transport-null + 2 non-transport routes 1,2 (#1838)
@@ -4345,10 +4340,6 @@ func TestHandleScopeStats(t *testing.T) {
 
 func TestHandleScopeStatsInvalidWindow(t *testing.T) {
 	srv, _ := setupTestServer(t)
-	if _, err := srv.db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT DEFAULT NULL`); err != nil {
-		t.Fatalf("add scope_name column: %v", err)
-	}
-	srv.db.hasScopeName = true
 
 	req := httptest.NewRequest("GET", "/api/scope-stats?window=invalid", nil)
 	w := httptest.NewRecorder()
@@ -4356,19 +4347,6 @@ func TestHandleScopeStatsInvalidWindow(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
-	}
-}
-
-func TestHandleScopeStatsNoColumn(t *testing.T) {
-	srv, _ := setupTestServer(t)
-	// hasScopeName stays false (not set)
-
-	req := httptest.NewRequest("GET", "/api/scope-stats?window=24h", nil)
-	w := httptest.NewRecorder()
-	srv.handleScopeStats(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
 

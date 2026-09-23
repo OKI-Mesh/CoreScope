@@ -7,10 +7,12 @@ package main
 import (
 	"database/sql"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
 func TestInsertTransmission_FromPubkeyPopulatedForAdvert(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +43,7 @@ func TestInsertTransmission_FromPubkeyPopulatedForAdvert(t *testing.T) {
 }
 
 func TestInsertTransmission_FromPubkeyNullForNonAdvert(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

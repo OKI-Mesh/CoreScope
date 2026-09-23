@@ -10,10 +10,12 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
 func TestIssue1690_LastSeenUpdatedOnObservation(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

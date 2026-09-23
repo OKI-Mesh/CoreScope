@@ -24,16 +24,7 @@ func TestNodeHealth_CanRelayCaseInsensitive_Issue1290(t *testing.T) {
 	const obsIDMixed = "DeadBeefCafe1290" // packet observer-id w/ mixed case
 	const nodePubkey = "aabbccdd11223344" // seeded by seedTestData
 	now := time.Now().UTC().Format(time.RFC3339)
-	// The test fixture's observers table predates the can_relay migration;
-	// add both columns (matches dbschema migrations).
-	for _, ddl := range []string{
-		`ALTER TABLE observers ADD COLUMN can_relay INTEGER DEFAULT 1`,
-		`ALTER TABLE observers ADD COLUMN can_relay_seen INTEGER DEFAULT 0`,
-	} {
-		if _, err := srv.store.db.conn.Exec(ddl); err != nil {
-			t.Fatalf("alter: %v", err)
-		}
-	}
+
 	if _, err := srv.store.db.conn.Exec(
 		`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count, can_relay, can_relay_seen)
 		 VALUES (?, 'ListenerOnly', 'SJC', ?, '2026-01-01T00:00:00Z', 1, 0, 1)`,

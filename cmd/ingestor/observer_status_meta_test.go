@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
 // Regression test for #1044: observer metadata (model, firmware, battery_mv,
@@ -53,7 +55,7 @@ func TestStatusMessageMetadataPersisted_Issue1044(t *testing.T) {
 	}
 
 	// Now drive the meta through UpsertObserver and verify the row.
-	s, err := OpenStore(tempDBPath(t))
+	s, err := OpenStore(testfixtures.TempDBPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

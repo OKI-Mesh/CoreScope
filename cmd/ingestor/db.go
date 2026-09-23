@@ -7,14 +7,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 	_ "modernc.org/sqlite"
 )
@@ -125,36 +124,37 @@ func OpenStore(dbPath string) (*Store, error) {
 
 // OpenStoreWithInterval opens or creates a SQLite DB with a configurable sample interval.
 func OpenStoreWithInterval(dbPath string, sampleIntervalSec int) (*Store, error) {
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating data dir: %w", err)
-	}
-
-	db, err := sql.Open("sqlite3", dbschema.WriterDSN(dbPath))
+	conn, err := database.OpenReadWrite(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("opening db: %w", err)
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	log.Printf("SQLite config: busy_timeout=5000ms, max_open_conns=1, max_idle_conns=1, journal=WAL")
+
+	if err := database.AssertBaselined(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("refusing to start: %w", err)
 	}
 
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("pinging db: %w", err)
+	provider, err := database.NewMigrationProvider(conn, true, false)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("creating goose provider: %w", err)
+	}
+	if _, err := provider.Up(context.Background()); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	log.Printf("SQLite config: busy_timeout=5000ms, max_open_conns=1, max_idle_conns=1, journal=WAL, synchronous=FULL")
-
-	if err := applySchema(db); err != nil {
-		return nil, fmt.Errorf("applying schema: %w", err)
+	if err := database.EnsureLegacyMigrationsTable(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ensure legacy migrations table: %w", err)
+	}
+	if err := database.NormalizePublicKeyCasing(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("normalize public_key casing: %w", err)
 	}
 
-	// Apply the additional server-originated migrations (now owned by
-	// the ingestor per #1287). Adds the indexes/columns that used to live
-	// in cmd/server/ensure_*.go: server now ASSERTS these exist.
-	if err := dbschema.Apply(db, log.Printf); err != nil {
-		return nil, fmt.Errorf("dbschema.Apply: %w", err)
-	}
-
-	s := &Store{db: db, path: dbPath, sampleIntervalSec: sampleIntervalSec}
+	s := &Store{db: conn, path: dbPath, sampleIntervalSec: sampleIntervalSec}
 	if err := s.prepareStatements(); err != nil {
 		return nil, fmt.Errorf("preparing statements: %w", err)
 	}

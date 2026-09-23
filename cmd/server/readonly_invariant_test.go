@@ -10,7 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	_ "modernc.org/sqlite"
 )
 
 // TestServerSourceHasNoCachedRWCalls enforces issue #1287: after the
@@ -145,23 +146,37 @@ func TestServerDBConnIsReadOnly(t *testing.T) {
 	}
 }
 
-// bootstrapMinimalDB creates a tiny DB with the columns these tests
-// need, opened with WAL so the read-only opener in OpenDB can attach.
-// Kept in *_test.go so it does NOT add any write capability to the
-// production server binary.
-func bootstrapMinimalDB(tb testing.TB, path string) error {
+// bootstrapMinimalDB creates a fully-migrated test DB, opened with WAL
+// so the read-only opener in OpenDB can attach. Kept in *_test.go so
+// it does NOT add any write capability to the production server
+// binary.
+func bootstrapMinimalDB(path string) error {
+	// Bring the database fully under goose's control — OpenDB now
+	// asserts readiness via database.AssertReady before returning a
+	// usable handle.
+	migrateConn, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		migrateConn.Close()
+		return err
+	}
+	migrateConn.Close()
+
+	// Reopen with WAL explicitly, matching what the original fixture
+	// did — BaselineStampMigrate's own connection may not carry this
+	// pragma, and callers relying on WAL mode being active need a
+	// connection opened with it.
 	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000", path)
 	rw, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return err
 	}
 	defer rw.Close()
-	if _, err := rw.Exec(`CREATE TABLE IF NOT EXISTS nodes (public_key TEXT PRIMARY KEY, name TEXT)`); err != nil {
-		return err
-	}
-	// prepareStatements compiles eagerly under mattn; give it the rest of the
-	// surface it references so OpenDB gets far enough to test read-onlyness.
-	ensurePreparable(tb, rw)
+
+	// nodes table already exists via migration 1 — nothing left to
+	// create here.
 	return nil
 }
 

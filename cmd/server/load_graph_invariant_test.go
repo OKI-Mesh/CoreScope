@@ -6,7 +6,12 @@ import (
 	"testing"
 	"time"
 
+<<<<<<< HEAD
 	_ "github.com/mattn/go-sqlite3"
+=======
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	_ "modernc.org/sqlite"
+>>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 )
 
 // TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist pins the startup-ordering
@@ -22,7 +27,22 @@ func TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
+<<<<<<< HEAD
 	rw, err := sql.Open("sqlite3", "file:"+dbPath+"?_journal_mode=WAL")
+=======
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
+	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
+>>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,38 +54,8 @@ func TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist(t *testing.T) {
 		}
 	}
 
-	// Minimal CoreScope schema. PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE transmissions (
-		id INTEGER PRIMARY KEY,
-		raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER,
-		decoded_json TEXT
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY, transmission_id INTEGER,
-		observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER,
-		path_json TEXT, timestamp TEXT, raw_hex TEXT, resolved_path TEXT
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT, inactive INTEGER)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE schema_version (version INTEGER)`)
-	exec(`INSERT INTO schema_version (version) VALUES (1)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE neighbor_edges (
-		node_a TEXT NOT NULL,
-		node_b TEXT NOT NULL,
-		count INTEGER DEFAULT 1,
-		last_seen TEXT,
-		PRIMARY KEY (node_a, node_b)
-	)`)
+	// neighbor_edges already exists via migration 26 — just seed a row so
+	// the panic condition (rows exist, graph not loaded) is triggered.
 	now := time.Now().UTC().Format(time.RFC3339)
 	exec(`INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, ?, ?)`,
 		"aaa", "bbb", 5, now)

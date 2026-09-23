@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 	_ "modernc.org/sqlite"
 )
@@ -37,17 +38,23 @@ const routeTypeNonTransportSQL = "route_type IN (1, 2)"
 
 // DB wraps a read-only connection to the MeshCore SQLite database.
 type DB struct {
-	conn                    *sql.DB
-	path                    string // filesystem path to the database file
-	isV3                    bool   // v3 schema: observer_idx in observations (vs observer_id in v2)
-	hasResolvedPath         bool   // observations table has resolved_path column
-	hasObsRawHex            bool   // observations table has raw_hex column (#881)
-	hasScopeName            bool   // transmissions.scope_name column exists (#899)
-	hasDefaultScope         bool   // nodes.default_scope column exists (#899)
+	
+	conn *sql.DB
+	path string // filesystem path to the database file
+	// Schema feature-detection flags. Now that database.OpenReadOnlyDB
+	// guarantees the schema is fully migrated (AssertReady, goose
+	// versions 1-31+), these are very likely always true — but a lot of
+	// hand-written SQL still branches on them. Remove each flag as its
+	// dependent query is converted to sqlc; don't bulk-delete.
+	isV3                bool // v3 schema: observer_idx in observations (vs observer_id in v2)
+	hasResolvedPath     bool // observations table has resolved_path column
+	hasObsRawHex        bool // observations table has raw_hex column (#881)
+	hasScopeName        bool // transmissions.scope_name column exists (#899)
+	hasDefaultScope     bool // nodes.default_scope column exists (#899)
 	hasConfiguredScope      bool   // nodes.configured_scope column exists (#1865)
 	hasDeclaredRegionsTable bool   // node_declared_regions table exists at startup (#1975); read via declaredRegionsTablePresent
-	hasMultibyteSupCols     bool   // nodes/inactive_nodes have multibyte_sup/multibyte_evidence (#903)
-	hasLastSeen             bool   // transmissions.last_seen column exists (#1690)
+	hasMultibyteSupCols bool // nodes/inactive_nodes have multibyte_sup/multibyte_evidence (#903)
+	hasLastSeen         bool // transmissions.last_seen column exists (#1690)
 
 	// declaredRegionsTableLate latches true once node_declared_regions is found
 	// after startup. The ingestor creates that table, and the two processes
@@ -143,21 +150,26 @@ type channelMessagesCacheEntry struct {
 // left to the driver's default (see memlimit.go).
 func OpenDB(path string) (*DB, error) {
 <<<<<<< HEAD
+<<<<<<< HEAD
 	dsn := fmt.Sprintf("file:%s?mode=ro&_cache_size=-2000", path)
 	conn, err := sql.Open("sqlite3", dsn)
 =======
 	dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000", path)
 	conn, err := sql.Open("sqlite", dsn)
 >>>>>>> d5ae0232 (Removing low level go modules and making it one module (#116))
+=======
+	conn, err := database.OpenReadOnly(path)
+>>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		return nil, err
 	}
+	if err := database.AssertReady(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("database not ready: %w", err)
+	}
 	conn.SetMaxOpenConns(4)
 	conn.SetMaxIdleConns(2)
-	if err := conn.Ping(); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("ping failed: %w", err)
-	}
+
 	d := &DB{conn: conn, path: path}
 	// Detect the on-disk schema on a single pinned connection and fail loudly if
 	// it cannot be probed. A swallowed detection failure would silently cache the
@@ -1419,24 +1431,13 @@ func (db *DB) getObservationsForTransmissions(txIDs []int) map[int][]map[string]
 
 // GetObservers returns active observers (not soft-deleted) sorted by last_seen DESC.
 func (db *DB) GetObservers() ([]Observer, error) {
-	// Issue #1290: can_relay is read via COALESCE(can_relay, 1). The
-	// column is added by internal/dbschema; older test fixtures and
-	// pre-migration DBs may lack it, so we probe and fall back.
-	// PR #1624 MAJOR-2: can_relay_seen is the tri-state sentinel — 1
-	// means the ingestor explicitly wrote a value, 0 means "unknown"
-	// and the server returns CanRelay=nil so the UI shows no badge.
-	canRelayClause := "COALESCE(can_relay, 1)"
-	canRelaySeenClause := "0"
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay"); !hasCol {
-		canRelayClause = "1"
-	}
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay_seen"); hasCol {
-		canRelaySeenClause = "COALESCE(can_relay_seen, 0)"
-	}
+	// can_relay/can_relay_seen are guaranteed present — AssertReady
+	// refuses server startup on any DB below goose v29, which includes
+	// these columns (migration 00028_can_relay_columns.sql).
 	rows, err := db.conn.Query(`SELECT id, name, iata, last_seen, first_seen, packet_count,
 		model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor, last_packet_at,
 		clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at,
-		` + canRelayClause + `, ` + canRelaySeenClause + `
+		COALESCE(can_relay, 1), COALESCE(can_relay_seen, 0)
 		FROM observers WHERE inactive IS NULL OR inactive = 0 ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, err
@@ -1487,12 +1488,10 @@ func (db *DB) GetObservers() ([]Observer, error) {
 // from the candidate set. Inactive observers are excluded for
 // consistency with GetObservers; reactivation flips can_relay only on
 // the next status message.
+//
+// can_relay is guaranteed present — AssertReady refuses server startup
+// on any database below goose v29 (migration 00028_can_relay_columns.sql).
 func (db *DB) GetNonRelayObserverPubkeys() ([]string, error) {
-	// Graceful no-op when can_relay column is absent (legacy DB / older
-	// test fixture). Avoids noisy schema-degradation log spam.
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay"); !hasCol {
-		return nil, nil
-	}
 	rows, err := db.conn.Query(`SELECT LOWER(id) FROM observers
 		WHERE COALESCE(can_relay, 1) = 0
 		  AND (inactive IS NULL OR inactive = 0)`)
@@ -1515,10 +1514,11 @@ func (db *DB) GetNonRelayObserverPubkeys() ([]string, error) {
 // value (can_relay_seen=1). PR #1624 MAJOR-2: the badge surface uses
 // this to render tri-state — observers NOT in this set are "unknown"
 // and the UI shows no badge.
+//
+// can_relay_seen is guaranteed present — AssertReady refuses server
+// startup on any database below goose v29 (migration
+// 00028_can_relay_columns.sql).
 func (db *DB) GetCanRelaySeenObserverPubkeys() ([]string, error) {
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay_seen"); !hasCol {
-		return nil, nil
-	}
 	rows, err := db.conn.Query(`SELECT LOWER(id) FROM observers
 		WHERE COALESCE(can_relay_seen, 0) = 1
 		  AND (inactive IS NULL OR inactive = 0)`)
@@ -1536,25 +1536,19 @@ func (db *DB) GetCanRelaySeenObserverPubkeys() ([]string, error) {
 	return out, rows.Err()
 }
 
-// GetObserverByID returns a single observer.
+// GetObserverByID returns a single observer. can_relay/can_relay_seen
+// are guaranteed present — AssertReady refuses server startup on any
+// database below goose v29 (migration 00028_can_relay_columns.sql).
 func (db *DB) GetObserverByID(id string) (*Observer, error) {
 	var o Observer
 	var batteryMv, uptimeSecs, clockSkewSec sql.NullInt64
 	var clockSkewCount sql.NullInt64
 	var noiseFloor sql.NullFloat64
 	var canRelay, canRelaySeen int
-	canRelayClause := "COALESCE(can_relay, 1)"
-	canRelaySeenClause := "0"
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay"); !hasCol {
-		canRelayClause = "1"
-	}
-	if hasCol, _ := dbschema.TableHasColumn(db.conn, "observers", "can_relay_seen"); hasCol {
-		canRelaySeenClause = "COALESCE(can_relay_seen, 0)"
-	}
 	err := db.conn.QueryRow(`SELECT id, name, iata, last_seen, first_seen, packet_count,
 		model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor, last_packet_at,
 		clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at,
-		`+canRelayClause+`, `+canRelaySeenClause+`
+		COALESCE(can_relay, 1), COALESCE(can_relay_seen, 0)
 		FROM observers WHERE id = ?`, id).
 		Scan(&o.ID, &o.Name, &o.IATA, &o.LastSeen, &o.FirstSeen, &o.PacketCount,
 			&o.Model, &o.Firmware, &o.ClientVersion, &o.Radio, &batteryMv, &uptimeSecs, &noiseFloor, &o.LastPacketAt,
@@ -3140,32 +3134,27 @@ func (db *DB) GetSignatureDropCount() int64 {
 	return count
 }
 
+// GetScopeStats returns scope/region statistics for the given time
+// window. scope_name is guaranteed present — AssertReady refuses server
+// startup on any database below goose v29 (migration 00019_scope_name_v1.sql).
 func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
-	if !db.hasScopeName {
-		return nil, fmt.Errorf("scope_name column not present — run ingestor to apply migrations")
-	}
-
 	var since string
 	var bucketExpr string
 	switch window {
 	case "1h":
 		since = time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
-		// 5-minute buckets
 		bucketExpr = `strftime('%Y-%m-%dT%H:', first_seen) || printf('%02d', (CAST(strftime('%M', first_seen) AS INTEGER) / 5) * 5) || ':00Z'`
 	case "7d":
 		since = time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339)
-		// 6-hour buckets
 		bucketExpr = `strftime('%Y-%m-%dT', first_seen) || printf('%02d', (CAST(strftime('%H', first_seen) AS INTEGER) / 6) * 6) || ':00:00Z'`
 	default: // "24h"
 		window = "24h"
 		since = time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
-		// 1-hour buckets
 		bucketExpr = `strftime('%Y-%m-%dT%H:00:00Z', first_seen)`
 	}
 
 	resp := &ScopeStatsResponse{Window: window}
 
-	// Summary counts
 	row := db.conn.QueryRow(`
 		SELECT
 			COUNT(*) AS transport_total,
@@ -3184,6 +3173,7 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 		return nil, fmt.Errorf("scope summary query: %w", err)
 	}
 
+<<<<<<< HEAD
 	// #1838: non-transport routes (FLOOD=1, DIRECT=2) never carry
 	// transport_code_1 per MeshCore protocol, so they are inherently unscoped.
 	// Fold their count into Summary.Unscoped so the analytics denominator
@@ -3198,6 +3188,8 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 	resp.Summary.Unscoped += nonTransportUnscoped
 
 	// Per-region counts (named regions only)
+=======
+>>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	rows, err := db.conn.Query(`
 		SELECT scope_name, COUNT(*) AS cnt
 		FROM transmissions
@@ -3222,7 +3214,6 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 		resp.ByRegion = []ScopeRegionCount{}
 	}
 
-	// Time series
 	tsQuery := fmt.Sprintf(`
 		SELECT %s AS bucket,
 			COUNT(scope_name) AS scoped,

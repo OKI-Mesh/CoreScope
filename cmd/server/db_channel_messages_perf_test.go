@@ -28,29 +28,39 @@ func TestGetChannelMessagesPerfLargeChannel(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	// Seed one observer.
-	if _, err := db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs_perf', 'PerfObs', 'SJC', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)`); err != nil {
-		t.Fatal(err)
-	}
-
 	const numTx = 1500
 	const obsPerTx = 50
+
+	// Seed obsPerTx distinct observers, since each transmission will be
+	// "heard" by all of them (observer_idx is part of the dedup key).
+	for o := 1; o <= obsPerTx; o++ {
+		if _, err := db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
+			VALUES (?, ?, 'SJC', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)`,
+			fmt.Sprintf("obs_perf_%d", o), fmt.Sprintf("PerfObs%d", o)); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	tx, err := db.conn.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback() // no-op once committed
+
 	txStmt, err := tx.Prepare(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
 		VALUES (?, ?, ?, 1, 5, ?, '#perf')`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer txStmt.Close()
+
 	obsStmt, err := tx.Prepare(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (?, 1, 10.0, -90, '[]', ?)`)
+		VALUES (?, ?, 10.0, -90, '[]', ?)`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer obsStmt.Close()
+
 	base := time.Now().UTC().Add(-24 * time.Hour)
 	for i := 0; i < numTx; i++ {
 		ts := base.Add(time.Duration(i) * time.Second).Format(time.RFC3339)
@@ -62,7 +72,7 @@ func TestGetChannelMessagesPerfLargeChannel(t *testing.T) {
 		}
 		txID, _ := res.LastInsertId()
 		for o := 0; o < obsPerTx; o++ {
-			if _, err := obsStmt.Exec(txID, base.Unix()+int64(i*100+o)); err != nil {
+			if _, err := obsStmt.Exec(txID, o+1, base.Unix()+int64(i*100+o)); err != nil {
 				t.Fatal(err)
 			}
 		}

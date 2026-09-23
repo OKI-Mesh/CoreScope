@@ -8,10 +8,10 @@
 -- '%pubkey%' attribution path"). Verify against source history if exact
 -- original WHERE clause matters.
 UPDATE nodes SET advert_count = (
-	SELECT COUNT(*) FROM transmissions t
-	WHERE t.payload_type = 4
-	  AND t.decoded_json LIKE '%' || nodes.public_key || '%'
-);
+				SELECT COUNT(*) FROM transmissions t
+				WHERE t.payload_type = 4
+				  AND t.from_pubkey = nodes.public_key
+			);
 
 -- +goose Down
 -- Data-recalculation migration; no meaningful rollback.
