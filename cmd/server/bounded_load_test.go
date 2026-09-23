@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -149,24 +150,32 @@ func createTestDBWithAgedPackets(t *testing.T, numRecent, numOld int) string {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 
-	execOrFail := func(s string) {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatalf("setup: %v\nSQL: %s", err, s)
-		}
+	// Real observers row so the LEFT JOIN observers ON obs.rowid =
+	// o.observer_idx resolves — without this, ObserverID/byObserver
+	// silently come back empty.
+	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
+	if err != nil {
+		t.Fatalf("insert observer: %v", err)
 	}
-	execOrFail(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT, route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT)`)
-	execOrFail(`CREATE TABLE observations (id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT, observer_name TEXT, direction TEXT, snr REAL, rssi REAL, score INTEGER, path_json TEXT, timestamp TEXT, raw_hex TEXT)`)
-	execOrFail(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`)
-	execOrFail(`CREATE TABLE nodes (pubkey TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, first_seen TEXT, frequency REAL)`)
-	execOrFail(`CREATE TABLE schema_version (version INTEGER)`)
-	execOrFail(`INSERT INTO schema_version (version) VALUES (1)`)
-	execOrFail(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
+	observerRowID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("observer rowid: %v", err)
+	}
 
 	now := time.Now().UTC()
 	id := 1
@@ -174,18 +183,20 @@ func createTestDBWithAgedPackets(t *testing.T, numRecent, numOld int) string {
 	for i := 0; i < numOld; i++ {
 		oldT := now.Add(-48 * time.Hour).Add(time.Duration(i) * time.Second)
 		ts := oldT.Format(time.RFC3339)
-		conn.Exec("INSERT INTO transmissions VALUES (?,?,?,?,0,4,1,?)", id, "aa", fmt.Sprintf("old%d", i), ts, `{}`)
-		// observations.timestamp is INTEGER (unix seconds) in production schema
-		// — keep the fixture consistent so the RFC3339 subquery matches.
-		conn.Exec("INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?)", id, id, "obs1", "Obs1", "RX", -10.0, -80.0, 5, `[]`, oldT.Unix(), "")
+		conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+			VALUES (?,?,?,?,0,4,1,?,?)`, id, "aa", fmt.Sprintf("old%d", i), ts, `{}`, oldT.Unix())
+		conn.Exec(`INSERT INTO observations (id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
+			VALUES (?,?,?,?,?,?,?,?,?)`, id, id, observerRowID, "RX", -10.0, -80.0, 5, `[]`, oldT.Unix())
 		id++
 	}
 	// Insert recent packets (within last hour)
 	for i := 0; i < numRecent; i++ {
 		newT := now.Add(-30 * time.Minute).Add(time.Duration(i) * time.Second)
 		ts := newT.Format(time.RFC3339)
-		conn.Exec("INSERT INTO transmissions VALUES (?,?,?,?,0,4,1,?)", id, "bb", fmt.Sprintf("new%d", i), ts, `{}`)
-		conn.Exec("INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?,?,?)", id, id, "obs1", "Obs1", "RX", -10.0, -80.0, 5, `[]`, newT.Unix(), "")
+		conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+			VALUES (?,?,?,?,0,4,1,?,?)`, id, "bb", fmt.Sprintf("new%d", i), ts, `{}`, newT.Unix())
+		conn.Exec(`INSERT INTO observations (id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
+			VALUES (?,?,?,?,?,?,?,?,?)`, id, id, observerRowID, "RX", -10.0, -80.0, 5, `[]`, newT.Unix())
 		id++
 	}
 	return dbPath
@@ -298,43 +309,29 @@ func BenchmarkLoad_30K_Unlimited(b *testing.B) {
 // createTestDBAt is like createTestDB but writes to a specific path.
 func createTestDBAt(tb testing.TB, dbPath string, numTx int) {
 	tb.Helper()
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
+
+	conn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(conn, nil); err != nil {
+		conn.Close()
+		tb.Fatalf("migrating test db: %v", err)
+	}
+	conn.Close()
+
+	// reopen with whatever pragmas this test needs, then seed data
+	conn, err = sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		tb.Fatal(err)
 	}
 	defer conn.Close()
 
-	execOrFail := func(sql string) {
-		if _, err := conn.Exec(sql); err != nil {
-			tb.Fatalf("test DB setup exec failed: %v\nSQL: %s", err, sql)
-		}
-	}
-	execOrFail(`CREATE TABLE IF NOT EXISTS transmissions (
-		id INTEGER PRIMARY KEY,
-		raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER,
-		payload_version INTEGER, decoded_json TEXT
-	)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS observations (
-		id INTEGER PRIMARY KEY,
-		transmission_id INTEGER, observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER,
-		path_json TEXT, timestamp TEXT, raw_hex TEXT
-	)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS nodes (
-		pubkey TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, first_seen TEXT, frequency REAL
-	)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)`)
-	execOrFail(`INSERT INTO schema_version (version) VALUES (1)`)
-	execOrFail(`CREATE INDEX IF NOT EXISTS idx_tx_first_seen ON transmissions(first_seen)`)
-
-	txStmt, err := conn.Prepare("INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	txStmt, err := conn.Prepare("INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		tb.Fatalf("test DB prepare transmissions insert: %v", err)
 	}
-	obsStmt, err := conn.Prepare("INSERT INTO observations (id, transmission_id, observer_id, observer_name, direction, snr, rssi, score, path_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	obsStmt, err := conn.Prepare("INSERT INTO observations (id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		tb.Fatalf("test DB prepare observations insert: %v", err)
 	}
@@ -343,10 +340,12 @@ func createTestDBAt(tb testing.TB, dbPath string, numTx int) {
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 1; i <= numTx; i++ {
-		ts := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
+		tsTime := base.Add(time.Duration(i) * time.Minute)
+		ts := tsTime.Format(time.RFC3339)
+		tsUnix := tsTime.Unix()
 		hash := fmt.Sprintf("h%04d", i)
-		txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i))
-		obsStmt.Exec(i, i, "obs1", "Obs1", "RX", -10.0, -80.0, 5, `["aa","bb"]`, ts)
+		txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i), tsUnix)
+		obsStmt.Exec(i, i, 1, "RX", -10.0, -80.0, 5, `["aa","bb"]`, tsUnix)
 	}
 }
 

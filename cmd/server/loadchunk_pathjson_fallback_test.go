@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -25,6 +26,17 @@ func createTestDBPathJSONNoResolvedPath(t *testing.T, relayPubkey, hopPrefix, fi
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
@@ -37,48 +49,36 @@ func createTestDBPathJSONNoResolvedPath(t *testing.T, relayPubkey, hopPrefix, fi
 		}
 	}
 
-	// PREFLIGHT: async=true reason="test fixture: in-memory t.TempDir SQLite, never touches a real DB. Tables are CREATE-from-empty in a one-shot OpenDB call, not a schema migration over existing data."
-	exec(`CREATE TABLE transmissions (
-		id INTEGER PRIMARY KEY,
-		raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER,
-		decoded_json TEXT
-	)`)
-	// resolved_path column present (matches live schema) but left NULL.
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY,
-		transmission_id INTEGER,
-		observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER,
-		path_json TEXT, timestamp TEXT,
-		raw_hex TEXT,
-		resolved_path TEXT
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`)
-	// Production nodes schema uses public_key (not pubkey) — getAllNodes /
-	// buildPrefixMap reads public_key, role, advert_count, first_seen.
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
-	)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE TABLE schema_version (version INTEGER)`)
-	exec(`INSERT INTO schema_version (version) VALUES (1)`)
-	// PREFLIGHT: async=true reason="test fixture, in-memory tmpdir DB"
-	exec(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
+	// Real observers row so the LEFT JOIN observers ON obs.rowid =
+	// o.observer_idx resolves.
+	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
+	if err != nil {
+		t.Fatalf("insert observer: %v", err)
+	}
+	observerRowID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("observer rowid: %v", err)
+	}
 
 	// Repeater node so canAppearInPath() admits it to the prefix map.
 	exec(`INSERT INTO nodes (public_key, name, role, advert_count) VALUES (?,?,?,?)`,
 		relayPubkey, "Relay One", "repeater", 10)
 
-	exec("INSERT INTO transmissions VALUES (?,?,?,?,0,4,1,?)",
-		1, "aa", "hashpjf_1", firstSeen, `{}`)
+	firstSeenTime, err := time.Parse(time.RFC3339, firstSeen)
+	if err != nil {
+		t.Fatalf("parsing firstSeen %q: %v", firstSeen, err)
+	}
+	lastSeenUnix := firstSeenTime.Unix()
+
+	exec(`INSERT INTO transmissions
+		(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+		VALUES (?,?,?,?,0,4,1,?,?)`,
+		1, "aa", "hashpjf_1", firstSeen, `{}`, lastSeenUnix)
 	// resolved_path explicitly NULL; path_json carries the relay hop prefix.
-	exec("INSERT INTO observations (id, transmission_id, observer_id, observer_name, direction, snr, rssi, score, path_json, timestamp, raw_hex, resolved_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)",
-		1, 1, "obs1", "Obs1", "RX", -10.0, -80.0, 5, fmt.Sprintf(`[%q]`, hopPrefix), firstSeen, "")
+	exec(`INSERT INTO observations
+		(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, resolved_path)
+		VALUES (?,?,?,?,?,?,?,?,?,NULL)`,
+		1, 1, observerRowID, "RX", -10.0, -80.0, 5, fmt.Sprintf(`[%q]`, hopPrefix), lastSeenUnix)
 
 	return dbPath
 }

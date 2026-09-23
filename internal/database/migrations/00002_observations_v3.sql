@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS observations (
 CREATE INDEX IF NOT EXISTS idx_observations_transmission_id ON observations(transmission_id);
 CREATE INDEX IF NOT EXISTS idx_observations_observer_idx ON observations(observer_idx);
 CREATE INDEX IF NOT EXISTS idx_observations_timestamp ON observations(timestamp);
-
+CREATE INDEX IF NOT EXISTS idx_observations_tx_ts ON observations(transmission_id, timestamp);
 DELETE FROM observations
 WHERE id NOT IN (
 	SELECT MIN(id)

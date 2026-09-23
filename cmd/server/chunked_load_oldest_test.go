@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // createTestDBReverseTime builds numTx transmissions whose ids run
@@ -31,53 +33,51 @@ import (
 // This mirrors the freshen-fixture-shifted e2e DB exactly.
 func createTestDBReverseTime(tb testing.TB, dbPath string, numTx int) {
 	tb.Helper()
+
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		tb.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		tb.Fatal(err)
 	}
 	defer conn.Close()
 
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS transmissions (
-			id INTEGER PRIMARY KEY,
-			raw_hex TEXT, hash TEXT, first_seen TEXT,
-			route_type INTEGER, payload_type INTEGER,
-			payload_version INTEGER, decoded_json TEXT
-		)`,
-		`CREATE TABLE IF NOT EXISTS observations (
-			id INTEGER PRIMARY KEY,
-			transmission_id INTEGER, observer_id TEXT, observer_name TEXT,
-			direction TEXT, snr REAL, rssi REAL, score INTEGER,
-			path_json TEXT, timestamp TEXT, raw_hex TEXT
-		)`,
-		`CREATE TABLE IF NOT EXISTS observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT)`,
-		`CREATE TABLE IF NOT EXISTS nodes (
-			pubkey TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-			last_seen TEXT, first_seen TEXT, frequency REAL
-		)`,
-		`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)`,
-		`INSERT INTO schema_version (version) VALUES (1)`,
-		`CREATE INDEX IF NOT EXISTS idx_tx_first_seen ON transmissions(first_seen)`,
+	txStmt, err := conn.Prepare(`INSERT INTO transmissions
+		(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tb.Fatalf("prepare transmissions insert: %v", err)
 	}
-	for _, s := range stmts {
-		if _, err := conn.Exec(s); err != nil {
-			tb.Fatalf("setup exec: %v\nSQL: %s", err, s)
-		}
+	obsStmt, err := conn.Prepare(`INSERT INTO observations
+		(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tb.Fatalf("prepare observations insert: %v", err)
 	}
-
-	txStmt, _ := conn.Prepare("INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-	obsStmt, _ := conn.Prepare("INSERT INTO observations (id, transmission_id, observer_id, observer_name, direction, snr, rssi, score, path_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	defer txStmt.Close()
 	defer obsStmt.Close()
 
 	// id=1 is the NEWEST (now); id=numTx is the OLDEST (numTx minutes ago).
+	// Insertion order (by id) is deliberately the REVERSE of time order —
+	// this fixture exists to prove Load() sorts by last_seen/time, not by
+	// id or insertion order.
 	now := time.Now().UTC().Truncate(time.Second)
 	for i := 1; i <= numTx; i++ {
-		ts := now.Add(-time.Duration(i-1) * time.Minute).Format(time.RFC3339)
-		unixTs := now.Add(-time.Duration(i-1) * time.Minute).Unix()
+		txTime := now.Add(-time.Duration(i-1) * time.Minute)
+		ts := txTime.Format(time.RFC3339)
+		unixTs := txTime.Unix()
 		hash := fmt.Sprintf("h%04d", i)
-		txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i))
-		obsStmt.Exec(i, i, "obs1", "Obs1", "RX", -10.0, -80.0, 5, `["aa","bb"]`, unixTs)
+		txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i), unixTs)
+		obsStmt.Exec(i, i, 1, "RX", -10.0, -80.0, 5, `["aa","bb"]`, unixTs)
 	}
 }
 

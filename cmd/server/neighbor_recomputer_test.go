@@ -3,10 +3,11 @@ package main
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
@@ -18,21 +19,24 @@ func TestNeighborGraphRecomputerLoadsSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "neighbor_recomp.db")
 
-	// Bootstrap a WAL DB with the neighbor_edges table.
+	// Bring the database fully under goose's control before inserting
+	// data — OpenDB now asserts readiness via database.AssertReady.
+	// neighbor_edges already exists via migration 26 — no manual
+	// CREATE TABLE needed.
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
 	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rw.Close()
-	if _, err := rw.Exec(`CREATE TABLE neighbor_edges (
-		node_a TEXT NOT NULL,
-		node_b TEXT NOT NULL,
-		count INTEGER DEFAULT 1,
-		last_seen TEXT,
-		PRIMARY KEY (node_a, node_b)
-	)`); err != nil {
-		t.Fatal(err)
-	}
 
 	// Stage one edge.
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -84,14 +88,13 @@ func TestServerStartupRequiresMigratedSchema(t *testing.T) {
 	dbPath := filepath.Join(dir, "unmigrated.db")
 
 	// Bootstrap with ONLY transmissions/observations (the things
-	// server tries to read) but WITHOUT the columns dbschema asserts
-	// (resolved_path, inactive, last_packet_at, iata, foreign_advert,
-	// from_pubkey, neighbor_edges).
+	// server tries to read) but WITHOUT the full goose migration
+	// chain applied — simulating a database that was never brought
+	// under goose's control.
 	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rw.Close()
 	for _, s := range []string{
 		`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT, payload_type INTEGER)`,
 		`CREATE TABLE observations (id INTEGER PRIMARY KEY, transmission_id INTEGER)`,
@@ -100,23 +103,23 @@ func TestServerStartupRequiresMigratedSchema(t *testing.T) {
 		`CREATE TABLE inactive_nodes (public_key TEXT PRIMARY KEY)`,
 	} {
 		if _, err := rw.Exec(s); err != nil {
+			rw.Close()
 			t.Fatal(err)
 		}
 	}
+	rw.Close()
 
-	// Open the read-only server handle and call AssertReady directly
-	// (production path: main.go does this before any business logic).
-	d, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
+	// OpenDB itself must refuse — it now asserts readiness internally
+	// (via database.AssertBaselined/AssertReady) before ever returning
+	// a usable handle. This is the actual startup-safety guarantee:
+	// the server never gets far enough to read from an unmigrated or
+	// partially-migrated database.
+	_, err = OpenDB(dbPath)
+	if err == nil {
+		t.Fatal("expected OpenDB to fail against an unmigrated DB; server would have started against an incomplete schema")
 	}
-	defer d.conn.Close()
-
-	// The package-level dbschema.AssertReady requires every missing
-	// surface to be reported. We hit it directly through the same
-	// path main.go uses.
-	if err := assertReadyForTest(d); err == nil {
-		t.Fatal("expected AssertReady to fail against an unmigrated DB; server would have started against an incomplete schema")
+	if !strings.Contains(err.Error(), "baseline") && !strings.Contains(err.Error(), "ready") {
+		t.Errorf("expected error to indicate schema/readiness problem, got: %v", err)
 	}
 }
 
@@ -129,4 +132,4 @@ func assertReadyForTest(d *DB) error {
 // dbschemaAssertReadyShim wraps the package import so tests don't
 // directly depend on the import being present (production wires it
 // via main.go).
-func dbschemaAssertReadyShim(d *DB) error { return dbschema.AssertReady(d.conn) }
+func dbschemaAssertReadyShim(d *DB) error { return database.AssertReady(d.conn) }

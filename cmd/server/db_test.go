@@ -7,110 +7,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
 )
 
-// setupTestDB creates an in-memory SQLite database with the v3 schema.
 func setupTestDB(t *testing.T) *DB {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Force single connection so all goroutines share the same in-memory DB
 	conn.SetMaxOpenConns(1)
 
-	// Create schema matching MeshCore Analyzer v3
-	schema := `
-		CREATE TABLE nodes (
-			public_key TEXT PRIMARY KEY,
-			name TEXT,
-			role TEXT,
-			lat REAL,
-			lon REAL,
-			last_seen TEXT,
-			first_seen TEXT,
-			advert_count INTEGER DEFAULT 0,
-			battery_mv INTEGER,
-			temperature_c REAL,
-			foreign_advert INTEGER DEFAULT 0
-		);
+	if err := database.RunMigrations(conn); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
 
-		CREATE TABLE observers (
-			id TEXT PRIMARY KEY,
-			name TEXT,
-			iata TEXT,
-			last_seen TEXT,
-			first_seen TEXT,
-			packet_count INTEGER DEFAULT 0,
-			model TEXT,
-			firmware TEXT,
-			client_version TEXT,
-			radio TEXT,
-			battery_mv INTEGER,
-			uptime_secs INTEGER,
-			noise_floor REAL,
-			inactive INTEGER DEFAULT 0,
-			last_packet_at TEXT DEFAULT NULL,
-			clock_skew_seconds INTEGER DEFAULT NULL,
-			clock_skew_count_24h INTEGER DEFAULT 0,
-			clock_last_naive_at TEXT DEFAULT NULL
-		);
-
-		CREATE TABLE transmissions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			raw_hex TEXT NOT NULL,
-			hash TEXT NOT NULL UNIQUE,
-			first_seen TEXT NOT NULL,
-			route_type INTEGER,
-			payload_type INTEGER,
-			payload_version INTEGER,
-			decoded_json TEXT,
-			channel_hash TEXT DEFAULT NULL,
-			from_pubkey TEXT DEFAULT NULL,
-			created_at TEXT DEFAULT (datetime('now'))
-		);
-
-		CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-			observer_idx INTEGER,
-			direction TEXT,
-			snr REAL,
-			rssi REAL,
-			score INTEGER,
-			path_json TEXT,
-			timestamp INTEGER NOT NULL,
-			resolved_path TEXT,
-			raw_hex TEXT
-		);
-
-		CREATE TABLE IF NOT EXISTS observer_metrics (
-			observer_id TEXT NOT NULL,
-			timestamp TEXT NOT NULL,
-			noise_floor REAL,
-			tx_air_secs INTEGER,
-			rx_air_secs INTEGER,
-			recv_errors INTEGER,
-			battery_mv INTEGER,
-			packets_sent INTEGER,
-			packets_recv INTEGER,
-			PRIMARY KEY (observer_id, timestamp)
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_observer_metrics_timestamp ON observer_metrics(timestamp);
-
-		-- Auto-populate from_pubkey for ADVERT rows so existing test fixtures
-		-- (which only set decoded_json) still attribute correctly under #1143's
-		-- exact-match column. Production migration handles legacy data; the
-		-- ingestor sets the column at write time.
-		--
-		-- m4 alignment: prod ingest leaves from_pubkey NULL when pubKey is
-		-- missing or empty (cmd/ingestor/db.go ~1289 guards PubKey != empty-string).
-		-- The trigger mirrors that: only assign when json_extract yields a
-		-- non-empty string. json_extract returns NULL for missing keys, so
-		-- the explicit IS NOT NULL AND <> empty-string guard catches the empty-string
-		-- case too. UPDATE only when we have something to write.
+	if _, err := conn.Exec(`
 		CREATE TRIGGER IF NOT EXISTS test_from_pubkey_advert
 		AFTER INSERT ON transmissions
 		FOR EACH ROW
@@ -122,23 +35,13 @@ func setupTestDB(t *testing.T) *DB {
 			SET from_pubkey = json_extract(NEW.decoded_json, '$.pubKey')
 			WHERE id = NEW.id;
 		END;
-		CREATE INDEX IF NOT EXISTS idx_transmissions_from_pubkey ON transmissions(from_pubkey);
-
-		-- Mirror prod indexes from internal/dbschema/dbschema.go so query plans
-		-- in tests match prod. idx_observations_transmission_id is required by
-		-- GetChannelMessages's grouped MAX(timestamp) per tx aggregate
-		-- (issue #1366 / PR #1368): without it the perf test on 1500 tx × 50 obs
-		-- blows the 1.5s budget under -race.
-		CREATE INDEX IF NOT EXISTS idx_observations_transmission_id ON observations(transmission_id);
-		CREATE INDEX IF NOT EXISTS idx_observations_timestamp ON observations(timestamp);
-		CREATE INDEX IF NOT EXISTS idx_observations_tx_ts ON observations(transmission_id, timestamp);
-		CREATE INDEX IF NOT EXISTS idx_transmissions_channel_hash ON transmissions(channel_hash);
-	`
-	if _, err := conn.Exec(schema); err != nil {
-		t.Fatal(err)
+	`); err != nil {
+		t.Fatalf("create test-only from_pubkey trigger: %v", err)
 	}
 
-	return &DB{conn: conn, isV3: true, hasResolvedPath: true}
+	db := &DB{conn: conn}
+	db.detectSchema()
+	return db
 }
 
 func seedTestData(t *testing.T, db *DB) {
@@ -1445,21 +1348,20 @@ func TestGetNetworkStatusDateFormats(t *testing.T) {
 }
 
 func TestOpenDBValid(t *testing.T) {
-	// Create a real SQLite database file
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-	// Create DB with a table using a writable connection first
-	conn, err := sql.Open("sqlite", dbPath)
+	// Bring the database fully under goose's control before OpenDB —
+	// it now asserts readiness via database.AssertReady rather than
+	// accepting any file with a "transmissions" table.
+	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT)`)
-	if err != nil {
-		conn.Close()
-		t.Fatal(err)
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
 	}
-	conn.Close()
+	migrateConn.Close()
 
 	// Now test OpenDB (read-only)
 	database, err := OpenDB(dbPath)
@@ -1486,29 +1388,24 @@ func TestOpenDBInvalidPath(t *testing.T) {
 // hasDefaultScope via the real detectSchema path when the columns are present.
 // The existing ScopeStats tests set these flags manually — this test ensures
 // the flag-setting code itself is covered.
-func TestDetectSchemaScopeName(t *testing.T) {
+func TestDetectSchema_FlagsTrueOnFullyMigratedDB(t *testing.T) {
+	// Every schema feature flag detectSchema() sets is guaranteed true
+	// on any database that passes OpenDB's AssertReady check, since the
+	// full goose migration chain unconditionally adds these
+	// columns/tables. These flags are legacy — remove this test (and
+	// the flags themselves) as each dependent query is converted to
+	// sqlc; see DB struct comment.
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "detect.db")
 
-	// Create file-based DB with the scope_name and default_scope columns.
-	conn, err := sql.Open("sqlite", dbPath)
+	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn.SetMaxOpenConns(1)
-	if _, err := conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT, scope_name TEXT)`); err != nil {
-		conn.Close()
-		t.Fatalf("create transmissions: %v", err)
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
 	}
-	if _, err := conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY, default_scope TEXT)`); err != nil {
-		conn.Close()
-		t.Fatalf("create nodes: %v", err)
-	}
-	if _, err := conn.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY)`); err != nil {
-		conn.Close()
-		t.Fatalf("create observations: %v", err)
-	}
-	conn.Close()
+	migrateConn.Close()
 
 	db, err := OpenDB(dbPath)
 	if err != nil {
@@ -1517,35 +1414,10 @@ func TestDetectSchemaScopeName(t *testing.T) {
 	defer db.Close()
 
 	if !db.hasScopeName {
-		t.Error("hasScopeName should be true when scope_name column exists")
+		t.Error("hasScopeName should be true on a fully migrated database")
 	}
 	if !db.hasDefaultScope {
-		t.Error("hasDefaultScope should be true when default_scope column exists")
-	}
-
-	// Verify the flags stay false when the columns are absent.
-	dbPath2 := filepath.Join(dir, "detect2.db")
-	conn2, err := sql.Open("sqlite", dbPath2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn2.SetMaxOpenConns(1)
-	conn2.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT)`)
-	conn2.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
-	conn2.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY)`)
-	conn2.Close()
-
-	db2, err := OpenDB(dbPath2)
-	if err != nil {
-		t.Fatalf("OpenDB2: %v", err)
-	}
-	defer db2.Close()
-
-	if db2.hasScopeName {
-		t.Error("hasScopeName should be false when scope_name column is absent")
-	}
-	if db2.hasDefaultScope {
-		t.Error("hasDefaultScope should be false when default_scope column is absent")
+		t.Error("hasDefaultScope should be true on a fully migrated database")
 	}
 }
 

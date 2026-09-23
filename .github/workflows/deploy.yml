@@ -360,7 +360,7 @@ jobs:
         # server against the committed e2e fixture — so we run the
         # standalone migrate tool here to bring the fixture up to the
         # required shape before the server boots.
-        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db
+        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db -baseline-stamp-migrate
 
       - name: Seed observer IATA codes (post-migration-reconstruction fixture repair)
         run: |

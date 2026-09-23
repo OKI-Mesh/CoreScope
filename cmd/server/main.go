@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -157,26 +157,26 @@ func main() {
 	}
 
 	// Open database
-	database, err := OpenDB(resolvedDB)
+	db, err := OpenDB(resolvedDB)
 	if err != nil {
 		log.Fatalf("[db] failed to open %s: %v", resolvedDB, err)
 	}
 	var dbCloseOnce sync.Once
 	dbClose := func() error {
 		var err error
-		dbCloseOnce.Do(func() { err = database.Close() })
+		dbCloseOnce.Do(func() { err = db.Close() })
 		return err
 	}
 	defer dbClose()
 
 	// Verify DB has expected tables
 	var tableName string
-	err = database.conn.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='transmissions'").Scan(&tableName)
+	err = db.conn.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='transmissions'").Scan(&tableName)
 	if err == sql.ErrNoRows {
 		log.Fatalf("[db] table 'transmissions' not found — is this a CoreScope database?")
 	}
 
-	stats, err := database.GetStats()
+	stats, err := db.GetStats()
 	if err != nil {
 		log.Printf("[db] warning: could not read stats: %v", err)
 	} else {
@@ -191,12 +191,12 @@ func main() {
 	// (#1287). The server NEVER migrates — it only reads. If a required
 	// column/index/table is missing, the operator must restart the
 	// ingestor (which owns dbschema.Apply) before this server can start.
-	if err := dbschema.AssertReady(database.conn); err != nil {
+	if err := database.AssertReady(db.conn); err != nil {
 		log.Fatalf("[db] schema not ready (ingestor must run migrations first): %v", err)
 	}
 
 	// In-memory packet store
-	store := NewPacketStore(database, cfg.PacketStore, cfg.CacheTTL)
+	store := NewPacketStore(db, cfg.PacketStore, cfg.CacheTTL)
 	store.config = cfg
 
 	// Load the persisted neighbor graph BEFORE the packet load so the
@@ -209,9 +209,9 @@ func main() {
 	// so this adds negligible latency before the HTTP listener binds. The
 	// fresh-DB branch (no snapshot) still builds in-memory AFTER the load
 	// below, because BuildFromStore needs the loaded packets.
-	neighborEdgesPersisted := neighborEdgesTableExists(database.conn)
+	neighborEdgesPersisted := neighborEdgesTableExists(db.conn)
 	if neighborEdgesPersisted {
-		store.graph.Store(loadNeighborEdgesFromDB(database.conn))
+		store.graph.Store(loadNeighborEdgesFromDB(db.conn))
 		log.Printf("[neighbor] loaded persisted neighbor graph")
 	}
 
@@ -272,8 +272,8 @@ func main() {
 	// loaded above, before the packet load. Per #1287 schema migrations
 	// all live in the ingestor; the server only reads the snapshot and
 	// then refreshes it via the recompNeighborGraph slot every 60s.
-	dbPath = database.path
-	database.hasResolvedPath = true // dbschema.AssertReady above already verified observations.resolved_path exists
+	dbPath = db.path
+	db.hasResolvedPath = true // dbschema.AssertReady above already verified observations.resolved_path exists
 
 	// WaitGroup for background init steps that gate /api/healthz readiness.
 	var initWg sync.WaitGroup
@@ -348,7 +348,7 @@ func main() {
 	hub.upgrader.EnableCompression = cfg.WSCompressionEnabled()
 
 	// HTTP server
-	srv := NewServer(database, cfg, hub)
+	srv := NewServer(db, cfg, hub)
 	srv.configDir = configDir
 	srv.store = store
 	router := mux.NewRouter()
@@ -372,7 +372,7 @@ func main() {
 	}
 
 	// Start SQLite poller for WebSocket broadcast
-	poller := NewPoller(database, hub, time.Duration(pollMs)*time.Millisecond)
+	poller := NewPoller(db, hub, time.Duration(pollMs)*time.Millisecond)
 	poller.store = store
 	go poller.Start()
 

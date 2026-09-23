@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // hmacSHA256 computes HMAC-SHA256 for test use.
@@ -1018,33 +1020,32 @@ func TestHandleMessageStatusNoOrigin(t *testing.T) {
 
 // --- db.go: applySchema migrations run on fresh DB ---
 
-func TestApplySchemaMigrationsOnFreshDB(t *testing.T) {
-	// OpenStore already runs all migrations; verify they completed
+func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
+	// OpenStore already runs db.RunMigrations (goose) as part of its
+	// boot sequence; verify that integration actually completed and
+	// produced the expected schema.
 	store := newTestStore(t)
 
-	// Check that migrations were recorded
-	var count int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM _migrations").Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count < 3 {
-		t.Errorf("expected at least 3 migrations recorded, got %d", count)
+	var version int64
+	if err := store.db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
+		t.Fatalf("checking goose version: %v", err)
 	}
 
-	// Check observations table exists with dedup index
+	if version != database.GooseAdoptionVersion {
+		t.Errorf("expected goose version %d, got %d", database.GooseAdoptionVersion, version)
+	}
+
 	var tblName string
 	err := store.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='observations'").Scan(&tblName)
 	if err != nil {
 		t.Error("observations table should exist")
 	}
 
-	// Check inactive_nodes table exists
 	err = store.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='inactive_nodes'").Scan(&tblName)
 	if err != nil {
 		t.Error("inactive_nodes table should exist")
 	}
 
-	// Check packets_v view exists
 	err = store.db.QueryRow("SELECT name FROM sqlite_master WHERE type='view' AND name='packets_v'").Scan(&tblName)
 	if err != nil {
 		t.Error("packets_v view should exist")
