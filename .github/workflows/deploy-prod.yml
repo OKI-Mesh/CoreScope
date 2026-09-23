@@ -22,6 +22,7 @@ jobs:
     runs-on: [self-hosted, corescope-prod]
     env:
       PROD_CONTAINER: corescope
+      PROD_DATA: /opt/corescope/data  # bind-mounted to /app/data in the container
       IMAGE: ghcr.io/oki-mesh/corescope
       LOCAL_TAG: "corescope:prod"     # prod compose references this local tag
       ROLLBACK_KEEP: "3"
@@ -48,6 +49,23 @@ jobs:
             echo "HAVE_ROLLBACK=false" >> "$GITHUB_ENV"
             echo "ℹ️ No existing $PROD_CONTAINER container (first deploy) — no rollback point created."
           fi
+
+      - name: Baseline database before promote
+        run: |
+          # Since the goose cutover (#131) the ingestor and server both refuse
+          # to start against a database with no goose_db_version, and neither
+          # migrates any more — corescope-migrate does. Nothing else in the
+          # deploy path invokes it, so without this step a deploy onto an
+          # unstamped database fails the healthcheck below (#135).
+          #
+          # --entrypoint is required: entrypoint-go.sh ends in `exec
+          # supervisord` and never `exec "$@"`, so a trailing command is
+          # silently ignored and you get a full stack instead of a migration.
+          docker run --rm \
+            -v "${PROD_DATA}:/data" \
+            --entrypoint /app/corescope-migrate \
+            "$IMAGE:$VER" \
+            -db /data/meshcore.db -baseline-stamp-migrate
 
       - name: Promote + recreate corescope
         working-directory: /opt/corescope
