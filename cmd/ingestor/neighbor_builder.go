@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // NeighborEdgesBuilderInterval is how often the ingestor rescans

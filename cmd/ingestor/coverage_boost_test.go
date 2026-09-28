@@ -1032,7 +1032,7 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 		t.Fatalf("checking goose version: %v", err)
 	}
 
-	if version != database.GooseAdoptionVersion {
+	if version <= database.GooseAdoptionVersion {
 		t.Errorf("expected goose version %d, got %d", database.GooseAdoptionVersion, version)
 	}
 

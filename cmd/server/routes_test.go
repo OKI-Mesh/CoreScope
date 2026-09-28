@@ -17,6 +17,16 @@ import (
 	"github.com/gorilla/mux"
 )
 
+func dropTable(t *testing.T, db *DB, name string) {
+	t.Helper()
+	if _, err := db.conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("disable fk: %v", err)
+	}
+	if _, err := db.conn.Exec("DROP TABLE IF EXISTS " + name); err != nil {
+		t.Fatalf("drop %s: %v", name, err)
+	}
+}
+
 func setupTestServer(t *testing.T) (*Server, *mux.Router) {
 	t.Helper()
 	db := setupTestDB(t)
@@ -2030,6 +2040,9 @@ func TestHandlerErrorPaths(t *testing.T) {
 	srv.RegisterRoutes(router)
 
 	t.Run("stats error", func(t *testing.T) {
+		if _, err := db.conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			t.Fatalf("disable fk: %v", err)
+		}
 		db.conn.Exec("DROP TABLE IF EXISTS transmissions")
 		req := httptest.NewRequest("GET", "/api/stats", nil)
 		w := httptest.NewRecorder()
@@ -2048,7 +2061,9 @@ func TestHandlerErrorChannels(t *testing.T) {
 	srv := NewServer(db, cfg, hub)
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
-
+	if _, err := db.conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("disable fk: %v", err)
+	}
 	db.conn.Exec("DROP TABLE IF EXISTS transmissions")
 
 	req := httptest.NewRequest("GET", "/api/channels", nil)
@@ -2145,7 +2160,7 @@ func TestHandlerErrorPackets(t *testing.T) {
 	srv.RegisterRoutes(router)
 
 	// Drop transmissions table to trigger error in transmission-centric query
-	db.conn.Exec("DROP TABLE IF EXISTS transmissions")
+	dropTable(t, db, "transmissions")
 
 	req := httptest.NewRequest("GET", "/api/packets?limit=10", nil)
 	w := httptest.NewRecorder()
@@ -4273,7 +4288,11 @@ func TestPacketDetailPrefersStoreOverDB(t *testing.T) {
 func TestHandleScopeStats(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
-	// Clear seed transmissions so this test isolates scope-stats math.
+	// Clear seed data so this test isolates scope-stats math. Children first:
+	// observations reference transmissions and the migrated schema enforces FKs.
+	if _, err := srv.db.conn.Exec(`DELETE FROM observations`); err != nil {
+		t.Fatalf("clear observations: %v", err)
+	}
 	if _, err := srv.db.conn.Exec(`DELETE FROM transmissions`); err != nil {
 		t.Fatalf("clear transmissions: %v", err)
 	}

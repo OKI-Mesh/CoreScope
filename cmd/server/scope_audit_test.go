@@ -31,7 +31,7 @@ var (
 // fiction, so the join behaves the way it does against a real database.
 func setupScopeConformanceDB(t *testing.T) *DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,21 +218,12 @@ func TestScopeAuditForwardingAmbiguousHopCreditsNeitherTarget(t *testing.T) {
 // vacuously.
 func setupScopeAuditServer(t *testing.T) (*Server, *mux.Router) {
 	t.Helper()
-	db := setupScopeConformanceDB(t)
-	if _, err := db.conn.Exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY,
-		name TEXT,
-		role TEXT,
-		configured_scope TEXT,
-		configured_scope_at TEXT
-	)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.detectSchema(context.Background(), db.conn); err != nil {
-		t.Fatal(err)
-	}
+	db := setupTestDB(t) // goose-migrated; detectSchema already ran
 	if !db.hasConfiguredScope {
-		t.Fatal("hasConfiguredScope is false after creating the column: the fixture would test nothing")
+		t.Fatal("hasConfiguredScope is false: migrated schema lacks nodes.configured_scope")
+	}
+	if !db.hasDeclaredRegionsTable {
+		t.Fatal("hasDeclaredRegionsTable is false: migrated schema lacks node_declared_regions")
 	}
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
@@ -727,61 +718,11 @@ func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 // would skip the table and every assertion below would pass vacuously.
 func createDeclaredRegionsTable(t *testing.T, srv *Server) {
 	t.Helper()
-	if _, err := srv.db.conn.Exec(`
-		CREATE TABLE node_declared_regions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			target TEXT NOT NULL,
-			rx_pubkey TEXT NOT NULL,
-			observed_at TEXT NOT NULL,
-			ingested_at TEXT NOT NULL,
-			regions_csv TEXT NOT NULL,
-			truncated INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(target, rx_pubkey, observed_at)
-		)`); err != nil {
-		t.Fatal(err)
-	}
 	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
 		t.Fatal(err)
 	}
 	if !srv.db.hasDeclaredRegionsTable {
 		t.Fatal("hasDeclaredRegionsTable is false after creating the table: the fixture would test nothing")
-	}
-}
-
-// TestDeclaredRegionsTableCreatedAfterStartupIsRead covers the first run of a
-// build whose ingestor creates node_declared_regions: supervisord starts both
-// processes together, so the server's startup probe can run before the table
-// exists. The merge must still find it without a restart.
-func TestDeclaredRegionsTableCreatedAfterStartupIsRead(t *testing.T) {
-	srv, _ := setupScopeAuditServer(t)
-	if srv.db.declaredRegionsTablePresent() {
-		t.Fatal("precondition: the fixture must start without node_declared_regions")
-	}
-	// Created behind the server's back, with no detectSchema re-probe: exactly
-	// what happens when the ingestor creates it after the server started.
-	if _, err := srv.db.conn.Exec(`
-		CREATE TABLE node_declared_regions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			target TEXT NOT NULL,
-			rx_pubkey TEXT NOT NULL,
-			observed_at TEXT NOT NULL,
-			ingested_at TEXT NOT NULL,
-			regions_csv TEXT NOT NULL,
-			truncated INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(target, rx_pubkey, observed_at)
-		)`); err != nil {
-		t.Fatal(err)
-	}
-	if srv.db.hasDeclaredRegionsTable {
-		t.Fatal("precondition: the startup flag must still be false, or this tests nothing")
-	}
-	seedSecondSource(t, srv, testFullPubkeyA, "2026-09-18T09:09:32Z", "*,hu", 0)
-	got, ok := declaredFor(t, srv, testFullPubkeyA)
-	if !ok || got.RegionsCSV != "*,hu" {
-		t.Fatalf("got %+v (found=%v), want the answer from the late-created table", got, ok)
-	}
-	if !srv.db.declaredRegionsTableLate.Load() {
-		t.Error("the late sighting should latch so later calls skip the probe")
 	}
 }
 

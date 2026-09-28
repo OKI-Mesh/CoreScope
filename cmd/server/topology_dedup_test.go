@@ -7,12 +7,8 @@ import (
 	"testing"
 	"time"
 
-<<<<<<< HEAD
-	_ "github.com/mattn/go-sqlite3"
-=======
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 )
 
 // TestTopologyDedup_RepeatersMergeByPubkey verifies that topRepeaters
@@ -20,9 +16,6 @@ import (
 func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-<<<<<<< HEAD
-	conn, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
-=======
 
 	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -34,7 +27,6 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 	migrateConn.Close()
 
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,29 +49,6 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 			t.Fatalf("SQL exec failed: %v\nSQL: %s", err, s)
 		}
 	}
-<<<<<<< HEAD
-	exec(`CREATE TABLE transmissions (
-		id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT
-	)`)
-	exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER, path_json TEXT, timestamp TEXT, raw_hex TEXT
-	)`)
-	exec(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT, inactive INTEGER)`)
-	exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, frequency REAL
-	)`)
-	exec(`CREATE TABLE schema_version (version INTEGER)`)
-	exec(`INSERT INTO schema_version (version) VALUES (1)`)
-	exec(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
-
-	// Insert two repeater nodes with distinct pubkeys.
-	// AQUA: pubkey starts with 0735bc...
-	// BETA: pubkey starts with 99aabb...
-=======
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('0735bc6dda4d1122aabbccdd', 'AQUA', 'Repeater')`)
 	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('99aabb001122334455667788', 'BETA', 'Repeater')`)
 
@@ -176,9 +145,6 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-<<<<<<< HEAD
-	conn, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
-=======
 
 	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -190,7 +156,6 @@ func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
 	migrateConn.Close()
 
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,25 +175,6 @@ func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
 			t.Fatalf("SQL exec failed: %v\nSQL: %s", err, s)
 		}
 	}
-<<<<<<< HEAD
-	exec(`CREATE TABLE transmissions (
-		id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT
-	)`)
-	exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER, path_json TEXT, timestamp TEXT, raw_hex TEXT
-	)`)
-	exec(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT, inactive INTEGER)`)
-	exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, frequency REAL
-	)`)
-	exec(`CREATE TABLE schema_version (version INTEGER)`)
-	exec(`INSERT INTO schema_version (version) VALUES (1)`)
-	exec(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
-=======
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 
 	// Two nodes whose pubkeys share the prefix "ab" — collision!
 	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('ab11223344556677aabbccdd', 'NODE_A', 'Repeater')`)
@@ -318,9 +264,6 @@ func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
 func TestTopologyDedup_PairsMergeByPubkey(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
-<<<<<<< HEAD
-	conn, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
-=======
 
 	migrateConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -332,7 +275,6 @@ func TestTopologyDedup_PairsMergeByPubkey(t *testing.T) {
 	migrateConn.Close()
 
 	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,26 +294,6 @@ func TestTopologyDedup_PairsMergeByPubkey(t *testing.T) {
 			t.Fatalf("SQL exec failed: %v\nSQL: %s", err, s)
 		}
 	}
-<<<<<<< HEAD
-	exec(`CREATE TABLE transmissions (
-		id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT
-	)`)
-	exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER, path_json TEXT, timestamp TEXT, raw_hex TEXT
-	)`)
-	exec(`CREATE TABLE observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT, inactive INTEGER)`)
-	exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, frequency REAL
-	)`)
-	exec(`CREATE TABLE schema_version (version INTEGER)`)
-	exec(`INSERT INTO schema_version (version) VALUES (1)`)
-	exec(`CREATE INDEX idx_tx_first_seen ON transmissions(first_seen)`)
-
-=======
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('0735bc6dda4d1122aabbccdd', 'AQUA', 'Repeater')`)
 	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('99aabb001122334455667788', 'BETA', 'Repeater')`)
 

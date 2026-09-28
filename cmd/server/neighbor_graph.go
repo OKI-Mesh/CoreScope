@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // ─── Constants ─────────────────────────────────────────────────────────────────

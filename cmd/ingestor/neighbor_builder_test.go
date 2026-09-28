@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/meshcore-analyzer/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // TestNeighborEdgesBuilderUpsertsFromObservations enforces issue

@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const channelsCacheTTL = 90 * time.Second
+const serverchannelsCacheTTL = 90 * time.Second
 
 func (s *Server) effectiveChannelsCacheTTL() time.Duration {
 	if s.cfg != nil && s.cfg.ChannelsCache != nil && s.cfg.ChannelsCache.TTLSeconds > 0 {
@@ -31,14 +31,14 @@ func channelsCacheKey(region string, includeEncrypted bool) string {
 	return fmt.Sprintf("channels|%s|%s", region, enc)
 }
 
-type channelsCacheEntry struct {
+type serverchannelsCacheEntry struct {
 	resp ChannelListResponse
 	at   time.Time
 }
 
-type channelsCacheField struct {
-	entries sync.Map // string → *channelsCacheEntry
-	sf      singleflight.Group
+type serverchannelsCacheField struct {
+	entries   sync.Map // string → *serverchannelsCacheEntry
+	sf        singleflight.Group
 	fillCount atomic.Int64 // test-only: counts singleflight wins
 }
 

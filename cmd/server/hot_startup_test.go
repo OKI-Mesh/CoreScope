@@ -14,7 +14,6 @@ import (
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // createTestDBMultiDay creates a test DB with packets spread across numDays days.

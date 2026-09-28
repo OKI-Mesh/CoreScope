@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // --- Unit tests ---
@@ -1096,7 +1094,7 @@ func TestLRU_CapacityAfterBulkDelete(t *testing.T) {
 // TestConfirmResolvedPathContains_SpecialChars verifies that pubkeys containing
 // SQL LIKE wildcards (%, _) don't cause false positives with the INSTR approach.
 func TestConfirmResolvedPathContains_SpecialChars(t *testing.T) {
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

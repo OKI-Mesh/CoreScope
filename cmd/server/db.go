@@ -14,10 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-	"github.com/OKI-Mesh/CoreScope/internal/dbschema"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
+	"golang.org/x/sync/singleflight"
 	_ "modernc.org/sqlite"
 )
 
@@ -38,7 +37,6 @@ const routeTypeNonTransportSQL = "route_type IN (1, 2)"
 
 // DB wraps a read-only connection to the MeshCore SQLite database.
 type DB struct {
-	
 	conn *sql.DB
 	path string // filesystem path to the database file
 	// Schema feature-detection flags. Now that database.OpenReadOnlyDB
@@ -46,15 +44,15 @@ type DB struct {
 	// versions 1-31+), these are very likely always true — but a lot of
 	// hand-written SQL still branches on them. Remove each flag as its
 	// dependent query is converted to sqlc; don't bulk-delete.
-	isV3                bool // v3 schema: observer_idx in observations (vs observer_id in v2)
-	hasResolvedPath     bool // observations table has resolved_path column
-	hasObsRawHex        bool // observations table has raw_hex column (#881)
-	hasScopeName        bool // transmissions.scope_name column exists (#899)
-	hasDefaultScope     bool // nodes.default_scope column exists (#899)
-	hasConfiguredScope      bool   // nodes.configured_scope column exists (#1865)
-	hasDeclaredRegionsTable bool   // node_declared_regions table exists at startup (#1975); read via declaredRegionsTablePresent
-	hasMultibyteSupCols bool // nodes/inactive_nodes have multibyte_sup/multibyte_evidence (#903)
-	hasLastSeen         bool // transmissions.last_seen column exists (#1690)
+	isV3                    bool // v3 schema: observer_idx in observations (vs observer_id in v2)
+	hasResolvedPath         bool // observations table has resolved_path column
+	hasObsRawHex            bool // observations table has raw_hex column (#881)
+	hasScopeName            bool // transmissions.scope_name column exists (#899)
+	hasDefaultScope         bool // nodes.default_scope column exists (#899)
+	hasConfiguredScope      bool // nodes.configured_scope column exists (#1865)
+	hasDeclaredRegionsTable bool // node_declared_regions table exists at startup (#1975); read via declaredRegionsTablePresent
+	hasMultibyteSupCols     bool // nodes/inactive_nodes have multibyte_sup/multibyte_evidence (#903)
+	hasLastSeen             bool // transmissions.last_seen column exists (#1690)
 
 	// declaredRegionsTableLate latches true once node_declared_regions is found
 	// after startup. The ingestor creates that table, and the two processes
@@ -149,17 +147,7 @@ type channelMessagesCacheEntry struct {
 // connection; it sits outside GOMEMLIMIT, so it is bounded here rather than
 // left to the driver's default (see memlimit.go).
 func OpenDB(path string) (*DB, error) {
-<<<<<<< HEAD
-<<<<<<< HEAD
-	dsn := fmt.Sprintf("file:%s?mode=ro&_cache_size=-2000", path)
-	conn, err := sql.Open("sqlite3", dsn)
-=======
-	dsn := fmt.Sprintf("file:%s?mode=ro&_busy_timeout=5000", path)
-	conn, err := sql.Open("sqlite", dsn)
->>>>>>> d5ae0232 (Removing low level go modules and making it one module (#116))
-=======
 	conn, err := database.OpenReadOnly(path)
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		return nil, err
 	}
@@ -1068,7 +1056,6 @@ func (db *DB) GetObservationsForHash(hash string) []map[string]interface{} {
 	return obsByTx[txID]
 }
 
-<<<<<<< HEAD
 // ObservationRawHexForHash returns the stored wire bytes per observation id for
 // one transmission, keyed by observations.id. Empty when the schema has no
 // observations.raw_hex column (#881 made it optional) or nothing is stored.
@@ -1119,8 +1106,6 @@ func (db *DB) ObservationRawHexForHash(hash string) map[int]string {
 	return out
 }
 
-=======
->>>>>>> d5ae0232 (Removing low level go modules and making it one module (#116))
 // GetNodes returns filtered, paginated node list.
 func (db *DB) GetNodes(limit, offset int, role, search, before, lastHeard, sortBy, region string) ([]map[string]interface{}, int, map[string]int, error) {
 	var where []string
@@ -3173,7 +3158,6 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 		return nil, fmt.Errorf("scope summary query: %w", err)
 	}
 
-<<<<<<< HEAD
 	// #1838: non-transport routes (FLOOD=1, DIRECT=2) never carry
 	// transport_code_1 per MeshCore protocol, so they are inherently unscoped.
 	// Fold their count into Summary.Unscoped so the analytics denominator
@@ -3188,8 +3172,6 @@ func (db *DB) GetScopeStats(window string) (*ScopeStatsResponse, error) {
 	resp.Summary.Unscoped += nonTransportUnscoped
 
 	// Per-region counts (named regions only)
-=======
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	rows, err := db.conn.Query(`
 		SELECT scope_name, COUNT(*) AS cnt
 		FROM transmissions

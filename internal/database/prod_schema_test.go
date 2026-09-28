@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"sort"
@@ -31,8 +32,12 @@ func TestMigratedSchemaMatchesProd(t *testing.T) {
 	execRaw(t, prod, string(prodSQL))
 
 	fresh := newMemoryDB(t)
-	if _, err := BaselineStampMigrate(fresh, nil); err != nil {
-		t.Fatalf("migrating fresh db: %v", err)
+	provider, err := NewMigrationProvider(fresh, true, false)
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+	if _, err := provider.UpTo(context.Background(), 31); err != nil {
+		t.Fatalf("migrating fresh db to 31: %v", err)
 	}
 
 	compareTablesAndColumns(t, prod, fresh)

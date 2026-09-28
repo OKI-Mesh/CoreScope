@@ -1618,7 +1618,7 @@ func TestObsTimestampIndexMigration(t *testing.T) {
 
 		// Build a bare-bones DB that mimics an old installation:
 		// observations table exists but idx_observations_timestamp does NOT.
-		db, err := sql.Open("sqlite3", path)
+		db, err := sql.Open("sqlite", path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2248,7 +2248,20 @@ func TestScopeNameMigration(t *testing.T) {
 }
 
 func TestTransportCodesStored(t *testing.T) {
-	s, err := OpenStore(tempDBPath(t))
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	migrateConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
+	}
+	migrateConn.Close()
+
+	s, err := OpenStore(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

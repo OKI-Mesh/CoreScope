@@ -34,9 +34,6 @@ var chScopeWant = map[string]interface{}{
 func setupChannelScopeDB(t *testing.T) *DB {
 	t.Helper()
 	db := setupTestDB(t)
-	if _, err := db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT DEFAULT NULL`); err != nil {
-		t.Fatalf("add scope_name column: %v", err)
-	}
 	db.hasScopeName = true
 	if _, err := db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer One', 'BRU')`); err != nil {
 		t.Fatalf("insert observer: %v", err)

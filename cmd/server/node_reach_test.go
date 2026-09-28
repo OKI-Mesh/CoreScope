@@ -5,15 +5,13 @@ import (
 	"database/sql"
 	"strconv"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // newReachScanTestDB builds a minimal observer_idx-schema DB with two rows whose
 // path contains "01FA" and one that does not, for scanReachRows coverage.
 func newReachScanTestDB(t *testing.T) *DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

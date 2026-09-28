@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/meshcore-analyzer/packetpath"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 func TestLoadConfigValidJSON(t *testing.T) {

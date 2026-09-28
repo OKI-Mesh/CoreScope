@@ -6,12 +6,8 @@ import (
 	"testing"
 	"time"
 
-<<<<<<< HEAD
-	_ "github.com/mattn/go-sqlite3"
-=======
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	_ "modernc.org/sqlite"
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 )
 
 // TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist pins the startup-ordering
@@ -27,9 +23,6 @@ func TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
-<<<<<<< HEAD
-	rw, err := sql.Open("sqlite3", "file:"+dbPath+"?_journal_mode=WAL")
-=======
 	// Bring the database fully under goose's control before inserting
 	// data — OpenDB now asserts readiness via database.AssertReady.
 	migrateConn, err := sql.Open("sqlite", dbPath)
@@ -42,7 +35,6 @@ func TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist(t *testing.T) {
 	migrateConn.Close()
 
 	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
->>>>>>> 1c8be9f4 (Wired up the server and fixed all broken test (#131))
 	if err != nil {
 		t.Fatal(err)
 	}

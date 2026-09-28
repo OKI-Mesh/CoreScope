@@ -21,14 +21,6 @@ import (
 func setupScopeConfigStateServer(t *testing.T) (*Server, *mux.Router) {
 	t.Helper()
 	srv, router := setupTestServer(t)
-	for _, stmt := range []string{
-		`ALTER TABLE nodes ADD COLUMN configured_scope TEXT`,
-		`ALTER TABLE nodes ADD COLUMN configured_scope_at TEXT`,
-	} {
-		if _, err := srv.db.conn.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
 		t.Fatal(err)
 	}
@@ -139,27 +131,33 @@ func TestHandleNodeDetailExposesScopeConfigState(t *testing.T) {
 	}
 }
 
-// TestHandleNodesOmitsScopeConfigStateWithoutASource is the difference between
-// "nobody has answered" and "this database cannot hold an answer". The stock
-// test schema has neither configured_scope nor node_declared_regions, so every
-// repeater would otherwise be labelled "none" — a positive claim about a
-// network, made from a database that structurally cannot carry the fact.
-func TestHandleNodesOmitsScopeConfigStateWithoutASource(t *testing.T) {
+// A repeater with no declared-regions answer and no scoped traffic reports
+// scope_config_state = none, and carries no declared_regions field.
+//
+// "Never answered" is a distinct state from "answered with an empty list"
+// (which is ScopeConfigNoFlood and does carry declared_regions = []), so the
+// absent field is what tells the map and audit page the node was never asked.
+//
+// The migrated schema always has a declared-regions source, so a node with no
+// row in it is the never-answered case. The field is omitted only when the
+// declared-regions lookup itself fails (see enrichNodeDeclaredScope callers).
+func TestHandleNodesScopeConfigStateNoneWithoutADeclaredAnswer(t *testing.T) {
 	srv, router := setupTestServer(t)
-	if srv.db.hasConfiguredScope || srv.db.hasDeclaredRegionsTable {
-		t.Fatal("fixture has a declared-regions source: this test would prove nothing")
-	}
+
 	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
 		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('PK_NOSOURCE', 'rp', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`,
+		VALUES ('PK_NOANSWER', 'rp', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`,
 	); err != nil {
 		t.Fatal(err)
 	}
 
-	nodes := nodesByPubkey(t, router, "?limit=200")
+	n := nodesByPubkey(t, router, "?limit=200")["PK_NOANSWER"]
 
-	if v, present := nodes["PK_NOSOURCE"]["scope_config_state"]; present {
-		t.Errorf("repeater carries scope_config_state = %v on a schema with no declared-regions source, want the field absent", v)
+	if got := n["scope_config_state"]; got != ScopeConfigNone {
+		t.Errorf("scope_config_state = %v, want %v for a repeater that never declared and carried no scoped traffic", got, ScopeConfigNone)
+	}
+	if v, present := n["declared_regions"]; present {
+		t.Errorf("declared_regions = %v, want absent when the node has no declared answer", v)
 	}
 }
 
@@ -254,18 +252,6 @@ func TestHandleNodesReportsObservedForUndeclaredForwarder(t *testing.T) {
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
-	// The columns the two halves of the field read, on a schema old enough to
-	// have neither.
-	for _, stmt := range []string{
-		`ALTER TABLE nodes ADD COLUMN configured_scope TEXT`,
-		`ALTER TABLE nodes ADD COLUMN configured_scope_at TEXT`,
-		`ALTER TABLE transmissions ADD COLUMN scope_name TEXT`,
-	} {
-		if _, err := db.conn.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	// 64-hex pubkey: the path-hop join matches a truncated hop against the
 	// node's own pubkey prefix, so a short fixture key would match nothing.
 	const pk = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
@@ -341,9 +327,6 @@ func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
 	srv, router := setupScopeConfigStateServer(t)
 	// /api/scope-audit reads transmissions.scope_name; the stock test schema
 	// predates it and the handler fails without it.
-	if _, err := srv.db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT`); err != nil {
-		t.Fatal(err)
-	}
 	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
 		t.Fatal(err)
 	}

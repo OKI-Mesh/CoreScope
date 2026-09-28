@@ -17,14 +17,39 @@ import (
 
 func setupTestDB(t *testing.T) *DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.SetMaxOpenConns(1)
 
-	if err := database.RunMigrations(conn); err != nil {
-		t.Fatalf("run migrations: %v", err)
+	// File-backed, like the ingestor (WAL, busy_timeout, max_open_conns=1 all come
+	// from OpenReadWrite). t.TempDir() is removed automatically after the test.
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	conn, err := database.OpenReadWrite(dbPath)
+	if err != nil {
+		t.Fatalf("opening database: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	// --- Ingestor-side setup, same order as OpenStoreWithInterval ---
+	if err := database.AssertBaselined(conn); err != nil {
+		t.Fatalf("assert baselined: %v", err)
+	}
+
+	provider, err := database.NewMigrationProvider(conn, true, false)
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+	if _, err := provider.Up(context.Background()); err != nil {
+		t.Fatalf("running migrations: %v", err)
+	}
+
+	if err := database.EnsureLegacyMigrationsTable(conn); err != nil {
+		t.Fatalf("ensure legacy migrations table: %v", err)
+	}
+	if err := database.NormalizePublicKeyCasing(conn); err != nil {
+		t.Fatalf("normalize public_key casing: %v", err)
+	}
+
+	// --- Server-side gate, same as server startup ---
+	if err := database.AssertReady(conn); err != nil {
+		t.Fatalf("assert ready: %v", err)
 	}
 
 	if _, err := conn.Exec(`
@@ -44,7 +69,9 @@ func setupTestDB(t *testing.T) *DB {
 	}
 
 	db := &DB{conn: conn}
-	db.detectSchema()
+	if err := db.detectSchema(context.Background(), conn); err != nil {
+		t.Fatalf("detect schema: %v", err)
+	}
 	return db
 }
 
@@ -1101,7 +1128,7 @@ func TestGetNodesFiltering(t *testing.T) {
 // where observations use observer_id TEXT instead of observer_idx INTEGER.
 func setupTestDBV2(t *testing.T) *DB {
 	t.Helper()
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2106,7 +2133,7 @@ func TestPerObservationRawHexEnrich(t *testing.T) {
 }
 
 func TestGetScopeStats(t *testing.T) {
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -2166,7 +2193,7 @@ func TestGetScopeStats(t *testing.T) {
 // scope_name states (NULL is unscoped, an empty string is unknown scope, a
 // name is a named scope).
 func TestGetScopeStatsAdvertsByRole(t *testing.T) {
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -2250,7 +2277,7 @@ func TestGetScopeStatsAdvertsByRole(t *testing.T) {
 }
 
 func TestGetScopeStatsAdvertsByRoleEmpty(t *testing.T) {
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -2336,7 +2363,7 @@ func (f *failingQuerier) QueryContext(ctx context.Context, query string, args ..
 // a v3 database for the whole process lifetime.
 func TestDetectSchemaFailsLoudOnProbeError(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v3.db")
-	conn, err := sql.Open("sqlite3", dbPath)
+	conn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2350,7 +2377,7 @@ func TestDetectSchemaFailsLoudOnProbeError(t *testing.T) {
 	conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
 	conn.Close()
 
-	real, err := sql.Open("sqlite3", "file:"+dbPath+"?mode=ro")
+	real, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2372,44 +2399,34 @@ func TestDetectSchemaV3AndV2(t *testing.T) {
 	dir := t.TempDir()
 
 	v3 := filepath.Join(dir, "v3.db")
-	c, err := sql.Open("sqlite3", v3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.SetMaxOpenConns(1)
-	c.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY, observer_idx INTEGER)`)
-	c.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT)`)
-	c.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
-	ensurePreparable(t, c)
-	c.Close()
+	createTestDBAt(t, v3, 0)
 	db, err := OpenDB(v3)
 	if err != nil {
 		t.Fatalf("OpenDB v3: %v", err)
 	}
+	defer db.Close()
 	if !db.isV3 {
 		t.Error("isV3 should be true when observations.observer_idx exists")
 	}
-	db.Close()
 
 	v2 := filepath.Join(dir, "v2.db")
-	c2, err := sql.Open("sqlite3", v2)
+	c2, err := sql.Open("sqlite", v2)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c2.Close()
 	c2.SetMaxOpenConns(1)
 	c2.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY, observer_id INTEGER)`)
 	c2.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT)`)
 	c2.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
-	ensurePreparable(t, c2)
-	c2.Close()
-	db2, err := OpenDB(v2)
-	if err != nil {
-		t.Fatalf("OpenDB v2: %v", err)
+
+	db2 := &DB{conn: c2}
+	if err := db2.detectSchema(context.Background(), c2); err != nil {
+		t.Fatalf("detectSchema v2: %v", err)
 	}
 	if db2.isV3 {
 		t.Error("isV3 should be false when observations has no observer_idx")
 	}
-	db2.Close()
 }
 
 // #1899: the sidebar preview must come from the region being filtered on.

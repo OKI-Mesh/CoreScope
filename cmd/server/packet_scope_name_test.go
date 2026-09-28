@@ -63,9 +63,6 @@ func TestTxToMapScopeNameNotTransportScoped(t *testing.T) {
 // only ever rendered for packets old enough to fall through to the DB.
 func TestPacketDetailExposesScopeName(t *testing.T) {
 	db := setupTestDB(t)
-	if _, err := db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT DEFAULT NULL`); err != nil {
-		t.Fatalf("add scope_name column: %v", err)
-	}
 	db.hasScopeName = true
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -155,9 +152,6 @@ func TestGroupedTxsToPageCarriesScopeName(t *testing.T) {
 
 func TestGroupedPacketsEndpointExposesScopeName(t *testing.T) {
 	db := setupTestDB(t)
-	if _, err := db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT DEFAULT NULL`); err != nil {
-		t.Fatalf("add scope_name column: %v", err)
-	}
 	db.hasScopeName = true
 	if _, err := db.conn.Exec(`DELETE FROM transmissions`); err != nil {
 		t.Fatalf("clear transmissions: %v", err)

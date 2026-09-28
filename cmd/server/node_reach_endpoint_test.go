@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func serveReach(srv *Server, path string) *httptest.ResponseRecorder {
@@ -57,7 +56,7 @@ func resetReachState(t *testing.T, servers ...*Server) {
 // build the zero-reach case (identifiable node, no matching observations).
 func newReachIntegrationDB(t *testing.T, obsPath string) (*DB, string) {
 	t.Helper()
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

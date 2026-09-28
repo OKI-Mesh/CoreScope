@@ -328,49 +328,53 @@ func createTestDBAt(tb testing.TB, dbPath string, numTx int) {
 		conn.Close()
 		tb.Fatalf("migrating test db: %v", err)
 	}
-	conn.Close()
-
-	// reopen with whatever pragmas this test needs, then seed data
-	conn, err = sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		tb.Fatal(err)
-	}
 	defer conn.Close()
+	conn.SetMaxOpenConns(1)
 
-	txStmt, err := conn.Prepare("INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	// observer_idx is the observers rowid, so seed the row it points at.
+	if _, err := conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
+		VALUES ('obs1', 'Obs1', 'SJC', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)`); err != nil {
+		tb.Fatalf("test DB insert observer: %v", err)
+	}
+	var obsIdx int64
+	if err := conn.QueryRow(`SELECT rowid FROM observers WHERE id = 'obs1'`).Scan(&obsIdx); err != nil {
+		tb.Fatalf("test DB observer rowid: %v", err)
+	}
+
+	tx, err := conn.Begin()
+	if err != nil {
+		tb.Fatalf("test DB BEGIN: %v", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	txStmt, err := tx.Prepare(`INSERT INTO transmissions
+		(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		tb.Fatalf("test DB prepare transmissions insert: %v", err)
 	}
-	obsStmt, err := conn.Prepare("INSERT INTO observations (id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	defer txStmt.Close()
+	obsStmt, err := tx.Prepare(`INSERT INTO observations
+		(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		tb.Fatalf("test DB prepare observations insert: %v", err)
 	}
-	defer txStmt.Close()
 	defer obsStmt.Close()
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// Wrap the inserts in a single transaction. Without this, SQLite
-	// (pure-Go driver) auto-commits every Exec → one fsync per row → ~2N fsyncs
-	// for N transmissions (tx + obs). At numTx=5000 that is ~10k fsyncs and the
-	// fixture blows past the test timeout (the #1741 hang). A single
-	// BEGIN/COMMIT makes the whole build one commit, finishing in well under a
-	// second regardless of numTx.
-	if _, err := conn.Exec("BEGIN"); err != nil {
-		tb.Fatalf("test DB BEGIN: %v", err)
-	}
 	for i := 1; i <= numTx; i++ {
 		tsTime := base.Add(time.Duration(i) * time.Minute)
-		ts := tsTime.Format(time.RFC3339)
-		tsUnix := tsTime.Unix()
-		hash := fmt.Sprintf("h%04d", i)
-		if _, err := txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i)); err != nil {
+		if _, err := txStmt.Exec(i, "aabb", fmt.Sprintf("h%04d", i), tsTime.Format(time.RFC3339),
+			0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i), tsTime.Unix()); err != nil {
 			tb.Fatalf("test DB insert transmission %d: %v", i, err)
 		}
-		if _, err := obsStmt.Exec(i, i, "obs1", "Obs1", "RX", -10.0, -80.0, 5, `["aa","bb"]`, ts); err != nil {
+		if _, err := obsStmt.Exec(i, i, obsIdx, "RX", -10.0, -80.0, 5,
+			`["aa","bb"]`, tsTime.Unix()); err != nil {
 			tb.Fatalf("test DB insert observation %d: %v", i, err)
 		}
 	}
-	if _, err := conn.Exec("COMMIT"); err != nil {
+	if err := tx.Commit(); err != nil {
 		tb.Fatalf("test DB COMMIT: %v", err)
 	}
 }

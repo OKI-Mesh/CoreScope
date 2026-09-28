@@ -19,7 +19,7 @@ func TestChannelsCacheServesWarmEntry(t *testing.T) {
 		},
 	}
 	cacheKey := channelsCacheKey("", true)
-	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: resp, at: time.Now()})
+	s.channelsCache.entries.Store(cacheKey, &serverchannelsCacheEntry{resp: resp, at: time.Now()})
 
 	req := httptest.NewRequest("GET", "/api/channels?includeEncrypted=true", nil)
 	w := httptest.NewRecorder()
@@ -55,7 +55,7 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 	fresh := ChannelListResponse{
 		Channels: []map[string]interface{}{{"hash": "fresh-sentinel", "name": "fresh-sentinel"}},
 	}
-	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: fresh, at: time.Now()})
+	s.channelsCache.entries.Store(cacheKey, &serverchannelsCacheEntry{resp: fresh, at: time.Now()})
 	req := httptest.NewRequest("GET", "/api/channels", nil)
 	w := httptest.NewRecorder()
 	s.handleChannels(w, req)
@@ -66,7 +66,7 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 	stale := ChannelListResponse{
 		Channels: []map[string]interface{}{{"hash": "stale-sentinel", "name": "stale-sentinel"}},
 	}
-	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: stale, at: time.Now().Add(-channelsCacheTTL - time.Second)})
+	s.channelsCache.entries.Store(cacheKey, &serverchannelsCacheEntry{resp: stale, at: time.Now().Add(-channelsCacheTTL - time.Second)})
 	w2 := httptest.NewRecorder()
 	s.handleChannels(w2, req)
 	if strings.Contains(w2.Body.String(), "stale-sentinel") {
@@ -174,6 +174,9 @@ func TestChannelsCacheDoesNotCacheOnEncryptedQueryError(t *testing.T) {
 
 	if _, err := db.GetChannels(""); err != nil {
 		t.Fatalf("warm db cache: %v", err)
+	}
+	if _, err := db.conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("disable fk: %v", err)
 	}
 	if _, err := db.conn.Exec("DROP TABLE transmissions"); err != nil {
 		t.Fatalf("drop transmissions: %v", err)

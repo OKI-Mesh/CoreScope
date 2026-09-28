@@ -130,7 +130,7 @@ func TestServerDBConnIsReadOnly(t *testing.T) {
 
 	// Bootstrap a minimal DB with the ingestor-style WAL opener so the
 	// server can attach in read-only mode.
-	if err := bootstrapMinimalDB(t, path); err != nil {
+	if err := bootstrapMinimalDB(path); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
@@ -169,7 +169,7 @@ func bootstrapMinimalDB(path string) error {
 	// pragma, and callers relying on WAL mode being active need a
 	// connection opened with it.
 	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000", path)
-	rw, err := sql.Open("sqlite3", dsn)
+	rw, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return err
 	}

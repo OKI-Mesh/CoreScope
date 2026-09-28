@@ -258,7 +258,6 @@ jobs:
   e2e-test:
     name: "🎭 Playwright E2E Tests"
     needs: [changes, go-test]
-    if: needs.changes.outputs.code == 'true'   # #113: skip for docs-only changes
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -764,7 +763,6 @@ jobs:
     # tag deploy (the release-fast-path fallback dispatch) regardless.
     if: needs.changes.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
-    if: needs.changes.outputs.code == 'true' && !(startsWith(github.ref, 'refs/tags/v') && inputs.images_published)
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

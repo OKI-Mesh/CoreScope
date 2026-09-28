@@ -104,7 +104,7 @@ type Server struct {
 	// #1483 follow-up (singleflight + monotonic time).
 	observersCacheV2 observersCacheField
 
-	channelsCache channelsCacheField // see channels_cache.go
+	channelsCache serverchannelsCacheField // see channels_cache.go
 
 	// Cached default-shape /api/analytics/neighbor-graph response,
 	// recomputed every 5 min in a background goroutine. Issue #1481 P0-1.
@@ -2674,7 +2674,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	cacheKey := channelsCacheKey(region, includeEncrypted)
 
 	if v, ok := s.channelsCache.entries.Load(cacheKey); ok {
-		if e, ok := v.(*channelsCacheEntry); ok && e != nil && !s.isChannelsListCacheStale(e.at) {
+		if e, ok := v.(*serverchannelsCacheEntry); ok && e != nil && !s.isChannelsListCacheStale(e.at) {
 			w.Header().Set("X-Cache-Age-Seconds", cacheAgeSecondsHeader(time.Since(e.at)))
 			writeJSON(w, e.resp)
 			return
@@ -2683,7 +2683,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 
 	v, err, _ := s.channelsCache.sf.Do(cacheKey, func() (interface{}, error) {
 		if v, ok := s.channelsCache.entries.Load(cacheKey); ok {
-			if e, ok := v.(*channelsCacheEntry); ok && e != nil && !s.isChannelsListCacheStale(e.at) {
+			if e, ok := v.(*serverchannelsCacheEntry); ok && e != nil && !s.isChannelsListCacheStale(e.at) {
 				return e, nil
 			}
 		}
@@ -2692,7 +2692,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 			return nil, fetchErr
 		}
 		s.channelsCache.fillCount.Add(1)
-		entry := &channelsCacheEntry{resp: resp, at: time.Now()}
+		entry := &serverchannelsCacheEntry{resp: resp, at: time.Now()}
 		s.channelsCache.entries.Store(cacheKey, entry)
 		return entry, nil
 	})
@@ -2700,7 +2700,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	entry := v.(*channelsCacheEntry)
+	entry := v.(*serverchannelsCacheEntry)
 	w.Header().Set("X-Cache-Age-Seconds", cacheAgeSecondsHeader(time.Since(entry.at)))
 	writeJSON(w, entry.resp)
 }

@@ -561,7 +561,7 @@ func TestBuildNodeInfoMap_FirstSeenIsCached(t *testing.T) {
 	})
 
 	// Seed via rw connection.
-	rw, err := sql.Open("sqlite3", dbPath)
+	rw, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +646,6 @@ func TestGetAllNodes_FirstSeenSchemaFallback(t *testing.T) {
 	}
 	defer conn.Close()
 	db := &DB{conn: conn, path: dbPath}
-	db.detectSchema()
 
 	store := NewPacketStore(db, nil)
 	nodes := store.getAllNodes()

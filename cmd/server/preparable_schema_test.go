@@ -59,7 +59,7 @@ func ensurePreparable(tb testing.TB, conn *sql.DB) {
 // create, it fails here rather than as a confusing OpenDB error in whichever
 // fixture happens to be thinnest.
 func TestEnsurePreparableMatchesPrepareStatements(t *testing.T) {
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

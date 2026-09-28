@@ -350,8 +350,6 @@ func TestNodeHopAnalytics_LiveIngestDoesNotTrustResolverPick(t *testing.T) {
 // map and neighbor graph, not from what each load path indexed.
 func TestNodeHopAnalytics_SameResultAfterRestart(t *testing.T) {
 	db := setupTestDB(t)
-	mustExec(t, db, `CREATE TABLE neighbor_edges (node_a TEXT NOT NULL, node_b TEXT NOT NULL,
-		count INTEGER DEFAULT 1, last_seen TEXT, PRIMARY KEY (node_a, node_b))`)
 	mustExec(t, db, `INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, 50, ?)`,
 		hopOther, hopTarget, time.Now().UTC().Format(time.RFC3339))
 	hopInsertNode(t, db, hopTarget, "Target", 1)

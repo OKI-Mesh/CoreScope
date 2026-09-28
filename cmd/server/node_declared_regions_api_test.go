@@ -122,9 +122,12 @@ func TestHandleNodeDetailExposesDeclaredRegions(t *testing.T) {
 // hold a declared answer, an empty list would claim "answered, names nothing".
 func TestHandleNodesOmitsDeclaredRegionsWithoutASource(t *testing.T) {
 	srv, router := setupTestServer(t)
-	if srv.db.hasConfiguredScope || srv.db.hasDeclaredRegionsTable {
-		t.Fatal("fixture has a declared-regions source: this test would prove nothing")
-	}
+
+	// The goose-migrated fixture always carries nodes.configured_scope, so
+	// simulate a deployment with no confirmed-scope source by clearing the flags.
+	srv.db.hasConfiguredScope = false
+	srv.db.hasDeclaredRegionsTable = false
+
 	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
 		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
 		VALUES ('PK_NOSOURCE_RGN', 'rp', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`,
@@ -146,9 +149,6 @@ func TestHandleNodesOmitsDeclaredRegionsWithoutASource(t *testing.T) {
 // repeaters.
 func TestScopeAuditAndNodesAgreeOnDeclaredRegions(t *testing.T) {
 	srv, router := setupScopeConfigStateServer(t)
-	if _, err := srv.db.conn.Exec(`ALTER TABLE transmissions ADD COLUMN scope_name TEXT`); err != nil {
-		t.Fatal(err)
-	}
 	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
 		t.Fatal(err)
 	}

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // TestNeighborPersist_LegacyEdgeInvariant (#1638 adv-#1): edges loaded from
@@ -18,7 +16,7 @@ import (
 func TestNeighborPersist_LegacyEdgeInvariant(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "neighbor_legacy.db")
-	rw, err := sql.Open("sqlite3", "file:"+dbPath+"?_journal_mode=WAL")
+	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +77,7 @@ func TestNeighborPersist_LegacyEdgeInvariant(t *testing.T) {
 func TestNeighborPersist_LegacyEdgeMergeOnReload(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "neighbor_legacy_merge.db")
-	rw, err := sql.Open("sqlite3", "file:"+dbPath+"?_journal_mode=WAL")
+	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func computeContentHash(rawHex string) string {

@@ -61,7 +61,7 @@ func TestMigrateBringsFixtureToReady(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "fixture-copy.db")
 	copyFile(t, src, dst)
 
-	db, err := sql.Open("sqlite3", dst)
+	db, err := sql.Open("sqlite", dst)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

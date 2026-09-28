@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // benchReachDB builds an in-memory DB with nObs observations. matchEvery
@@ -155,7 +153,7 @@ func BenchmarkNodeReachAttribute(b *testing.B) {
 // must surface an error, not a swallowed nil. Lives in this file because
 // the bench callers in the same file rely on the same signature.
 func TestScanReachRows_ErrorReturn(t *testing.T) {
-	conn, err := sql.Open("sqlite3", ":memory:")
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
