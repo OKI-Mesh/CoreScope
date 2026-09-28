@@ -3780,9 +3780,24 @@ func (s *PacketStore) computeNodeHomeRegions() map[string]string {
 }
 
 // enrichObs returns a map with observation fields + transmission fields.
+//
+// It reads s.byTxID, so it MUST be called with s.mu held (RLock suffices).
+// Callers that cannot hold the lock across enrichment — e.g. the analytics
+// handler, which snapshots byObserver and releases the RLock early (#1481) —
+// must resolve the *StoreTx under the lock and call enrichObsWithTx instead.
+// Calling this unlocked races the ingestor's byTxID writes: fatal "concurrent
+// map read and map write" (#134).
 func (s *PacketStore) enrichObs(obs *StoreObs) map[string]interface{} {
-	tx := s.byTxID[obs.TransmissionID]
+	return s.enrichObsWithTx(obs, s.byTxID[obs.TransmissionID])
+}
 
+// enrichObsWithTx is enrichObs with the transmission already resolved by the
+// caller. It performs NO access to s.byTxID (or any other s.mu-guarded map),
+// so it is safe to call without holding s.mu — the caller is responsible for
+// having read byTxID under the lock. The on-demand resolved_path fetch it does
+// is guarded by its own lruMu, independent of s.mu. tx may be nil (unknown
+// transmission), in which case the transmission-derived fields are omitted.
+func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx) map[string]interface{} {
 	m := map[string]interface{}{
 		"id":            obs.ID,
 		"timestamp":     strOrNil(obs.Timestamp),
