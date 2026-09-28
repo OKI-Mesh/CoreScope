@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -67,4 +68,24 @@ func TestObserverAnalyticsByTxIDRace(t *testing.T) {
 	readers.Wait()
 	close(stop)
 	<-writerDone
+
+	// #141 review (Jeymz): a 200 alone would pass even if enrichment silently
+	// stopped resolving the transmission. Assert a transmission-derived field
+	// survives — packetTypes is keyed by tx.PayloadType, so a non-empty map
+	// proves enrichObsWithTx still resolved the tx for obs1's seeded packets.
+	// Run this after the writer stops, so it's a deterministic quiescent check.
+	req := httptest.NewRequest("GET", "/api/observers/obs1/analytics", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("final analytics request returned %d, want 200", w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode analytics response: %v", err)
+	}
+	pt, ok := body["packetTypes"].(map[string]interface{})
+	if !ok || len(pt) == 0 {
+		t.Errorf("packetTypes empty: enrichment no longer resolves the transmission (got %v)", body["packetTypes"])
+	}
 }

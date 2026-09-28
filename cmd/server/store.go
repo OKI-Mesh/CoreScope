@@ -3792,11 +3792,19 @@ func (s *PacketStore) enrichObs(obs *StoreObs) map[string]interface{} {
 }
 
 // enrichObsWithTx is enrichObs with the transmission already resolved by the
-// caller. It performs NO access to s.byTxID (or any other s.mu-guarded map),
-// so it is safe to call without holding s.mu — the caller is responsible for
-// having read byTxID under the lock. The on-demand resolved_path fetch it does
-// is guarded by its own lruMu, independent of s.mu. tx may be nil (unknown
-// transmission), in which case the transmission-derived fields are omitted.
+// caller. It performs NO s.mu-guarded MAP lookup (no s.byTxID or other guarded
+// map access), so the caller may release s.mu before calling it, provided it
+// read byTxID under the lock. The on-demand resolved_path fetch uses its own
+// lruMu, independent of s.mu. tx may be nil (unknown transmission), in which
+// case the transmission-derived fields are omitted.
+//
+// Scope of the safety guarantee: this removes the unlocked *map* access only.
+// Reading fields off the snapshotted *StoreObs / *StoreTx after s.mu is
+// released is safe because the store replaces index entries rather than
+// mutating live objects in place. That object-lifecycle invariant is separate
+// from this change and is NOT established here; the one known in-place mutation
+// (hash-migrate rewriting tx.Hash) is a distinct field-level race tracked in
+// #142, not closed by this method.
 func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx) map[string]interface{} {
 	m := map[string]interface{}{
 		"id":            obs.ID,

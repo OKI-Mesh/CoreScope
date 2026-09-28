@@ -2847,6 +2847,12 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 	// that lookup after RUnlock is a fatal "concurrent map read and map write".
 	// byTxID is keyed by transmission id, so shared transmissions dedupe here;
 	// a missing id maps to nil, which enrichObsWithTx handles.
+	//
+	// This snapshot holds *pointers*. Closing only the map race is sound because
+	// the store replaces index entries rather than mutating live objects in
+	// place; reading tx fields after RUnlock relies on that lifecycle invariant,
+	// not on this lookup. The one known in-place mutation (hash-migrate) is a
+	// separate field-level race tracked in #142.
 	txSnapshot := make(map[int]*StoreTx, len(obsSnapshot))
 	for _, obs := range obsSnapshot {
 		txSnapshot[obs.TransmissionID] = s.store.byTxID[obs.TransmissionID]
