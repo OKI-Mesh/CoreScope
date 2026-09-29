@@ -2842,6 +2842,21 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 	// don't iterate + json-decode + time-parse under the lock.
 	obsSnapshot := make([]*StoreObs, len(obsList))
 	copy(obsSnapshot, obsList)
+	// #134: resolve each observation's *StoreTx while we still hold the RLock.
+	// enrichObs reads s.byTxID, which the ingestor writes concurrently; doing
+	// that lookup after RUnlock is a fatal "concurrent map read and map write".
+	// byTxID is keyed by transmission id, so shared transmissions dedupe here;
+	// a missing id maps to nil, which enrichObsWithTx handles.
+	//
+	// This snapshot holds *pointers*. Closing only the map race is sound because
+	// the store replaces index entries rather than mutating live objects in
+	// place; reading tx fields after RUnlock relies on that lifecycle invariant,
+	// not on this lookup. The one known in-place mutation (hash-migrate) is a
+	// separate field-level race tracked in #142.
+	txSnapshot := make(map[int]*StoreTx, len(obsSnapshot))
+	for _, obs := range obsSnapshot {
+		txSnapshot[obs.TransmissionID] = s.store.byTxID[obs.TransmissionID]
+	}
 	s.store.mu.RUnlock()
 	filtered := make([]*StoreObs, 0, len(obsSnapshot))
 	for _, obs := range obsSnapshot {
@@ -2888,7 +2903,7 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 			nodeBucketSets[bucketStart] = map[string]struct{}{}
 		}
 
-		enriched := s.store.enrichObs(obs)
+		enriched := s.store.enrichObsWithTx(obs, txSnapshot[obs.TransmissionID])
 		if pt, ok := enriched["payload_type"].(int); ok {
 			packetTypes[strconv.Itoa(pt)]++
 		}

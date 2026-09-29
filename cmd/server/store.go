@@ -3780,9 +3780,32 @@ func (s *PacketStore) computeNodeHomeRegions() map[string]string {
 }
 
 // enrichObs returns a map with observation fields + transmission fields.
+//
+// It reads s.byTxID, so it MUST be called with s.mu held (RLock suffices).
+// Callers that cannot hold the lock across enrichment — e.g. the analytics
+// handler, which snapshots byObserver and releases the RLock early (#1481) —
+// must resolve the *StoreTx under the lock and call enrichObsWithTx instead.
+// Calling this unlocked races the ingestor's byTxID writes: fatal "concurrent
+// map read and map write" (#134).
 func (s *PacketStore) enrichObs(obs *StoreObs) map[string]interface{} {
-	tx := s.byTxID[obs.TransmissionID]
+	return s.enrichObsWithTx(obs, s.byTxID[obs.TransmissionID])
+}
 
+// enrichObsWithTx is enrichObs with the transmission already resolved by the
+// caller. It performs NO s.mu-guarded MAP lookup (no s.byTxID or other guarded
+// map access), so the caller may release s.mu before calling it, provided it
+// read byTxID under the lock. The on-demand resolved_path fetch uses its own
+// lruMu, independent of s.mu. tx may be nil (unknown transmission), in which
+// case the transmission-derived fields are omitted.
+//
+// Scope of the safety guarantee: this removes the unlocked *map* access only.
+// Reading fields off the snapshotted *StoreObs / *StoreTx after s.mu is
+// released is safe because the store replaces index entries rather than
+// mutating live objects in place. That object-lifecycle invariant is separate
+// from this change and is NOT established here; the one known in-place mutation
+// (hash-migrate rewriting tx.Hash) is a distinct field-level race tracked in
+// #142, not closed by this method.
+func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx) map[string]interface{} {
 	m := map[string]interface{}{
 		"id":            obs.ID,
 		"timestamp":     strOrNil(obs.Timestamp),
