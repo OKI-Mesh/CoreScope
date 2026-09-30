@@ -199,7 +199,7 @@ for (const [name, edge] of [['matching', 'a'.repeat(40)], ['missing', null], ['m
   assert.equal(mutates.length, matching ? 2 : 0, `${name}: one mutate per platform`);
   if (matching) {
     assert.deepEqual(mutates.map(command => command.at(-1)).sort(),
-      ['ghcr.io/kpa-clawbot/corescope:tmp-v9.8.7-linux-amd64', 'ghcr.io/kpa-clawbot/corescope:tmp-v9.8.7-linux-arm64'],
+      ['ghcr.io/oki-mesh/corescope:tmp-v9.8.7-linux-amd64', 'ghcr.io/oki-mesh/corescope:tmp-v9.8.7-linux-arm64'],
       'each platform is mutated into its own scratch tag');
     assert.ok(mutates.every(command => command[2].includes('@sha256:')), 'mutate must address a platform by digest, not the index tag');
     const indexes = commands.filter(command => command[0] === 'crane' && command[1] === 'index');
