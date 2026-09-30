@@ -3028,11 +3028,11 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, ObserverAnalyticsResponse{
-		Timeline:        buildTimeline(filtered, days),
-		PacketTypes:     buildPacketTypes(filtered, txByID),
-		NodesTimeline:   buildNodesTimeline(filtered, days, txByID),
-		SnrDistribution: buildSnrDistribution(filtered),
-		RecentPackets:   buildRecentPackets(s.store, filtered, 20, txByID),
+		Timeline:        buildTimeline(timelineCounts),
+		PacketTypes:     packetTypes,
+		NodesTimeline:   buildTimeline(nodeCounts),
+		SnrDistribution: snrDistribution,
+		RecentPackets:   recentPackets,
 	})
 }
 
