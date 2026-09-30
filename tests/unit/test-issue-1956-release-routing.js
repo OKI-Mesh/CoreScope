@@ -206,7 +206,7 @@ for (const [name, edge] of [['matching', 'a'.repeat(40)], ['missing', null], ['m
     assert.equal(indexes.length, 1, 'the release tag is assembled as one index');
     assert.deepEqual(indexes[0].slice(1, 3), ['index', 'append']);
     assert.equal(indexes[0].filter(argument => argument === '-m').length, 2, 'the index carries both platforms');
-    assert.equal(indexes[0].at(-1), 'ghcr.io/kpa-clawbot/corescope:v9.8.7');
+    assert.equal(indexes[0].at(-1), 'ghcr.io/oki-mesh/corescope:v9.8.7');
   }
   assert.deepEqual(commands.filter(command => command[0] === 'crane' && command[1] === 'tag').map(command => command.at(-1)), matching ? ['v9.8', 'v9', 'latest'] : []);
   const jobs = route(context(undefined, undefined, { images_published: matching }));
