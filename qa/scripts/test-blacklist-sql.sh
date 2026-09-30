@@ -11,17 +11,20 @@
 # the query is silently broken and returns 0 for everything, so the legitimate
 # pubkey must be shown to still return the row it should.
 #
-# The fixture schema is NOT hand-written: it is the transmissions CREATE TABLE
-# extracted from cmd/ingestor/db.go, and the query is also run against the
-# committed staging-captured test-fixtures/e2e-fixture.db. An earlier version
-# invented a `from_node` column that no CoreScope database has, and so passed
-# while the real probe could never succeed.
+# The fixture schema is NOT hand-written: it is built by running the real
+# ingestor migration path (cmd/migrate -migrate) against a throwaway file, so
+# it always matches whatever goose migrations currently define — no more
+# copy-pasting or scraping DDL that can drift out of sync. The query is also
+# run against the committed staging-captured test-fixtures/e2e-fixture.db.
+# An earlier version invented a `from_node` column that no CoreScope database
+# has, and so passed while the real probe could never succeed; this is the
+# fix for that same class of bug recurring against a scraped DDL string.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INGESTOR_DB_GO="$REPO_ROOT/cmd/ingestor/db.go"
+MIGRATE_BIN="${MIGRATE_BIN:-$REPO_ROOT/bin/migrate}"
 REAL_FIXTURE="$REPO_ROOT/test-fixtures/e2e-fixture.db"
 # shellcheck source=blacklist-test.sh
 . "$SCRIPT_DIR/blacklist-test.sh"
@@ -95,20 +98,13 @@ assert_true "query targets transmissions.from_pubkey" contains "$COUNT_SQL" "WHE
 assert_true "query does not reference from_node"     lacks "$COUNT_SQL" "from_node"
 assert_true "query text does not carry the raw pubkey" lacks "$COUNT_SQL" "$PK_A"
 
-# ----- schema taken from the ingestor ------------------------------------------
-# Pull the transmissions DDL out of cmd/ingestor/db.go instead of restating it.
-transmissions_ddl() {
-    awk '/CREATE TABLE IF NOT EXISTS transmissions \(/{p=1} p{print} p&&/^[[:space:]]*\);/{exit}' "$INGESTOR_DB_GO"
-}
-DDL=$(transmissions_ddl)
-assert_match "ingestor DDL extracted" "CREATE TABLE IF NOT EXISTS transmissions \\(" "$DDL"
-assert_match "ingestor DDL has from_pubkey" "from_pubkey[[:space:]]+TEXT" "$DDL"
-assert_true  "ingestor DDL has no from_node" lacks "$DDL" "from_node"
-
 # ----- against a real sqlite3 ----------------------------------------------
 if ! command -v sqlite3 >/dev/null 2>&1; then
-    echo "SKIP: sqlite3 not on PATH — skipping the ${#SQLITE_ARGS[@]}-flag query group" >&2
-    echo "      (the alphabet, query-text and schema assertions above still ran)" >&2
+    echo "SKIP: sqlite3 not on PATH — skipping the sqlite3-backed query group" >&2
+    echo "      (the alphabet and query-text assertions above still ran)" >&2
+elif [ ! -x "$MIGRATE_BIN" ]; then
+    echo "SKIP: migrate binary not found/executable at $MIGRATE_BIN — skipping the sqlite3-backed query group" >&2
+    echo "      (build it first, e.g. go build -o bin/migrate ./cmd/migrate)" >&2
 else
     FIXTURE_DIR=$(mktemp -d)
     trap 'rm -rf "$FIXTURE_DIR"' EXIT
@@ -116,10 +112,15 @@ else
     LEGACY_DB="$FIXTURE_DIR/legacy-from-node.db"
     EMPTY_DB="$FIXTURE_DIR/no-table.db"
 
-    # Schema-realistic fixture: the ingestor's own DDL. Three ADVERTs from A, one
-    # from B, and two non-ADVERT rows whose from_pubkey is NULL (the ingestor only
-    # attributes ADVERTs), so a structural injection has 6 rows to leak.
-    printf '%s\n' "$DDL" | sqlite3 "$DB"
+    # Schema-realistic fixture: built by running the real migrations, not a
+    # scraped/hand-copied DDL string. Three ADVERTs from A, one from B, and two
+    # non-ADVERT rows whose from_pubkey is NULL (the ingestor only attributes
+    # ADVERTs), so a structural injection has 6 rows to leak.
+    if ! "$MIGRATE_BIN" -migrate -db "$DB" >"$FIXTURE_DIR/migrate.log" 2>&1; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: building fixture via $MIGRATE_BIN -migrate -db $DB" >&2
+        cat "$FIXTURE_DIR/migrate.log" >&2
+    fi
     sqlite3 "$DB" <<SQL
 INSERT INTO transmissions(raw_hex,hash,first_seen,payload_type,from_pubkey) VALUES
   ('00','h1','2026-01-01T00:00:00Z',4,'$PK_A'),
@@ -130,6 +131,8 @@ INSERT INTO transmissions(raw_hex,hash,first_seen,payload_type,from_pubkey) VALU
   ('00','h6','2026-01-01T00:00:05Z',2,NULL);
 SQL
     # The fixture the previous version of this test used: an invented column.
+    # Kept hand-rolled deliberately — this is meant to simulate a broken/wrong
+    # schema, not a real one, so it stays independent of the migrate tool.
     sqlite3 "$LEGACY_DB" "CREATE TABLE transmissions(from_node TEXT); INSERT INTO transmissions VALUES('$PK_A');"
     sqlite3 "$EMPTY_DB" "CREATE TABLE unrelated(x);"
 
