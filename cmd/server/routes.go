@@ -2902,17 +2902,20 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 	obsList := s.store.byObserver[id]
 	obsSnapshot := make([]*StoreObs, len(obsList))
 	copy(obsSnapshot, obsList)
-	// #1830: also resolve each referenced transmission's *StoreTx under
-	// this same RLock. s.store.byTxID is guarded by s.store.mu (writes
-	// from ingest/eviction); reading it after RUnlock — as the loop below
-	// used to via s.store.byTxID[...] and enrichObs() — races with those
-	// writers. Keyed by TransmissionID (not by observation index) since
-	// multiple observations can share one transmission.
-	txByID := make(map[int]*StoreTx, len(obsSnapshot))
+	// #134: resolve each observation's *StoreTx while we still hold the RLock.
+	// enrichObs reads s.byTxID, which the ingestor writes concurrently; doing
+	// that lookup after RUnlock is a fatal "concurrent map read and map write".
+	// byTxID is keyed by transmission id, so shared transmissions dedupe here;
+	// a missing id maps to nil, which enrichObsWithTx handles.
+	//
+	// This snapshot holds *pointers*. Closing only the map race is sound because
+	// the store replaces index entries rather than mutating live objects in
+	// place; reading tx fields after RUnlock relies on that lifecycle invariant,
+	// not on this lookup. The one known in-place mutation (hash-migrate) is a
+	// separate field-level race tracked in #142.
+	txSnapshot := make(map[int]*StoreTx, len(obsSnapshot))
 	for _, obs := range obsSnapshot {
-		if _, ok := txByID[obs.TransmissionID]; !ok {
-			txByID[obs.TransmissionID] = s.store.byTxID[obs.TransmissionID]
-		}
+		txSnapshot[obs.TransmissionID] = s.store.byTxID[obs.TransmissionID]
 	}
 	s.store.mu.RUnlock()
 	filtered := make([]*StoreObs, 0, len(obsSnapshot))
@@ -2926,6 +2929,103 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Timestamp > filtered[j].Timestamp })
+
+	bucketDur := 24 * time.Hour
+	if days <= 1 {
+		bucketDur = time.Hour
+	} else if days <= 7 {
+		bucketDur = 4 * time.Hour
+	}
+	formatLabel := func(t time.Time) string {
+		if days <= 1 {
+			return t.UTC().Format("15:04")
+		}
+		if days <= 7 {
+			return t.UTC().Format("Mon 15:04")
+		}
+		return t.UTC().Format("Jan 02")
+	}
+
+	packetTypes := map[string]int{}
+	timelineCounts := map[int64]int{}
+	nodeBucketSets := map[int64]map[string]struct{}{}
+	snrBuckets := map[int]*SnrDistributionEntry{}
+	recentPackets := make([]map[string]interface{}, 0, 20)
+
+	for i, obs := range filtered {
+		ts, ok := obs.ParsedTime()
+		if !ok {
+			continue
+		}
+		bucketStart := ts.UTC().Truncate(bucketDur).Unix()
+		timelineCounts[bucketStart]++
+		if nodeBucketSets[bucketStart] == nil {
+			nodeBucketSets[bucketStart] = map[string]struct{}{}
+		}
+
+		enriched := s.store.enrichObsWithTx(obs, txSnapshot[obs.TransmissionID])
+		if pt, ok := enriched["payload_type"].(int); ok {
+			packetTypes[strconv.Itoa(pt)]++
+		}
+		if decodedRaw, ok := enriched["decoded_json"].(string); ok && decodedRaw != "" {
+			var decoded map[string]interface{}
+			if json.Unmarshal([]byte(decodedRaw), &decoded) == nil {
+				for _, k := range []string{"pubKey", "srcHash", "destHash"} {
+					if v, ok := decoded[k].(string); ok && v != "" {
+						nodeBucketSets[bucketStart][v] = struct{}{}
+					}
+				}
+			}
+		}
+		for _, hop := range parsePathJSON(obs.PathJSON) {
+			if hop != "" {
+				nodeBucketSets[bucketStart][hop] = struct{}{}
+			}
+		}
+		if obs.SNR != nil {
+			bucket := int(*obs.SNR) / 2 * 2
+			if *obs.SNR < 0 && int(*obs.SNR) != bucket {
+				bucket -= 2
+			}
+			if snrBuckets[bucket] == nil {
+				snrBuckets[bucket] = &SnrDistributionEntry{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
+			}
+			snrBuckets[bucket].Count++
+		}
+		if i < 20 {
+			recentPackets = append(recentPackets, enriched)
+		}
+	}
+	// #1481 P0-2: RLock was released earlier after snapshotting the
+	// observation pointer slice; no Unlock needed here.
+
+	buildTimeline := func(counts map[int64]int) []TimeBucket {
+		keys := make([]int64, 0, len(counts))
+		for k := range counts {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		out := make([]TimeBucket, 0, len(keys))
+		for _, k := range keys {
+			lbl := formatLabel(time.Unix(k, 0))
+			out = append(out, TimeBucket{Label: &lbl, Count: counts[k]})
+		}
+		return out
+	}
+
+	nodeCounts := make(map[int64]int, len(nodeBucketSets))
+	for k, nodes := range nodeBucketSets {
+		nodeCounts[k] = len(nodes)
+	}
+	snrKeys := make([]int, 0, len(snrBuckets))
+	for k := range snrBuckets {
+		snrKeys = append(snrKeys, k)
+	}
+	sort.Ints(snrKeys)
+	snrDistribution := make([]SnrDistributionEntry, 0, len(snrKeys))
+	for _, k := range snrKeys {
+		snrDistribution = append(snrDistribution, *snrBuckets[k])
+	}
 
 	writeJSON(w, ObserverAnalyticsResponse{
 		Timeline:        buildTimeline(filtered, days),

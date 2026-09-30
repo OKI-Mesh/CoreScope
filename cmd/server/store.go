@@ -3844,24 +3844,31 @@ func (s *PacketStore) computeNodeHomeRegions() map[string]string {
 }
 
 // enrichObs returns a map with observation fields + transmission fields.
-// Looks up the transmission in s.byTxID itself — safe only when the caller
-// already holds s.mu (directly, or via a defer'd RLock spanning the call).
-// Callers that snapshot observations under RLock and then release it before
-// iterating (e.g. handleObserverAnalytics, #1830) must use enrichObsWithTx
-// with a tx pointer resolved during that same snapshot instead.
+//
+// It reads s.byTxID, so it MUST be called with s.mu held (RLock suffices).
+// Callers that cannot hold the lock across enrichment — e.g. the analytics
+// handler, which snapshots byObserver and releases the RLock early (#1481) —
+// must resolve the *StoreTx under the lock and call enrichObsWithTx instead.
+// Calling this unlocked races the ingestor's byTxID writes: fatal "concurrent
+// map read and map write" (#134).
 func (s *PacketStore) enrichObs(obs *StoreObs) map[string]interface{} {
 	return s.enrichObsWithTx(obs, s.byTxID[obs.TransmissionID])
 }
 
-// enrichObsWithTx is enrichObs with the transmission pointer already
-// resolved by the caller, instead of looking it up in s.byTxID here. #1830:
-// s.byTxID is guarded by s.mu (writes from ingest/eviction); reading it
-// without holding at least RLock races with those writers — Go maps can
-// panic with "concurrent map read and map write" during a rehash, not just
-// fail under -race. Callers that need to read byTxID after releasing their
-// RLock (to keep JSON decode / enrichment off the hot lock, per #1481)
-// should resolve the *StoreTx for each observation during their RLock-held
-// snapshot and pass it in here.
+// enrichObsWithTx is enrichObs with the transmission already resolved by the
+// caller. It performs NO s.mu-guarded MAP lookup (no s.byTxID or other guarded
+// map access), so the caller may release s.mu before calling it, provided it
+// read byTxID under the lock. The on-demand resolved_path fetch uses its own
+// lruMu, independent of s.mu. tx may be nil (unknown transmission), in which
+// case the transmission-derived fields are omitted.
+//
+// Scope of the safety guarantee: this removes the unlocked *map* access only.
+// Reading fields off the snapshotted *StoreObs / *StoreTx after s.mu is
+// released is safe because the store replaces index entries rather than
+// mutating live objects in place. That object-lifecycle invariant is separate
+// from this change and is NOT established here; the one known in-place mutation
+// (hash-migrate rewriting tx.Hash) is a distinct field-level race tracked in
+// #142, not closed by this method.
 func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx) map[string]interface{} {
 	m := map[string]interface{}{
 		"id":            obs.ID,
