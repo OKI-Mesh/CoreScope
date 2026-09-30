@@ -15,6 +15,21 @@ function getPathLenOffset(routeType) { return isTransportRoute(routeType) ? 5 : 
 function transportBadge(rt) { return isTransportRoute(rt) ? ' <span class="badge badge-transport" title="' + routeTypeName(rt) + '">T</span>' : ''; }
 
 /**
+ * Render a packet's transport region scope (transmissions.scope_name) for the
+ * Scope column and the detail pane. Three states, matching what the DB stores:
+ *   null/undefined — not transport-scoped; FLOOD and DIRECT carry no
+ *                    transport_code_1 at all, so there is nothing to show.
+ *   ""             — transport-scoped, but the code matched no configured
+ *                    hashRegions entry.
+ *   "#be"          — the matched region name.
+ */
+function scopeCellHtml(scopeName) {
+  if (scopeName == null) return '—';
+  if (scopeName === '') return '<span style="color:var(--text-muted)">unknown</span>';
+  return escapeHtml(scopeName);
+}
+
+/**
  * Compute breakdown byte ranges from raw_hex on the client.
  * Mirrors cmd/server/decoder.go BuildBreakdown(). Used so per-observation raw_hex
  * (which can differ in path length from the top-level packet) gets accurate
@@ -150,7 +165,12 @@ async function api(path, { ttl = 0, bust = false } = {}) {
         _apiPerf.log.push({ path, ms: Math.round(ms), time: Date.now() });
         if (_apiPerf.log.length > 200) _apiPerf.log.shift();
         if (ms > 500) console.warn(`[SLOW API] ${path} took ${Math.round(ms)}ms`);
-        if (ttl > 0) _apiCache.set(path, { data, expires: Date.now() + ttl });
+        // #1997: never cache a "not ready yet" body. The lazy distance
+        // index answers 202 with {status:"building"} until it is built, and
+        // res.ok is true for 202, so caching it would serve that placeholder
+        // back to every retry for the whole TTL — the page would stay in its
+        // building state for minutes after the index was ready.
+        if (ttl > 0 && res.status !== 202) _apiCache.set(path, { data, expires: Date.now() + ttl });
         return data;
       }
     } finally {
@@ -217,11 +237,25 @@ async function fetchAllNodes(extraQuery = '', { ttl = 0, pageSize = 500, safetyC
       : (Array.isArray(data) ? data : []);
     accumulated.push.apply(accumulated, page);
     if (offset === 0) counts = (data && data.counts) || {};
-    // Canonical stop: a short page is the end. The server's `total` is a real
-    // COUNT(*) for the query, but the handler overwrites it with the filtered
-    // length under area/geo/blacklist filtering — so we never loop on it, nor
-    // surface it; a short page is the reliable end-of-data signal. See #1606.
-    if (page.length < pageSize) break;
+    // Canonical stop: the server's `has_more`. Neither of the other two signals
+    // can be trusted — the handler rewrites `total` to the filtered length, AND
+    // the same filters (blacklist / hidden prefix / geo-filter / area) drop rows
+    // from the page itself, so a page can be short while later pages still hold
+    // rows. #1606 stopped on a short page, which is correct only on deployments
+    // where nothing is ever filtered; elsewhere one filtered node in page 1
+    // stranded every node behind it. `has_more` is computed server-side before
+    // those filters run.
+    // An empty page always ends it: there is nothing here, and OFFSET means
+    // nothing behind it either. Checked first so a server reporting has_more
+    // against a concurrently-shrinking table cannot spin us to safetyCap.
+    if (page.length === 0) break;
+    if (data && typeof data.has_more === 'boolean') {
+      if (!data.has_more) break;
+      continue;
+    }
+    // Server predates `has_more`: fall back to a zero-length page, the only
+    // remaining end-of-data signal that filtering cannot fake. Costs one extra
+    // request per load against an old server; a short page no longer stops us.
   }
   // Dedup by public_key: the sort window (last_seen DESC by default) can shift
   // under concurrent ingest, repeating a row across a page boundary. Rows
@@ -620,6 +654,18 @@ function buildHexLegend(ranges) {
 let ws = null;
 let wsListeners = [];
 
+// #1074: a half-open connection (a proxy idle timeout, NAT state dropped, a
+// laptop that slept) can keep a WebSocket OPEN for minutes without onclose
+// ever firing, and the page just stops updating. The server writes
+// WS_HEARTBEAT on every 30s ping tick (cmd/server/websocket.go), so a socket
+// that has received nothing for WS_STALE_MS is replaced. 75s tolerates one
+// late or lost heartbeat.
+const WS_STALE_MS = 75000;
+const WS_HEARTBEAT = '{"type":"heartbeat"}';
+let wsLastMessageAt = 0;
+let wsWatchdogTimer = null;
+let wsReconnectTimer = null;
+
 // --- Brand-logo packet-driven pulse (#1173) ---
 // Replaces the legacy live-dot indicator. Class-toggle only (CSS animations); colors come from
 // --logo-accent / --logo-accent-hi tokens. Test seam at window.__corescopeLogo.
@@ -763,16 +809,60 @@ const Logo = (function () {
   return api;
 })();
 
+// Detach before closing: a half-open socket may not fire onclose until the
+// browser gives up on the closing handshake, and a late onclose from a socket
+// already replaced would schedule a second connection.
+function dropWS() {
+  clearTimeout(wsWatchdogTimer);
+  wsWatchdogTimer = null;
+  if (!ws) return;
+  const old = ws;
+  ws = null;
+  old.onopen = old.onclose = old.onerror = old.onmessage = null;
+  try { old.close(); } catch (_) {}
+}
+
+function checkWSLiveness() {
+  if (!ws) return;
+  clearTimeout(wsWatchdogTimer);
+  const silentMs = Date.now() - wsLastMessageAt;
+  // A negative reading means the wall clock stepped back since the last
+  // message, so the silence can no longer be measured: replace the socket
+  // like a stale one rather than re-arm for the size of the step. Date.now()
+  // stays the clock because performance.now() may not count time asleep.
+  if (silentMs >= 0 && silentMs < WS_STALE_MS) {
+    wsWatchdogTimer = setTimeout(checkWSLiveness, WS_STALE_MS - silentMs);
+    return;
+  }
+  Logo.setConnected(false);
+  connectWS();
+}
+
 function connectWS() {
+  clearTimeout(wsReconnectTimer);
+  wsReconnectTimer = null;
+  dropWS();
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}`);
-  ws.onopen = () => Logo.setConnected(true);
-  ws.onclose = () => {
+  const sock = new WebSocket(`${proto}//${location.host}`);
+  ws = sock;
+  // Measured from creation, so a handshake that never completes is caught too.
+  wsLastMessageAt = Date.now();
+  wsWatchdogTimer = setTimeout(checkWSLiveness, WS_STALE_MS);
+  sock.onopen = () => Logo.setConnected(true);
+  sock.onclose = () => {
+    clearTimeout(wsWatchdogTimer);
+    wsWatchdogTimer = null;
     Logo.setConnected(false);
-    setTimeout(connectWS, 3000);
+    // WS_RECONNECT_MS comes from roles.js and is settable as cacheTTL's
+    // sibling `wsReconnectMs`. It used to apply only to the live map's own
+    // socket; now that every view shares this one, the operator's setting
+    // applies here or nowhere.
+    wsReconnectTimer = setTimeout(connectWS, window.WS_RECONNECT_MS || 3000);
   };
-  ws.onerror = () => ws.close();
-  ws.onmessage = (e) => {
+  sock.onerror = () => sock.close();
+  sock.onmessage = (e) => {
+    wsLastMessageAt = Date.now();
+    if (e.data === WS_HEARTBEAT) return;
     Logo.pulse(e);
     try {
       const msg = JSON.parse(e.data);
@@ -787,6 +877,15 @@ function connectWS() {
       wsListeners.forEach(fn => fn(msg));
     } catch {}
   };
+}
+
+// Timers in a hidden or sleeping tab can run late, so check as soon as the
+// page is back instead of waiting out a watchdog that may be minutes behind.
+function setupWSResumeCheck() {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkWSLiveness();
+  });
+  window.addEventListener('online', checkWSLiveness);
 }
 
 function onWS(fn) { wsListeners.push(fn); }
@@ -847,16 +946,11 @@ function pullReconnect() {
   // If WS is connected (readyState OPEN), give a brief "Connected"
   // confirmation but still cycle so the user sees fresh data.
   const wasOpen = ws && ws.readyState === 1;
-  if (wasOpen) {
-    _showPullToast('Connected', true);
-    // Fast cycle: close and let onclose reconnect immediately
-    try { ws.close(); } catch (e) {}
-  } else {
-    _showPullToast('Reconnecting…', true);
-    try { if (ws) ws.close(); } catch (e) {}
-    // onclose handler schedules reconnect; force one now in case ws was null
-    try { connectWS(); } catch (e) {}
-  }
+  _showPullToast(wasOpen ? 'Connected' : 'Reconnecting…', true);
+  // Replace the socket now in both cases: an OPEN socket may be half-open,
+  // and its onclose can take about a minute to fire after close().
+  // connectWS() detaches and closes the old socket itself.
+  try { connectWS(); } catch (e) {}
 }
 
 function _isTouchDevice() {
@@ -1039,16 +1133,20 @@ function navigate() {
   closeNav();
 
   // Backward-compat redirect: #/traces/<hash> → #/tools/trace/<hash> (issue #944).
+  // Uses replaceState (not location.hash =) so this redirect doesn't add its
+  // own history entry, otherwise the back button gets stuck bouncing off it.
   if (location.hash.startsWith('#/traces/')) {
-    location.hash = location.hash.replace('#/traces/', '#/tools/trace/');
+    history.replaceState(null, '', location.hash.replace('#/traces/', '#/tools/trace/'));
+    navigate();
     return;
   }
 
   // Backward-compat redirect: #/roles → #/analytics?tab=roles (issue #1085).
   // The Roles page was folded into the Analytics tab strip; old links and
-  // bookmarks must keep working.
+  // bookmarks must keep working. Uses replaceState for the same reason as above.
   if (location.hash === '#/roles' || location.hash.startsWith('#/roles?') || location.hash.startsWith('#/roles/')) {
-    location.hash = '#/analytics?tab=roles';
+    history.replaceState(null, '', '#/analytics?tab=roles');
+    navigate();
     return;
   }
 
@@ -1178,6 +1276,7 @@ window.addEventListener('timestamp-mode-changed', () => {
 });
 window.addEventListener('DOMContentLoaded', () => {
   connectWS();
+  setupWSResumeCheck();
   setupPullToReconnect();
 
   // --- Dark Mode ---

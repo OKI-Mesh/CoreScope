@@ -1051,6 +1051,92 @@
     else _docColMenuCloseHandler = handler;
   }
 
+  // --- Locally-added channels in the channel filter ---------------------
+  // Channels the operator adds in their own browser (Channels page → "Add
+  // channel") live only in localStorage — the keys never leave the client
+  // (channel-decrypt.js). The server therefore cannot decrypt their traffic
+  // and files it under the synthetic channel hash "enc_<HH>", which
+  // /api/channels omits. Result: a channel you just added is invisible in
+  // the packets channel picker.
+  //
+  // Fix: derive the same "enc_<HH>" value client-side from the stored key
+  // (SHA-256(key)[0], exactly what the ingestor writes) and offer those
+  // channels as extra options. /api/packets?channel=enc_<HH> already
+  // filters on that value server-side, so no backend change is needed.
+
+  /**
+   * Read the browser's stored channel keys and map each to the server-side
+   * channel-hash value its packets are stored under.
+   * Cost: one SHA-256 per stored key (a handful), once per page init.
+   * @returns {Promise<Array<{value:string,name:string,label:string}>>}
+   */
+  async function collectLocalChannels() {
+    const CD = window.ChannelDecrypt;
+    if (!CD || typeof CD.getStoredKeys !== 'function') return [];
+    let keys;
+    try { keys = CD.getStoredKeys() || {}; } catch (e) { return []; }
+    const out = [];
+    for (const name of Object.keys(keys)) {
+      const keyHex = keys[name];
+      if (!keyHex || typeof keyHex !== 'string') continue;
+      let hashByte;
+      try {
+        const keyBytes = CD.hexToBytes(keyHex);
+        if (!keyBytes || keyBytes.length !== 16) continue;
+        hashByte = await CD.computeChannelHash(keyBytes);
+      } catch (e) { continue; }
+      if (typeof hashByte !== 'number') continue;
+      const label = (typeof CD.getLabel === 'function' && CD.getLabel(name)) || name;
+      out.push({
+        // Uppercase 2-digit hex — matches cmd/ingestor/decoder.go ("%02X").
+        value: 'enc_' + hashByte.toString(16).padStart(2, '0').toUpperCase(),
+        name: name,
+        label: label
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Merge the server channel list with locally-added ones into the two
+   * option groups the picker renders. Pure — unit-tested.
+   * A local channel is dropped when the server already exposes it (same
+   * hash value, or same name because the server holds the key too).
+   * @returns {{server: Array<{value:string,label:string}>, local: Array<{value:string,label:string}>}}
+   */
+  function buildChannelOptions(serverChannels, localChannels) {
+    const byLabel = (a, b) => {
+      const an = (a.label || '').toLowerCase();
+      const bn = (b.label || '').toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    };
+    const server = [];
+    const seenValues = new Set();
+    const seenNames = new Set();
+    for (const ch of serverChannels || []) {
+      const value = (ch && (ch.hash || ch.name)) || '';
+      if (!value || seenValues.has(value)) continue;
+      seenValues.add(value);
+      seenNames.add(String(ch.name || value).toLowerCase());
+      server.push({ value: value, label: ch.name || value });
+    }
+    const local = [];
+    for (const lc of localChannels || []) {
+      if (!lc || !lc.value) continue;
+      if (seenValues.has(lc.value)) continue;
+      if (seenNames.has(String(lc.name || '').toLowerCase())) continue;
+      seenValues.add(lc.value);
+      local.push({ value: lc.value, label: lc.label || lc.name });
+    }
+    return { server: server.sort(byLabel), local: local.sort(byLabel) };
+  }
+
+  // Exported for test-packets-local-channels.js (no DOM required).
+  if (typeof window !== 'undefined') {
+    window._packetsBuildChannelOptionsForTest = buildChannelOptions;
+    window._packetsCollectLocalChannelsForTest = collectLocalChannels;
+  }
+
   function renderTimestampCell(isoString) {
     if (typeof formatTimestampWithTooltip !== 'function' || typeof getTimestampMode !== 'function') {
       return escapeHtml(typeof timeAgo === 'function' ? timeAgo(isoString) : '—');
@@ -1601,7 +1687,12 @@
         <div class="filter-group filter-group-dropdowns">
           <div class="multi-select-wrap" id="observerFilterWrap">
             <button class="multi-select-trigger" id="observerTrigger" title="Show only packets seen by selected observer stations">All Observers ▾</button>
-            <div class="multi-select-menu" id="observerMenu"></div>
+            <div class="multi-select-menu" id="observerMenu">
+              <div class="multi-select-search-wrap">
+                <input type="text" id="observerSearchInput" class="multi-select-search" placeholder="Search observers…" autocomplete="off" aria-label="Search observers" title="Matches anywhere in the name. Start with ^ to match only from the beginning, e.g. ^BE">
+              </div>
+              <div class="multi-select-list" id="observerList"></div>
+            </div>
           </div>
           <div id="packetsRegionFilter" class="region-filter-container" style="display:inline-block;vertical-align:middle"></div>
           <div id="packetsAreaFilter" style="display:none;vertical-align:middle"></div>
@@ -1635,7 +1726,7 @@
         <thead><tr>
           <th scope="col" class="col-expand" data-priority="1"></th><th scope="col" class="col-region" data-sort-key="region" data-priority="3">Region</th><th scope="col" class="col-time" data-sort-key="time" data-type="date" data-priority="1">Time</th><th scope="col" class="col-hash" data-sort-key="hash" data-priority="3">Hash</th><th scope="col" class="col-size" data-sort-key="size" data-type="numeric" data-priority="4">Size</th>
           <th scope="col" class="col-hashsize" data-sort-key="hb" data-type="numeric" data-priority="5">HB</th>
-          <th scope="col" class="col-type" data-sort-key="type" data-priority="1">Type</th><th scope="col" class="col-observer" data-sort-key="observer" data-priority="3">Observer</th><th scope="col" class="col-path" data-sort-key="path" data-priority="5">Path</th><th scope="col" class="col-rpt" data-sort-key="rpt" data-type="numeric" data-priority="3">Rpt</th><th scope="col" class="col-details" data-priority="1">Details</th>
+          <th scope="col" class="col-type" data-sort-key="type" data-priority="1">Type</th><th scope="col" class="col-scope" data-sort-key="scope" data-priority="4">Scope</th><th scope="col" class="col-observer" data-sort-key="observer" data-priority="3">Observer</th><th scope="col" class="col-path" data-sort-key="path" data-priority="5">Path</th><th scope="col" class="col-rpt" data-sort-key="rpt" data-type="numeric" data-priority="3">Rpt</th><th scope="col" class="col-details" data-priority="1">Details</th>
         </tr></thead>
         <tbody id="pktBody"></tbody>
       </table></div>
@@ -1712,8 +1803,23 @@
 
     // --- Observer multi-select ---
     const obsMenu = document.getElementById('observerMenu');
+    const obsList = document.getElementById('observerList');
+    const obsSearchInput = document.getElementById('observerSearchInput');
     const obsTrigger = document.getElementById('observerTrigger');
     const selectedObservers = new Set(filters.observer ? filters.observer.split(',') : []);
+    function applyObserverSearchFilter() {
+      const raw = (obsSearchInput.value || '').trim().toLowerCase();
+      // #1884 — default to substring matching so "brussels" finds "ON4XYZ
+      // Brussels"; a leading ^ opts into prefix-only matching for narrowing
+      // down a shared prefix like "BE".
+      const anchored = raw.startsWith('^');
+      const term = anchored ? raw.slice(1) : raw;
+      obsList.querySelectorAll('.multi-select-item[data-obs-name]').forEach((item) => {
+        const name = item.dataset.obsName;
+        const matches = !term || (anchored ? name.startsWith(term) : name.includes(term));
+        item.style.display = matches ? '' : 'none';
+      });
+    }
     function buildObserverMenu() {
       const allChecked = selectedObservers.size === 0;
       let html = `<label class="multi-select-item"><input type="checkbox" data-obs-id="__all__" ${allChecked ? 'checked' : ''}> All Observers</label>`;
@@ -1725,11 +1831,15 @@
       } else {
         for (const o of observers) {
           const checked = selectedObservers.has(String(o.id)) ? 'checked' : '';
-          html += `<label class="multi-select-item"><input type="checkbox" data-obs-id="${o.id}" ${checked}> ${escapeHtml(o.name || o.id)}</label>`;
+          const name = o.name || String(o.id);
+          html += `<label class="multi-select-item" data-obs-name="${escapeHtml(name.toLowerCase())}"><input type="checkbox" data-obs-id="${o.id}" ${checked}> ${escapeHtml(name)}</label>`;
         }
       }
-      obsMenu.innerHTML = html;
+      obsList.innerHTML = html;
+      applyObserverSearchFilter();
     }
+    obsSearchInput.addEventListener('click', (e) => e.stopPropagation());
+    obsSearchInput.addEventListener('input', applyObserverSearchFilter);
     // #1693 — expose for loadObservers() to refresh on resolve.
     _rebuildObserverMenu = () => { buildObserverMenu(); updateObsTrigger(); };
     function updateObsTrigger() {
@@ -1745,9 +1855,22 @@
     }
     buildObserverMenu();
     updateObsTrigger();
-    obsTrigger.addEventListener('click', (e) => { e.stopPropagation(); obsMenu.classList.toggle('open'); typeMenu.classList.remove('open'); });
+    obsTrigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      obsMenu.classList.toggle('open');
+      typeMenu.classList.remove('open');
+      // #1884 — don't autofocus on touch devices; it raises the on-screen
+      // keyboard over the list the user is about to tap.
+      const isTouch = window.matchMedia('(pointer: coarse)').matches;
+      if (obsMenu.classList.contains('open') && !isTouch) obsSearchInput.focus();
+    });
     obsMenu.addEventListener('change', (e) => {
       const id = e.target.dataset.obsId;
+      // #1884 — obsSearchInput lives inside obsMenu, so its own change
+      // events (blur/Enter) bubble here too; without this guard they run
+      // the else branch below and rebuild the list mid-click, dropping
+      // whatever checkbox the user just pressed.
+      if (!id) return;
       if (id === '__all__') {
         selectedObservers.clear();
       } else {
@@ -1807,6 +1930,7 @@
       if (filters.type) localStorage.setItem('meshcore-type-filter', filters.type); else localStorage.removeItem('meshcore-type-filter');
       buildTypeMenu();
       updateTypeTrigger();
+      updatePacketsUrl();
       renderTableRows();
     });
 
@@ -1824,31 +1948,37 @@
         opt.selected = true;
         channelSel.appendChild(opt);
       }
-      api('/channels').then(data => {
+      Promise.all([
+        api('/channels').catch(() => null),
+        collectLocalChannels()
+      ]).then(([data, localChannels]) => {
         const channels = (data && data.channels) || [];
         // Build options via DOM API: channel names are network-supplied
         // and must NOT be interpolated into innerHTML (XSS, #812).
         // Sort alphabetically (case-insensitive) for predictable picker order;
         // the API returns last-activity order which is unstable for a dropdown.
-        const sorted = channels.slice().sort((a, b) => {
-          const an = (a.name || a.hash || '').toLowerCase();
-          const bn = (b.name || b.hash || '').toLowerCase();
-          return an < bn ? -1 : an > bn ? 1 : 0;
-        });
+        const groups = buildChannelOptions(channels, localChannels);
         channelSel.textContent = '';
         const allOpt = document.createElement('option');
         allOpt.value = '';
         allOpt.textContent = 'All Channels';
         channelSel.appendChild(allOpt);
         let matched = false;
-        for (const ch of sorted) {
-          const v = ch.hash || ch.name || '';
-          if (!v) continue;
+        const addOption = (o, parent) => {
           const opt = document.createElement('option');
-          opt.value = v;
-          opt.textContent = ch.name || v;
-          if (v === filters.channel) { opt.selected = true; matched = true; }
-          channelSel.appendChild(opt);
+          opt.value = o.value;
+          opt.textContent = o.label;
+          if (o.value === filters.channel) { opt.selected = true; matched = true; }
+          parent.appendChild(opt);
+        };
+        for (const o of groups.server) addOption(o, channelSel);
+        // Browser-added channels the server can't see, grouped so it's
+        // obvious they come from keys stored in this browser only.
+        if (groups.local.length) {
+          const grp = document.createElement('optgroup');
+          grp.label = 'My Channels (this browser)';
+          for (const o of groups.local) addOption(o, grp);
+          channelSel.appendChild(grp);
         }
         // If current filter isn't in the list (encrypted hash, stale, or
         // race with cache), keep it as a selected option so the UI reflects state.
@@ -1913,15 +2043,16 @@
       document.getElementById('fChannel').value = '';
       document.getElementById('fMyNodes').classList.remove('active');
 
-      // Reset observer multi-select
-      var obMenu = document.getElementById('observerMenu');
-      if (obMenu) obMenu.querySelectorAll('input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
-      document.getElementById('observerTrigger').textContent = 'All Observers ▾';
-
-      // Reset type multi-select
-      var typeMenu = document.getElementById('typeMenu');
-      if (typeMenu) typeMenu.querySelectorAll('input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
-      document.getElementById('typeTrigger').textContent = 'All Types ▾';
+      // Reset observer and type multi-selects (#2012): empty the selection
+      // Sets, not only the checkboxes, or the next pick adds to the old one.
+      selectedObservers.clear();
+      buildObserverMenu();
+      updateObsTrigger();
+      obsSearchInput.value = '';
+      applyObserverSearchFilter();
+      selectedTypes.clear();
+      buildTypeMenu();
+      updateTypeTrigger();
 
       // Reset time window to default
       savedTimeWindowMin = DEFAULT_TIME_WINDOW;
@@ -2019,6 +2150,7 @@
       { key: 'hash', label: 'Hash' },
       { key: 'size', label: 'Size' },
       { key: 'type', label: 'Type' },
+      { key: 'scope', label: 'Scope' },
       { key: 'observer', label: 'Observer' },
       { key: 'path', label: 'Path' },
       { key: 'rpt', label: 'Rpt' },
@@ -2028,12 +2160,27 @@
     // #1249: observer column must stay visible at narrow widths so the IATA
     // badge (#1188) renders on mobile. Without observer in scope the user
     // can't see who heard the packet at all.
-    const defaultHidden = isNarrow ? ['region', 'hash', 'path', 'rpt', 'size'] : ['region'];
+    const defaultHidden = isNarrow ? ['region', 'hash', 'path', 'rpt', 'size', 'scope'] : ['region'];
     let visibleCols;
+    let knownCols;
     try {
       visibleCols = JSON.parse(localStorage.getItem('packets-visible-cols'));
+      knownCols = JSON.parse(localStorage.getItem('packets-known-cols'));
     } catch {}
     if (!visibleCols) visibleCols = COL_DEFS.map(c => c.key).filter(k => !defaultHidden.includes(k));
+    else {
+      // A column added after the visitor last saved their preferences is absent
+      // from the stored array for the same reason a column they unchecked is:
+      // the array alone can't tell the two apart, so a new column would arrive
+      // silently hidden. `packets-known-cols` records which keys existed at save
+      // time; anything newer than that gets the default treatment instead.
+      if (!Array.isArray(knownCols)) knownCols = ['region', 'time', 'hash', 'size', 'type', 'observer', 'path', 'rpt', 'details'];
+      COL_DEFS.forEach(c => {
+        if (!knownCols.includes(c.key) && !visibleCols.includes(c.key) && !defaultHidden.includes(c.key)) {
+          visibleCols.push(c.key);
+        }
+      });
+    }
     const colMenu = document.getElementById('colToggleMenu');
     const pktTable = document.getElementById('pktTable');
     function applyColVisibility() {
@@ -2041,6 +2188,7 @@
         pktTable.classList.toggle('hide-col-' + c.key, !visibleCols.includes(c.key));
       });
       localStorage.setItem('packets-visible-cols', JSON.stringify(visibleCols));
+      localStorage.setItem('packets-known-cols', JSON.stringify(COL_DEFS.map(c => c.key)));
     }
     colMenu.innerHTML = COL_DEFS.map(c =>
       `<label><input type="checkbox" data-col="${c.key}" ${visibleCols.includes(c.key) ? 'checked' : ''}> ${c.label}</label>`
@@ -2253,7 +2401,12 @@
     const groupTypeClass = payloadTypeColor(p.payload_type);
     const groupSize = p.raw_hex ? Math.floor(p.raw_hex.length / 2) : 0;
     const _grpPlOff = getPathLenOffset(p.route_type);
-    const groupHashBytes = ((parseInt(p.raw_hex?.slice(_grpPlOff * 2, _grpPlOff * 2 + 2), 16) || 0) >> 6) + 1;
+    // #1849: TRACE (payload_type=9) header path bytes are per-hop SNR readings,
+    // not truncated hop hashes (see internal/packetpath/route.go PathBytesAreHops).
+    // The (>>6)+1 derivation is meaningless for TRACE — render — with a tooltip.
+    const _grpIsTrace = p.payload_type === 9;
+    const groupHashBytes = _grpIsTrace ? '—' : (((parseInt(p.raw_hex?.slice(_grpPlOff * 2, _grpPlOff * 2 + 2), 16) || 0) >> 6) + 1);
+    const _grpHashSizeTitle = _grpIsTrace ? ' title="TRACE path bytes are SNR readings, not hash prefixes — see sidebar decoder for actual hop count"' : '';
     const isSingle = p.count <= 1;
     // Channel color highlighting (#271)
     const _grpDecoded = getParsedDecoded(p) || {};
@@ -2266,8 +2419,9 @@
           <td class="col-time">${renderTimestampCell(p.latest)}</td>
           <td class="mono col-hash" data-filter-field="hash" data-filter-value="${escapeHtml(p.hash || '')}">${truncate(p.hash || '—', 8)}</td>
           <td class="col-size" data-filter-field="size" data-filter-value="${groupSize || ''}">${groupSize ? groupSize + 'B' : '—'}</td>
-          <td class="col-hashsize mono">${groupHashBytes}</td>
+          <td class="col-hashsize mono"${_grpHashSizeTitle}>${groupHashBytes}</td>
           <td class="col-type" data-filter-field="type" data-filter-value="${escapeHtml(groupTypeName || '')}">${p.payload_type != null ? `<span class="badge badge-${groupTypeClass}">${groupTypeName}</span>${transportBadge(p.route_type)}` : '—'}</td>
+          <td class="col-scope" data-filter-field="scope" data-filter-value="${escapeHtml(p.scope_name || '')}">${scopeCellHtml(p.scope_name)}</td>
           <td class="col-observer" data-filter-field="observer" data-filter-value="${escapeHtml(obsNameOnly(headerObserverId) || '')}">${isSingle ? escapeHtml(truncate(obsNameOnly(headerObserverId), 16)) + obsIataBadge(p) : escapeHtml(truncate(obsNameOnly(headerObserverId), 10)) + groupedObserverIataBadgesHtml(p)}</td>
           <td class="col-path"><span class="path-hops">${groupPathStr}</span></td>
           <td class="col-rpt">${p.observation_count > 1 ? '<span class="badge badge-obs" title="Seen ' + p.observation_count + ' times"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-eye"/></svg> ' + p.observation_count + '</span>' : (isSingle ? '' : p.count)}</td>
@@ -2284,9 +2438,14 @@
         const size = c.raw_hex ? Math.floor(c.raw_hex.length / 2) : 0;
         const childPath = getParsedPath(c);
         const _cPlOff = getPathLenOffset(p.route_type);
-        const childHashBytes = c.raw_hex
-          ? (((parseInt(c.raw_hex.slice(_cPlOff * 2, _cPlOff * 2 + 2), 16) || 0) >> 6) + 1)
-          : (childPath.length > 0 ? childPath[0].length / 2 : 0);
+        // #1849: TRACE header path bytes are SNR readings, not hop hashes.
+        const _cIsTrace = c.payload_type === 9;
+        const childHashBytes = _cIsTrace
+          ? '—'
+          : (c.raw_hex
+            ? (((parseInt(c.raw_hex.slice(_cPlOff * 2, _cPlOff * 2 + 2), 16) || 0) >> 6) + 1)
+            : (childPath.length > 0 ? childPath[0].length / 2 : 0));
+        const _cHashSizeTitle = _cIsTrace ? ' title="TRACE path bytes are SNR readings, not hash prefixes — see sidebar decoder for actual hop count"' : '';
         const childRegion = c.observer_id ? (observerMap.get(c.observer_id)?.iata || '') : '';
         const childPathStr = renderPath(childPath, c.observer_id);
         const _childHashStripe = _hashStripeStyle(c.hash || p.hash);
@@ -2295,8 +2454,9 @@
               <td class="col-time">${renderTimestampCell(c.timestamp)}</td>
               <td class="mono col-hash" data-filter-field="hash" data-filter-value="${escapeHtml(c.hash || '')}">${truncate(c.hash || '', 8)}</td>
               <td class="col-size" data-filter-field="size" data-filter-value="${size || ''}">${size}B</td>
-              <td class="col-hashsize mono">${childHashBytes}</td>
+              <td class="col-hashsize mono"${_cHashSizeTitle}>${childHashBytes}</td>
               <td class="col-type" data-filter-field="type" data-filter-value="${escapeHtml(typeName || '')}"><span class="badge badge-${typeClass}">${typeName}</span>${transportBadge(c.route_type)}</td>
+              <td class="col-scope" data-filter-field="scope" data-filter-value="${escapeHtml(c.scope_name || '')}">${scopeCellHtml(c.scope_name)}</td>
               <td class="col-observer" data-filter-field="observer" data-filter-value="${escapeHtml(obsNameOnly(c.observer_id) || '')}">${escapeHtml(truncate(obsNameOnly(c.observer_id), 16))}${obsIataBadge(c)}</td>
               <td class="col-path"><span class="path-hops">${childPathStr}</span></td>
               <td class="col-rpt"></td>
@@ -2318,7 +2478,10 @@
     const _chanStyle = window.ChannelColors ? window.ChannelColors.getRowStyle(decoded.type || typeName, decoded.channel) : '';
     const size = p.raw_hex ? Math.floor(p.raw_hex.length / 2) : 0;
     const _flatPlOff = getPathLenOffset(p.route_type);
-    const hashBytes = ((parseInt(p.raw_hex?.slice(_flatPlOff * 2, _flatPlOff * 2 + 2), 16) || 0) >> 6) + 1;
+    // #1849: TRACE path bytes = SNR readings, not hop hashes.
+    const _flatIsTrace = p.payload_type === 9;
+    const hashBytes = _flatIsTrace ? '—' : (((parseInt(p.raw_hex?.slice(_flatPlOff * 2, _flatPlOff * 2 + 2), 16) || 0) >> 6) + 1);
+    const _flatHashSizeTitle = _flatIsTrace ? ' title="TRACE path bytes are SNR readings, not hash prefixes — see sidebar decoder for actual hop count"' : '';
     const pathStr = renderPath(pathHops, p.observer_id);
     const detail = getDetailPreview(decoded);
     const _flatHashStripe = _hashStripeStyle(p.hash);
@@ -2328,8 +2491,9 @@
         <td class="col-time">${renderTimestampCell(p.timestamp)}</td>
         <td class="mono col-hash" data-filter-field="hash" data-filter-value="${escapeHtml(p.hash || '')}">${truncate(p.hash || String(p.id), 8)}</td>
         <td class="col-size" data-filter-field="size" data-filter-value="${size || ''}">${size}B</td>
-        <td class="col-hashsize mono">${hashBytes}</td>
+        <td class="col-hashsize mono"${_flatHashSizeTitle}>${hashBytes}</td>
         <td class="col-type" data-filter-field="type" data-filter-value="${escapeHtml(typeName || '')}"><span class="badge badge-${typeClass}">${typeName}</span>${transportBadge(p.route_type)}</td>
+        <td class="col-scope" data-filter-field="scope" data-filter-value="${escapeHtml(p.scope_name || '')}">${scopeCellHtml(p.scope_name)}</td>
         <td class="col-observer" data-filter-field="observer" data-filter-value="${escapeHtml(obsNameOnly(p.observer_id) || '')}">${escapeHtml(truncate(obsNameOnly(p.observer_id), 16))}${obsIataBadge(p)}</td>
         <td class="col-path"><span class="path-hops">${pathStr}</span></td>
         <td class="col-rpt"></td>
@@ -2697,6 +2861,7 @@
       case 'rpt': accessor = function(p) {
         try { var pj = typeof p.path_json === 'string' ? JSON.parse(p.path_json) : p.path_json; return Array.isArray(pj) ? pj.length : 0; } catch(e) { return 0; }
       }; break;
+      case 'scope': accessor = function(p) { return p.scope_name || ''; }; break;
       case 'region': accessor = function(p) { return (regionMap && regionMap[p.observer_id]) || ''; }; break;
       case 'path': accessor = function(p) {
         try { var pj = typeof p.path_json === 'string' ? JSON.parse(p.path_json) : p.path_json; return Array.isArray(pj) ? pj.join(',') : ''; } catch(e) { return ''; }
@@ -2709,6 +2874,13 @@
     var isDate = (col === 'time');
 
     packets.sort(function(a, b) {
+      // Most packets carry no scope (FLOOD and DIRECT cannot), so an ascending
+      // sort would bury every scoped row under a wall of dashes. Pin the empties
+      // last in BOTH directions, as the nodes table does for default_scope.
+      if (col === 'scope') {
+        var aHasScope = a.scope_name ? 1 : 0, bHasScope = b.scope_name ? 1 : 0;
+        if (aHasScope !== bHasScope) return bHasScope - aHasScope;
+      }
       var va = accessor(a), vb = accessor(b);
       var result;
       if (isDate) {
@@ -2726,6 +2898,47 @@
         ) * -1; // desc (newest first)
       }
       return dir * result;
+    });
+  }
+
+  // applyObserverFilter decides which already-loaded packets remain visible
+  // under the current observer filter. Extracted into its own function
+  // (rather than left inline in renderTableRows) specifically so tests can
+  // exercise the real production logic instead of a hand-copied
+  // reimplementation — see #1748 PR review (kent-beck): a test that only
+  // checks a copy of this logic doesn't fail if this function regresses.
+  //
+  // #1748: In grouped mode, the server already filters transmissions
+  // correctly (buildTransmissionWhere emits an EXISTS subquery over ALL
+  // observations of the transmission, not just the displayed one — see
+  // cmd/server/db.go). Each row's `observer_id` here is only the
+  // *representative* observer chosen for display (longest observed path),
+  // which may legitimately differ from the observer that satisfied the
+  // filter. Re-filtering client-side against that single representative —
+  // with `_children` still unpopulated at this point (only fetched lazily
+  // on row-expand or observer-sort-change) — hid every multi-observer
+  // transmission whose representative happened not to be one of the
+  // selected observers. In practice this meant a transmission only stayed
+  // visible when the filtered observer was also the one with the longest
+  // path (which is why the report described it as "works only for
+  // whichever observer logged it first" in dense meshes, where
+  // longest-path and earliest-seen correlate). The server-side EXISTS
+  // filter is authoritative for grouped rows, so no client-side
+  // re-filtering is needed or correct here.
+  //
+  // Flat/expanded mode (groupByHash === false) has no such
+  // representative-vs-actual mismatch — buildPacketWhere filters each
+  // observation row by its own exact observer_id — but we keep the
+  // defensive re-filter for that path since it costs nothing and guards
+  // against any future flat-mode server change.
+  function applyObserverFilter(displayPackets, filters, groupByHash, hashOnly) {
+    if (hashOnly || !filters.observer) return displayPackets;
+    if (groupByHash) return displayPackets;
+    const obsIds = new Set(filters.observer.split(','));
+    return displayPackets.filter(p => {
+      if (obsIds.has(p.observer_id)) return true;
+      if (p._children) return p._children.some(c => obsIds.has(String(c.observer_id)));
+      return false;
     });
   }
 
@@ -2771,14 +2984,7 @@
       const types = filters.type.split(',').map(Number);
       displayPackets = displayPackets.filter(p => types.includes(p.payload_type));
     }
-    if (!hashOnly && filters.observer) {
-      const obsIds = new Set(filters.observer.split(','));
-      displayPackets = displayPackets.filter(p => {
-        if (obsIds.has(p.observer_id)) return true;
-        if (p._children) return p._children.some(c => obsIds.has(String(c.observer_id)));
-        return false;
-      });
-    }
+    displayPackets = applyObserverFilter(displayPackets, filters, groupByHash, hashOnly);
 
     // Packet Filter Language
     const pfCount = document.getElementById('packetFilterCount');
@@ -2828,6 +3034,34 @@
 
     // Restore scroll position after re-render (#431)
     if (scrollContainer) scrollContainer.scrollTop = savedScrollTop;
+  }
+
+  // ADV_TYPE_* values, firmware src/helpers/AdvertDataHelpers.h:7-11. Shared by
+  // the ADVERT app-flags row and CONTROL DISCOVER node type / filter (#1868).
+  const ADV_TYPE_LABELS = {1:'Companion',2:'Repeater',3:'Room Server',4:'Sensor'};
+  function advTypeLabel(t) {
+    return ADV_TYPE_LABELS[t] || ('Unknown(' + t + ')');
+  }
+  // DISCOVER_REQ type_filter holds one bit per ADV_TYPE_* (firmware
+  // examples/simple_repeater/MyMesh.cpp:817 tests filter & (1 << ADV_TYPE_REPEATER)).
+  function ctrlFilterLabels(filter) {
+    return Object.keys(ADV_TYPE_LABELS).filter(t => filter & (1 << t)).map(t => ADV_TYPE_LABELS[t]);
+  }
+  // Filter bits with no label: ADV_TYPE_NONE (bit 0) and the FUTURE 5..15 range
+  // (AdvertDataHelpers.h:7,12). Returned as '0x..' so they are not dropped.
+  function ctrlFilterUnknownHex(filter) {
+    const extra = filter & 0xFF & ~0x1E;
+    return extra ? '0x' + extra.toString(16).padStart(2, '0') : '';
+  }
+  // DISCOVER_RESP snr byte is int8 SNR*4 (firmware docs/payloads.md:280,
+  // examples/simple_repeater/MyMesh.cpp:821, src/Packet.h:92 getSNR() = _snr / 4.0f).
+  function ctrlSnrDb(raw) {
+    return (Number(raw) / 4).toFixed(2);
+  }
+  // DISCOVER_RESP pubkey is 32 bytes or an 8-byte prefix. Resolve via the
+  // HopResolver node index (bulk /api/nodes, no per-packet request).
+  function ctrlPubKeyNode(key) {
+    return (key && window.HopResolver && HopResolver.nodeForKey) ? HopResolver.nodeForKey(key) : null;
   }
 
   function getDetailPreview(decoded) {
@@ -2892,8 +3126,16 @@
     if (decoded.type === 'PATH') return `<svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-shuffle"/></svg> ${decoded.srcHash?.slice(0,8) || '?'} → ${decoded.destHash?.slice(0,8) || '?'}`;
     // Requests/responses (encrypted)
     if (decoded.type === 'REQ' || decoded.type === 'RESPONSE') return `<svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-lock"/></svg> ${decoded.srcHash?.slice(0,8) || '?'} → ${decoded.destHash?.slice(0,8) || '?'}`;
-    // Anonymous requests
-    if (decoded.type === 'ANON_REQ') return `<svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-lock"/></svg> anon → ${decoded.destHash?.slice(0,8) || '?'}`;
+    // Anonymous requests (#1864). ANON_REQ carries the sender's FULL 32-byte
+    // pubkey (not a 1-byte srcHash) — resolve it to a node name if known,
+    // else show the first 8 hex chars. Legacy ephemeralPubKey fallback covers
+    // packets decoded before the backend field was renamed to srcPubKey.
+    if (decoded.type === 'ANON_REQ') {
+      const anonKey = decoded.srcPubKey || decoded.ephemeralPubKey || '';
+      const anonName = (anonKey && window.HopResolver && HopResolver.nameForKey) ? HopResolver.nameForKey(anonKey) : null;
+      const anonSrc = anonName ? escapeHtml(anonName) : (anonKey ? escapeHtml(anonKey.slice(0, 8)) : 'anon');
+      return `<svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-lock"/></svg> ${anonSrc} → ${decoded.destHash?.slice(0,8) || '?'}`;
+    }
     // CONTROL packets (#1802) — DISCOVER_REQ / DISCOVER_RESP body fields,
     // decoded by cmd/ingestor/decoder.go decodeControl(). Wire format:
     //   firmware/src/Mesh.cpp:69
@@ -2906,7 +3148,11 @@
       const parts = [];
       if (subtype === 'DISCOVER_REQ') {
         if (decoded.ctrlFilter != null) {
-          parts.push(`filter=0x${Number(decoded.ctrlFilter).toString(16).padStart(2, '0')}`);
+          const filter = Number(decoded.ctrlFilter);
+          const labels = ctrlFilterLabels(filter);
+          const unknownBits = ctrlFilterUnknownHex(filter);
+          if (labels.length && unknownBits) labels.push(unknownBits);
+          parts.push(`filter=${labels.length ? labels.join('+') : '0x' + filter.toString(16).padStart(2, '0')}`);
         }
         if (decoded.ctrlTag != null) {
           parts.push(`tag=0x${(Number(decoded.ctrlTag) >>> 0).toString(16).padStart(8, '0')}`);
@@ -2916,16 +3162,17 @@
         }
       } else if (subtype === 'DISCOVER_RESP') {
         if (decoded.ctrlNodeType != null) {
-          parts.push(`type=${Number(decoded.ctrlNodeType)}`);
+          parts.push(`type=${advTypeLabel(Number(decoded.ctrlNodeType))}`);
         }
         if (decoded.ctrlSNR != null) {
-          parts.push(`snr=${Number(decoded.ctrlSNR)}`);
+          parts.push(`snr=${ctrlSnrDb(decoded.ctrlSNR)}dB`);
         }
         if (decoded.ctrlTag != null) {
           parts.push(`tag=0x${(Number(decoded.ctrlTag) >>> 0).toString(16).padStart(8, '0')}`);
         }
         if (decoded.ctrlPubKey) {
-          parts.push(`pubkey=${escapeHtml(decoded.ctrlPubKey)}`);
+          const node = ctrlPubKeyNode(decoded.ctrlPubKey);
+          parts.push(`pubkey=${escapeHtml(node && node.name ? node.name : decoded.ctrlPubKey.slice(0, 8))}`);
         }
       } else if (decoded.ctrlFlags) {
         parts.push(`flags=0x${escapeHtml(decoded.ctrlFlags)}`);
@@ -3099,6 +3346,10 @@
       } catch {}
     }
 
+    // #1868: zero-hop CONTROL has no path to trigger the node index load, but
+    // the DISCOVER_RESP pubkey row resolves its name from that same index.
+    if (decoded.type === 'CONTROL' && decoded.ctrlPubKey) await ensureHopResolver();
+
     // Resolve hops: prefer server-side resolved_path, fall back to client-side HopResolver
     if (pathHops.length) {
       try {
@@ -3249,7 +3500,10 @@
     // src→dst). Replaces the prior byte-count title that buried packet
     // identity behind a byte counter (#1458 P0-A).
     const semanticSummary = getDetailPreview(decoded);
-    const srcLabel = decoded.sender || decoded.name || (decoded.srcHash ? decoded.srcHash.slice(0,8) : null) || (decoded.pubKey ? decoded.pubKey.slice(0,8) + '…' : null);
+    // #1864: ANON_REQ has no srcHash — its sender is the full srcPubKey.
+    const _anonKey = decoded.srcPubKey || decoded.ephemeralPubKey || '';
+    const _anonName = (_anonKey && window.HopResolver && HopResolver.nameForKey) ? HopResolver.nameForKey(_anonKey) : null;
+    const srcLabel = decoded.sender || decoded.name || (decoded.srcHash ? decoded.srcHash.slice(0,8) : null) || _anonName || (_anonKey ? _anonKey.slice(0,8) + '…' : null) || (decoded.pubKey ? decoded.pubKey.slice(0,8) + '…' : null);
     const dstLabel = decoded.recipient || (decoded.destHash ? decoded.destHash.slice(0,8) : null);
     const srcDstHtml = (srcLabel || dstLabel)
       ? `<div class="detail-srcdst">${escapeHtml(srcLabel || '?')} <span class="arrow">→</span> ${escapeHtml(dstLabel || (decoded.channel ? '#' + decoded.channel : '?'))}</div>`
@@ -3373,7 +3627,11 @@
               id: o.id, hash: pkt.hash, raw: o.raw_hex || pkt.raw_hex,
               _ts: new Date(o.timestamp).getTime(),
               decoded: { header: { payloadTypeName: typeName }, payload: oDec, path: { hops: oPath } },
-              snr: o.snr, rssi: o.rssi, observer: obsName(o.observer_id)
+              snr: o.snr, rssi: o.rssi, observer: obsName(o.observer_id),
+              // #1900: carry the id itself, not just the resolved name. The Live
+              // region filter matches on observer_id, so without it the replay
+              // silently renders nothing whenever a region is selected.
+              observer_id: o.observer_id, observer_iata: o.observer_iata
             });
           }
         } else {
@@ -3381,7 +3639,8 @@
             id: pkt.id, hash: pkt.hash, raw: pkt.raw_hex,
             _ts: new Date(pkt.timestamp).getTime(),
             decoded: { header: { payloadTypeName: typeName }, payload: decoded, path: { hops: pathHops } },
-            snr: pkt.snr, rssi: pkt.rssi, observer: obsName(pkt.observer_id)
+            snr: pkt.snr, rssi: pkt.rssi, observer: obsName(pkt.observer_id),
+            observer_id: pkt.observer_id, observer_iata: pkt.observer_iata
           });
         }
         sessionStorage.setItem('replay-packet', JSON.stringify(replayPackets));
@@ -3533,8 +3792,7 @@
       rows += fieldRow(off + 32, 'Timestamp (4B)', decoded.timestampISO || '', 'Unix: ' + (decoded.timestamp || ''));
       rows += fieldRow(off + 36, 'Signature (64B)', truncate(decoded.signature || '', 24), '');
       if (decoded.flags) {
-        const _typeLabels = {1:'Companion',2:'Repeater',3:'Room Server',4:'Sensor'};
-        const _typeName = _typeLabels[decoded.flags.type] || ('Unknown(' + decoded.flags.type + ')');
+        const _typeName = advTypeLabel(decoded.flags.type);
         const _boolFlags = [decoded.flags.hasLocation && 'location', decoded.flags.hasName && 'name'].filter(Boolean);
         const _flagDesc = _typeName + (_boolFlags.length ? ' + ' + _boolFlags.join(', ') : '');
         rows += fieldRow(off + 100, 'App Flags', '0x' + (decoded.flags.raw?.toString(16).padStart(2,'0') || '??'), _flagDesc);
@@ -3566,6 +3824,74 @@
       rows += fieldRow(off + 8, 'Flags', decoded.traceFlags != null ? '0x' + decoded.traceFlags.toString(16).padStart(2, '0') : '—', decoded.traceFlags != null ? 'hash_size=' + (1 << (decoded.traceFlags & 0x03)) + ' byte(s)' : '');
       if (decoded.pathData) {
         rows += fieldRow(off + 9, 'Route Hops', decoded.pathData.toUpperCase(), pathHops.length + ' hop(s)');
+      }
+    } else if (decoded.type === 'ANON_REQ') {
+      // #1864: ANON_REQ layout differs from REQ — the source is a FULL 32-byte
+      // pubkey, not a 1-byte srcHash, so MAC/data sit at off+33/off+35 (not
+      // off+2/off+4). Decode explicitly and resolve the key to a node link.
+      const anonKey = decoded.srcPubKey || decoded.ephemeralPubKey || '';
+      const anonName = (anonKey && window.HopResolver && HopResolver.nameForKey) ? HopResolver.nameForKey(anonKey) : null;
+      rows += fieldRow(off, 'Dest Hash (1B)', decoded.destHash || '', '');
+      const anonKeyCell = anonKey
+        ? `<a href="#/nodes/${encodeURIComponent(anonKey)}" class="hop-link ${anonName ? 'hop-named' : ''}" data-hop-link="true">${anonName ? escapeHtml(anonName) : truncate(anonKey, 24)}</a>`
+        : '—';
+      rows += fieldRow(off + 1, 'Src Public Key (32B)', anonKeyCell, anonName ? '' : 'sender pubkey (unresolved)');
+      rows += fieldRow(off + 33, 'MAC (2B)', decoded.mac || '', '');
+      rows += fieldRow(off + 35, 'Encrypted Data', truncate(decoded.encryptedData || '', 30), '');
+    } else if (decoded.type === 'CONTROL') {
+      // #1868: layout per firmware docs/payloads.md:259-282, decoded by
+      // cmd/ingestor/decoder.go decodeControl(). Body fields are length-gated
+      // there, so each row is only added when the field is present.
+      const subtype = decoded.ctrlSubtype || 'CONTROL';
+      let subtypeDesc = decoded.ctrlFlags ? 'flags=0x' + escapeHtml(decoded.ctrlFlags) + ', sub_type in upper 4 bits' : '';
+      // prefix_only is flags bit 0 (docs/payloads.md:270, MyMesh.cpp:818): responders send an 8-byte key prefix.
+      if (subtype === 'DISCOVER_REQ' && decoded.ctrlFlags) subtypeDesc += ', prefix_only=' + (parseInt(decoded.ctrlFlags, 16) & 1);
+      rows += fieldRow(off, 'Subtype', escapeHtml(subtype), subtypeDesc);
+      // Payload bytes covered by the rows below; anything past it gets a Raw row.
+      let ctrlEnd = off + 1;
+      if (subtype === 'DISCOVER_REQ') {
+        if (decoded.ctrlFilter != null) {
+          const filter = Number(decoded.ctrlFilter);
+          const labels = ctrlFilterLabels(filter);
+          const unknownBits = ctrlFilterUnknownHex(filter);
+          rows += fieldRow(off + 1, 'Type Filter (1B)', '0x' + filter.toString(16).padStart(2, '0'), (labels.length ? 'Requesting: ' + labels.join(', ') : 'No known types requested') + (unknownBits ? ' +' + unknownBits : ''));
+          ctrlEnd = off + 2;
+        }
+        if (decoded.ctrlTag != null) {
+          rows += fieldRow(off + 2, 'Tag (4B)', '0x' + (Number(decoded.ctrlTag) >>> 0).toString(16).toUpperCase().padStart(8, '0'), '');
+          ctrlEnd = off + 6;
+        }
+        if (decoded.ctrlSince != null) {
+          // since=0 is the firmware default (MyMesh.cpp:814) and matches every responder (:817).
+          const since = Number(decoded.ctrlSince) >>> 0;
+          rows += fieldRow(off + 6, 'Since (4B)', since === 0 ? '0 (no filter)' : String(since), 'Unix epoch');
+          ctrlEnd = off + 10;
+        }
+      } else if (subtype === 'DISCOVER_RESP') {
+        if (decoded.ctrlNodeType != null) {
+          rows += fieldRow(off, 'Node Type', escapeHtml(advTypeLabel(Number(decoded.ctrlNodeType))), 'lower 4 bits of flags');
+        }
+        if (decoded.ctrlSNR != null) {
+          rows += fieldRow(off + 1, 'SNR (1B)', ctrlSnrDb(decoded.ctrlSNR) + ' dB', 'request SNR as heard by the responder, wire value ' + Number(decoded.ctrlSNR) + ' / 4');
+          ctrlEnd = off + 2;
+        }
+        if (decoded.ctrlTag != null) {
+          rows += fieldRow(off + 2, 'Tag (4B)', '0x' + (Number(decoded.ctrlTag) >>> 0).toString(16).toUpperCase().padStart(8, '0'), '');
+          ctrlEnd = off + 6;
+        }
+        if (decoded.ctrlPubKey) {
+          const node = ctrlPubKeyNode(decoded.ctrlPubKey);
+          const pkLen = decoded.ctrlPubKey.length === 64 ? '32B' : '8B prefix';
+          // Unknown key: full hex here (the row preview keeps 8 chars), wrappable.
+          const pkCell = node
+            ? `<a href="#/nodes/${encodeURIComponent(node.public_key)}" class="hop-link hop-named" data-hop-link="true">${escapeHtml(node.name || node.public_key.slice(0, 8))}</a>`
+            : `<span style="word-break:break-all">${escapeHtml(decoded.ctrlPubKey)}</span>`;
+          rows += fieldRow(off + 6, 'Public Key (' + pkLen + ')', pkCell, node ? '' : 'Unknown node');
+          ctrlEnd = off + 6 + Math.floor(decoded.ctrlPubKey.length / 2);
+        }
+      }
+      if (size > ctrlEnd) {
+        rows += fieldRow(ctrlEnd, 'Raw', escapeHtml(truncate(buf.slice(ctrlEnd * 2), 40)), '');
       }
     } else if (decoded.destHash !== undefined) {
       rows += fieldRow(off, 'Dest Hash (1B)', decoded.destHash || '', '');
@@ -3877,6 +4203,7 @@
       renderDecodedPacket,
       kv,
       buildFieldTable,
+      renderDetail,
       sectionRow,
       fieldRow,
       renderTimestampCell,
@@ -3890,6 +4217,7 @@
       _calcVisibleRange,
       _effectiveViewportHeight,
       buildPacketsParams,
+      applyObserverFilter,
       renderTableRows,
       _setPackets: function(p) { packets = p; },
       _setFilter: function(k, v) { filters[k] = v; },

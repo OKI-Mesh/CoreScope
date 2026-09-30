@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-09-26
+
+See [docs/release-notes/v3.12.0.md](docs/release-notes/v3.12.0.md) for the full notes. 29 commits since v3.11.0: 15 fix, 5 test, 3 perf, 3 feat, 2 ci, 1 chore.
+
+### Highlights
+- **The first start after this release runs `ANALYZE`, and ingest stalls while it does** (#2058) - measured at 3m43.9s on a 9.4 GB database, once per database, buffered with nothing dropped. It buys 25% fewer pages read on the region-filtered channel query (143,442 to 107,429). Set `db.analysisLimit` negative to skip it. **Operator awareness required**, and worth picking the moment on a busy instance.
+- **`maxMemoryMB` eviction actually triggers** (#2035) - path, decode-cache and dedup-key bytes were unaccounted, so the measured footprint stayed under the configured limit and eviction never fired. Instances relying on that limit will evict where they previously grew.
+- **Reception is attributed more honestly** (#2057, #2063, #2064) - zero-hop adverts count as direct reception, Heard By lists only observers that heard the node on air, and its empty state no longer claims the node is out of range.
+- **Each observation carries its own wire bytes** (#1999) - the packet detail API handed every observation the same canonical frame.
+- **CoreDrive RX region answers are stored** (#2047) - `node_declared_regions` was read but created by nothing, so the Scope Audit described a source that never arrived. Opt-in through `clientRegions`, kept with position, repeater clock and per-collector history.
+- **Eight E2E suites had no runner at all** (#2045, #2053) - the aggregate reported a pass while skipping them.
+
+No manual migration step: `node_declared_regions` (#2047) and `sqlite_stat1` (#2058) are both created at boot.
+
+## [3.11.0] - 2026-09-16
+
+Released and deployed, but it never received a changelog entry at the time; this one is written after the fact and there is no `docs/release-notes/v3.11.0.md`. 52 commits since v3.10.1: 27 fix, 16 feat, 4 test, 2 perf.
+
+### Highlights
+- **Network-wide Scope Audit page** (#1976), with declared-region verification against a repeater's own traffic (#1990), unnameable-traffic accounting (#1987), and opt-in region keys derived from what nodes declare (#1989).
+- **SQLite driver swapped** from `modernc.org/sqlite` to `mattn/go-sqlite3`, cross-built with zig (#1992). This makes the build cgo-dependent.
+- **Map colours and filters repeaters by scope-configuration state** (#2006), and filters repeaters by region name (#1862).
+- Analytics additions: retransmission pressure over time (#1699), scope adverts by node role (#1979), per-node hop-count statistics (#1812).
+- The scope-match tally survives ingestor restarts (#2002).
+
+## [3.10.1] - 2026-09-04
+
+v3.10.0 was tagged and withdrawn before any container image or release asset was published; nothing was ever available under that number. Same release, next number.
+
+See [docs/release-notes/v3.10.1.md](docs/release-notes/v3.10.1.md) for the full notes. 111 commits since v3.9.2, all substantive (no coverage bumps in this range).
+
+### Highlights
+- **CARTO basemaps need an API key now** (#1919, #1926) - unauthenticated tiles come back watermarked with HTTP 200, so this failed silently. Set `map.tiles.providers.carto.key`. **Operator action required.**
+- **Relay `last_seen` is written again** (#1854) - the server-side touch had been a no-op since the `mode=ro` refactor, so it had degraded into an advert timestamp.
+- **Opt-in RF telemetry from mobile clients** (#1905, #1906) - full-packet RF observations and RF environment samples along a GPS track. Both default OFF.
+- **Path-trust threshold for hop attribution** (#1841, #1863) - `pathTrust.minHashBytesForMapping`, shipped at default 1 so nothing changes on upgrade.
+- **Three E2E "flakes" were real product bugs** (#1940, #1944, #1945) - Live view toggles inert for ~100 ms, colour picker arrow keys undone by a deferred focus, analytics filter discarded by a theme-refresh.
+
+### API
+- `/api/paths/inspect` marks a candidate as `speculative` when any hop falls below `pathTrust.minHashBytesForMapping`; consumers can tell this apart from score-based speculation through `evidence.perHop[].trusted`.
+- New per-node fields: `flood_advert_count_7d` (#1831), `unscoped_relay_count_24h` (#1823).
+- New endpoint `/api/nodes/resolve` (#1728).
+
+### Retention
+- New `observerPurgeDays` for hard-deleting long-inactive observers, disabled by default (#1886).
+- New windows for the opt-in client tables: `retention.clientRxDays`, `clientRxObsDays`, `clientRfDays`.
+
+### CI
+- Documentation-only changes skip the pipeline, with root-level markdown covered by the filter (#1949, #1950).
+- Container images are published on a tag ref and not only on a `push` event, so the release fallback in `release-fast-path.yml` can actually publish (#1951).
+
 ## [3.9.1] — 2026-06-12
 
 Patch release on top of v3.9.0 — v3.9.0's container image never published (Playwright flake gated Docker build). See [docs/release-notes/v3.9.1.md](docs/release-notes/v3.9.1.md).

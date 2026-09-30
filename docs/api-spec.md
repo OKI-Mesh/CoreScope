@@ -23,11 +23,11 @@
 - [GET /api/nodes/:pubkey/health](#get-apinodespubkeyhealth)
 - [GET /api/nodes/:pubkey/paths](#get-apinodespubkeypaths)
 - [GET /api/nodes/:pubkey/analytics](#get-apinodespubkeyanalytics)
+- [GET /api/nodes/:pubkey/hop_analytics](#get-apinodespubkeyhop_analytics)
 - [GET /api/nodes/:pubkey/reach](#get-apinodespubkeyreach)
 - [GET /api/packets](#get-apipackets)
 - [GET /api/packets/timestamps](#get-apipacketstimestamps)
 - [GET /api/packets/:id](#get-apipacketsid)
-- [POST /api/packets](#post-apipackets)
 - [POST /api/decode](#post-apidecode)
 - [GET /api/observers](#get-apiobservers)
 - [GET /api/observers/:id](#get-apiobserversid)
@@ -36,11 +36,13 @@
 - [GET /api/channels/:hash/messages](#get-apichannelshashmessages)
 - [GET /api/analytics/rf](#get-apianalyticsrf)
 - [GET /api/analytics/topology](#get-apianalyticstopology)
+- [GET /api/analytics/retransmissions](#get-apianalyticsretransmissions)
 - [GET /api/analytics/channels](#get-apianalyticschannels)
 - [GET /api/analytics/distance](#get-apianalyticsdistance)
 - [GET /api/analytics/hash-sizes](#get-apianalyticshash-sizes)
 - [GET /api/analytics/subpaths](#get-apianalyticssubpaths)
 - [GET /api/analytics/subpath-detail](#get-apianalyticssubpath-detail)
+- [GET /api/scope-audit](#get-apiscope-audit)
 - [GET /api/scope-stats](#get-apiscope-stats)
 - [GET /api/resolve-hops](#get-apiresolve-hops)
 - [GET /api/traces/:hash](#get-apitraceshash)
@@ -317,7 +319,10 @@ Paginated node list with filtering.
       "hash_size_inconsistent": boolean, // true if flip-flopping
       "hash_sizes_seen": [number] | undefined, // present only if >1 unique size seen
       "last_heard":    string (ISO) | undefined, // from in-memory packets or path relay
-      "default_scope": string | null | undefined // Most recently observed transport scope for this node. null = never observed transport-scoped, "" = observed scoped but no configured region matched, "#name" = matched region. Only present when ingestor has applied the nodes_default_scope_v1 migration.
+      "default_scope": string | null | undefined, // Most recently observed transport scope for this node. null = never observed transport-scoped, "" = observed scoped but no configured region matched, "#name" = matched region. Only present when ingestor has applied the nodes_default_scope_v1 migration.
+      "scope_config_state": string | undefined, // Repeater/room only. How this node's region config reads: "full" | "no-unscoped" | "no-scopes" | "no-flood" from its own declared-regions answer, "observed" when it never answered but has been seen forwarding scoped traffic, "none" when it never answered and nothing scoped was observed. Absent for other roles and when the declared-regions lookup failed.
+      "declared_regions": [string] | undefined, // Repeater/room only. Named regions from this node's newest declared-regions answer, spelled like GET /api/scope-audit `declaredRegions` (leading "#" stripped, "*" excluded). [] = answered with no named region. Absent = never answered, other roles, no declared-regions source, or the declared-regions lookup failed.
+      "declared_regions_truncated": true | undefined // Repeater/room only. Present, and true, only when the answer behind declared_regions was flagged as truncated: the list is partial. Same flag as GET /api/scope-audit `truncated`.
     }
   ],
   "total":  number,                      // total matching count (before pagination)
@@ -333,6 +338,9 @@ Paginated node list with filtering.
 **Notes:**
 - `hash_sizes_seen` is only present when more than one hash size has been observed.
 - `last_heard` is only present when in-memory data provides a more recent timestamp than `last_seen`.
+- `declared_regions` is what the map's region-scope filter reads (#1862), together with `transported_scopes`. It is the same list the Scope Audit shows as `declaredRegions`, split and normalised by the same function, so the audit's region search and the map list a repeater under the same names. Its presence follows `scope_config_state`: set whenever that field is one of the four declared states. An absent field or a region missing from the list is not evidence that the repeater lacks that region.
+- `declared_regions_truncated` is set only when the newest declared answer was flagged as cut off (`node_declared_regions.truncated`), and the map popup then marks the declared list as truncated, as the Scope Audit does. It is never `false`: the `nodes.configured_scope` source does not record whether its size cap fired, so an absent field does not mean the list is complete.
+- `scope_config_state` carries the same four declared states as [GET /api/scope-audit](#get-apiscope-audit) and is computed the same way, from the newest declared-regions answer merged across collectors. The audit lists only repeaters that have answered; this field also classifies the ones that have not, which is what the map colours by. `"none"` means the answer is missing, not that the node is misconfigured: firmware drops scoped floods for regions it holds no key for, so a repeater with no region config and one nobody sends scoped traffic past are indistinguishable here. The four declared states are computed from stored data and do not depend on a window; `"observed"` and `"none"` are separated by `transported_scopes`, which the in-memory packet store accumulates over its retention window, so a node can move between them after a restart. The field is absent entirely when this database carries no declared-regions source at all, since "nobody has answered" is then a claim the schema cannot support.
 
 ---
 
@@ -400,15 +408,18 @@ Returns a JSON array (not wrapped in an object):
       "avgSnr":             number | null,
       "lastHeard":          string (ISO) | null
     },
+    // Direct-RF only, same shape and rule as GET /api/nodes/:pubkey/health.
     "observers": [
       {
         "observer_id":   string,
         "observer_name": string | null,
         "avgSnr":        number | null,
         "avgRssi":       number | null,
-        "packetCount":   number
+        "packetCount":   number,
+        "can_relay":     boolean | null
       }
-    ]
+    ],
+    "relayObserverCount": number
   }
 ]
 ```
@@ -506,6 +517,12 @@ Detailed health information for a single node.
     "first_seen":   string (ISO),
     "advert_count": number
   },
+  // Observers that received this node's OWN transmission off the air:
+  // a flood packet whose last path hop resolves unambiguously to this
+  // node, or a flood ADVERT it originated that arrived with an empty
+  // path. Only here do avgSnr/avgRssi describe this node's signal.
+  // Direct routes never qualify: their path is the remaining route,
+  // not the travelled one.
   "observers": [
     {
       "observer_id":   string,
@@ -513,9 +530,13 @@ Detailed health information for a single node.
       "packetCount":   number,
       "avgSnr":        number | null,
       "avgRssi":       number | null,
-      "iata":          string | null
+      "can_relay":     boolean | null  // null = observer never reported a repeat field
     }
   ],
+  // Observers that saw traffic through this node without hearing it.
+  // The stats below count that relayed traffic, so this keeps the two
+  // consistent. Most nodes have no observer in radio range at all.
+  "relayObserverCount": number,
   "stats": {
     "totalTransmissions": number,
     "totalObservations":  number,
@@ -664,6 +685,71 @@ Per-node analytics over a time range.
   }
 }
 ```
+
+### Response `404`
+
+```json
+{ "error": "Not found" }
+```
+
+---
+
+## GET /api/nodes/:pubkey/hop_analytics
+
+Hop count at this node for every flood packet it forwarded, to help choose
+`flood.max`, `flood.max.unscoped` and `flood.max.advert`. A repeater checks
+those limits against the number of hashes already in the path, then appends
+its own hash, so the hop count is the node's zero-based index in the observed
+path (firmware `src/helpers/RoutingPolicy.h`, `src/Mesh.cpp` `routeRecvPacket`).
+This is not the `hopDistribution` of `/analytics`, which is the path length at
+the observer.
+
+- One entry per packet hash. Values are raw so the client can filter and bin.
+- Only floods (route types 0 and 1). DIRECT packets carry the remaining route,
+  not a hop count, and are left out. Packets the node originated are left out.
+- Every observation of every flood packet in the window is read, not only the
+  packet's longest path, so a relay on a shorter branch of the flood counts too.
+- A packet is attributed when the node's path prefix sits at exactly one index
+  across its observations, and either no other relay-capable node shares that
+  prefix, or the hop resolves to the node under the ingestor's strict rule
+  (every earlier hop identified without a tiebreak, and exactly one candidate
+  is a `neighbor_edges` neighbor of the previous hop, or of the originator for
+  an advert) in at least one observation and to another node in none. The
+  server's resolved-path pick (affinity, GPS distance, advert count) is not
+  used, so the result is the same before and after a restart. Everything else
+  with the node's prefix is counted in `ambiguous` and left out; in practice
+  that is most packets with a colliding 1-byte path hash.
+- Size: for a busy repeater on a 1,669-node mesh over 7 days (2026-09-13)
+  the response held 23,068 entries, 2.3 MB of JSON, 375 KB gzipped. `hash`
+  and `timestamp` are 61% of the raw and 91% of the gzipped bytes; they stay
+  so a client can join entries to packets and bin by time (issue #1812).
+
+### Query Parameters
+
+| Param  | Type   | Default | Description              |
+|--------|--------|---------|--------------------------|
+| `days` | number | `7`     | Lookback window (1-365)  |
+
+### Response `200`
+
+```jsonc
+{
+  "timeRange": { "from": string (ISO), "to": string (ISO), "days": number },
+  "packets": [
+    {
+      "hash":      string,
+      "timestamp": string (ISO),      // first seen
+      "hops":      number,            // 0 = heard straight from the originator
+      "tags":      [string]           // "flood", then "scoped" or "unscoped", then "advert" if an ADVERT
+    }
+  ],
+  "ambiguous": number                 // prefix matched, hop position not attributable to this node
+}
+```
+
+Filters that match the firmware limits: `flood.max` uses all entries,
+`flood.max.unscoped` the entries tagged `unscoped`, `flood.max.advert` the
+entries tagged `advert`.
 
 ### Response `404`
 
@@ -907,48 +993,6 @@ Single packet detail with byte breakdown and observations.
 
 ---
 
-## POST /api/packets
-
-Ingest a raw packet. Requires API key.
-
-### Headers
-
-- `X-API-Key: <key>` (required if `config.apiKey` is set)
-
-### Request Body
-
-```jsonc
-{
-  "hex":      string,        // required — raw hex-encoded packet
-  "observer": string | null, // observer ID
-  "snr":      number | null,
-  "rssi":     number | null,
-  "region":   string | null, // IATA code
-  "hash":     string | null  // pre-computed content hash
-}
-```
-
-### Response `200`
-
-```jsonc
-{
-  "id":      number,         // packet/observation ID
-  "decoded": {               // full decode result
-    "header":  DecodedHeader,
-    "path":    DecodedPath,
-    "payload": object
-  }
-}
-```
-
-### Response `400`
-
-```json
-{ "error": "hex is required" }
-```
-
----
-
 ## POST /api/decode
 
 Decode a raw packet without storing it.
@@ -1143,12 +1187,23 @@ Messages for a specific channel.
       "repeats":          number,           // dedup count
       "observers":        [string],         // observer names
       "hops":             number,
-      "snr":              number | null
+      "snr":              number | null,
+      "scope_name":       string | null     // region scope, see below
     }
   ],
   "total": number                           // total deduplicated messages
 }
 ```
+
+`scope_name` is the transmission's region scope (`transmissions.scope_name`), the same field `/api/packets` returns:
+
+| Value | Meaning |
+|-------|---------|
+| `null` | No transport code: the message was not region-scoped. Also `null` when the database has no `scope_name` column yet (ingestor migration not run). |
+| `""` | Transport-scoped, but the ingestor could not match it to a single region: no region key matched, or several matched with no single operator-configured key among them. |
+| `"#name"` | The matched region name. |
+
+The same field is on the WebSocket `packet` broadcast, both top-level and inside `packet`.
 
 ---
 
@@ -1312,6 +1367,93 @@ Network topology analytics.
       "minDist":       number,
       "observer_id":   string,
       "observer_name": string
+    }
+  ]
+}
+```
+
+---
+
+## GET /api/analytics/retransmissions
+
+Retransmission pressure over time (#1699): a collision-pressure **proxy**, not a
+measured collision rate.
+
+For each flood event of a flood-routed packet (`route_type` 0 or 1, TRACE
+excluded) the server takes the union of the paths of all its observations and
+counts the distinct repeaters in it: paths `[A]`, `[A,B,C]` and `[A,D]` give 4.
+Direct routes are excluded because their path is the route still to travel, not
+the forwarders; zero-hop sends are direct routes. A flood event heard only with
+an empty path counts as 0 repeaters.
+
+A transmission is one packet hash, and the same bytes can flood again later:
+those observations are stored on the same transmission. Its observations are
+therefore sorted by time and split into flood events wherever two consecutive
+observations are more than 5 minutes apart. Each event is counted on its own and
+bucketed by its first observation. A firmware node holds a flood for at most
+32 s before forwarding it, plus a random retransmit delay, so a flood that is
+still spreading is not split. Every count in the response (`packets`,
+`one_byte_packets`, `no_repeater_packets`) counts flood events. Observations are
+stored once per observer and path per transmission, so a later event holds only
+the observer and path pairs not already stored for that hash, and its count is a
+lower bound.
+
+Events that start before the store's retention floor (now minus
+`retentionHours`) are left out for every request shape, including explicit
+`window`, `from` and `to`: the store keeps observations older than that only for
+hashes heard again recently, so they do not represent that period.
+
+Hop prefixes are not resolved to nodes. A prefix counts once per flood event,
+whether it repeats across observations or inside one path. A 2- or 3-byte prefix
+that repeats inside one path is one node forwarding the flood again after its
+duplicate filter (a cyclic buffer of 160 hashes) dropped the hash. A repeated
+1-byte prefix can also be two nodes; counting it once keeps the value a lower
+bound, as does merging repeaters that share a prefix across observations. Only
+repeaters that some observer heard are counted, so the value also follows
+observer coverage.
+
+The default shape (no `region`, no window, `bucket=1h`) is served from the
+analytics recomputer; other shapes use the TTL cache, and concurrent requests
+for the same uncached shape share one computation. During startup the default
+shape returns `503` with `Retry-After` until the recomputer completes a pass
+after the hot startup window has loaded, or for at most 60 s after the
+recomputer started, whichever comes first. The history beyond the hot window
+keeps loading in the background after that, so until the first recompute pass
+after that load finishes the default shape can cover less than the retention
+window. `?area=` is not
+supported: the area filter works on resolved node public keys and this metric
+does not resolve prefixes.
+
+### Query Parameters
+
+| Param    | Type   | Default | Description                         |
+|----------|--------|---------|-------------------------------------|
+| `region` | string | none    | Comma-separated IATA codes; only observations from the region's observers feed the union, events none of them heard are skipped. Events are split before this filter. A region with no known observers is not filtered and returns network-wide data, as `/api/analytics/rf` does |
+| `window` | string | none    | `1h`, `24h`, `3d`, `7d` or `30d` (relative to now) |
+| `from`, `to` | string (ISO) | none | Absolute window bounds, take precedence over `window` |
+| `bucket` | string | `1h`    | `5m`, `15m`, `1h`, `6h` or `1d`; other values fall back to `1h` |
+
+### Response `200`
+
+```jsonc
+{
+  "bucket_seconds": number,
+  "window":         string,          // window label, "" for all data
+  "region":         string,
+  "summary": {
+    "packets":             number,   // flood events that started in the window
+    "avg_repeaters":       number,   // mean distinct repeaters per event
+    "observers":           number,   // distinct observers that heard them
+    "one_byte_packets":    number,   // events on 1-byte hop hashes (most ambiguous)
+    "no_repeater_packets": number    // events heard with an empty path only
+  },
+  "buckets": [                       // ascending, empty buckets omitted
+    {
+      "start":         string (ISO), // bucket start, UTC
+      "packets":       number,       // flood events that started in the bucket
+      "repeater_sum":  number,
+      "avg_repeaters": number,
+      "observers":     number
     }
   ]
 }
@@ -1613,6 +1755,167 @@ Detailed stats for a specific subpath.
 
 ---
 
+## GET /api/scope-audit
+
+Network-wide declared-vs-observed region-scope comparison: for every repeater that has
+ever successfully answered a declared-regions request, which of its declared regions have
+no observed forwarding in the window, which scopes it forwards without declaring, and
+whether it contradicts its own `'*'` wildcard. This is the whole-network answer to the
+question `GET /api/nodes/:pubkey/scopes` answers one repeater at a time — see that
+endpoint's notes for the full explanation of the three traps this comparison has to get
+right (the `#`-prefix spelling difference, `'*'` not being a scope, and "never asked"
+not being the same as "declared nothing"), which apply here identically.
+
+### Query Parameters
+
+| Param    | Type   | Default | Description                    |
+|----------|--------|---------|---------------------------------|
+| `window` | string | `24h`   | Time window: `1h`, `24h`, `7d` |
+
+### Response `200`
+
+```jsonc
+{
+  "window": string,                    // echoed window ("1h", "24h", or "7d")
+  "since":  string (ISO),              // start of the observed-forwarding window
+  "repeaters": [
+    {
+      "publicKey":        string,
+      "name":             string,      // "" if the node row is gone (pruned/deleted)
+      "role":             string,      // "" if unknown
+      "declaredRegions":  [string],    // '*' excluded — see declaredWildcard
+      "declaredWildcard": boolean,     // '*' present in the raw declared list
+      "configState":      string,      // "full" | "no-scopes" | "no-unscoped" | "no-flood" — see note below
+      "declaredAt":       string (ISO),// age of the DECLARED answer, not bounded by window
+      "truncated":        boolean,     // declared list may have had entries silently dropped
+
+      "notObserved":            [string],            // declared regions with zero matched-forwarding observed this window
+      "undeclaredObserved":     [
+        { "scope": string, "packets": number, "firstSeen": string (ISO), "lastSeen": string (ISO) }
+      ],
+      "observedUnscopedPackets": number,               // plain-FLOOD packets forwarded this window
+      "wildcardContradiction":   boolean,               // observed unscoped forwarding but '*' not declared
+      "ambiguousHops":            number,                // forwarder hops this window that could not be attributed — see note below
+      "observedUnmatchedPackets": number,                // forwarded packets whose scope this instance holds no key for — see note below
+      "observedUnmatchedSampled": number,                // how many of those verification could examine — see note below
+      "regionEvidence":           { "<region>": number } // declared regions corroborated by this repeater's own unnameable traffic — see note below
+    }
+  ]
+}
+```
+
+### Response `400`
+
+```json
+{ "error": "window must be 1h, 24h, or 7d" }
+```
+
+**Notes:**
+- Only repeaters with **at least one** declared-regions answer appear in `repeaters`. A
+  repeater that was never successfully asked is absent, not shown as a row that declares
+  nothing — those are different facts (see `GET /api/nodes/:pubkey/scopes`'s "never asked"
+  note).
+- `window` bounds `notObserved` / `undeclaredObserved` / `observedUnscopedPackets` only —
+  `declaredAt` is always the latest declared reading regardless of age, exactly like
+  `declared.observedAt` on the per-node endpoint. **A "declared but not observed" result
+  is weak evidence at `window=1h` (a quiet region can simply have had no traffic) and much
+  stronger at `window=7d`; a client MUST show which window a result belongs to and must
+  not present a `1h` result as if it were `7d`.** Because `declaredAt` is not bounded by
+  `window`, the declared answer and the forwarding evidence are not guaranteed to be
+  temporally aligned — a repeater could have declared its regions well before, or even
+  after, the window that produced `notObserved` — and the server makes no attempt to
+  align them; the `declaredAt` column in the UI is the mitigation (so a stale declared
+  answer is visible to the reader), not a guarantee that the two sides describe the same
+  period.
+- `ambiguousHops` counts forwarder-hop observations in this window whose truncated hash
+  prefix matched more than one declared target's pubkey — i.e. two or more repeaters that
+  declared a region list happen to share that prefix. Such a hop is attributed to **none**
+  of the matching targets (crediting all of them risks papering over a real gap in a
+  colliding neighbour's row; crediting none of them invents no failure) and this counter
+  is incremented on **every** matching target instead. A row with a non-zero
+  `ambiguousHops` carries weaker evidence than one with zero: any entry in that row's
+  `notObserved` could be explained by a prefix collision rather than a genuine absence of
+  forwarding, and a client should present it as a caveat rather than a confirmed finding.
+- `observedUnmatchedPackets` counts packets this repeater was observed forwarding whose
+  transport scope matched no region key this instance has configured (`hashRegions`), so
+  the ingestor stored them with an empty `scope_name`. Those packets name no region and
+  therefore cannot satisfy a declared one, which means **a repeater forwarding a region
+  this instance cannot name is reported exactly like one forwarding nothing**. A non-zero
+  value is a caveat on this row's `notObserved`, in the same spirit as `ambiguousHops` but
+  with a different cause and a different fix: `ambiguousHops` is a pubkey-prefix collision
+  between two repeaters and nobody's fault, `observedUnmatchedPackets` is a missing entry
+  in this instance's own configuration and the operator can act on it. It is **not**
+  evidence for or against `declaredWildcard` — unmatched traffic is scoped, so it never
+  affects `wildcardContradiction`, which counts only plain unscoped floods.
+  Part of this count is explained: packets counted in `regionEvidence` are
+  attributable to a declared region after all. A client showing this as a caveat should
+  subtract them and report only the remainder, which carries a sharper meaning — traffic
+  this repeater forwards for a region it does **not** declare and this instance cannot
+  name. Two rules on that subtraction: count only evidence for regions **absent** from
+  `notObserved` (a region with a single hit was deliberately not accepted as evidence, so
+  its packet is not explained either), and compare against `observedUnmatchedSampled`
+  first.
+- `observedUnmatchedSampled` is how many of those packets verification could actually
+  examine. Two caps sit between the count and the evidence: the per-repeater working set
+  (512 packets) and the per-window sample (the 4096 most recent unnameable packets, which
+  a deployment with few `hashRegions` entries will reach). `regionEvidence` can only ever
+  count packets inside that sample, so when this field is **smaller** than
+  `observedUnmatchedPackets` the difference between the count and the evidence is an
+  **upper bound** on the unexplained traffic rather than a figure, and a client should say
+  so. Equal values mean the subtraction is exact.
+- `regionEvidence` maps a declared region to how many of this repeater's own unmatched
+  forwarded packets derive to it. The server tests each declared region this repeater has
+  no *named* evidence for by deriving `SHA256("#region")[:16]` and HMAC-ing that
+  repeater's own unmatched packets with it — the same computation the ingestor performs at
+  ingest, with the candidate set narrowed to this repeater's declarations. A region
+  reaching **2** corroborating packets is removed from `notObserved`: `code1` is two
+  bytes, so one match happens by chance with probability 1/65536, while two on the same
+  region is (1/65536)². A region with exactly one hit therefore stays in `notObserved`
+  **and** appears here with the value 1, so a client can explain why it is still shown as
+  not observed. `notObserved` remains the single source of truth for whether a region was
+  observed; this field says only *how* that was established. The object is always present
+  and may be empty.
+- All scope names in `declaredRegions` / `notObserved` / `undeclaredObserved[].scope` are
+  already normalised (no leading `#`) — the server does the `#`/no-`#` reconciliation
+  described on the per-node endpoint so this response is directly comparable without a
+  client-side normalisation step.
+- `'*'` is never present in `declaredRegions`, `notObserved`, or `undeclaredObserved` — see
+  `declaredWildcard` and `wildcardContradiction` for its dedicated (non-scope) treatment,
+  same rule as the per-node endpoint.
+- `configState` is a derived reading of `declaredRegions`/`declaredWildcard` together —
+  the repeater's overall configuration shape, rather than a per-region detail:
+  - `"full"` — named regions **and** `'*'` declared: fully configured, forwards both its
+    declared regions and plain unscoped floods.
+  - `"no-scopes"` — `'*'` only, no named regions.
+  - `"no-unscoped"` — named regions declared, `'*'` absent: this repeater does **not**
+    forward plain unscoped floods. This reading is exact — `'*'` absent from the export
+    always means the wildcard denies flooding.
+  - `"no-flood"` — neither named regions nor `'*'`: the repeater answered, but nothing at
+    all is flood-allowed, not even plain unscoped traffic. The "no unscoped forwarding"
+    half of this is exact for the same reason as `"no-unscoped"`; the "no named regions"
+    half carries the same caveat as `"no-scopes"` below.
+
+  **Caveat on `"no-scopes"` and `"no-flood"`:** the firmware exports the FLOOD-*allowed*
+  set (`region_map.exportNamesTo(..., REGION_DENY_FLOOD)` in
+  `examples/simple_repeater/MyMesh.cpp`), not "every region this repeater has configured".
+  A repeater with regions defined but every one of them marked deny-flood exports exactly
+  the same list as a repeater with no region tree at all — the two are indistinguishable
+  from this data alone. In practice `"no-scopes"` is almost always "no scopes configured",
+  but a client MUST NOT present it as proven absence of configuration; word it as "no
+  region is flood-allowed" rather than "no regions exist".
+- `wildcardContradiction` is `true` when the repeater was observed forwarding unscoped
+  (plain-`FLOOD`) traffic this window but its declared list omits `'*'` — it declares it
+  will NOT forward those packets, and the traffic says otherwise.
+- Rows are sorted with the interesting cases first: most `notObserved` entries first, then
+  `wildcardContradiction`, then most `undeclaredObserved` entries, then alphabetically by
+  name. A repeater in full agreement (no `notObserved`, no `wildcardContradiction`, no
+  `undeclaredObserved`) sorts to the bottom.
+- Cached 30 seconds per window, mirroring `/api/scope-stats`.
+- Blacklisted nodes and nodes matching an operator-configured hidden-name prefix are
+  excluded, same as other multi-node endpoints.
+
+---
+
 ## GET /api/scope-stats
 
 Scope-based packet statistics over a time window. Requires ingestor `scope_name_v1` migration to have run.
@@ -1639,6 +1942,14 @@ Scope-based packet statistics over a time window. Requires ingestor `scope_name_
   ],
   "timeSeries": [
     { "t": string (ISO), "scoped": number, "unscoped": number }  // bucket timestamps and counts
+  ],
+  "advertsByRole": [
+    {
+      "role":         string,        // sender's nodes.role, or "unknown" (see notes below)
+      "unscoped":     number,        // flood adverts with no scope (scope_name NULL)
+      "unknownScope": number,        // scoped, but no region name could be assigned (scope_name "")
+      "named":        number         // scoped with a named region
+    }
   ]
 }
 ```
@@ -1652,6 +1963,13 @@ Scope-based packet statistics over a time window. Requires ingestor `scope_name_
   - `1h` window → 5-minute buckets
   - `24h` window → 1-hour buckets
   - `7d` window → 6-hour buckets
+- `advertsByRole` (#1979) counts ADVERT packets on flood routes only (TRANSPORT_FLOOD 0, FLOOD 1) in the window,
+  grouped by the sender's current `nodes.role`. Zero-hop adverts (DIRECT/TRANSPORT_DIRECT) are excluded.
+  Ordered by total adverts descending, then role. It reports what was sent per role, not why.
+  `role` is `"unknown"` when the advert row has no `from_pubkey` (legacy rows the ingestor's #1143
+  `from_pubkey` backfill has not reached yet), when the sender has no row in `nodes` (including a sender
+  the ingestor's node retention moved to `inactive_nodes`, which within the 7d window only happens with
+  `retention.nodeDays` below 7), or when its `nodes.role` is empty.
 - Cached 30 seconds
 
 > **Note:** On deployments with pre-existing data, `unscoped` will be inflated until the async startup backfill completes, because transport-route rows inserted before the `scope_name_v1` migration ran have `scope_name = NULL` and are indistinguishable from Code1=0000 rows. The backfill goroutine populates them at startup but may take several minutes on large databases.

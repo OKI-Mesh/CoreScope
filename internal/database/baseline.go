@@ -17,7 +17,7 @@ import (
 // `migrate -baseline-and-stamp`, and may be in an unknown mixed state —
 // neither the server nor the ingestor should attempt to reason about
 // or migrate it directly.
-const GooseAdoptionVersion = 31
+const GooseAdoptionVersion = 35
 
 // checkFunc reports whether a piece of expected schema (a table, an
 // index, a column, a view) is present in db.

@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // --- Unit tests ---
@@ -218,28 +216,6 @@ func TestAddToByNode_WithoutResolvedPathField(t *testing.T) {
 	}
 	if len(store.byNode["relay_pk_2"]) != 1 {
 		t.Error("relay_pk_2 should be in byNode")
-	}
-}
-
-// TestTouchRelayLastSeen_WithoutResolvedPathField verifies relay last_seen is
-// still updated via explicit pubkey list.
-func TestTouchRelayLastSeen_WithoutResolvedPathField(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role) VALUES (?, ?, ?)", "relay_pk", "R1", "REPEATER")
-
-	s := &PacketStore{
-		db:              db,
-		lastSeenTouched: make(map[string]time.Time),
-	}
-
-	s.touchRelayLastSeen([]string{"relay_pk"}, time.Now())
-
-	var lastSeen sql.NullString
-	db.conn.QueryRow("SELECT last_seen FROM nodes WHERE public_key = ?", "relay_pk").Scan(&lastSeen)
-	if !lastSeen.Valid {
-		t.Fatal("expected last_seen to be set")
 	}
 }
 
@@ -661,30 +637,6 @@ func TestDecodeWindow_LockHoldTimeBounded(t *testing.T) {
 }
 
 // --- Integration / regression tests ---
-
-// TestRepeaterLiveness_StillAccurate verifies touchRelayLastSeen still works
-// with the new pubkey-list interface.
-func TestRepeaterLiveness_StillAccurate(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role) VALUES (?, ?, ?)", "r1", "Relay1", "REPEATER")
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role) VALUES (?, ?, ?)", "r2", "Relay2", "REPEATER")
-
-	s := &PacketStore{
-		db:              db,
-		lastSeenTouched: make(map[string]time.Time),
-	}
-
-	s.touchRelayLastSeen([]string{"r1", "r2"}, time.Now())
-
-	var ls1, ls2 sql.NullString
-	db.conn.QueryRow("SELECT last_seen FROM nodes WHERE public_key = ?", "r1").Scan(&ls1)
-	db.conn.QueryRow("SELECT last_seen FROM nodes WHERE public_key = ?", "r2").Scan(&ls2)
-	if !ls1.Valid || !ls2.Valid {
-		t.Error("expected both relays to have last_seen updated")
-	}
-}
 
 // --- Benchmarks ---
 

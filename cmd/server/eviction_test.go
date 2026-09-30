@@ -87,7 +87,7 @@ func makeTestStore(count int, startTime time.Time, intervalMin int) *PacketStore
 		addTxToSubpathIndex(store.spIndex, tx)
 
 		// Track bytes for self-accounting
-		store.trackedBytes += estimateStoreTxBytes(tx)
+		store.trackedBytes += rechargeTx(tx)
 		for _, obs := range tx.Observations {
 			store.trackedBytes += estimateStoreObsBytes(obs)
 		}
@@ -253,26 +253,26 @@ func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
 	defer db.Close()
 
 	store := &PacketStore{
-		packets:       make([]*StoreTx, 0),
-		byHash:        make(map[string]*StoreTx),
-		byTxID:        make(map[int]*StoreTx),
-		byObsID:       make(map[int]*StoreObs),
-		byObserver:    make(map[string][]*StoreObs),
-		byNode:        make(map[string][]*StoreTx),
-		nodeHashes:    make(map[string]map[string]bool),
-		byPayloadType: make(map[int][]*StoreTx),
-		spIndex:       make(map[string]int),
-		distHops:      make([]distHopRecord, 0),
-		distPaths:     make([]distPathRecord, 0),
-		rfCache:       make(map[string]*cachedResult),
-		topoCache:     make(map[string]*cachedResult),
-		hashCache:     make(map[string]*cachedResult),
-		chanCache:     make(map[string]*cachedResult),
-		distCache:     make(map[string]*cachedResult),
-		subpathCache:  make(map[string]*cachedResult),
-		rfCacheTTL:    15 * time.Second,
-		retentionHours: 24,
-		db:             db,
+		packets:              make([]*StoreTx, 0),
+		byHash:               make(map[string]*StoreTx),
+		byTxID:               make(map[int]*StoreTx),
+		byObsID:              make(map[int]*StoreObs),
+		byObserver:           make(map[string][]*StoreObs),
+		byNode:               make(map[string][]*StoreTx),
+		nodeHashes:           make(map[string]map[string]bool),
+		byPayloadType:        make(map[int][]*StoreTx),
+		spIndex:              make(map[string]int),
+		distHops:             make([]distHopRecord, 0),
+		distPaths:            make([]distPathRecord, 0),
+		rfCache:              make(map[string]*cachedResult),
+		topoCache:            make(map[string]*cachedResult),
+		hashCache:            make(map[string]*cachedResult),
+		chanCache:            make(map[string]*cachedResult),
+		distCache:            make(map[string]*cachedResult),
+		subpathCache:         make(map[string]*cachedResult),
+		rfCacheTTL:           15 * time.Second,
+		retentionHours:       24,
+		db:                   db,
 		useResolvedPathIndex: true,
 	}
 	store.initResolvedPathIndex()
@@ -460,7 +460,7 @@ func TestTrackedBytes_MatchesExpectedAfterMixedInsertEvict(t *testing.T) {
 	var evictedBytes int64
 	for i := 0; i < 50; i++ {
 		tx := store.packets[i]
-		evictedBytes += estimateStoreTxBytes(tx)
+		evictedBytes += tx.accountedBytes
 		for _, obs := range tx.Observations {
 			evictedBytes += estimateStoreObsBytes(obs)
 		}
@@ -568,6 +568,7 @@ func TestEstimateStoreTxBytes(t *testing.T) {
 	// Manual calculation: base + string lengths + index entries + perTxMaps + path hops + subpaths
 	hops := int64(len(txGetParsedPath(tx)))
 	manualCalc := int64(storeTxBaseBytes) + int64(len(tx.RawHex)+len(tx.Hash)+len(tx.DecodedJSON)+len(tx.PathJSON)) + int64(numIndexesPerTx*indexEntryBytes)
+	manualCalc += int64(decodedCacheFactor * len(tx.DecodedJSON))
 	manualCalc += perTxMapsBytes
 	manualCalc += hops * perPathHopBytes
 	if hops > 1 {
@@ -576,8 +577,8 @@ func TestEstimateStoreTxBytes(t *testing.T) {
 	if est != manualCalc {
 		t.Fatalf("estimateStoreTxBytes = %d, want %d (manual calc)", est, manualCalc)
 	}
-	if est < 600 || est > 1200 {
-		t.Fatalf("estimateStoreTxBytes = %d, expected in range [600, 1200]", est)
+	if est < 600 || est > 1300 {
+		t.Fatalf("estimateStoreTxBytes = %d, expected in range [600, 1300]", est)
 	}
 }
 
@@ -587,8 +588,9 @@ func TestEstimateStoreObsBytes(t *testing.T) {
 		PathJSON:   `["aa"]`,
 	}
 	est := estimateStoreObsBytes(obs)
-	// storeObsBaseBytes(192) + len(ObserverID=6) + len(PathJSON=6) + 2*48(96) = 300
-	expected := int64(192 + 6 + 6 + 2*48)
+	// storeObsBaseBytes(192) + len(ObserverID=6) + len(PathJSON=6) + 2*48(96) = 300,
+	// plus the obsKeys dedup entry: obsKeyEntryBytes(65) + 6 + 6 = 77
+	expected := int64(192 + 6 + 6 + 2*48 + 77)
 	if est != expected {
 		t.Fatalf("estimateStoreObsBytes = %d, want %d", est, expected)
 	}

@@ -30,12 +30,28 @@ func TestServerSourceHasNoCachedRWCalls(t *testing.T) {
 		regexp.MustCompile(`\bcachedRW\s*\(`),
 		regexp.MustCompile(`mode=rw`),
 		regexp.MustCompile(`sql\.Open\([^)]*\?[^)]*_journal_mode=WAL[^)]*\)`),
-		// #1324 follow-up: PR #903's persistMultibyteCapability moved
-		// to cmd/ingestor — the server may NEVER UPDATE these columns
-		// (it opens mode=ro since #1289). Server publishes a snapshot
-		// file via internal/mbcapqueue; the ingestor applies it.
-		regexp.MustCompile(`UPDATE\s+nodes\s+SET\s+multibyte_`),
-		regexp.MustCompile(`UPDATE\s+inactive_nodes\s+SET\s+multibyte_`),
+		// The node directory is ingestor-owned (#1283/#1287); the
+		// server opens mode=ro since #1289 and may never write it.
+		//
+		// This deliberately matches ANY column rather than naming
+		// them. The column-specific form is what let #1598 through:
+		// #1324 added `UPDATE nodes SET multibyte_` after relocating
+		// PR #903's writer, then touchRelayLastSeen introduced a
+		// second write shape (`SET last_seen`) that the grep did not
+		// cover. It failed on every call for months with the error
+		// discarded at the call site, so nodes.last_seen silently
+		// degraded into an advert-age proxy. Enumerating shapes does
+		// not scale — forbid the table instead.
+		//
+		// Writers live in cmd/ingestor: Store.TouchRelayNodes (#1598)
+		// and RunMultibyteCapPersist (#1324, fed by a snapshot the
+		// server publishes via internal/mbcapqueue).
+		// Shapes are normalised before matching (see nodeTableWritePattern):
+		// optional OR-conflict clause, optional quoting, optional alias.
+		nodeTableWritePattern(`UPDATE(\s+OR\s+\w+)?`, `SET`),
+		nodeTableWritePattern(`INSERT\s+(OR\s+\w+\s+)?INTO`, ``),
+		nodeTableWritePattern(`REPLACE\s+INTO`, ``),
+		nodeTableWritePattern(`DELETE\s+FROM`, ``),
 		regexp.MustCompile(`\bpersistMultibyteCapability\s*\(`),
 		regexp.MustCompile(`\bmaybePersistMultibyteCapability\s*\(`),
 	}
@@ -83,6 +99,7 @@ func TestServerDBHasNoWriteMethods(t *testing.T) {
 		"PruneOldPackets",
 		"PruneOldMetrics",
 		"RemoveStaleObservers",
+		"PurgeStaleObservers",
 		// #738 / one-click geo-prune: the DELETE must live on the
 		// ingestor's *Store. The server's HTTP handler now enqueues a
 		// marker file (see internal/prunequeue); it does not write.
@@ -180,5 +197,69 @@ func TestPacketStoreHasNoMultibytePersistMethods(t *testing.T) {
 		if _, ok := typ.MethodByName(name); ok {
 			t.Errorf("server *PacketStore exposes forbidden write method %q — must be relocated to ingestor (#1324)", name)
 		}
+	}
+}
+
+// nodeTableWritePattern builds a matcher for DML against the
+// ingestor-owned node directory. verb is the leading keyword(s); trailer
+// is what must follow the table name (e.g. SET for UPDATE), or empty.
+//
+// Covers the shapes a plain `UPDATE nodes SET` regex misses:
+//
+//	UPDATE OR REPLACE nodes SET ...
+//	UPDATE "nodes" SET ... / `nodes` / [nodes]
+//	UPDATE nodes AS n SET ...
+//	REPLACE INTO nodes ...
+//
+// Residual gap, stated rather than papered over: SQL assembled at
+// runtime (fmt.Sprintf("UPDATE %s SET ...", tbl)) cannot be caught by
+// source grepping. That is what TestServerDBConnIsReadOnly and
+// TestServerDBHasNoWriteMethods are for — the handle physically cannot
+// write and the write helpers do not exist on the type. This test is the
+// cheap first line that names the offending file and line; those two are
+// the structural backstop.
+func nodeTableWritePattern(verb, trailer string) *regexp.Regexp {
+	const table = "[\"`\\[]?(nodes|inactive_nodes)[\"`\\]]?"
+	const alias = `(\s+(AS\s+)?[a-z]\w*)?`
+	expr := `(?i)` + verb + `\s+` + table + alias
+	if trailer != "" {
+		expr += `\s+` + trailer
+	} else {
+		expr += `\b`
+	}
+	return regexp.MustCompile(expr)
+}
+
+// TestOpenDBRefusesMissingDatabase pins the behaviour that makes mode=ro
+// meaningful: OpenDB must fail on a path that does not exist rather than
+// creating an empty database there.
+//
+// This is worth a test of its own because the guarantee is not obvious from the
+// call site. github.com/mattn/go-sqlite3 always passes
+// SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE to sqlite3_open_v2; what restricts it
+// is the mode=ro parameter in the URI, which only takes effect because mattn's
+// C wrapper ORs SQLITE_OPEN_URI into the flags (sqlite3.go _sqlite3_open_v2).
+// Lose the file: prefix, or the URI flag, and this silently degrades into a
+// read-write open that manufactures a fresh empty database — which the server
+// would then happily serve. cmd/decrypt shipped exactly that bug for a while by
+// building its DSN without the file: prefix.
+func TestOpenDBRefusesMissingDatabase(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "absent.db")
+
+	db, err := OpenDB(missing)
+	if err == nil {
+		db.Close()
+		t.Fatal("OpenDB succeeded against a nonexistent database; mode=ro is not in effect")
+	}
+
+	// Neither the database itself nor a file literally named after the DSN
+	// (what happens when URI handling is off) may have been created.
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil {
+		t.Fatalf("read temp dir: %v", rerr)
+	}
+	for _, e := range entries {
+		t.Errorf("OpenDB created %q; a read-only open must not write anything", e.Name())
 	}
 }

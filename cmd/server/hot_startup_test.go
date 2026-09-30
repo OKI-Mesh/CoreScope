@@ -14,7 +14,6 @@ import (
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
-	_ "modernc.org/sqlite"
 )
 
 // createTestDBMultiDay creates a test DB with packets spread across numDays days.
@@ -96,12 +95,9 @@ func waitForBackgroundLoad(t *testing.T, store *PacketStore, timeout time.Durati
 }
 
 func TestHotStartupConfig_Clamp(t *testing.T) {
-	dbPath := createTestDB(t, 10)
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := setupTestDB(t)
+	seedTransmissions(t, db.conn, 10)
 	defer db.conn.Close()
 
 	// hotStartupHours > retentionHours → must be clamped
@@ -115,15 +111,21 @@ func TestHotStartupConfig_Clamp(t *testing.T) {
 }
 
 func TestHotStartupConfig_ZeroIsDisabled(t *testing.T) {
-	dbPath := createTestDB(t, 10)
+	db := setupTestDB(t)
+	seedTransmissions(t, db.conn, 10)
+	defer db.conn.Close()
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
+	// hotStartupHours > retentionHours → must be clamped
+	store := NewPacketStore(db, &PacketStoreConfig{
+		RetentionHours:  24,
+		HotStartupHours: 48,
+	})
+	if store.hotStartupHours != 24 {
+		t.Errorf("expected hotStartupHours clamped to retentionHours=24, got %f", store.hotStartupHours)
 	}
 	defer db.conn.Close()
 
-	store := NewPacketStore(db, &PacketStoreConfig{
+	store = NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  24,
 		HotStartupHours: 0,
 	})

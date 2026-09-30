@@ -10,42 +10,98 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
+// pruneBatchTransmissions bounds how many transmissions (and their child
+// observations) one prune transaction deletes before it commits and
+// releases the writer lock.
+//
+// Releasing between batches is the entire point. writerMu serialises every
+// wrapped writer call, so while the prune holds it the MQTT ingest path is
+// blocked. Go's sync.Mutex switches to FIFO handoff once a waiter has been
+// blocked for 1ms (starvation mode), so an ingest goroutine queued behind
+// the prune is served at the next batch boundary instead of after the whole
+// retention day.
+//
+// The bound is on transmissions, but hold time scales with the rows actually
+// deleted, and each transmission carries an unbounded number of observations.
+// At ~16 observations per transmission a batch is ~4k row deletes and a few
+// hundred milliseconds; an instance with a denser observation ratio gets a
+// proportionally longer hold from the same batch size. 250 also keeps the
+// commit count low (a 16k-transmission day is 64 transactions, not 16k).
+const pruneBatchTransmissions = 250
+
+// pruneAgedTransmissionIDs selects the next batch of transmissions older than
+// the cutoff. Both statements of a batch embed it, so they resolve the same
+// set: nothing modifies `transmissions` between them inside the transaction.
+//
+// The ORDER BY must be satisfiable from idx_transmissions_first_seen. That
+// index carries the rowid as its tiebreaker, so "first_seen, id" is walked
+// straight off it and the LIMIT stays deterministic even when timestamps tie.
+// Ordering by id alone looks equivalent but makes SQLite abandon the index for
+// a rowid SCAN. That is harmless while rows are being deleted — the oldest
+// rows have the lowest rowids and match at once — but the batch that finds
+// nothing, which is the steady state whenever nothing has aged out, walks the
+// whole table under writerMu. TestPruneAgedTransmissionIDsUsesFirstSeenIndex
+// pins the plan.
+const pruneAgedTransmissionIDs = `SELECT id FROM transmissions WHERE first_seen < ? ORDER BY first_seen, id LIMIT ?`
+
+// The two statements of one prune batch. Child observations go first (no
+// CASCADE in SQLite).
+const (
+	pruneObservationsBatch  = `DELETE FROM observations WHERE transmission_id IN (` + pruneAgedTransmissionIDs + `)`
+	pruneTransmissionsBatch = `DELETE FROM transmissions WHERE id IN (` + pruneAgedTransmissionIDs + `)`
+)
+
 // PruneOldPackets deletes transmissions (and their child observations)
 // older than `days`. Returns count of transmissions deleted.
 //
 // Owned by the ingestor per #1283: the writer process is the only one
 // allowed to hold the DB write lock; previously this lived in
 // cmd/server/db.go and raced ingestor INSERTs (SQLITE_BUSY).
+//
+// Deletion is chunked into bounded transactions so ingest is never blocked
+// for longer than a single batch. Deleting a whole retention day in one
+// transaction held the writer lock for ~35s on a mesh doing ~260k
+// observations/day, stalling MQTT ingest for the same duration.
+//
+// On error the transmissions deleted by already-committed batches are
+// returned alongside it — those rows are gone, so reporting 0 would be
+// wrong.
 func (s *Store) PruneOldPackets(days int) (int64, error) {
 	if days <= 0 {
 		return 0, nil
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	// Tagged for writer-perf visibility (#1340).
-	var n int64
-	err := s.WriterTx("prune_packets", func(tx *sql.Tx) error {
-		// Delete child observations first (no CASCADE in SQLite).
-		if _, err := tx.Exec(`DELETE FROM observations WHERE transmission_id IN (
-			SELECT id FROM transmissions WHERE first_seen < ?
-		)`, cutoff); err != nil {
-			return fmt.Errorf("prune observations: %w", err)
-		}
-
-		res, err := tx.Exec(`DELETE FROM transmissions WHERE first_seen < ?`, cutoff)
+	var total int64
+	for {
+		var batch int64
+		// Tagged for writer-perf visibility (#1340).
+		err := s.WriterTx("prune_packets", func(tx *sql.Tx) error {
+			if _, err := tx.Exec(pruneObservationsBatch, cutoff, pruneBatchTransmissions); err != nil {
+				return fmt.Errorf("prune observations: %w", err)
+			}
+			res, err := tx.Exec(pruneTransmissionsBatch, cutoff, pruneBatchTransmissions)
+			if err != nil {
+				return fmt.Errorf("prune transmissions: %w", err)
+			}
+			batch, _ = res.RowsAffected()
+			return nil
+		})
 		if err != nil {
-			return fmt.Errorf("prune transmissions: %w", err)
+			return total, err
 		}
-		n, _ = res.RowsAffected()
-		return nil
-	})
-	if err != nil {
-		return 0, err
+		total += batch
+		// A short batch proves nothing is left below the cutoff: the subquery
+		// found fewer rows than it was allowed to take. Only a batch that came
+		// back exactly full needs another pass.
+		if batch < pruneBatchTransmissions {
+			break
+		}
 	}
-	if n > 0 {
-		log.Printf("[prune] deleted %d transmissions older than %d days", n, days)
+	if total > 0 {
+		log.Printf("[prune] deleted %d transmissions older than %d days", total, days)
 	}
-	return n, nil
+	return total, nil
 }
 
 // PruneOldClientReceptions deletes mobile client-RX coverage rows older than
@@ -78,6 +134,87 @@ func (s *Store) PruneOldClientReceptions(days int) (int64, error) {
 	if n > 0 {
 		log.Printf("[prune] deleted %d client_receptions older than %d days", n, days)
 	}
+	return n, nil
+}
+
+// PruneOldClientRxObservations deletes diagnostic client_rx_observations rows
+// older than `days` (by rx_at). Unlike client_receptions this table is
+// diagnostic, not archival, so it gets its own (typically shorter) window.
+// 0 disables. Owned by the ingestor writer (#1283). rx_at on this table is
+// stored at millisecond precision via rxTimeMillisLayout, not RFC3339 — the
+// cutoff must be formatted the same way so lexicographic comparison against
+// stored values stays correct.
+func (s *Store) PruneOldClientRxObservations(days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(rxTimeMillisLayout)
+	res, err := s.db.Exec(`DELETE FROM client_rx_observations WHERE rx_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune client_rx_observations: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("[prune] deleted %d client_rx_observations older than %d days", n, days)
+	}
+	return n, nil
+}
+
+// PruneOldClientRfSamples deletes RF environment sample rows older than
+// `days` (by sampled_at). Diagnostic, not archival, so it gets its own
+// window, independent of clientRxDays/clientRxObsDays. 0 disables. Owned by
+// the ingestor writer (#1283). sampled_at on this table is stored at
+// millisecond precision via rxTimeMillisLayout, not RFC3339 — the cutoff
+// must be formatted the same way so lexicographic comparison against
+// stored values stays correct.
+func (s *Store) PruneOldClientRfSamples(days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(rxTimeMillisLayout)
+	res, err := s.db.Exec(`DELETE FROM client_rf_samples WHERE sampled_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune client_rf_samples: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("[prune] deleted %d client_rf_samples older than %d days", n, days)
+	}
+	return n, nil
+}
+
+// PruneOldClientDeclaredRegions deletes declared-region observation rows
+// (node_declared_regions) older than `days` (by observed_at). Independent of
+// clientRxDays/clientRxObsDays/clientRfDays. 0 disables. Owned by the
+// ingestor writer (#1283). observed_at on this table is stored at
+// millisecond precision via rxTimeMillisLayout, not RFC3339 — the cutoff
+// must be formatted the same way so lexicographic comparison against
+// stored values stays correct.
+func (s *Store) PruneOldClientDeclaredRegions(days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	n, err := s.pruneOldClientDeclaredRegionsAt(time.Now().UTC().AddDate(0, 0, -days))
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		log.Printf("[prune] deleted %d node_declared_regions older than %d days", n, days)
+	}
+	return n, nil
+}
+
+// pruneOldClientDeclaredRegionsAt is the cutoff-instant seam behind
+// PruneOldClientDeclaredRegions: it exists so tests can pin the cutoff
+// deterministically instead of racing time.Now() to place a fixture row on a
+// specific side of it.
+func (s *Store) pruneOldClientDeclaredRegionsAt(cutoffInstant time.Time) (int64, error) {
+	cutoff := cutoffInstant.Format(rxTimeMillisLayout)
+	res, err := s.db.Exec(`DELETE FROM node_declared_regions WHERE observed_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune node_declared_regions: %w", err)
+	}
+	n, _ := res.RowsAffected()
 	return n, nil
 }
 
@@ -248,6 +385,25 @@ func extractPubkeyFromAdvertJSON(s string) string {
 		return ""
 	}
 	if v, ok := m["pubKey"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// extractPubkeyFromAnonReqJSON parses an ANON_REQ decoded_json blob and
+// returns the ephemeralPubKey field, or "" if absent/invalid (#1777).
+// ANON_REQ carries the sender's full Ed25519 ephemeral pubkey — the same
+// trust level as ADVERT's pubKey — unlike REQ/RESP/PATH/TXT, which only
+// carry a 1-byte truncated hash of the originator.
+func extractPubkeyFromAnonReqJSON(s string) string {
+	if s == "" {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return ""
+	}
+	if v, ok := m["ephemeralPubKey"].(string); ok {
 		return v
 	}
 	return ""

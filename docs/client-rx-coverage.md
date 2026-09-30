@@ -82,6 +82,34 @@ Payload — meshcoretomqtt-compatible packet, plus a `gps` object:
 - Subscription: the ingestor's default subscription (`meshcore/#`) already covers this topic. Sources
   configured with an explicit topic list must add `meshcore/client/+/packets`.
 
+### Region answers — `meshcore/client/{PUBLIC_KEY}/regions`
+
+CoreDrive RX can also ask a repeater it hears directly which regions it is configured to flood, and
+publishes the answer here. It is accepted under the same `clientRxCoverage.enabled` switch and lands
+in `node_declared_regions`, which the Scope Audit page and the `autoRegionKeys` tier read alongside
+the observer `/neighbors` source (`nodes.configured_scope`). Newest answer per repeater wins across
+both, by the answer's own `timestamp`, so a buffered upload arriving late cannot overwrite a fresher
+one.
+
+```json
+{
+  "origin": "<companion name>",
+  "origin_id": "<companion pubkey hex>",
+  "timestamp": "2026-09-18T09:09:32.120Z",
+  "type": "REGIONS",
+  "target": "<repeater pubkey, 64 hex>",
+  "regions": ["*", "hu"],
+  "truncated": false
+}
+```
+
+- `regions: []` is stored: the repeater answered that it floods nothing. A missing or non-array
+  `regions` is dropped, never read as an empty answer.
+- `target` must be a full 64-hex pubkey. Names containing a comma, longer than 64 characters, or past
+  the 64th entry are dropped and the answer is flagged truncated.
+- The broker ACL must allow the client to publish to `/regions` as well as `/packets` and `/rf`.
+  Explicit topic lists need `meshcore/client/+/regions` (or `meshcore/client/#`).
+
 ## Capture HARD RULE — only what was heard directly
 
 The app and ingestor record **only the node the companion physically received**, never upstream
@@ -123,6 +151,70 @@ Retention: the table grows on every submission, so set `retention.clientRxDays` 
 rows older than N days (and stale `client_observers`); `0` disables it. Without it the table is
 unbounded.
 
+## Diagnostic observations — `client_rx_observations` (ingestor-owned)
+
+The client topic may also carry packets the companion could not attribute to a directly-heard
+node — a DIRECT-route packet with a path, for instance (see the capture HARD RULE above). Those
+packets are still decodable, and are optionally recorded as a diagnostic RF observation,
+independent of whether they produced a coverage row.
+
+**Not literally every decodable packet, though.** A packet still needs a `gps` fix and
+`direction: "rx"` to reach the decoder/observation write at all — `handleClientPacket` returns
+early (before `DecodePacket` even runs) when `gps` is missing or its `lat`/`lon` don't parse, and
+`direction: "tx"` (a companion's own outgoing transmission) is decoded but explicitly excluded
+from the observation write, the same as it already was from coverage. A diagnostic table silently
+requiring a GPS fix is a bit surprising, so: no `gps` → no observation row either, same constraint
+as coverage.
+
+- Written to `client_rx_observations` only, **never** to `client_receptions` — the coverage
+  invariant (only directly-heard nodes) is unchanged and unaffected by this feature.
+- Gated by its own flag, `"clientRxObservations": { "enabled": true }` — a **top-level** `Config`
+  field, not nested inside `clientRxCoverage` in the JSON. It IS gated behind `clientRxCoverage` in
+  the *control flow*: `handleClientPacket` (where the observation write lives) is only reached when
+  `clientRxCoverage.enabled` is true, so observations require coverage to be enabled even though the
+  two keys are siblings on disk:
+  ```json
+  {
+    "clientRxCoverage": { "enabled": true },
+    "clientRxObservations": { "enabled": true }
+  }
+  ```
+  Config loading is plain `json.Unmarshal` with no `DisallowUnknownFields`, so nesting
+  `clientRxObservations` under `clientRxCoverage` as written above is silently ignored — the key is
+  never read, the feature stays off, and nothing logs or errors. An ingestor without
+  `clientRxObservations.enabled` simply drops these packets (no table writes, no error).
+- Enabling the companion app's `fullRfLog` flag while `clientRxObservations.enabled` is `false` here
+  is pure waste: the phone spends mobile data uploading packets this ingestor decodes and discards,
+  with no row written and no warning anywhere. `fullRfLog` multiplies normal upload volume — see the
+  corescope-rx README.
+- The JSON payload shape from the companion app is **unchanged** either way — this is purely an
+  ingestor-side decision based on what `raw` decodes to, not a new field the app must send.
+- Captures routing detail the coverage path discards: `route_type`, `payload_type`,
+  `code1`/`code2` transport codes (route types 0/3 only), `scope_name` (matched against configured
+  region keys), `hash_size`, `hop_count`, the full forwarder path (`path_json`), and — for FLOOD
+  routes only — the immediate `forwarder`.
+- `rx_at` is stored at millisecond precision (unlike `client_receptions.rx_at`), because
+  `UNIQUE(rx_pubkey, pkt_hash, rx_at)` deliberately allows multiple rows per `pkt_hash`: each row is
+  one forwarder's copy of the same flood, and that multiplicity is the flood-amplification signal
+  this table exists to capture. Retention is `retention.clientRxObsDays` (separate from, and
+  typically shorter than, `retention.clientRxDays` — this table is diagnostic, not archival).
+- `pkt_hash` (`ComputeContentHash`) deliberately excludes both the transport-code bytes and the
+  path bytes, so distinctness inside `UNIQUE(rx_pubkey, pkt_hash, rx_at)` rests entirely on `rx_at`.
+  On the happy path that's fine — real receive times come from the envelope timestamp at
+  millisecond resolution, and same-millisecond collisions aren't physical on a half-duplex LoRa
+  radio. But on any fallback path (missing/unparseable/implausible timestamp — see
+  `resolveRxTimeCore`), every packet in a buffered upload batch is stamped with the same ingest-time
+  `rx_at`, and distinct forwarder copies of one flood inside that batch collapse into a single row
+  via `ON CONFLICT DO NOTHING`. Not a correctness bug — the constraint is doing exactly what it's
+  told — but it means a buffered/late upload with a bad envelope timestamp under-reports flood
+  amplification for that batch. This isn't limited to the server-side fallback path either: the
+  companion app stamps `rx_at` at BLE-frame *processing* time, not true RF receive time (`app.js`),
+  so two forwarder copies processed in the same millisecond collapse just as effectively even when
+  the envelope timestamp itself is fine.
+- A 0-hop advert gets `forwarder = NULL` in `client_rx_observations` even though the transmitter is
+  known — it's the advert's own pubkey, which the coverage path records separately with
+  `src='advert'` (see `client_receptions` above). Don't mistake this `NULL` for "unknown".
+
 ## Read API — coverage GeoJSON
 
 `GET /api/nodes/{pubkey}/rx-coverage?bbox={minLat,minLon,maxLat,maxLon}&z={zoom}`
@@ -139,7 +231,8 @@ server-side (read-only). Each feature:
 ```
 
 - Hex binning is a pure-Go pointy-top grid over Web Mercator (`cmd/server/hexgrid.go`). We do **not**
-  use `uber/h3-go` because it is CGO and the project builds with `CGO_ENABLED=0`. Latitude is only
+  use `uber/h3-go`, which would add a C dependency for no benefit (the SQLite driver
+  is cgo since the mattn/go-sqlite3 move, but that is a library we need). Latitude is only
   defined within ±85.05° (Web Mercator limit) and is clamped to that range.
 - `z` (Leaflet zoom) selects the hex resolution (zoom-adaptive). Raw points never leave the server
   (privacy: contributors' tracks are not exposed).

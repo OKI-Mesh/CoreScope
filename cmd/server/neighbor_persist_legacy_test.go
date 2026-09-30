@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestNeighborPersist_LegacyEdgeInvariant (#1638 adv-#1): edges loaded from

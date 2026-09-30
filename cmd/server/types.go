@@ -113,11 +113,26 @@ type ScopeTimePoint struct {
 	Unscoped int    `json:"unscoped"`
 }
 
+// ScopeAdvertRoleCount is one row of the adverts-by-role breakdown (#1979):
+// flood adverts sent by nodes of one role, split by the three scope_name
+// states. Role is the sender's nodes.role, or "unknown" when the advert has
+// no from_pubkey (legacy row not yet reached by the #1143 backfill), when the
+// sender has no nodes row (also after MoveStaleNodes moved it to
+// inactive_nodes, possible inside the 7d window only with
+// retention.nodeDays < 7), or when its role is empty.
+type ScopeAdvertRoleCount struct {
+	Role         string `json:"role"`
+	Unscoped     int    `json:"unscoped"`
+	UnknownScope int    `json:"unknownScope"`
+	Named        int    `json:"named"`
+}
+
 type ScopeStatsResponse struct {
-	Window     string             `json:"window"`
-	Summary    ScopeStatsSummary  `json:"summary"`
-	ByRegion   []ScopeRegionCount `json:"byRegion"`
-	TimeSeries []ScopeTimePoint   `json:"timeSeries"`
+	Window        string                 `json:"window"`
+	Summary       ScopeStatsSummary      `json:"summary"`
+	ByRegion      []ScopeRegionCount     `json:"byRegion"`
+	TimeSeries    []ScopeTimePoint       `json:"timeSeries"`
+	AdvertsByRole []ScopeAdvertRoleCount `json:"advertsByRole"`
 }
 
 // ─── Health ────────────────────────────────────────────────────────────────────
@@ -158,6 +173,13 @@ type PerfCacheStats struct {
 
 type WebSocketStatsResp struct {
 	Clients int `json:"clients"`
+	// #1794: upgrade rejections since boot, split by cause so an operator can
+	// tell a deny-list hit from a client that is merely reconnecting too fast.
+	// omitempty: an install with no limits configured sends none of these
+	// rather than three permanent zeroes.
+	RejectedDeny    int64 `json:"rejectedDeny,omitempty"`
+	RejectedRate    int64 `json:"rejectedRate,omitempty"`
+	RejectedConnCap int64 `json:"rejectedConnCap,omitempty"`
 }
 
 type HealthPacketStoreStats struct {
@@ -388,11 +410,6 @@ type PacketDetailResponse struct {
 	Observations     []ObservationResp `json:"observations,omitempty"`
 }
 
-type PacketIngestResponse struct {
-	ID      int64       `json:"id"`
-	Decoded interface{} `json:"decoded"`
-}
-
 type DecodeResponse struct {
 	Decoded interface{} `json:"decoded"`
 }
@@ -418,6 +435,12 @@ type NodeListResponse struct {
 	Nodes  []map[string]interface{} `json:"nodes"`
 	Total  int                      `json:"total"`
 	Counts map[string]int           `json:"counts"`
+	// HasMore reports whether rows exist past this page. Computed from the raw
+	// SQL page before the post-LIMIT filters in handleNodes, which shorten the
+	// page and rewrite Total — so it is the only field a paginating client can
+	// trust to decide whether to ask for another page. Always emitted (no
+	// omitempty): a client must be able to tell "false" from "old server".
+	HasMore bool `json:"has_more"`
 }
 
 type NodeSearchResponse struct {
@@ -557,6 +580,21 @@ type NodeAnalyticsResponse struct {
 	UptimeHeatmap       []HeatmapCell           `json:"uptimeHeatmap"`
 	ComputedStats       ComputedNodeStats       `json:"computedStats"`
 	ClockSkew           *NodeClockSkew          `json:"clockSkew,omitempty"`
+}
+
+// NodeHopPacket is one flood packet this node forwarded, with the hop count
+// the node's flood.max check saw for it (issue #1812).
+type NodeHopPacket struct {
+	Hash      string   `json:"hash"`
+	Timestamp string   `json:"timestamp"`
+	Hops      int      `json:"hops"`
+	Tags      []string `json:"tags"`
+}
+
+type NodeHopAnalyticsResponse struct {
+	TimeRange TimeRangeResp   `json:"timeRange"`
+	Packets   []NodeHopPacket `json:"packets"`
+	Ambiguous int             `json:"ambiguous"`
 }
 
 // ─── Analytics — RF ────────────────────────────────────────────────────────────
@@ -1044,6 +1082,7 @@ type ClientConfigResponse struct {
 	MapDarkTileProvider string                 `json:"mapDarkTileProvider,omitempty"` // deprecated. TODO: remove after v3.5.0
 	Customizer          CustomizerClientConfig `json:"customizer"`
 	ClientRxCoverage    bool                   `json:"clientRxCoverage"`
+	PathTrust           *PathTrustConfig       `json:"pathTrust,omitempty"`
 }
 
 // CustomizerClientConfig is the operator-side customizer-modal knobs that

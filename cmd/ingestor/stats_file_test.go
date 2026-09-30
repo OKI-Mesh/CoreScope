@@ -56,7 +56,7 @@ func TestStatsFileWriter_PublishesProcIO(t *testing.T) {
 	}
 	defer store.Close()
 
-	StartStatsFileWriter(store, 50*time.Millisecond)
+	t.Cleanup(StartStatsFileWriter(store, 50*time.Millisecond))
 
 	// Wait for at least 2 ticks so the writer has had a chance to populate
 	// procIO rates from a delta.
@@ -108,8 +108,9 @@ func TestStatsFileWriter_PublishesProcIO(t *testing.T) {
 //
 // This test pre-plants a symlink at `path` pointing to an unrelated target
 // file and asserts:
-//   (a) post-write, path is a regular file (not a symlink), and
-//   (b) the original target's contents are unchanged.
+//
+//	(a) post-write, path is a regular file (not a symlink), and
+//	(b) the original target's contents are unchanged.
 //
 // If a future refactor swaps os.Rename for something that follows the
 // destination symlink (e.g. ioutil.WriteFile, or an open(path, O_WRONLY)
