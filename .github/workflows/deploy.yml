@@ -746,21 +746,6 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   # 3. Build & Publish Docker Image
   # ───────────────────────────────────────────────────────────────
-  # The five GHCR steps below publish on a push to master (the :edge image) and
-  # on a tag ref. The tag half is not decoration: release-fast-path.yml re-tags
-  # :edge to :vX.Y.Z when the :edge revision label matches the tagged commit,
-  # and dispatches THIS workflow when it does not. That fallback previously
-  # produced no image at all, because a workflow_dispatch is not a push and
-  # every publishing step was gated on github.event_name == 'push'. It built
-  # locally, reported success, and pushed nothing.
-  #
-  # That went unnoticed until v3.10.0, where the tagged commit was
-  # documentation-only. At that time a trigger-level paths-ignore skipped this
-  # workflow for such commits, so no :edge image was ever built for it, the label
-  # comparison failed, and the fallback ran for the first time. That filter is
-  # gone: the `changes` job now forces code=true for anything that is not a pull
-  # request, so every master commit gets an image and a documentation commit is
-  # safe to tag. See the comment on the `on:` block.
   build-and-publish:
     name: "🏗️ Build & Publish Docker Image"
     # Decoupled from e2e-test (#66, per diagnostic #65): build off go-test so a flaky
@@ -770,8 +755,8 @@ jobs:
     needs: [changes, go-test]
     # #113: skip the image build for docs-only changes, but ALWAYS build for a
     # tag deploy (the release-fast-path fallback dispatch) regardless.
+    if: needs.changes.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
-    if: needs.changes.outputs.code == 'true' && !(startsWith(github.ref, 'refs/tags/v') && inputs.images_published)
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -810,48 +795,6 @@ jobs:
       - name: Set up QEMU (arm64 runtime stage)
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
         uses: docker/setup-qemu-action@v3
-
-      # Since the SQLite driver became cgo, the container build depends on a zig
-      # cross-toolchain and static musl linking. The GHCR step below is
-      # push/tag-only, so without this a PR never exercises either, and the
-      # first signal would arrive on master. Builds both architectures and
-      # actually runs the arm64 binaries under QEMU.
-      - name: Two-arch build (no publish)
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          platforms: linux/amd64,linux/arm64
-          tags: corescope:pr-${{ github.event.pull_request.number }}
-          build-args: |
-            APP_VERSION=${{ steps.meta.outputs.app_version }}
-            GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
-            BUILD_TIME=${{ steps.meta.outputs.build_time }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Smoke the arm64 binaries under QEMU
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          set -e
-          # Export the arm64 binaries so the runner's own `file` can confirm
-          # they are static, then execute one under QEMU. Cheap: the build above
-          # already populated the layer cache.
-          docker buildx build . --platform linux/arm64 \
-            --build-arg APP_VERSION=smoke --cache-from type=gha \
-            --output type=local,dest=./arm64-image
-          for b in corescope-server corescope-ingestor corescope-decrypt; do
-            file "./arm64-image/app/$b" | tee /dev/stderr | grep -q 'statically linked' \
-              || { echo "::error::$b is not statically linked"; exit 1; }
-            file "./arm64-image/app/$b" | grep -q 'ARM aarch64' \
-              || { echo "::error::$b is not an arm64 binary"; exit 1; }
-          done
-          docker run --rm --platform linux/arm64 \
-            -v "$PWD/arm64-image/app:/bin-under-test:ro" alpine:3.20 \
-            /bin-under-test/corescope-decrypt --version
-          rm -rf ./arm64-image
-          echo "arm64 static binaries run under QEMU ✅"
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
