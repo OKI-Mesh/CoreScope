@@ -416,7 +416,7 @@ jobs:
           # A genuinely failing test still reds the build after the retry.
           run_e2e_suite() { bash -eo pipefail -c '
           echo "=== E2E SUITE: test-e2e-playwright.js ==="
-          BASE_URL=http://localhost:13581 node test-e2e-playwright.js 2>&1 | tee e2e-output.txt
+          BASE_URL=http://localhost:13581 node tests/e2e/test-e2e-playwright.js 2>&1 | tee e2e-output.txt
           # M5+M6 of #1668 — axe-core CI gate.
           # M5: color-contrast on desktop dark+light.
           # M6: expanded ruleset (image-alt, label, aria-required-attr,
