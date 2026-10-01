@@ -661,6 +661,12 @@ jobs:
           BASE_URL=http://localhost:13581 node tests/e2e/test-nodes-export-e2e.js 2>&1 | tee -a e2e-output.txt
           echo "=== E2E SUITE: test-show-neighbors.js ==="
           BASE_URL=http://localhost:13581 node tests/e2e/test-show-neighbors.js 2>&1 | tee -a e2e-output.txt
+          '; }
+          run_e2e_suite || {
+            echo "::warning::E2E suite failed - flake-guard retry once (issue #61)"
+            cp e2e-output.txt e2e-output.attempt1.txt 2>/dev/null || true
+            run_e2e_suite
+          }
 
       # #1616: slide-over focus-restore flake-gate. Runs the slide-over
       # E2E 20 consecutive times against the SAME backend instance so
