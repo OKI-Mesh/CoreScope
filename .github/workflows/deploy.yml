@@ -755,9 +755,7 @@ jobs:
     needs: [changes, go-test]
     # #113: skip the image build for docs-only changes, but ALWAYS build for a
     # tag deploy (the release-fast-path fallback dispatch) regardless.
-    if: >
-      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') && inputs.images_published != true) ||
-      (needs.changes.outputs.code == 'true' && !(github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')))
+    if: needs.changes.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -861,12 +859,12 @@ jobs:
       - name: Build corescope-decrypt (static, linux/amd64)
         run: |
           cd cmd/decrypt
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux-musl" go build -trimpath -tags netgo,osusergo,sqlite_omit_load_extension -ldflags="-s -w -extldflags '-static -Wl,-s' -X main.version=${{ github.ref_name }}" -o ../../corescope-decrypt-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ../../corescope-decrypt-linux-amd64 .
 
       - name: Build corescope-decrypt (static, linux/arm64)
         run: |
           cd cmd/decrypt
-          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC="zig cc -target aarch64-linux-musl" go build -trimpath -tags netgo,osusergo,sqlite_omit_load_extension -ldflags="-s -w -extldflags '-static -Wl,-s' -X main.version=${{ github.ref_name }}" -o ../../corescope-decrypt-linux-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ../../corescope-decrypt-linux-arm64 .
 
       - name: Verify release binaries are static and runnable
         run: |
