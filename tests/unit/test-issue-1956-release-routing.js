@@ -197,7 +197,7 @@ for (const [name, edge] of [['matching', 'a'.repeat(40)], ['missing', null], ['m
   // which is how v3.11.0 shipped amd64-only.
   const mutates = commands.filter(command => command[0] === 'crane' && command[1] === 'mutate');
   assert.equal(mutates.length, matching ? 2 : 0, `${name}: one mutate per platform`);
-  if (matching) {a
+  if (matching) {
     assert.deepEqual(mutates.map(command => command.at(-1)).sort(),
       ['ghcr.io/oki-mesh/corescope:tmp-v9.8.7-linux-amd64', 'ghcr.io/oki-mesh/corescope:tmp-v9.8.7-linux-arm64'],
       'each platform is mutated into its own scratch tag');
