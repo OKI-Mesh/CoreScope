@@ -27,6 +27,9 @@ type DBStats struct {
 	ObserverUpserts        atomic.Int64
 	WriteErrors            atomic.Int64
 	SignatureDrops         atomic.Int64
+	// RelayTouches counts nodes.last_seen refreshes driven by relay
+	// participation rather than an ADVERT (#1598).
+	RelayTouches atomic.Int64
 	// WALCommits tracks every successful tx.Commit() that may have flushed
 	// WAL pages.
 	WALCommits atomic.Int64
@@ -78,6 +81,7 @@ type Store struct {
 	stmtGetObserverRowid       *sql.Stmt
 	stmtUpdateObserverLastSeen *sql.Stmt
 	stmtUpdateNodeTelemetry    *sql.Stmt
+	stmtTouchNodeLastSeen      *sql.Stmt
 	stmtUpsertMetrics          *sql.Stmt
 
 	sampleIntervalSec int
@@ -92,7 +96,25 @@ type Store struct {
 	// by the context-aware resolver (#1560). Rebuilt on startup and
 	// once per neighbor-edges builder tick (60s).
 	neighborGraph neighborGraphHolder
+
+	// relayTouched is the debounce map for touchRelayNodesLocked:
+	// pubkey -> rxTime of the last last_seen write (#1598). Guarded by
+	// writerMu, which InsertTransmission holds for its whole body.
+	relayTouched map[string]time.Time
 }
+
+// relayTouchDebounce is the minimum interval between two last_seen writes
+// for the same relay node. A backbone repeater appears in thousands of
+// paths per hour; without this the ingest path would issue one UPDATE per
+// observation for no added freshness.
+const relayTouchDebounce = 5 * time.Minute
+
+// relayTouchedMaxEntries caps the debounce map. One entry per node ever
+// seen relaying — ~10^3-10^4 on real deployments — but a long-lived
+// process on a large mesh should not grow it without bound. On overflow
+// we drop entries older than two debounce windows, which can only cause
+// an extra UPDATE, never a missed one.
+const relayTouchedMaxEntries = 50000
 
 // OpenStore opens or creates a SQLite DB at the given path, applying the
 // v3 schema that is compatible with the Node.js server.
@@ -137,6 +159,12 @@ func OpenStoreWithInterval(dbPath string, sampleIntervalSec int) (*Store, error)
 		return nil, fmt.Errorf("preparing statements: %w", err)
 	}
 
+	// Seed the in-process scope-match counters from the persisted running
+	// total so a restart doesn't zero the ratio. Synchronous: it's one row.
+	if err := s.LoadScopeMatchTotals(); err != nil {
+		log.Printf("[scope-match] failed to restore totals: %v", err)
+	}
+
 	// #1690: backfill transmissions.last_seen from MAX(observations.timestamp)
 	// per transmission. The column is added inline by dbschema.Apply (cheap
 	// metadata-only ALTER); the populate query is potentially expensive
@@ -175,8 +203,8 @@ func (s *Store) prepareStatements() error {
 	}
 
 	s.stmtInsertTransmission, err = s.db.Prepare(`
-		INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, channel_hash, scope_name, from_pubkey, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, channel_hash, scope_name, from_pubkey, last_seen, code1, code2)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -196,6 +224,12 @@ func (s *Store) prepareStatements() error {
 	// backfill completes. Recorded in _migrations under
 	// "tx_last_seen_backfill_v1".
 	// PREFLIGHT: async=true reason="prepared-statement row-level UPDATE BY PRIMARY KEY (transmissions.id) — single-row touch per observation, indexed by PK, constant-time at any scale. Not a migration."
+	s.stmtTouchNodeLastSeen, err = s.db.Prepare(
+		"UPDATE nodes SET last_seen = ? WHERE public_key = ? AND (last_seen IS NULL OR last_seen < ?)")
+	if err != nil {
+		return fmt.Errorf("preparing touch node last_seen: %w", err)
+	}
+
 	s.stmtBumpTxLastSeen, err = s.db.Prepare("UPDATE transmissions SET last_seen = ? WHERE id = ? AND last_seen < ?")
 	if err != nil {
 		return err
@@ -348,6 +382,8 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 			scopeNameForDB(data),
 			nilIfEmpty(data.FromPubkey),
 			epochSecondsForLastSeen(rxTime),
+			nilIfEmpty(data.Code1),
+			nilIfEmpty(data.Code2),
 		)
 		if err != nil {
 			s.Stats.WriteErrors.Add(1)
@@ -407,6 +443,10 @@ func (s *Store) InsertTransmission(data *PacketData) (bool, error) {
 		log.Printf("[db] observation insert (non-fatal): %v", err)
 	} else {
 		s.Stats.ObservationsInserted.Add(1)
+		// #1598: a resolved hop proves the node was forwarding traffic at
+		// rxTime. Refresh its last_seen so staleness/eviction logic sees
+		// relay activity, not just ADVERTs.
+		s.touchRelayNodesLocked(resolvedPubkeys(resolved), rxTime)
 		// #1690: bump transmissions.last_seen so cold-load can filter on
 		// effective recency. Conditional `last_seen < ?` so we never go
 		// backwards on out-of-order ingest.
@@ -520,8 +560,68 @@ func (s *Store) UpsertObserverAt(id, name, iata string, meta *ObserverMeta, last
 	}
 	normalizedIATA := strings.TrimSpace(strings.ToUpper(iata))
 
-	var model, firmware, clientVersion, radio interface{}
-	var batteryMv, uptimeSecs, noiseFloor, canRelay interface{}
+	model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay := observerMetaColumns(meta)
+
+	_, err := s.stmtUpsertObserver.Exec(
+		id, name, normalizedIATA, lastSeen, lastSeen, model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay, canRelay,
+		name, normalizedIATA, ingestNow, lastSeen, model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay, canRelay,
+	)
+	if err != nil {
+		s.Stats.WriteErrors.Add(1)
+		return err
+	}
+	s.Stats.ObserverUpserts.Add(1)
+
+	// Reactivate if this observer was previously marked inactive
+	s.db.Exec(`UPDATE observers SET inactive = 0 WHERE id = ? AND inactive = 1`, id)
+	return nil
+}
+
+// UpsertObserverRetained applies the metadata from a RETAINED status message
+// without treating it as a sign of life. The broker replays retained messages
+// on every subscribe, so an ingestor restart would otherwise stamp last_seen
+// with the restart time for every observer that ever published one — making
+// dead observers permanently un-ageable by RemoveStaleObservers, and undoing
+// any inactive flag it did manage to set.
+//
+// Deliberately narrower than UpsertObserverAt: it updates metadata columns on
+// an existing row only. It does not advance last_seen, does not clear
+// inactive, does not bump packet_count, and does not INSERT — a retained-only
+// observer the analyzer has never heard from live describes a past that may be
+// months old and does not belong in the list. A live message from the same
+// observer arrives moments later and creates the row through the normal path.
+func (s *Store) UpsertObserverRetained(id, name, iata string, meta *ObserverMeta) error {
+	normalizedIATA := strings.TrimSpace(strings.ToUpper(iata))
+	model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay := observerMetaColumns(meta)
+
+	_, err := s.db.Exec(`
+		UPDATE observers SET
+			name = COALESCE(?, name),
+			iata = COALESCE(?, iata),
+			model = COALESCE(?, model),
+			firmware = COALESCE(?, firmware),
+			client_version = COALESCE(?, client_version),
+			radio = COALESCE(?, radio),
+			battery_mv = COALESCE(?, battery_mv),
+			uptime_secs = COALESCE(?, uptime_secs),
+			noise_floor = COALESCE(?, noise_floor),
+			can_relay = COALESCE(?, can_relay),
+			can_relay_seen = CASE WHEN ? IS NULL THEN can_relay_seen ELSE 1 END
+		WHERE id = ?`,
+		name, normalizedIATA, model, firmware, clientVersion, radio,
+		batteryMv, uptimeSecs, noiseFloor, canRelay, canRelay, id,
+	)
+	if err != nil {
+		s.Stats.WriteErrors.Add(1)
+		return err
+	}
+	return nil
+}
+
+// observerMetaColumns flattens an *ObserverMeta into the driver args the
+// observer upserts bind. A nil field stays nil so the COALESCE in the SQL
+// leaves the existing column untouched (#1290).
+func observerMetaColumns(meta *ObserverMeta) (model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay interface{}) {
 	if meta != nil {
 		if meta.Model != nil {
 			model = *meta.Model
@@ -556,20 +656,7 @@ func (s *Store) UpsertObserverAt(id, name, iata string, meta *ObserverMeta, last
 			}
 		}
 	}
-
-	_, err := s.stmtUpsertObserver.Exec(
-		id, name, normalizedIATA, lastSeen, lastSeen, model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay, canRelay,
-		name, normalizedIATA, ingestNow, lastSeen, model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay, canRelay,
-	)
-	if err != nil {
-		s.Stats.WriteErrors.Add(1)
-		return err
-	}
-	s.Stats.ObserverUpserts.Add(1)
-
-	// Reactivate if this observer was previously marked inactive
-	s.db.Exec(`UPDATE observers SET inactive = 0 WHERE id = ? AND inactive = 1`, id)
-	return nil
+	return model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay
 }
 
 // Close checkpoints the WAL and closes the database.
@@ -706,6 +793,123 @@ func (s *Store) RunIncrementalVacuum(pages int) {
 	}
 }
 
+// RefreshPlannerStats rebuilds the query planner's cardinality statistics
+// (#2058).
+//
+// Without a sqlite_stat1 table the planner works from built-in guesses, and on
+// the channel queries it guesses wrong: it drives from the plain
+// idx_transmissions_payload_type rather than idx_tx_channel_hash, the partial
+// index (WHERE payload_type = 5) this schema already carries for that exact
+// filter.
+//
+// Measured on the 9.4 GB staging database (1,250,489 transmissions, 14,169,329
+// observations), region-filtered GetChannels, counting page-cache misses
+// because wall time there is dominated by the OS page cache (56.7s cold, 0.80s
+// warm, for the same query and plan):
+//
+//	analysis_limit   ANALYZE    driving index                     page misses
+//	none (no stats)  -          idx_transmissions_payload_type     143,442
+//	400              171ms      idx_transmissions_payload_type     143,449
+//	1000             171ms      idx_transmissions_payload_type     143,450
+//	10000            2.0s*      idx_tx_channel_hash                107,429
+//	0 (unbounded)    242.9s     idx_tx_channel_hash                107,429
+//
+// (*) Every ANALYZE duration in that table was timed on a warm page cache, one
+// after another. The same statement at limit 10000 took 3m43.9s cold, on a
+// freshly started container. See EnsurePlannerStats.
+//
+// So 10000 buys the whole plan change, and the four-minute unbounded ANALYZE
+// buys nothing beyond it. 400, the value SQLite's documentation offers for the
+// bounded form, changes nothing at all on this data: it samples too few rows to
+// separate the 126,336-row partial index from the 920,700-row plain one.
+//
+// ANALYZE, not PRAGMA optimize. Measured on the same database: optimize is a
+// no-op here, because it only analyzes tables that the calling connection has
+// itself queried during the session, and a maintenance call has queried none.
+// PRAGMA optimize(0x03) returned no statements and sqlite_stat1 was not
+// created.
+//
+// Note that analysis_limit=0 means *no* limit to SQLite, not "use a default".
+// Config.AnalysisLimit maps an unset config to 10000 for that reason, and a
+// negative value here disables the refresh.
+//
+// Returns whether the statistics were refreshed. This function owns its
+// logging; callers need add nothing.
+func (s *Store) RefreshPlannerStats(analysisLimit int) bool {
+	if analysisLimit < 0 {
+		return false
+	}
+	first := !s.hasPlannerStats()
+	start := time.Now()
+	// Tagged for /api/perf writer-lock visibility (#1340).
+	if _, err := s.instrumentedExec("analyze", fmt.Sprintf("PRAGMA analysis_limit=%d", analysisLimit)); err != nil {
+		log.Printf("[analyze] could not set analysis_limit: %v", err)
+		return false
+	}
+	if _, err := s.instrumentedExec("analyze", "ANALYZE"); err != nil {
+		log.Printf("[analyze] ANALYZE failed: %v", err)
+		return false
+	}
+	elapsed := time.Since(start).Round(time.Millisecond)
+	if first {
+		log.Printf("[analyze] planner statistics built in %v (analysis_limit=%d, first run against this database)", elapsed, analysisLimit)
+	} else {
+		log.Printf("[analyze] planner statistics refreshed in %v (analysis_limit=%d)", elapsed, analysisLimit)
+	}
+	return true
+}
+
+// EnsurePlannerStats builds planner statistics when the database has none, and
+// reports whether it did (#2058).
+//
+// This exists to close the window the startup stagger opens. The refresh ticker
+// waits 2 minutes before its first run, and a query arriving in that window
+// against a database with no statistics at all gets the plan measured in
+// RefreshPlannerStats above: 143,442 pages read, which timed at 56.7s cold on
+// the 9.4 GB staging file.
+//
+// It fires once per database, not once per restart. sqlite_stat1 is an ordinary
+// table, so once written it stays in the file and a fresh read-only connection
+// reads it back (verified across connection close, and through a mode=ro
+// handle). Every later start therefore costs one query against sqlite_master and
+// leaves the work to the ticker.
+//
+// The trade is a one-time ANALYZE early in startup, and it is not cheap on a
+// cold page cache. Observed on staging at 9.4 GB: 3m43.9s, against the 2.0s the
+// same statement takes warm. For those 3m44s it holds the store's single write
+// connection (SetMaxOpenConns(1), db.go:142), so ingest stalls and buffers: the
+// observations table took zero rows for four minutes and then 1027 in the minute
+// the ANALYZE finished, against about 130 a minute either side, with nothing
+// dropped. Hence the warning below, so an operator watching a first deploy can
+// tell this apart from a hang.
+//
+// That cost belongs to the first ANALYZE, not to running it here. The refresh
+// ticker would pay exactly the same 3m44s two minutes later; this only moves it
+// earlier, where it overlaps the startup burst the ingest buffer is already
+// sized for.
+func (s *Store) EnsurePlannerStats(analysisLimit int) bool {
+	if s.hasPlannerStats() {
+		return false
+	}
+	log.Printf("[analyze] this database has no planner statistics; building them now. " +
+		"ANALYZE holds the single write connection until it finishes (3m43.9s measured on 9.4 GB, cold), " +
+		"so ingest will buffer and catch up. Once per database, not once per restart.")
+	return s.RefreshPlannerStats(analysisLimit)
+}
+
+// hasPlannerStats reports whether ANALYZE has ever run against this database.
+// A query error reads as "no stats", which is the safe direction for both
+// callers: it costs the log line a wrong word, and costs EnsurePlannerStats one
+// ANALYZE that was not needed, rather than skipping one that was.
+func (s *Store) hasPlannerStats() bool {
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'`).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // Checkpoint runs a WAL checkpoint (TRUNCATE mode).
 // Returns the number of WAL frames checkpointed (0 if WAL was already empty).
 // TRUNCATE resets the WAL file to zero bytes when all frames are checkpointed;
@@ -822,9 +1026,11 @@ func (s *Store) BackfillPathJSONAsync() {
 // MQTT packet inserts and any concurrent backfill goroutines — serialize through
 // the single connection pool. busy_timeout(5000) handles transient cross-process
 // contention with the read-only server process. No additional locking is needed.
-func (s *Store) BackfillDefaultScopeAsync(regionKeys map[string][]byte) {
-	// No region keys configured — all scope_name values will be NULL, nothing to backfill.
-	if len(regionKeys) == 0 {
+func (s *Store) BackfillDefaultScopeAsync(regionSet *regionKeySet) {
+	// No region keys at all — every scope_name is NULL, nothing to backfill.
+	// The emptiness gate is read once here rather than per row: the loop below
+	// uses no keys, it only copies names that are already stored.
+	if len(regionSet.snapshot().all) == 0 {
 		return
 	}
 	s.backfillWg.Add(1)
@@ -865,6 +1071,122 @@ func (s *Store) BackfillDefaultScopeAsync(regionKeys map[string][]byte) {
 	}()
 }
 
+// BackfillTransportCodesAsync populates transmissions.code1/code2 for rows
+// inserted before the transport_codes_v1 migration, by re-parsing raw_hex.
+// Runs in a background goroutine so it does not block MQTT startup.
+//
+// Batched: SQLite holds a single write connection (SetMaxOpenConns(1)), so a
+// multi-million-row UPDATE in one transaction would stall live ingest for the
+// whole run. 5k-row batches keep each transaction short.
+func (s *Store) BackfillTransportCodesAsync() {
+	s.backfillWg.Add(1)
+	go func() {
+		defer s.backfillWg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[backfill] transport_codes async panic recovered: %v", r)
+			}
+		}()
+
+		var done int
+		if s.db.QueryRow("SELECT 1 FROM _migrations WHERE name = 'backfill_transport_codes_v1'").Scan(&done) == nil {
+			return // already ran
+		}
+
+		total, err := s.backfillTransportCodes(5000)
+		if err != nil {
+			log.Printf("[backfill] transport_codes: %v", err)
+			return // NOT recording the guard row — retry from scratch on next restart
+		}
+		s.Stats.IncBackfill("transport_codes")
+		log.Printf("[backfill] transport_codes populated for %d transmissions", total)
+		s.db.Exec(`INSERT INTO _migrations (name) VALUES ('backfill_transport_codes_v1')`)
+	}()
+}
+
+// backfillTransportCodes does the actual batched decode-and-update work,
+// returning the number of rows updated. Uses keyset pagination on id rather
+// than counting decoded items per page: a page can hit the LIMIT while
+// containing undecodable rows, so "items returned < batchSize" does NOT mean
+// "no rows remain" — that conflation previously caused the backfill to record
+// its completion migration after silently truncating on the first page with
+// an undecodable row. Termination is driven by how many rows the page
+// actually scanned (seen), not by how many decoded successfully; lastID
+// advances past undecodable rows too, so they are stepped over rather than
+// re-selected forever.
+//
+// Invariant: the caller records the backfill_transport_codes_v1 guard row iff
+// this returns a nil error, i.e. iff the loop ran to genuine exhaustion of all
+// matching rows. Every error path below returns non-nil immediately, without
+// finishing the run, so the guard is withheld and the next startup retries.
+func (s *Store) backfillTransportCodes(batchSize int) (int, error) {
+	var total int
+	var lastID int64
+	for {
+		rows, err := s.db.Query(`
+			SELECT id, raw_hex FROM transmissions
+			WHERE id > ? AND code1 IS NULL AND route_type IN (0, 3)
+			ORDER BY id
+			LIMIT ?`, lastID, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("transport_codes select: %w", err)
+		}
+		type item struct {
+			id           int64
+			code1, code2 string
+		}
+		var items []item
+		var seen int
+		for rows.Next() {
+			var id int64
+			var raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				rows.Close()
+				return total, fmt.Errorf("transport_codes scan: %w", err)
+			}
+			seen++
+			lastID = id // advance past undecodable rows too, or they are re-selected forever
+			decoded, err := DecodePacket(raw, nil, false)
+			if err != nil || decoded.TransportCodes == nil {
+				continue
+			}
+			items = append(items, item{id, decoded.TransportCodes.Code1, decoded.TransportCodes.Code2})
+		}
+		rows.Close()
+		if seen == 0 {
+			break // no rows left matching the filter
+		}
+
+		if len(items) > 0 {
+			tx, err := s.db.Begin()
+			if err != nil {
+				return total, fmt.Errorf("transport_codes begin: %w", err)
+			}
+			stmt, err := tx.Prepare(`UPDATE transmissions SET code1 = ?, code2 = ? WHERE id = ?`)
+			if err != nil {
+				tx.Rollback()
+				return total, fmt.Errorf("transport_codes prepare: %w", err)
+			}
+			for _, it := range items {
+				if _, err := stmt.Exec(it.code1, it.code2, it.id); err != nil {
+					stmt.Close()
+					tx.Rollback()
+					return total, fmt.Errorf("transport_codes update id=%d: %w", it.id, err)
+				}
+			}
+			stmt.Close()
+			if err := tx.Commit(); err != nil {
+				return total, fmt.Errorf("transport_codes commit: %w", err)
+			}
+			total += len(items)
+		}
+		if seen < batchSize {
+			break // last partial page
+		}
+	}
+	return total, nil
+}
+
 // LogStats logs current operational metrics.
 func (s *Store) LogStats() {
 	log.Printf("[stats] tx_inserted=%d tx_dupes=%d obs_inserted=%d node_upserts=%d observer_upserts=%d write_errors=%d sig_drops=%d",
@@ -876,6 +1198,87 @@ func (s *Store) LogStats() {
 		s.Stats.WriteErrors.Load(),
 		s.Stats.SignatureDrops.Load(),
 	)
+}
+
+// touchRelayNodesLocked refreshes nodes.last_seen for nodes observed as
+// relay hops, so a node that forwards traffic stays fresh even when it
+// adverts rarely or not at all.
+//
+// MUST be called with writerMu held. InsertTransmission holds it for its
+// entire body, so the debounce map needs no lock of its own; the name
+// carries the requirement for future callers.
+//
+// Ownership (#1283/#1287/#1289): nodes is written by the ingestor only.
+// The server opens SQLite mode=ro; its former touchRelayLastSeen has been
+// failing on every call since that refactor and is removed in this change.
+// cmd/server/readonly_invariant_test.go now guards against reintroduction.
+//
+// Callers pass the resolved pubkeys already computed for
+// observations.resolved_path (#1547/#1560) — only unambiguously resolved
+// hops reach this function, so a 1-byte prefix collision cannot keep a
+// silent node alive. resolvedPubkeys already dedups, so no second pass here.
+//
+// Never inserts: the UPDATE matches an existing row or does nothing.
+// Never rewinds: the last_seen guard makes out-of-order ingest a no-op.
+// UpsertNode's ON CONFLICT clause is monotonic in the same direction
+// (MAX(MIN(last_seen, ingestNow), rxTime) reduces to MAX(last_seen, rxTime)
+// for any non-future stored value), so an ADVERT cannot undo a touch.
+func (s *Store) touchRelayNodesLocked(pubkeys []string, rxTime string) {
+	if len(pubkeys) == 0 || s.stmtTouchNodeLastSeen == nil {
+		return
+	}
+	// Reject unparsable timestamps rather than writing them into the node
+	// directory. Callers hand us the observation rxTime, which comes off
+	// the wire and is not guaranteed well-formed.
+	ts, err := time.Parse(time.RFC3339, rxTime)
+	if err != nil {
+		return
+	}
+	// Same layout UpsertNode uses for last_seen, so the SQL comparisons
+	// above stay lexicographic-equals-chronological.
+	stamp := ts.UTC().Format(time.RFC3339)
+
+	if s.relayTouched == nil {
+		s.relayTouched = make(map[string]time.Time)
+	}
+	if len(s.relayTouched) >= relayTouchedMaxEntries {
+		s.compactRelayTouched(ts)
+	}
+	for _, pk := range pubkeys {
+		if pk == "" {
+			continue
+		}
+		if last, ok := s.relayTouched[pk]; ok && ts.Sub(last) < relayTouchDebounce {
+			continue
+		}
+		res, err := s.stmtTouchNodeLastSeen.Exec(stamp, pk, stamp)
+		if err != nil {
+			s.Stats.WriteErrors.Add(1)
+			continue
+		}
+		// Debounce on attempt, not on row match: an unknown pubkey would
+		// otherwise be retried on every observation it appears in.
+		//
+		// Side effect: a pubkey touched while absent from nodes, then
+		// inserted by an ADVERT moments later, is skipped for the rest of
+		// the window. Harmless — the ADVERT wrote last_seen itself, and it
+		// is newer than anything this window would have written.
+		s.relayTouched[pk] = ts
+		if n, _ := res.RowsAffected(); n > 0 {
+			s.Stats.RelayTouches.Add(n)
+		}
+	}
+}
+
+// compactRelayTouched drops debounce entries older than two windows.
+// Caller must hold writerMu.
+func (s *Store) compactRelayTouched(now time.Time) {
+	cutoff := now.Add(-2 * relayTouchDebounce)
+	for pk, t := range s.relayTouched {
+		if t.Before(cutoff) {
+			delete(s.relayTouched, pk)
+		}
+	}
 }
 
 // MoveStaleNodes moves nodes not seen in nodeDays to the inactive_nodes table.
@@ -928,6 +1331,42 @@ func (s *Store) RemoveStaleObservers(observerDays int) (int64, error) {
 		log.Printf("Marked %d observer(s) as inactive (not seen in %d days)", removed, observerDays)
 	}
 	return removed, nil
+}
+
+// PurgeStaleObservers hard-deletes rows RemoveStaleObservers already soft-deleted,
+// once they are older than purgeDays and nothing references them any more. It is
+// the second stage of observer retention: the soft-delete hides the observer,
+// this reclaims the row after its packets have aged out via packetDays.
+//
+// observations.observer_idx is a bare rowid with no foreign key, so deleting a
+// still-referenced observer silently orphans history — packets_v stops resolving
+// the observer and the packets are mis-attributed. The three NOT EXISTS guards
+// are what make the delete safe; they are correctness, not defensive padding.
+// Each is an index seek per candidate row (observers is O(100)), so the whole
+// statement stays cheap enough for the daily retention tick.
+//
+// purgeDays <= 0 disables the purge (the default).
+func (s *Store) PurgeStaleObservers(purgeDays int) (int64, error) {
+	if purgeDays <= 0 {
+		return 0, nil // disabled
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -purgeDays).Format(time.RFC3339)
+	// Tagged for /api/perf writer-lock visibility (#1340).
+	result, err := s.instrumentedExec("purge_observers", `
+		DELETE FROM observers
+		WHERE inactive = 1
+		  AND last_seen < ?
+		  AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.observer_idx = observers.rowid)
+		  AND NOT EXISTS (SELECT 1 FROM observer_metrics m WHERE m.observer_id = observers.id)
+		  AND NOT EXISTS (SELECT 1 FROM dropped_packets d WHERE d.observer_id = observers.id)`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("purge stale observers: %w", err)
+	}
+	purged, _ := result.RowsAffected()
+	if purged > 0 {
+		log.Printf("Purged %d inactive observer(s) with no remaining data (not seen in %d days)", purged, purgeDays)
+	}
+	return purged, nil
 }
 
 // DroppedPacket holds data for a packet rejected during ingest.
@@ -991,6 +1430,8 @@ type PacketData struct {
 	ChannelHash       string // grouping key for channel queries (#762)
 	ScopeName         string // matched region name, or "" for unknown-scoped
 	IsTransportScoped bool   // true when route_type IN (0,3) AND Code1 ≠ "0000"
+	Code1             string // transport code 1 (scope), "" when the route carries none
+	Code2             string // transport code 2 (return-region hint), "" when absent
 	Region            string // observer region: payload > topic > source config (#788)
 	Foreign           bool   // true when ADVERT GPS lies outside configured geofilter (#730)
 	FromPubkey        string // pubkey of the originating node, for exact-match attribution (#1143)
@@ -1002,6 +1443,14 @@ func nilIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// boolToInt converts a bool to SQLite's 0/1 INTEGER representation.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // scopeNameForDB encodes PacketData scope semantics for DB storage:
@@ -1039,6 +1488,109 @@ func (s *Store) UpdateNodeDefaultScope(pubkey, scope string) error {
 	}
 	// Mirror to inactive_nodes (node may be there if recently moved by retention).
 	_, err := s.db.Exec(`UPDATE inactive_nodes SET default_scope = ? WHERE public_key = ?`, scope, pubkey)
+	return err
+}
+
+// normalizeReportTS parses an observer report timestamp and returns it in
+// canonical UTC RFC3339 form ("2006-01-02T15:04:05Z"). It accepts both the
+// firmware's fractional/offset form (e.g. "2026-07-26T09:43:48.000000+00:00")
+// and plain "Z"/offset variants. An empty or unparseable input returns "" so
+// the caller writes an empty configured_scope_at and skips the ordering guard;
+// this keeps every stored timestamp either canonical or empty, never a mix of
+// offset/precision formats that would break lexicographic last-write-wins.
+func normalizeReportTS(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return ""
+}
+
+// normalizeScopeList canonicalises the comma-separated region-scope string an
+// observer reports for a node, so configured_scope is directly comparable with
+// default_scope instead of only looking similar (#1865, raised by @cwichura).
+//
+// The OTA scope query returns bare region names ("dk,eu,dk-aarhus"), while
+// everything else in CoreScope carries the leading "#": every stored
+// default_scope value on a live 1425-node instance starts with one (361 of
+// 361), and the hashRegions/hashChannels config paths already prefix a missing
+// "#" before deriving the channel key from it (main.go). The "#" is therefore
+// part of the region's name here, not decoration, so a bare "dk" and a stored
+// "#dk" are the same region and must be written the same way.
+//
+// Rules, in order: entries are trimmed; empty entries are dropped; "*" is a
+// wildcard rather than a region name and is passed through untouched; anything
+// else gains a leading "#" if it lacks one. Order is preserved and duplicates
+// are NOT collapsed, because the observer's ordering carries meaning we do not
+// interpret here. Case is left alone: region keys are derived as
+// sha256("#name"), so folding case would silently retarget a scope.
+//
+// An empty or all-empty input returns "", which UpdateNodeConfiguredScope
+// stores as a valid "responded, no scopes configured" statement.
+func normalizeScopeList(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if p != "*" && !strings.HasPrefix(p, "#") {
+			p = "#" + p
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, ",")
+}
+
+// UpdateNodeConfiguredScope records the region scopes a node has CONFIGURED,
+// as concrete evidence from an observer /neighbors report (#1865). Unlike
+// UpdateNodeDefaultScope (inferred, overwritten on every observation), this is
+// only called for the observer's own `self` scopes and for neighbors whose OTA
+// scope query returned status="responded" — so the caller, not this method,
+// gates on status. An empty scope IS a valid "responded, no scopes configured"
+// statement and is stored; a timeout must simply not reach this method.
+//
+// reportedAt is the report envelope timestamp (ISO-8601). It is stored in
+// configured_scope_at and used for last-write-wins: an out-of-order older
+// report must not clobber a newer confirmed value. A blank reportedAt skips
+// the ordering guard (always writes).
+func (s *Store) UpdateNodeConfiguredScope(pubkey, scope, reportedAt string) error {
+	if pubkey == "" {
+		return nil
+	}
+	// Normalize to canonical UTC RFC3339 so the last-write-wins comparison is
+	// chronological, not lexicographic (see normalizeReportTS). Stored values
+	// are therefore always canonical or empty.
+	reportedAt = normalizeReportTS(reportedAt)
+	// Canonicalise the scope syntax for the same reason: a value that is stored
+	// differently from default_scope cannot be compared against it (see
+	// normalizeScopeList).
+	scope = normalizeScopeList(scope)
+	// Last-write-wins: skip if the stored confirmation is newer-or-equal.
+	if reportedAt != "" {
+		var curAt sql.NullString
+		row := s.db.QueryRow(`SELECT configured_scope_at FROM nodes WHERE public_key = ?`, pubkey)
+		if row.Scan(&curAt) == nil && curAt.Valid && curAt.String != "" && curAt.String >= reportedAt {
+			return nil
+		}
+	}
+	if _, err := s.db.Exec(
+		`UPDATE nodes SET configured_scope = ?, configured_scope_at = ? WHERE public_key = ?`,
+		scope, reportedAt, pubkey); err != nil {
+		return err
+	}
+	// Mirror to inactive_nodes (node may be there if recently moved by retention).
+	_, err := s.db.Exec(
+		`UPDATE inactive_nodes SET configured_scope = ?, configured_scope_at = ? WHERE public_key = ?`,
+		scope, reportedAt, pubkey)
 	return err
 }
 
@@ -1102,7 +1654,7 @@ type MQTTPacketMessage struct {
 // into the past. Packet ordering is owned by the server clock; client
 // clocks are untrusted. msg.Timestamp still flows into observer.last_seen
 // via UpsertObserverAt — that's #1233's MAX/MIN guarded path and is fine.
-func BuildPacketData(msg *MQTTPacketMessage, decoded *DecodedPacket, observerID, region string, regionKeys map[string][]byte) *PacketData {
+func BuildPacketData(msg *MQTTPacketMessage, decoded *DecodedPacket, observerID, region string, regionSet *regionKeySet) *PacketData {
 	pathJSON := "[]"
 	// For TRACE packets, path_json must be the payload-decoded route hops
 	// (decoded.Path.Hops), NOT the raw_hex header bytes which are SNR values.
@@ -1150,9 +1702,13 @@ func BuildPacketData(msg *MQTTPacketMessage, decoded *DecodedPacket, observerID,
 		}
 	}
 
-	if decoded.TransportCodes != nil && decoded.TransportCodes.Code1 != "0000" {
-		pd.IsTransportScoped = true
-		pd.ScopeName = matchScope(regionKeys, byte(decoded.Header.PayloadType), decoded.payloadRaw, decoded.TransportCodes.Code1)
+	if decoded.TransportCodes != nil {
+		pd.Code1 = decoded.TransportCodes.Code1
+		pd.Code2 = decoded.TransportCodes.Code2
+		if decoded.TransportCodes.Code1 != "0000" {
+			pd.IsTransportScoped = true
+			pd.ScopeName = regionSet.matchScopeName(byte(decoded.Header.PayloadType), decoded.payloadRaw, decoded.TransportCodes.Code1)
+		}
 	}
 
 	// Populate from_pubkey at write time (#1143). ADVERTs carry the

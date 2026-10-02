@@ -18,8 +18,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // createTestDBWithLastSeen seeds a DB with the post-fix schema (last_seen

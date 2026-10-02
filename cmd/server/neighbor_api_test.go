@@ -12,7 +12,6 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 	"github.com/gorilla/mux"
-	_ "modernc.org/sqlite"
 )
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -495,6 +494,7 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 			t.Fatalf("exec %q: %v", stmt, err)
 		}
 	}
+	ensurePreparable(t, conn)
 	conn.Close()
 
 	// Open via our DB wrapper
@@ -631,7 +631,7 @@ func TestGetAllNodes_FirstSeenSchemaFallback(t *testing.T) {
 	}
 	for _, stmt := range []string{
 		"CREATE TABLE nodes (public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, advert_count INTEGER)",
-		"CREATE TABLE observers (id TEXT, name TEXT, iata TEXT)",
+		"CREATE TABLE observers (id TEXT, name TEXT, iata TEXT, inactive INTEGER)",
 		"INSERT INTO nodes VALUES ('BBBB2222', 'Repeater-2', 'repeater', 0, 0, '2024-02-02T00:00:00Z', 3)",
 	} {
 		if _, err := rw.Exec(stmt); err != nil {
@@ -646,7 +646,6 @@ func TestGetAllNodes_FirstSeenSchemaFallback(t *testing.T) {
 	}
 	defer conn.Close()
 	db := &DB{conn: conn, path: dbPath}
-	db.detectSchema()
 
 	store := NewPacketStore(db, nil)
 	nodes := store.getAllNodes()

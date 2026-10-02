@@ -1,5 +1,13 @@
-# Build stage always runs natively on the builder's arch ($BUILDPLATFORM)
-# and cross-compiles to $TARGETOS/$TARGETARCH via Go toolchain. No QEMU.
+# syntax=docker/dockerfile:1
+# Build stage always runs natively on the builder's arch ($BUILDPLATFORM) and
+# cross-compiles to $TARGETOS/$TARGETARCH. No QEMU for compilation.
+#
+# The SQLite driver is github.com/mattn/go-sqlite3, which is cgo, so the Go
+# toolchain alone can no longer cross-compile this: it needs a C compiler that
+# can target the other architecture. `zig cc` is that compiler. Targeting musl
+# makes the result fully static (see -extldflags below), so the runtime stage
+# has no libc dependency on the base image at all.
+#
 # BUILDPLATFORM is auto-set by buildx; default to linux/amd64 so plain
 # `docker build` (without buildx) doesn't fail on an empty platform string.
 ARG BUILDPLATFORM=linux/amd64

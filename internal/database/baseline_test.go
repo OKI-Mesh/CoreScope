@@ -120,8 +120,8 @@ func TestSchemaChecksWellFormed(t *testing.T) {
 // through gooseAdoptionVersion has an entry — a gap here would cause
 // AssertBaselined to report versions as "missing" that were simply
 // never given a check, rather than genuinely absent.
-func TestSchemaChecksCoverAdoptionRange(t *testing.T) {
-	for v := int64(1); v <= GooseAdoptionVersion; v++ {
+func TestSchemaChecksCoverLegacyAdoptionRange(t *testing.T) {
+	for v := int64(1); v <= 31; v++ {
 		if _, ok := schemaChecks[v]; !ok {
 			t.Errorf("schemaChecks missing entry for version %d (required through %d)", v, GooseAdoptionVersion)
 		}

@@ -8,9 +8,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
 // MQTTSource represents a single MQTT broker connection.
@@ -24,6 +26,8 @@ type MQTTSource struct {
 	IATAFilter         []string `json:"iataFilter,omitempty"`
 	ConnectTimeoutSec  int      `json:"connectTimeoutSec,omitempty"`
 	Region             string   `json:"region,omitempty"`
+	// ClientID is the MQTT ClientID; empty means corescope-<name>-<random>.
+	ClientID string `json:"clientId,omitempty"`
 }
 
 // ConnectTimeoutOrDefault returns the per-source connect timeout in seconds,
@@ -43,22 +47,29 @@ type MQTTLegacy struct {
 
 // Config holds the ingestor configuration, compatible with the Node.js config.json format.
 type Config struct {
-	DBPath             string                  `json:"dbPath"`
-	MQTT               *MQTTLegacy             `json:"mqtt,omitempty"`
-	MQTTSources        []MQTTSource            `json:"mqttSources,omitempty"`
-	LogLevel           string                  `json:"logLevel,omitempty"`
-	ChannelKeysPath    string                  `json:"channelKeysPath,omitempty"`
-	ChannelKeys        map[string]string       `json:"channelKeys,omitempty"`
-	HashChannels       []string                `json:"hashChannels,omitempty"`
-	HashRegions        []string                `json:"hashRegions,omitempty"`
-	Retention          *RetentionConfig        `json:"retention,omitempty"`
-	Metrics            *MetricsConfig          `json:"metrics,omitempty"`
-	Runtime            *RuntimeConfig          `json:"runtime,omitempty"`
-	ClientRxCoverage   *ClientRxCoverageConfig `json:"clientRxCoverage,omitempty"`
-	GeoFilter          *GeoFilterConfig        `json:"geo_filter,omitempty"`
-	ForeignAdverts     *ForeignAdvertConfig    `json:"foreignAdverts,omitempty"`
-	ValidateSignatures *bool                   `json:"validateSignatures,omitempty"`
-	DB                 *DBConfig               `json:"db,omitempty"`
+	DBPath               string                      `json:"dbPath"`
+	MQTT                 *MQTTLegacy                 `json:"mqtt,omitempty"`
+	MQTTSources          []MQTTSource                `json:"mqttSources,omitempty"`
+	LogLevel             string                      `json:"logLevel,omitempty"`
+	ChannelKeysPath      string                      `json:"channelKeysPath,omitempty"`
+	ChannelKeys          map[string]string           `json:"channelKeys,omitempty"`
+	HashChannels         []string                    `json:"hashChannels,omitempty"`
+	HashRegions          []string                    `json:"hashRegions,omitempty"`
+	AutoRegionKeys       *AutoRegionKeysConfig       `json:"autoRegionKeys,omitempty"`
+	Retention            *RetentionConfig            `json:"retention,omitempty"`
+	Metrics              *MetricsConfig              `json:"metrics,omitempty"`
+	Runtime              *RuntimeConfig              `json:"runtime,omitempty"`
+	ClientRxCoverage     *ClientRxCoverageConfig     `json:"clientRxCoverage,omitempty"`
+	ClientRxObservations *ClientRxObservationsConfig `json:"clientRxObservations,omitempty"`
+	ClientRfSamples      *ClientRfSamplesConfig      `json:"clientRfSamples,omitempty"`
+	ClientRegions        *ClientRegionsConfig        `json:"clientRegions,omitempty"`
+	GeoFilter            *GeoFilterConfig            `json:"geo_filter,omitempty"`
+	// PathTrust configures the minimum path-hash prefix length trusted as
+	// mapping/topology evidence (issue #1784).
+	PathTrust          *PathTrustConfig     `json:"pathTrust,omitempty"`
+	ForeignAdverts     *ForeignAdvertConfig `json:"foreignAdverts,omitempty"`
+	ValidateSignatures *bool                `json:"validateSignatures,omitempty"`
+	DB                 *DBConfig            `json:"db,omitempty"`
 
 	// ObserverIATAWhitelist restricts which observer IATA regions are processed.
 	// When non-empty, only observers whose IATA code (from the MQTT topic) matches
@@ -70,8 +81,19 @@ type Config struct {
 	obsIATAWhitelistCached map[string]bool
 	obsIATAWhitelistOnce   sync.Once
 
+	// IATAWarnIntervalSec throttles the one-line-per-region warning emitted when
+	// ObserverIATAWhitelist rejects a region. 0 => defaultIATAWarnIntervalSec.
+	IATAWarnIntervalSec int `json:"iataWarnIntervalSec,omitempty"`
+
+	// iataWarnLast tracks when each dropped region was last logged.
+	iataWarnMu   sync.Mutex
+	iataWarnLast map[string]time.Time
+	// iataWarnOverflowLast throttles the shared warning used once
+	// iataWarnLast has reached iataWarnMaxTracked.
+	iataWarnOverflowLast time.Time
+
 	// ObserverBlacklist is a list of observer public keys to drop at ingest.
-	// Messages from blacklisted observers are silently discarded — no DB writes,
+	// Messages from blacklisted observers are silently discarded â€” no DB writes,
 	// no UpsertObserver, no observations, no metrics.
 	ObserverBlacklist []string `json:"observerBlacklist,omitempty"`
 
@@ -80,7 +102,7 @@ type Config struct {
 	obsBlacklistOnce      sync.Once
 
 	// NeighborEdgesMaxAgeDays controls neighbor_edges row retention
-	// (#1287 — moved from cmd/server). 0 = default 5.
+	// (#1287 â€” moved from cmd/server). 0 = default 5.
 	NeighborEdgesMaxAgeDays int `json:"neighborEdgesMaxAgeDays,omitempty"`
 
 	// IngestBufferSize caps the in-memory queue (number of MQTT messages) held
@@ -112,6 +134,10 @@ func (c *Config) IngestBufferSizeOrDefault() int {
 // GeoFilterConfig is an alias for the shared geofilter.Config type.
 type GeoFilterConfig = geofilter.Config
 
+// PathTrustConfig is an alias for the shared packetpath.TrustConfig type
+// (issue #1784). See packetpath.TrustConfig for the full doc comment.
+type PathTrustConfig = packetpath.TrustConfig
+
 // ForeignAdvertConfig controls how the ingestor handles ADVERTs whose GPS lies
 // outside the configured geofilter polygon (#730). Modes:
 //   - "flag" (default): store the advert/node and tag it foreign for visibility.
@@ -135,16 +161,56 @@ type ClientRxCoverageConfig struct {
 }
 
 // ClientRxCoverageEnabled reports whether the opt-in mobile client-RX coverage
-// feature is on. Absent/nil ⇒ off (the safe default).
+// feature is on. Absent/nil â‡’ off (the safe default).
 func (c *Config) ClientRxCoverageEnabled() bool {
 	return c.ClientRxCoverage != nil && c.ClientRxCoverage.Enabled
+}
+
+// ClientRxObservationsConfig controls the opt-in diagnostic RF observation
+// table. Separate from clientRxCoverage: a deployment may well want coverage
+// without the far higher-volume diagnostic stream.
+type ClientRxObservationsConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ClientRxObservationsEnabled reports whether diagnostic client RF observations
+// are recorded. Default false.
+func (c *Config) ClientRxObservationsEnabled() bool {
+	return c.ClientRxObservations != nil && c.ClientRxObservations.Enabled
+}
+
+// ClientRfSamplesConfig controls the opt-in RF environment sample stream.
+type ClientRfSamplesConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ClientRfSamplesEnabled reports whether RF samples are recorded. Default false.
+func (c *Config) ClientRfSamplesEnabled() bool {
+	return c.ClientRfSamples != nil && c.ClientRfSamples.Enabled
+}
+
+// ClientRegionsConfig controls the opt-in region-discovery answer stream.
+type ClientRegionsConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ClientRegionsEnabled reports whether declared-region answers are recorded.
+// Default false.
+func (c *Config) ClientRegionsEnabled() bool {
+	return c.ClientRegions != nil && c.ClientRegions.Enabled
 }
 
 // RetentionConfig controls how long stale nodes are kept before being moved to inactive_nodes.
 type RetentionConfig struct {
 	NodeDays     int `json:"nodeDays"`
 	ObserverDays int `json:"observerDays"`
-	MetricsDays  int `json:"metricsDays"`
+	// ObserverPurgeDays hard-deletes observers that observerDays already
+	// soft-deleted, once they are older than this and no observation,
+	// metric or dropped-packet row still references them; 0 disables.
+	// Only meaningful above observerDays and packetDays — below those the
+	// reference guards keep every candidate row anyway.
+	ObserverPurgeDays int `json:"observerPurgeDays"`
+	MetricsDays       int `json:"metricsDays"`
 	// PacketDays is the retention window for transmissions (#1283).
 	// Ownership moved from cmd/server to cmd/ingestor; 0 disables.
 	PacketDays int `json:"packetDays"`
@@ -152,6 +218,19 @@ type RetentionConfig struct {
 	// coverage rows in client_receptions / client_observers; 0 disables. Bounds
 	// the table the opt-in coverage feature would otherwise grow without limit.
 	ClientRxDays int `json:"clientRxDays"`
+	// ClientRxObsDays is the retention window (by rx_at) for the diagnostic
+	// client_rx_observations table; 0 disables. Shorter than clientRxDays â€”
+	// this table is diagnostic, not archival.
+	ClientRxObsDays int `json:"clientRxObsDays"`
+	// ClientRfDays is the retention window (by sampled_at) for the
+	// client_rf_samples table; 0 disables. Bounds the table the opt-in RF
+	// sample stream would otherwise grow without limit.
+	ClientRfDays int `json:"clientRfDays"`
+	// ClientRegionsDays is the retention window (by observed_at) for the
+	// node_declared_regions table; 0 disables. Bounds the table the opt-in
+	// region-discovery stream would otherwise grow without limit. Consumed by
+	// Task 6's pruner.
+	ClientRegionsDays int `json:"clientRegionsDays"`
 }
 
 // PacketDaysOrZero returns the configured retention.packetDays or 0
@@ -163,11 +242,45 @@ func (c *Config) PacketDaysOrZero() int {
 	return 0
 }
 
+// ObserverPurgeDaysOrZero returns the configured retention.observerPurgeDays
+// or 0 (disabled) if not set.
+func (c *Config) ObserverPurgeDaysOrZero() int {
+	if c.Retention != nil && c.Retention.ObserverPurgeDays > 0 {
+		return c.Retention.ObserverPurgeDays
+	}
+	return 0
+}
+
 // ClientRxDaysOrZero returns the configured retention.clientRxDays or 0
 // (disabled) if not set.
 func (c *Config) ClientRxDaysOrZero() int {
 	if c.Retention != nil && c.Retention.ClientRxDays > 0 {
 		return c.Retention.ClientRxDays
+	}
+	return 0
+}
+
+// ClientRxObsDaysOrZero returns retention.clientRxObsDays or 0 (disabled).
+func (c *Config) ClientRxObsDaysOrZero() int {
+	if c.Retention != nil && c.Retention.ClientRxObsDays > 0 {
+		return c.Retention.ClientRxObsDays
+	}
+	return 0
+}
+
+// ClientRfDaysOrZero returns retention.clientRfDays or 0 (disabled).
+func (c *Config) ClientRfDaysOrZero() int {
+	if c.Retention != nil && c.Retention.ClientRfDays > 0 {
+		return c.Retention.ClientRfDays
+	}
+	return 0
+}
+
+// ClientRegionsDaysOrZero returns retention.clientRegionsDays or 0
+// (disabled) if not set.
+func (c *Config) ClientRegionsDaysOrZero() int {
+	if c.Retention != nil && c.Retention.ClientRegionsDays > 0 {
+		return c.Retention.ClientRegionsDays
 	}
 	return 0
 }
@@ -195,6 +308,23 @@ func (c *Config) IncrementalVacuumPages() int {
 		return c.DB.IncrementalVacuumPages
 	}
 	return 1024
+}
+
+// AnalysisLimit returns the per-index row cap for the planner stats refresh
+// (#2058). A negative setting disables the refresh; zero means unset, matching
+// IncrementalVacuumPages above.
+//
+// 10000 rather than the 400 SQLite's documentation offers: measured on the
+// 9.4 GB staging database, 400 and 1000 leave the channel-query plan exactly as
+// it was, 10000 produces the same plan as an unbounded ANALYZE, and it costs 2.0s
+// against that ANALYZE's 242.9s, both timed warm. The full ladder, and the cold
+// figure that matters at startup, are in Store.RefreshPlannerStats and
+// Store.EnsurePlannerStats.
+func (c *Config) AnalysisLimit() int {
+	if c.DB != nil && c.DB.AnalysisLimit != 0 {
+		return c.DB.AnalysisLimit
+	}
+	return 10000
 }
 
 // ShouldValidateSignatures returns true (default) unless explicitly disabled.
@@ -238,6 +368,15 @@ func (c *Config) ObserverDaysOrDefault() int {
 	return 14
 }
 
+// GetPathTrust returns the effective path-trust config, applying
+// DefaultMinHashBytesForMapping when unset (issue #1784).
+func (c *Config) GetPathTrust() PathTrustConfig {
+	if c != nil && c.PathTrust != nil {
+		return *c.PathTrust
+	}
+	return PathTrustConfig{MinHashBytesForMapping: packetpath.DefaultMinHashBytesForMapping}
+}
+
 // IsObserverBlacklisted returns true if the given observer ID is in the observerBlacklist.
 func (c *Config) IsObserverBlacklisted(id string) bool {
 	if c == nil || len(c.ObserverBlacklist) == 0 {
@@ -275,6 +414,92 @@ func (c *Config) IsObserverIATAAllowed(iata string) bool {
 	return c.obsIATAWhitelistCached[strings.ToUpper(strings.TrimSpace(iata))]
 }
 
+// iataWarnMaxTracked bounds the per-region throttle map. The key is
+// publisher-controlled, so it cannot be allowed to grow with traffic. 512 is
+// far above any real deployment's region count (the reference instance has 43
+// observers across a handful of regions) and small enough that a hostile feed
+// buys nothing: the map stops growing and the warning keeps coming.
+const iataWarnMaxTracked = 512
+
+// defaultIATAWarnIntervalSec is the re-log interval for whitelist drops (6h).
+const defaultIATAWarnIntervalSec = 21600
+
+// IATAWarnInterval returns how often a dropped region is re-logged.
+func (c *Config) IATAWarnInterval() time.Duration {
+	if c == nil || c.IATAWarnIntervalSec <= 0 {
+		return defaultIATAWarnIntervalSec * time.Second
+	}
+	return time.Duration(c.IATAWarnIntervalSec) * time.Second
+}
+
+// ShouldWarnIATADrop reports whether a whitelist drop for this region should be
+// logged now, recording the decision when it returns true.
+//
+// Logging every dropped message is not an option: a foreign feed runs to
+// thousands of messages a day and would flood the container log. But dropping
+// in silence is worse — an allow-list fails in the dangerous direction, where a
+// legitimate but unlisted region simply vanishes with nothing to show for it.
+// So: one line per region, re-logged at most every IATAWarnInterval for as long
+// as that region keeps arriving. The re-log is deliberate — a strict log-once
+// would emit a single edge event that any scrape window eventually rolls past,
+// leaving an actively-dropping region looking identical to a healthy one.
+func (c *Config) ShouldWarnIATADrop(iata string) bool {
+	if c == nil {
+		return false
+	}
+	code := strings.ToUpper(strings.TrimSpace(iata))
+	if code == "" {
+		return false
+	}
+	interval := c.IATAWarnInterval()
+	now := time.Now()
+
+	c.iataWarnMu.Lock()
+	defer c.iataWarnMu.Unlock()
+	if last, ok := c.iataWarnLast[code]; ok && now.Sub(last) < interval {
+		return false
+	}
+	if c.iataWarnLast == nil {
+		c.iataWarnLast = make(map[string]time.Time)
+	}
+	// The key comes from a topic segment the publisher controls, so an
+	// unbounded map here is a remote memory sink: 200k distinct codes retained
+	// 200k entries and 15.1 MB of heap when this was measured. Nothing in the
+	// codebase constrains an IATA code's shape (it is uppercased and trimmed,
+	// never validated), so rejecting by shape would invent a rule operators
+	// have not agreed to. Bound the map instead.
+	//
+	// Past the cap the drop is still logged, throttled on one shared timestamp
+	// rather than a per-code one. That keeps the flood-protection the feature
+	// exists for while making the overflow itself visible: silently dropping
+	// the warning would reintroduce the bug this PR fixes, one level up.
+	if len(c.iataWarnLast) >= iataWarnMaxTracked {
+		// Sweep first. An entry older than the interval holds nothing back:
+		// the code would be re-logged on its next sighting anyway, so dropping
+		// it changes no behaviour and frees the slot. Without this the first
+		// iataWarnMaxTracked codes ever seen own the map forever, and a
+		// legitimate region that starts arriving later is stuck sharing the
+		// overflow throttle with whatever transient junk got there first.
+		// Only runs at the cap, so the normal path pays nothing.
+		for k, t := range c.iataWarnLast {
+			if now.Sub(t) >= interval {
+				delete(c.iataWarnLast, k)
+			}
+		}
+	}
+	if len(c.iataWarnLast) >= iataWarnMaxTracked {
+		if _, known := c.iataWarnLast[code]; !known {
+			if now.Sub(c.iataWarnOverflowLast) < interval {
+				return false
+			}
+			c.iataWarnOverflowLast = now
+			return true
+		}
+	}
+	c.iataWarnLast[code] = now
+	return true
+}
+
 // LoadConfig reads configuration from a JSON file, with env var overrides.
 // If the config file does not exist, sensible defaults are used (zero-config startup).
 func LoadConfig(path string) (*Config, error) {
@@ -285,7 +510,7 @@ func LoadConfig(path string) (*Config, error) {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("reading config %s: %w", path, err)
 		}
-		// Config file doesn't exist — use defaults (zero-config mode)
+		// Config file doesn't exist â€” use defaults (zero-config mode)
 		log.Printf("config file %s not found, using sensible defaults", path)
 	} else {
 		if err := json.Unmarshal(data, &cfg); err != nil {
@@ -298,7 +523,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.DBPath = v
 	}
 	if v := os.Getenv("MQTT_BROKER"); v != "" {
-		// Single broker from env — create a source
+		// Single broker from env â€” create a source
 		topic := os.Getenv("MQTT_TOPIC")
 		if topic == "" {
 			topic = "meshcore/#"
@@ -341,10 +566,10 @@ func LoadConfig(path string) (*Config, error) {
 //
 // Scheme mapping:
 //
-//	mqtt://  → tcp://   (paho plain TCP)
-//	mqtts:// → ssl://   (paho TLS over TCP)
-//	ws://               (paho WebSocket — passed through, no mapping needed)
-//	wss://              (paho WebSocket TLS — passed through, no mapping needed)
+//	mqtt://  â†’ tcp://   (paho plain TCP)
+//	mqtts:// â†’ ssl://   (paho TLS over TCP)
+//	ws://               (paho WebSocket â€” passed through, no mapping needed)
+//	wss://              (paho WebSocket TLS â€” passed through, no mapping needed)
 func (c *Config) ResolvedSources() []MQTTSource {
 	for i := range c.MQTTSources {
 		// paho uses tcp:// and ssl:// for plain MQTT; ws:// and wss:// are accepted natively.
@@ -354,8 +579,63 @@ func (c *Config) ResolvedSources() []MQTTSource {
 		} else if strings.HasPrefix(b, "mqtts://") {
 			c.MQTTSources[i].Broker = "ssl://" + b[8:]
 		}
-		// ws:// and wss:// pass through unchanged — paho handles WebSocket
+		// ws:// and wss:// pass through unchanged â€” paho handles WebSocket
 		// connections natively via gorilla/websocket.
 	}
 	return c.MQTTSources
+}
+
+// AutoRegionKeysConfig controls the opt-in derivation of region keys from the
+// names repeaters declare over RF (node_declared_regions), on top of the
+// explicit hashRegions list.
+//
+// TOP-LEVEL BLOCK, a sibling of hashRegions — not nested inside it. Config
+// loading is plain json.Unmarshal with no DisallowUnknownFields, so a
+// mis-nested key is silently ignored and derivation stays off with no error,
+// the same trap clientRxObservations documents.
+type AutoRegionKeysConfig struct {
+	Enabled        bool `json:"enabled"`
+	MaxDerived     int  `json:"maxDerived"`
+	RefreshMinutes int  `json:"refreshMinutes"`
+}
+
+// autoRegionKeysDefaultMaxDerived bounds the derived tier. Every added key
+// raises the random ambiguity rate by 1/65536 per scoped packet (code1 is two
+// bytes) and costs one more HMAC per transport-scoped packet — the match is
+// O(keys) and cannot be indexed, because the code depends on the payload. 256
+// on top of a typical explicit set puts the ambiguity rate near 0.5%, which is
+// the ceiling this design accepts.
+const autoRegionKeysDefaultMaxDerived = 256
+
+// autoRegionKeysDefaultRefreshMinutes is how often the derived tier is rebuilt
+// from the database. Declared-region answers arrive at human pace (a drive-by
+// with a companion app, or a 24h observer report), so minutes-scale staleness
+// is irrelevant and a tighter interval only burns queries.
+const autoRegionKeysDefaultRefreshMinutes = 15
+
+// AutoRegionKeysEnabled reports whether region keys may be derived from
+// declared-region answers. Default false.
+func (c *Config) AutoRegionKeysEnabled() bool {
+	return c.AutoRegionKeys != nil && c.AutoRegionKeys.Enabled
+}
+
+// AutoRegionKeysMaxDerived returns the derived-tier cap, falling back to the
+// default for absent, zero, or negative values — a zero is indistinguishable
+// from "key omitted" after json.Unmarshal, and neither should silently mean
+// "derive nothing" when the operator has switched the feature on.
+func (c *Config) AutoRegionKeysMaxDerived() int {
+	if c.AutoRegionKeys == nil || c.AutoRegionKeys.MaxDerived <= 0 {
+		return autoRegionKeysDefaultMaxDerived
+	}
+	return c.AutoRegionKeys.MaxDerived
+}
+
+// AutoRegionKeysRefreshMinutes returns the refresh interval in minutes,
+// falling back to the default for absent, zero, or negative values — a zero
+// here would otherwise panic time.NewTicker.
+func (c *Config) AutoRegionKeysRefreshMinutes() int {
+	if c.AutoRegionKeys == nil || c.AutoRegionKeys.RefreshMinutes <= 0 {
+		return autoRegionKeysDefaultRefreshMinutes
+	}
+	return c.AutoRegionKeys.RefreshMinutes
 }

@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-
-	_ "modernc.org/sqlite"
 )
 
 func computeContentHash(rawHex string) string {
@@ -69,7 +67,7 @@ func main() {
 	}
 	dbPath := os.Args[1]
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}

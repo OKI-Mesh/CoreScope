@@ -121,7 +121,7 @@ LIMITATIONS
 	key := channel.DeriveKey(ch)
 	chHash := channel.ChannelHash(key)
 
-	db, err := sql.Open("sqlite", *dbPath+"?mode=ro")
+	db, err := sql.Open("sqlite3", "file:"+*dbPath+"?mode=ro")
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

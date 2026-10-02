@@ -1,0 +1,105 @@
+/* Network-wide scope audit page (#/scope-audit). Reuses .ns-decl / .ns-table /
+   .ns-empty / .ns-truncated from node-scopes.css (same badge vocabulary, so
+   the per-node and network-wide views agree visually) plus .analytics-time-range
+   for the window buttons. No hex/rgb literals — --text-muted / --border /
+   --status-* / --link-color are defined globally. */
+
+.sa-page { max-width: 1200px; margin: 0 auto; padding: 12px 16px; }
+
+.sa-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.sa-head h2 { margin: 0; font-size: 18px; }
+
+.sa-intro { color: var(--text-muted); font-size: 12px; margin: 4px 0 10px; }
+.sa-intro a { color: var(--link-color); }
+
+/* .sa-search reuses .nodes-search (style.css) for the input's colours/border
+   so this page doesn't invent a second search-box style — only the sizing
+   below is page-specific. */
+.sa-search-bar { margin: 0 0 10px; }
+.sa-search { width: 100%; max-width: 360px; }
+
+.sa-window-note {
+  font-size: 12px; color: var(--text-muted); margin: 4px 0 10px;
+  border-left: 3px solid var(--border); padding: 4px 10px;
+}
+
+.sa-table-wrap { overflow-x: auto; }
+.sa-table { min-width: 720px; }
+.sa-name a { color: var(--link-color); text-decoration: none; }
+.sa-name a:hover { text-decoration: underline; }
+.sa-name-unknown { color: var(--text-muted); font-style: italic; }
+.sa-role { font-size: 10px; text-transform: uppercase; letter-spacing: .3px; }
+
+.sa-chip {
+  display: inline-block; padding: 1px 6px; margin: 1px 2px 1px 0; border-radius: 4px;
+  font-size: 11px; font-family: var(--mono); white-space: nowrap;
+}
+.sa-chip-declared { background: var(--section-bg, var(--card-bg)); color: var(--text); border: 1px solid var(--border); }
+.sa-chip-undeclared { background: color-mix(in srgb, var(--status-yellow) 18%, transparent); color: var(--status-amber-text); }
+/* Same outline, same reason as .ns-decl-unknown: --section-bg is dark-theme
+   only, so in light this falls back to --card-bg, which is white on a
+   near-white page ground and leaves the wildcard chip unpainted. */
+.sa-chip-wildcard { background: var(--section-bg, var(--card-bg)); box-shadow: inset 0 0 0 1px var(--border); color: var(--text-muted); font-weight: 700; }
+.sa-chip-ambiguous { background: var(--section-bg, var(--card-bg)); color: var(--text-muted); border: 1px dashed var(--border); font-family: inherit; font-style: italic; }
+
+.sa-count { font-size: 11px; margin-top: 6px; }
+
+/* sa-summary is the per-configState count line at the top of the page —
+   "13 no scopes configured" etc — reusing .ns-decl (node-scopes.css) for the
+   count pill so it shares the exact colour vocabulary the row-level Config
+   badge (also .ns-decl) uses, rather than a separate summary palette. */
+.sa-summary { display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 12px; color: var(--text-muted); margin: 2px 0 10px; }
+.sa-summary-item { display: inline-flex; align-items: center; gap: 5px; }
+
+/* A 640px rule hiding the table's sixth column used to live here. The table
+   has five (scope-audit.js), so it hid nothing, and the wrapper already scrolls
+   horizontally. Removed rather than repointed: hiding a column of this table is
+   what made the Config badge disappear on phones when node-scopes.css landed. */
+
+/* Observed forwarding, the green half of the merged Scopes column. Pairs with
+   .sa-chip-unobserved below, which stays neutral. Only the observed side is
+   coloured: red on every unobserved region would read as an alarm on rows that
+   are often just a quiet region over a short window. */
+/* #1996: the chip's own tint darkens whatever is behind it, so
+   --status-green-text (green-700, #15803d) landed at 4.04:1 on --surface-0 and
+   4.38:1 on white — both under the 4.5:1 the #1719 gate requires. Measured, and
+   it reproduces the ratio in the report exactly.
+   Fixed on the TEXT rather than by thinning the tint: 12% tint would reach
+   4.52:1, two hundredths above the line, which is the kind of margin that fails
+   again on the next surface change. green-800 gives 6.23:1 on white and 5.74:1
+   on --surface-0, and keeps the tint that makes the chip read as a chip.
+   Dark is untouched: --status-green-text is the bright #22c55e there and
+   already passes at 6.48:1 / 5.73:1. */
+.sa-chip-observed { background: color-mix(in srgb, var(--status-green) 16%, transparent); color: var(--sa-chip-observed-fg); }
+
+/* Declared but not observed in this window. Deliberately NOT red: absence over
+   a short window is weak evidence, which the page header says in words, so it
+   should not shout in colour. */
+.sa-chip-unobserved { background: var(--section-bg, var(--card-bg)); color: var(--text-muted); border: 1px solid var(--border); }
+
+/* Provenance note under the intro. Same muted treatment as .sa-intro; it is
+   context, not a finding, and must not compete with the table. */
+.sa-sources { color: var(--text-muted); font-size: 12px; margin: 0 0 10px; line-height: 1.5; }
+.sa-sources a { color: var(--link-color); }
+.sa-sources code { font-family: var(--mono); font-size: 11px; }
+
+/* Provenance note under the intro, and the empty state that has to carry the
+   same explanation on its own: on a stock install the table IS empty, so that
+   is where an operator actually reads it. Muted like .sa-intro; this is
+   context, not a finding, and must not compete with the table. */
+.sa-sources { color: var(--text-muted); font-size: 12px; margin: 0 0 10px; line-height: 1.5; }
+.sa-sources a, .sa-empty a { color: var(--link-color); }
+.sa-sources code, .sa-empty code { font-family: var(--mono); font-size: 11px; }
+.sa-empty { line-height: 1.6; max-width: 70ch; }
+.sa-empty ul { margin: 8px 0; padding-left: 20px; }
+.sa-empty li { margin: 4px 0; }
+
+/* Same muted, dashed treatment as .sa-chip-ambiguous on purpose: both are
+   caveats on the row's finding, not findings themselves, and neither may
+   compete visually with the red/green scope chips beside them. */
+.sa-chip-unmatched { background: var(--section-bg, var(--card-bg)); color: var(--text-muted); border: 1px dashed var(--border); font-family: inherit; font-style: italic; }
+
+/* Verified-by-declaration: the same green as any observed chip, because the
+   region IS observed. The dotted underline says how that was established
+   without introducing a third colour into a column that already carries two. */
+.sa-chip-verified { text-decoration: underline dotted; text-underline-offset: 2px; }

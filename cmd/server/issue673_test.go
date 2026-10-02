@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 const issue673NodePK = "7502f19f44cad6d7b626e1d811c00a914af452636182ccded3fd019803395ec9"

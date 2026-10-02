@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,8 +23,9 @@ func setupTestDB(t *testing.T) *DB {
 	}
 	conn.SetMaxOpenConns(1)
 
-	if err := database.RunMigrations(conn); err != nil {
-		t.Fatalf("run migrations: %v", err)
+	// Same migration path the other fixtures use; produces the v3 schema.
+	if _, err := database.BaselineStampMigrate(conn, nil); err != nil {
+		t.Fatalf("migrating test db: %v", err)
 	}
 
 	if _, err := conn.Exec(`
@@ -40,7 +45,9 @@ func setupTestDB(t *testing.T) *DB {
 	}
 
 	db := &DB{conn: conn}
-	db.detectSchema()
+	if err := db.detectSchema(context.Background(), conn); err != nil {
+		t.Fatalf("detectSchema: %v", err)
+	}
 	return db
 }
 
@@ -1125,7 +1132,8 @@ func setupTestDBV2(t *testing.T) *DB {
 			last_seen TEXT,
 			first_seen TEXT,
 			packet_count INTEGER DEFAULT 0,
-			last_packet_at TEXT DEFAULT NULL
+			last_packet_at TEXT DEFAULT NULL,
+			inactive INTEGER DEFAULT 0
 		);
 
 		CREATE TABLE transmissions (
@@ -2114,8 +2122,9 @@ func TestGetScopeStats(t *testing.T) {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		raw_hex TEXT, hash TEXT, first_seen TEXT, route_type INTEGER,
 		payload_type INTEGER, payload_version INTEGER, decoded_json TEXT,
-		scope_name TEXT DEFAULT NULL
+		scope_name TEXT DEFAULT NULL, from_pubkey TEXT DEFAULT NULL
 	)`)
+	db.conn.Exec(`CREATE TABLE IF NOT EXISTS nodes (public_key TEXT PRIMARY KEY, role TEXT)`)
 	// Manually set hasScopeName since we bypassed the detector
 	db.hasScopeName = true
 
@@ -2126,27 +2135,141 @@ func TestGetScopeStats(t *testing.T) {
 	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('b', ?, 0, '')`, now)
 	// Transport unscoped (NULL)
 	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('c', ?, 0, NULL)`, now)
-	// Non-transport (should not count)
+	// Non-transport FLOOD (route_type=1) — inherently unscoped per MeshCore protocol (#1838)
 	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('d', ?, 1, NULL)`, now)
+	// Non-transport DIRECT (route_type=2) — inherently unscoped per MeshCore protocol (#1838)
+	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('e', ?, 2, NULL)`, now)
 
 	stats, err := db.GetScopeStats("24h")
 	if err != nil {
 		t.Fatalf("GetScopeStats: %v", err)
 	}
+	// TransportTotal still counts only routes 0+3 (transport-code-carrying).
 	if stats.Summary.TransportTotal != 3 {
 		t.Errorf("TransportTotal = %d, want 3", stats.Summary.TransportTotal)
 	}
 	if stats.Summary.Scoped != 2 {
 		t.Errorf("Scoped = %d, want 2", stats.Summary.Scoped)
 	}
-	if stats.Summary.Unscoped != 1 {
-		t.Errorf("Unscoped = %d, want 1", stats.Summary.Unscoped)
+	// Unscoped now folds in non-transport (routes 1+2) — see #1838.
+	// 1 transport-NULL + 2 non-transport (routes 1 and 2) = 3.
+	if stats.Summary.Unscoped != 3 {
+		t.Errorf("Unscoped = %d, want 3 (1 transport-null + 2 non-transport)", stats.Summary.Unscoped)
 	}
 	if stats.Summary.UnknownScope != 1 {
 		t.Errorf("UnknownScope = %d, want 1", stats.Summary.UnknownScope)
 	}
 	if len(stats.ByRegion) != 1 || stats.ByRegion[0].Name != "#belgium" || stats.ByRegion[0].Count != 1 {
 		t.Errorf("ByRegion = %+v, want [{#belgium 1}]", stats.ByRegion)
+	}
+}
+
+// TestGetScopeStatsAdvertsByRole covers the #1979 breakdown: flood adverts in
+// the window, grouped by the sender's nodes.role, split by the three
+// scope_name states (NULL is unscoped, an empty string is unknown scope, a
+// name is a named scope).
+func TestGetScopeStatsAdvertsByRole(t *testing.T) {
+	conn, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	conn.SetMaxOpenConns(1)
+	db := &DB{conn: conn, hasScopeName: true}
+	defer db.conn.Close()
+
+	for _, stmt := range []string{
+		`CREATE TABLE transmissions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			hash TEXT, first_seen TEXT, route_type INTEGER, payload_type INTEGER,
+			scope_name TEXT DEFAULT NULL, from_pubkey TEXT DEFAULT NULL
+		)`,
+		`CREATE TABLE nodes (public_key TEXT PRIMARY KEY, role TEXT)`,
+		`INSERT INTO nodes (public_key, role) VALUES ('rpt', 'repeater'), ('cmp', 'companion'), ('sns', 'sensor'), ('norole', '')`,
+	} {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	old := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	rows := []struct {
+		hash    string
+		seen    string
+		route   int
+		ptype   int
+		scope   interface{}
+		fromKey interface{}
+	}{
+		// Totals per role differ from alphabetical order so the test pins
+		// ORDER BY total: repeater 4, unknown 3, companion 2, sensor 2.
+		// companion and sensor tie, which pins the role-name tie-break.
+		// Repeater: every scope state on flood routes, two named.
+		{"r1", now, 1, 4, nil, "rpt"},
+		{"r2", now, 0, 4, "", "rpt"},
+		{"r3", now, 0, 4, "#belgium", "rpt"},
+		{"r8", now, 1, 4, "#belgium", "rpt"},
+		// Excluded: zero-hop adverts are DIRECT/TRANSPORT_DIRECT, not flood.
+		{"r4", now, 2, 4, nil, "rpt"},
+		{"r5", now, 3, 4, "#belgium", "rpt"},
+		// Excluded: not an advert.
+		{"r6", now, 0, 5, "#belgium", "rpt"},
+		// Excluded: outside the window.
+		{"r7", old, 1, 4, nil, "rpt"},
+		// Companion: one unscoped, one named.
+		{"c1", now, 1, 4, nil, "cmp"},
+		{"c3", now, 0, 4, "#belgium", "cmp"},
+		// Sensor: one unscoped, one unknown scope.
+		{"s1", now, 1, 4, nil, "sns"},
+		{"s2", now, 0, 4, "", "sns"},
+		// No node row, and a node row without a role: both "unknown".
+		{"u1", now, 1, 4, nil, "stranger"},
+		{"u2", now, 0, 4, "", "norole"},
+		{"u3", now, 0, 4, "#belgium", nil},
+	}
+	for _, r := range rows {
+		if _, err := db.conn.Exec(
+			`INSERT INTO transmissions (hash, first_seen, route_type, payload_type, scope_name, from_pubkey) VALUES (?, ?, ?, ?, ?, ?)`,
+			r.hash, r.seen, r.route, r.ptype, r.scope, r.fromKey,
+		); err != nil {
+			t.Fatalf("seed %s: %v", r.hash, err)
+		}
+	}
+
+	stats, err := db.GetScopeStats("24h")
+	if err != nil {
+		t.Fatalf("GetScopeStats: %v", err)
+	}
+	// Ordered by total adverts descending, then role name.
+	want := []ScopeAdvertRoleCount{
+		{Role: "repeater", Unscoped: 1, UnknownScope: 1, Named: 2},
+		{Role: "unknown", Unscoped: 1, UnknownScope: 1, Named: 1},
+		{Role: "companion", Unscoped: 1, UnknownScope: 0, Named: 1},
+		{Role: "sensor", Unscoped: 1, UnknownScope: 1, Named: 0},
+	}
+	if !reflect.DeepEqual(stats.AdvertsByRole, want) {
+		t.Errorf("AdvertsByRole = %+v, want %+v", stats.AdvertsByRole, want)
+	}
+}
+
+func TestGetScopeStatsAdvertsByRoleEmpty(t *testing.T) {
+	conn, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	conn.SetMaxOpenConns(1)
+	db := &DB{conn: conn, hasScopeName: true}
+	defer db.conn.Close()
+	db.conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, first_seen TEXT, route_type INTEGER, payload_type INTEGER, scope_name TEXT, from_pubkey TEXT)`)
+	db.conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY, role TEXT)`)
+
+	stats, err := db.GetScopeStats("1h")
+	if err != nil {
+		t.Fatalf("GetScopeStats: %v", err)
+	}
+	// Array fields are [] when empty, never null (docs/api-spec.md conventions).
+	if stats.AdvertsByRole == nil || len(stats.AdvertsByRole) != 0 {
+		t.Errorf("AdvertsByRole = %#v, want empty non-nil slice", stats.AdvertsByRole)
 	}
 }
 
@@ -2192,5 +2315,116 @@ func TestLoadIndexesRelayHopsFromResolvedPath(t *testing.T) {
 	}
 	if store.byNode[relayPubkey][0].Hash != "relaytest0001hash" {
 		t.Errorf("relay byNode entry has wrong hash: %s", store.byNode[relayPubkey][0].Hash)
+	}
+}
+
+// failingQuerier wraps a real *sql.DB but forces the PRAGMA probe for a chosen
+// table to fail, so the #1901 fail-loud path can be exercised deterministically.
+type failingQuerier struct {
+	real   *sql.DB
+	failOn string // if the query text contains this substring, return err
+	err    error
+}
+
+func (f *failingQuerier) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if f.failOn != "" && strings.Contains(query, f.failOn) {
+		return nil, f.err
+	}
+	return f.real.QueryContext(ctx, query, args...)
+}
+
+// TestDetectSchemaFailsLoudOnProbeError is the regression guard for #1901: a
+// probe-query failure must surface as an error so OpenDB can abort startup,
+// instead of being silently swallowed and leaving the server in v2 mode against
+// a v3 database for the whole process lifetime.
+func TestDetectSchemaFailsLoudOnProbeError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v3.db")
+	conn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SetMaxOpenConns(1)
+	// v3-shaped: observations carries observer_idx.
+	if _, err := conn.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY, observer_idx INTEGER)`); err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY)`)
+	conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
+	conn.Close()
+
+	real, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer real.Close()
+
+	q := &failingQuerier{real: real, failOn: "table_info(observations)", err: errors.New("injected probe failure")}
+	db := &DB{}
+	if err := db.detectSchema(context.Background(), q); err == nil {
+		t.Fatal("detectSchema must return an error when a schema probe fails (#1901)")
+	}
+	if db.isV3 {
+		t.Error("isV3 must not be set when detection failed")
+	}
+}
+
+// GetChannels scoped msg_count and last_activity through observations/observers,
+// but the sample_json subquery that feeds lastMessage/lastSender did not join
+// either table. It therefore always returned the globally newest message on the
+// channel, so an operator filtering on their own region saw a preview line from
+// a message their observers never heard.
+func TestGetChannelsPreviewRespectsRegionFilter(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer1', 'SJC')`)
+	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs2', 'Observer2', 'SFO')`)
+
+	// One channel, seen in both regions. The SFO message is the newer one, so it
+	// is what an unscoped preview would show.
+	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
+		VALUES ('AA', 'hash1', '2026-01-15T10:00:00Z', 1, 5,
+		'{"type":"CHAN","channel":"#shared","text":"Alice: heard in SJC","sender":"Alice"}', '#shared')`)
+	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
+		VALUES (1, 1, 12.0, -90, 1736935200)`)
+
+	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
+		VALUES ('BB', 'hash2', '2026-01-15T10:05:00Z', 1, 5,
+		'{"type":"CHAN","channel":"#shared","text":"Bob: heard in SFO","sender":"Bob"}', '#shared')`)
+	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
+		VALUES (2, 2, 14.0, -88, 1736935500)`)
+
+	sjc, err := db.GetChannels("SJC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sjc) != 1 {
+		t.Fatalf("expected 1 channel for SJC, got %d", len(sjc))
+	}
+	if got := sjc[0]["lastSender"]; got != "Alice" {
+		t.Errorf("preview sender = %v, want Alice: SJC must not be shown Bob's message, "+
+			"which only SFO heard", got)
+	}
+	if got := sjc[0]["lastMessage"]; got != "heard in SJC" {
+		t.Errorf("preview message = %v, want \"heard in SJC\"", got)
+	}
+
+	// The other direction, so the test cannot pass by always picking the oldest.
+	sfo, err := db.GetChannels("SFO")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sfo[0]["lastSender"]; got != "Bob" {
+		t.Errorf("preview sender = %v, want Bob for SFO", got)
+	}
+
+	// Unscoped still shows the globally newest, which was never in question.
+	all, err := db.GetChannels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := all[0]["lastSender"]; got != "Bob" {
+		t.Errorf("unfiltered preview sender = %v, want Bob (the newest message)", got)
 	}
 }

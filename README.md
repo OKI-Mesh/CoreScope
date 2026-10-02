@@ -228,11 +228,28 @@ corescope/
 │   └── entrypoint-go.sh     # Container entrypoint
 ├── Dockerfile               # Multi-stage Go build + Alpine runtime
 ├── config.example.json      # Example configuration
-├── test-*.js                # Node.js test suite (frontend + legacy)
+├── tests/                   # Node.js test suite: unit/ (test-all.sh) and e2e/ (Playwright)
+├── test-all.sh              # Runs every suite in tests/unit
 └── tools/                   # Generators, E2E tests, utilities
 ```
 
 ## For Developers
+
+### Building
+
+```bash
+make build        # all four binaries for your machine, into dist/
+make build-server # just one
+make crossbuild   # static linux/amd64 + linux/arm64 binaries
+```
+
+The SQLite driver is [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3), which
+is cgo, so a plain `GOOS=linux go build` from a Mac will not work: cross-compiling
+needs a C compiler that can target the other platform. `make crossbuild` uses
+[`zig`](https://ziglang.org/download/) as that compiler (install it and it just
+works) and links statically against musl, so the result is one self-contained file
+that runs on Alpine or scratch. The container build does the same thing — see
+`Dockerfile`.
 
 ### Test Suite
 
@@ -243,11 +260,14 @@ corescope/
 cd cmd/server && go test ./... -v
 cd cmd/ingestor && go test ./... -v
 
+# Or across all 14 modules at once
+make test
+
 # Node.js frontend + integration tests
 npm test
 
 # Playwright E2E (requires running server on localhost:3000)
-node test-e2e-playwright.js
+node tests/e2e/test-e2e-playwright.js
 ```
 
 ### Generate Test Data

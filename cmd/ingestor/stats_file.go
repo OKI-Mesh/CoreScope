@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/perfio"
@@ -81,6 +82,18 @@ type IngestorStatsSnapshot struct {
 	// a panic in emit / log sink). Monotonic; 0 means no recovered
 	// panics yet. Additive — omitempty so older server builds ignore.
 	WatchdogPanicCount int64 `json:"watchdogPanicCount,omitempty"`
+	// WatchdogLogDropCount (#1749 root-cause fix) is the running total
+	// of watchdog log lines dropped by the async emit queue because
+	// the background writer goroutine could not keep up — almost
+	// always because its underlying write() is itself stuck (Docker
+	// JSON-file log driver backpressure, full stderr pipe, etc.).
+	// Surfaced alongside WatchdogLastTickUnix / WatchdogPanicCount so
+	// external monitoring can distinguish "watchdog dead" (stale tick)
+	// from "watchdog alive, but its log sink is stuck" (ticking
+	// normally, drop count climbing). Monotonic; 0 means the writer
+	// has never fallen behind. Additive — omitempty so older server
+	// builds ignore it.
+	WatchdogLogDropCount int64 `json:"watchdogLogDropCount,omitempty"`
 }
 
 // SourceLivenessSnapshot is the per-source two-clock view exposed for
@@ -228,11 +241,20 @@ func procIORate(prev, cur procIOSnapshot, stamp string) *PerfIOSample {
 // The stats file path is resolved via statsFilePath() once at writer-loop
 // start; the env var (CORESCOPE_INGESTOR_STATS) is only re-read on process
 // restart, not per tick.
-func StartStatsFileWriter(s *Store, interval time.Duration) {
+// The returned stop function ends the writer goroutine and returns once it has
+// exited. Production ignores it and runs for the process lifetime; tests must
+// call it, because this goroutine reads package-level hooks (readProcSelfIOFn)
+// that a later test may replace, and a writer left running past its own test
+// races with whoever runs next. It is safe to call more than once.
+func StartStatsFileWriter(s *Store, interval time.Duration) (stop func()) {
 	if interval <= 0 {
 		interval = time.Second
 	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	var once sync.Once
 	go func() {
+		defer close(stopped)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		path := statsFilePath()
@@ -245,7 +267,12 @@ func StartStatsFileWriter(s *Store, interval time.Duration) {
 		// The buffer grows once and stays.
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
-		for range t.C {
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
 			// Capture time.Now() ONCE per tick (Carmack must-fix #5).
 			// Both snapshot.SampledAt and procIO.SampledAt MUST share the
 			// same string so the freshness guard isn't validating one
@@ -273,6 +300,7 @@ func StartStatsFileWriter(s *Store, interval time.Duration) {
 				SourceStatuses:       SnapshotSourceStatuses(tickAt),
 				WatchdogLastTickUnix: WatchdogLastTickUnix(),
 				WatchdogPanicCount:   WatchdogPanicCount(),
+				WatchdogLogDropCount: WatchdogLogDropCount(),
 			}
 			buf.Reset()
 			if err := enc.Encode(&snap); err != nil {
@@ -292,4 +320,8 @@ func StartStatsFileWriter(s *Store, interval time.Duration) {
 			}
 		}
 	}()
+	return func() {
+		once.Do(func() { close(done) })
+		<-stopped
+	}
 }

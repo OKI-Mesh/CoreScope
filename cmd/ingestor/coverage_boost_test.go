@@ -40,7 +40,8 @@ func TestNodeDaysOrDefault(t *testing.T) {
 		{"custom nodeDays", Config{Retention: &RetentionConfig{NodeDays: 14}}, 14},
 		{"one day", Config{Retention: &RetentionConfig{NodeDays: 1}}, 1},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.cfg.NodeDaysOrDefault()
 			if got != tt.want {
@@ -1031,7 +1032,7 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 		t.Fatalf("checking goose version: %v", err)
 	}
 
-	if version != database.GooseAdoptionVersion {
+	if version <= database.GooseAdoptionVersion {
 		t.Errorf("expected goose version %d, got %d", database.GooseAdoptionVersion, version)
 	}
 

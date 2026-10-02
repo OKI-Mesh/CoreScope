@@ -12,7 +12,7 @@ MQTT Broker(s)  →  Go Ingestor  →  SQLite DB  ←  Node.js Web Server
 ```
 
 - **Single static binary** — no runtime dependencies, no CGO
-- **SQLite** via `modernc.org/sqlite` (pure Go)
+- **SQLite** via `github.com/mattn/go-sqlite3` (cgo; cross-compiled with `zig cc`, see the root `Makefile`)
 - **MQTT** via `github.com/eclipse/paho.mqtt.golang`
 - Runs **alongside** the Node.js server — they share the DB file
 - Does NOT serve HTTP/WebSocket — that stays in Node.js
@@ -91,6 +91,7 @@ The ingestor reads these fields from the existing `config.json`:
   - `username` / `password` — auth credentials
   - `topics` — array of topic patterns to subscribe
   - `iataFilter` — optional regional filter
+  - `clientId`: optional MQTT ClientID. Default `corescope-<name>-<random>`, new suffix per ingestor start. Two running ingestors must not share a value on one broker
 - `mqtt` — legacy single-broker config (auto-converted to `mqttSources`)
 - `dbPath` — SQLite DB path (default: `data/meshcore.db`)
 

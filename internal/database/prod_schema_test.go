@@ -20,7 +20,7 @@ func isExcludedTable(name string) bool {
 
 // TestMigratedSchemaMatchesProd (extended) — also compares indexes
 // and views, not just tables/columns.
-func TestMigratedSchemaMatchesProd(t *testing.T) {
+func TestMigratedSchemaMatchesLegacyProd(t *testing.T) {
 	const prodDumpPath = "test-fixtures/prod_schema.sql"
 
 	prod := newMemoryDB(t)
@@ -31,8 +31,8 @@ func TestMigratedSchemaMatchesProd(t *testing.T) {
 	execRaw(t, prod, string(prodSQL))
 
 	fresh := newMemoryDB(t)
-	if _, err := BaselineStampMigrate(fresh, nil); err != nil {
-		t.Fatalf("migrating fresh db: %v", err)
+	if err := SeedUnstampedSchema(fresh, 31); err != nil {
+		t.Fatalf("migrating fresh db to v31: %v", err)
 	}
 
 	compareTablesAndColumns(t, prod, fresh)

@@ -27,6 +27,11 @@ type RepeaterRelayInfo struct {
 	// RelayCount24h is the count of distinct non-advert packets where this
 	// pubkey appeared as a relay hop in the last 24 hours.
 	RelayCount24h int `json:"relayCount24h"`
+	// UnscopedRelayCount24h is the subset of RelayCount24h that were UNSCOPED
+	// floods (route_type == ROUTE_TYPE_FLOOD). A well-configured repeater runs
+	// `flood.max.unscoped 0` and should not forward these, so a non-trivial
+	// count flags a base-config problem (consumed by the ArcScope advisor).
+	UnscopedRelayCount24h int `json:"unscopedRelayCount24h"`
 	// TransportedScopes is the deduplicated, sorted set of region scope
 	// names (transmissions.scope_name) across ALL non-advert packets in
 	// which this pubkey appears as a path hop. Unlike RelayCount1h/24h this
@@ -69,6 +74,12 @@ func sortedCappedScopes(set map[string]struct{}) []string {
 // is forwarding traffic for other nodes.
 const payloadTypeAdvert = 4
 
+// routeTypeFlood is ROUTE_TYPE_FLOOD from the MeshCore packet header (the low 2
+// bits of the header byte). Equal to packetpath.RouteFlood; kept as a local
+// literal to avoid importing packetpath here. An "unscoped flood" is a
+// route-type-FLOOD packet — the traffic `flood.max.unscoped` governs.
+const routeTypeFlood = 1
+
 // parseRelayTS attempts to parse a packet first-seen timestamp using the
 // formats CoreScope writes in practice. Returns zero time and false on
 // failure. Accepted (in order):
@@ -97,9 +108,17 @@ func parseRelayTS(ts string) (time.Time, bool) {
 type relayEntry struct {
 	ts string
 	pt int
+	// rt is the tx route type (transmissions.route_type), or -1 when absent.
+	// rt == routeTypeFlood marks an unscoped flood (UnscopedRelayCount24h).
+	rt int
 	// scope is the tx's region scope name (transmissions.scope_name).
 	// Empty when absent / on older schemas. Used for TransportedScopes (#1751).
 	scope string
+	// viaPrefix marks an entry that was only reachable through the 1-byte
+	// wire-prefix bucket, i.e. some node whose pubkey starts with the same
+	// byte carried it — not necessarily this one. Counters accept that
+	// ambiguity (#662); scope attribution does not (#1902).
+	viaPrefix bool
 }
 
 // collectRelayEntriesLocked returns deduplicated relayEntry snapshots for
@@ -114,7 +133,9 @@ type relayEntry struct {
 //
 // The 1-byte prefix lookup CAN over-count when multiple nodes share the
 // same first byte. This trades a possible over-count for clearly false
-// zeros (issue #662).
+// zeros (issue #662). Entries reached only that way are flagged viaPrefix
+// so TransportedScopes can refuse them (#1902) while the counters keep the
+// trade-off.
 func (s *PacketStore) collectRelayEntriesLocked(key string) []relayEntry {
 	txList := s.byPathHop[key]
 	var prefixList []*StoreTx
@@ -133,7 +154,7 @@ func (s *PacketStore) collectRelayEntriesLocked(key string) []relayEntry {
 	hint := len(txList) + len(prefixList)
 	entries := make([]relayEntry, 0, hint)
 	seen := make(map[int]bool, hint)
-	collect := func(list []*StoreTx) {
+	collect := func(list []*StoreTx, viaPrefix bool) {
 		for _, tx := range list {
 			if tx == nil || seen[tx.ID] {
 				continue
@@ -143,11 +164,19 @@ func (s *PacketStore) collectRelayEntriesLocked(key string) []relayEntry {
 			if tx.PayloadType != nil {
 				pt = *tx.PayloadType
 			}
-			entries = append(entries, relayEntry{ts: tx.FirstSeen, pt: pt, scope: tx.ScopeName})
+			rt := -1
+			if tx.RouteType != nil {
+				rt = *tx.RouteType
+			}
+			scope := ""
+			if tx.ScopeName != nil {
+				scope = *tx.ScopeName
+			}
+			entries = append(entries, relayEntry{ts: tx.FirstSeen, pt: pt, rt: rt, scope: scope, viaPrefix: viaPrefix})
 		}
 	}
-	collect(txList)
-	collect(prefixList)
+	collect(txList, false)
+	collect(prefixList, true)
 	return entries
 }
 
@@ -171,7 +200,12 @@ func computeRelayInfoFromEntries(entries []relayEntry, windowHours float64) Repe
 		// #1751: accumulate transported scopes BEFORE the timestamp gate —
 		// a non-advert path-hop tx proves scope transport even if its
 		// first_seen is unparseable. Mirrors the bulk path.
-		if e.scope != "" {
+		//
+		// #1902: but only when the tx named this node by its full pubkey.
+		// A 1-byte hop names one of every node sharing that byte, which is
+		// enough for an approximate count and not enough to claim the node
+		// serves a region.
+		if e.scope != "" && !e.viaPrefix {
 			if scopeSet == nil {
 				scopeSet = map[string]struct{}{}
 			}
@@ -187,6 +221,9 @@ func computeRelayInfoFromEntries(entries []relayEntry, windowHours float64) Repe
 		}
 		if t.After(cutoff24h) {
 			info.RelayCount24h++
+			if e.rt == routeTypeFlood {
+				info.UnscopedRelayCount24h++
+			}
 			if t.After(cutoff1h) {
 				info.RelayCount1h++
 			}
