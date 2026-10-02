@@ -755,7 +755,11 @@ jobs:
     needs: [changes, go-test]
     # #113: skip the image build for docs-only changes, but ALWAYS build for a
     # tag deploy (the release-fast-path fallback dispatch) regardless.
-    if: needs.changes.outputs.code == 'true' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+    if: >
+      needs.changes.outputs.code == 'true' ||
+      (github.event_name == 'workflow_dispatch' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      github.event.inputs.images_published != 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
