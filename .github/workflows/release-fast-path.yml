@@ -33,6 +33,15 @@ concurrency:
   group: release-fast-path-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
+# #164: the registry is defined ONCE here and referenced as ${REGISTRY_IMAGE} by
+# every step below. It used to be written out in four separate `IMAGE=` lines, and
+# when publishing moved to ghcr.io/oki-mesh in #60 two of the four were missed - the
+# verify and cleanup steps kept pointing at the pre-handover registry, so a release
+# tagged our registry and then verified (and tried to delete tags in) the other one.
+# Keep it single-source: do not reintroduce a literal registry path in a step.
+env:
+  REGISTRY_IMAGE: ghcr.io/oki-mesh/corescope
+
 jobs:
   retag-or-fallback:
     name: "🏷️ Re-tag :edge and dispatch release artifacts or full fallback"
@@ -92,7 +101,7 @@ jobs:
         id: edge
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/oki-mesh/corescope"
+          IMAGE="${REGISTRY_IMAGE}"
           EDGE_REF="${IMAGE}:edge"
           # crane config returns the OCI image config JSON; the revision label
           # is set by docker/metadata-action on the master-edge build.
@@ -134,7 +143,7 @@ jobs:
         if: steps.edge.outputs.no_edge == 'false' && steps.edge.outputs.edge_revision == steps.semver.outputs.targetSha
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/oki-mesh/corescope"
+          IMAGE="${REGISTRY_IMAGE}"
           SRC="${IMAGE}:edge"
           TAG="${{ steps.semver.outputs.tag }}"
           echo "SHA match — fast-path re-tag from $SRC"
@@ -202,7 +211,7 @@ jobs:
         if: steps.edge.outputs.no_edge == 'false' && steps.edge.outputs.edge_revision == steps.semver.outputs.targetSha
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/kpa-clawbot/corescope"
+          IMAGE="${REGISTRY_IMAGE}"
           TAG="${{ steps.semver.outputs.tag }}"
           platforms_of() {
             crane manifest "$1" | jq -r '
@@ -237,7 +246,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
-          IMAGE="ghcr.io/kpa-clawbot/corescope"
+          IMAGE="${REGISTRY_IMAGE}"
           TAG="${{ steps.semver.outputs.tag }}"
           # Best effort: the index already references the manifests by digest,
           # so deleting the scratch tags does not affect it. Leaving them is
