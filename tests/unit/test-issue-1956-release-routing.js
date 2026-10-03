@@ -41,6 +41,19 @@ function value(source, key, indent) {
     : first;
 }
 
+// GitHub exposes a workflow-level `env:` block to every step's shell as real
+// environment variables. The harness has to do the same, or a step that reads
+// one dies on `set -u` with "unbound variable" even though the real workflow
+// runs fine (#164). Takes a whole workflow source, not a job block.
+function workflowEnv(source) {
+  const out = {};
+  for (const line of block(source, 'env', 0).split('\n').slice(1)) {
+    const pair = line.match(/^ {2}([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
+    if (pair) out[pair[1]] = pair[2].trim().replace(/^['"]|['"]$/g, '');
+  }
+  return out;
+}
+
 const steps = source => source.split(/(?=^      - name:)/m).slice(1);
 function evaluate(expression, context) {
   if (!expression) return true;
@@ -51,7 +64,7 @@ function evaluate(expression, context) {
 const expand = (script, context) => script.replace(/\$\{\{(.*?)\}\}/g, (_, expression) => String(evaluate(expression, context)));
 const bashPath = file => process.platform === 'win32' ? file.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive) => '/' + drive.toLowerCase()) : file;
 
-function runSteps(source, context, edge, mutateFails = false) {
+function runSteps(source, context, edge, mutateFails = false, workflowVars = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'corescope-release-test-'));
   const output = path.join(dir, 'output');
   const log = path.join(dir, 'commands');
@@ -130,7 +143,8 @@ function runSteps(source, context, edge, mutateFails = false) {
       const result = spawnSync(bash, ['--noprofile', '--norc', '-e', '-o', 'pipefail'], {
         input: stubs + '\n' + expand(script, context), cwd: dir, encoding: 'utf8', timeout: 15000,
         env: {
-          ...process.env, GITHUB_REF: context.github.ref, GITHUB_SHA: context.github.sha,
+          ...process.env, ...workflowVars,
+          GITHUB_REF: context.github.ref, GITHUB_SHA: context.github.sha,
           GITHUB_OUTPUT: bashPath(output), COMMAND_LOG: bashPath(log), TMPDIR: bashPath(dir),
           EDGE_CONFIG: edge === null ? 'missing' : JSON.stringify({ config: { Labels: { 'org.opencontainers.image.revision': edge } } }),
           // :edge is a two-platform index plus the two buildx attestation
@@ -182,7 +196,7 @@ function route(ctx, failedJob) {
 
 for (const [name, edge] of [['matching', 'a'.repeat(40)], ['missing', null], ['mismatched', 'b'.repeat(40)]]) {
   const ctx = context();
-  const { commands } = runSteps(block(fast, 'retag-or-fallback', 2), ctx, edge);
+  const { commands } = runSteps(block(fast, 'retag-or-fallback', 2), ctx, edge, false, workflowEnv(fast));
   const dispatches = commands.filter(command => command[0] === 'gh');
   assert.equal(dispatches.length, 1, `${name}: tag must dispatch the artifact workflow exactly once`);
   const dispatch = dispatches[0];
@@ -219,7 +233,7 @@ for (const [name, edge] of [['matching', 'a'.repeat(40)], ['missing', null], ['m
   console.log(`PASS ${name} edge: one artifact dispatch, correct image route`);
 }
 
-const failedRetag = runSteps(block(fast, 'retag-or-fallback', 2), context(), 'a'.repeat(40), true);
+const failedRetag = runSteps(block(fast, 'retag-or-fallback', 2), context(), 'a'.repeat(40), true, workflowEnv(fast));
 assert.equal(failedRetag.failed, true);
 assert.equal(failedRetag.commands.filter(command => command[0] === 'gh').length, 0, 'failed retag must not dispatch with images_published=true');
 
@@ -241,7 +255,7 @@ assert.equal(value(dispatchInput, 'type', 8), 'boolean', 'dispatch flag must ret
 assert.equal(value(dispatchInput, 'default', 8), 'false', 'manual and fallback dispatches must build images by default');
 
 const release = block(deploy, 'release-artifacts', 2);
-const builds = runSteps(release, context(), null).commands.filter(command => command[0] === 'go');
+const builds = runSteps(release, context(), null, false, workflowEnv(deploy)).commands.filter(command => command[0] === 'go');
 assert.deepEqual(builds.map(command => command.slice(1, 5)), [
   ['linux', 'amd64', '0', ''],
   ['linux', 'arm64', '0', ''],
@@ -267,7 +281,7 @@ console.log('PASS failed retag/Go gates, branch/PR routes, and complete tagged r
 {
   const sha = 'c'.repeat(40);
   const ctx = context('refs/heads/master', 'workflow_dispatch', { tag: 'v9.8.7' });
-  const { commands } = runSteps(block(fast, 'retag-or-fallback', 2), ctx, sha);
+  const { commands } = runSteps(block(fast, 'retag-or-fallback', 2), ctx, sha, false, workflowEnv(fast));
   assert.equal(ctx.steps.semver.outputs.tag, 'v9.8.7', 'the dispatched tag drives the release tags');
   assert.equal(ctx.steps.semver.outputs.targetSha, sha, 'the tagged commit is resolved from the tag, not from github.sha');
   assert.ok(commands.some(command => command[0] === 'gh' && command[1] === 'api'), 'the tag has to be looked up');
