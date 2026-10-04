@@ -2,6 +2,8 @@
 
 Guide for AI agents working on this codebase. Read this before writing any code.
 
+> **This repository is not a fork.** It left the `Kpa-clawbot/CoreScope` fork network on 2026-10-03. There is no Sync fork button and no automatic path for upstream code to arrive. Before taking anything from upstream — a commit, a release, a fix you saw in their notes — read **[docs/UPSTREAM.md](docs/UPSTREAM.md)**. It carries the mechanism, the review checklist, and the list of paths that must never come back.
+
 ## Architecture
 
 Go backend + static frontend. No build step. No framework. No bundler.
