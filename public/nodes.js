@@ -5,6 +5,21 @@
   let nodes = [];
   const PAYLOAD_TYPES = {0:'Request',1:'Response',2:'Direct Msg',3:'ACK',4:'Advert',5:'Channel Msg',7:'Anon Req',8:'Path',9:'Trace'};
 
+  // #170 / #173: the node-detail "Observer →" link is OFF.
+  //
+  // It was rendered unconditionally for every node, but an observer record
+  // exists for only 71 of 1,436 nodes on prod, so it 404'd on 95% of node
+  // pages. The markup is kept rather than deleted so restoring it is a flag
+  // flip, not archaeology.
+  //
+  // DO NOT re-enable this by simply flipping the flag. The link needs a
+  // condition — "does an observer exist for this pubkey" — and that condition
+  // must be written against whatever the Postgres migration settles for node
+  // identity (#19, Feature #14), NOT against today's nodes/inactive_nodes
+  // split, which that work removes. `role` cannot answer it either: the
+  // observer NR8O Observer has role "companion".
+  const OBSERVER_LINK_ENABLED = false;
+
   function syncClaimedToFavorites() {
     const myNodes = JSON.parse(localStorage.getItem('meshcore-my-nodes') || '[]');
     const favs = getFavorites();
@@ -679,7 +694,7 @@
             <button class="btn-primary" id="copyShortUrlBtn" title="Short URL using an 8-char pubkey prefix — easier to send over the mesh (issue #772)" style="flex:0 0 auto;font-size:12px;padding:4px 10px"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-broadcast"/></svg> Copy short URL</button>
             <a href="#/nodes/${encodeURIComponent(n.public_key)}/analytics" class="btn-primary" style="flex:0 0 auto;text-decoration:none;font-size:12px;padding:4px 10px"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-chart-bar"/></svg> Analytics</a>
             <a href="#/nodes/${encodeURIComponent(n.public_key)}/reach" class="btn-primary" style="flex:0 0 auto;text-decoration:none;font-size:12px;padding:4px 10px"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-broadcast"/></svg> Reach</a>
-            <a href="#/observers/${encodeURIComponent(n.public_key.toUpperCase())}" class="btn-primary" title="View this pubkey as an observer" style="flex:0 0 auto;text-decoration:none;font-size:12px;padding:4px 10px"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-eye"/></svg> Observer →</a>
+            ${OBSERVER_LINK_ENABLED ? `<a href="#/observers/${encodeURIComponent(n.public_key.toUpperCase())}" class="btn-primary" title="View this pubkey as an observer" style="flex:0 0 auto;text-decoration:none;font-size:12px;padding:4px 10px"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-eye"/></svg> Observer →</a>` : ''}
           </div>
         </div>
 
