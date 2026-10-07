@@ -120,6 +120,7 @@ node tests/unit/test-issue-1668-m4-per-route.js
 node tests/unit/test-issue-1697-mqtt-mobile-e2e.js
 node tests/unit/test-issue-1699-retransmission-chart.js
 node tests/unit/test-issue-1705-subpath-contrast.js
+node tests/unit/test-issue-173-observer-link-gate.js
 node tests/unit/test-issue-1753-copy-url-slash.js
 node tests/unit/test-issue-1770-mobile-row-clamp.js
 node tests/unit/test-issue-1789-observer-firmware-cols.js
