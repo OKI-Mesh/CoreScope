@@ -15,11 +15,11 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-//go:embed migrations/*.sql
+//go:embed postgres/migrations/*.sql
 var migrationsFS embed.FS
 
-func NewMigrationProvider(db *sql.DB, allowOutOfOrder bool, disableVersioning bool) (*goose.Provider, error) {
-	sub, err := fs.Sub(migrationsFS, "migrations")
+func NewMigrationProvider(ctx context.Context, db *sql.DB, allowOutOfOrder bool, disableVersioning bool) (*goose.Provider, error) {
+	sub, err := fs.Sub(migrationsFS, "postgres/migrations")
 	if err != nil {
 		return nil, fmt.Errorf("creating migrations sub filesystem: %w", err)
 	}
@@ -30,20 +30,55 @@ func NewMigrationProvider(db *sql.DB, allowOutOfOrder bool, disableVersioning bo
 	if disableVersioning {
 		opts = append(opts, goose.WithDisableVersioning(true))
 	}
-	return goose.NewProvider(goose.DialectSQLite3, db, sub, opts...)
+	return goose.NewProvider(goose.DialectPostgres, db, sub, opts...)
+}
+
+// in the database package
+func withMigrationHandle(ctx context.Context, connStr string, fn func(*sql.DB) error) error {
+	migDB, err := sql.Open("pgx", connStr)
+	if err != nil {
+		return fmt.Errorf("opening migration handle: %w", err)
+	}
+	defer migDB.Close()
+	if err := migDB.PingContext(ctx); err != nil {
+		return fmt.Errorf("cannot reach database: %w", err)
+	}
+	return fn(migDB)
+}
+
+func Migrate(ctx context.Context, connStr string) error {
+	return withMigrationHandle(ctx, connStr, func(migDB *sql.DB) error {
+		if err := AssertBaselined(ctx, migDB); err != nil {
+			return err
+		}
+		provider, err := NewMigrationProvider(ctx, migDB, false, false)
+		if err != nil {
+			return fmt.Errorf("creating migration provider: %w", err)
+		}
+		if _, err := provider.Up(ctx); err != nil {
+			return fmt.Errorf("running migrations: %w", err)
+		}
+		if err := EnsureLegacyMigrationsTable(migDB); err != nil {
+			return fmt.Errorf("ensure legacy migrations table: %w", err)
+		}
+		if err := NormalizePublicKeyCasing(migDB); err != nil {
+			return fmt.Errorf("normalize public_key casing: %w", err)
+		}
+		return nil
+	})
 }
 
 // RunMigrations applies all pending goose migrations, in strict order.
 // No pre-flight checks — callers that need to distinguish a fresh DB
 // from an unstamped-but-populated one should call MigrationStatus first
 // and branch accordingly (see cmd/ingestor's boot sequence).
-func RunMigrations(rw *sql.DB) error {
+func RunMigrations(ctx context.Context, rw *sql.DB) error {
 
-	provider, err := NewMigrationProvider(rw, false, false)
+	provider, err := NewMigrationProvider(ctx, rw, false, false)
 	if err != nil {
 		return fmt.Errorf("creating goose provider: %w", err)
 	}
-	_, err = provider.Up(context.Background())
+	_, err = provider.Up(ctx)
 	if err != nil {
 		return fmt.Errorf("goose up: %w", err)
 	}
@@ -55,12 +90,12 @@ func RunMigrations(rw *sql.DB) error {
 // earlier migration hasn't been stamped, rather than refusing. Intended
 // ONLY for use immediately after DetectAndStampSchema, to fill in
 // whatever gaps that best-effort stamping left behind.
-func RunMigrationsAllowingGaps(rw *sql.DB) error {
-	provider, err := NewMigrationProvider(rw, true, false)
+func RunMigrationsAllowingGaps(ctx context.Context, rw *sql.DB) error {
+	provider, err := NewMigrationProvider(ctx, rw, true, false)
 	if err != nil {
 		return fmt.Errorf("creating goose provider: %w", err)
 	}
-	_, err = provider.Up(context.Background())
+	_, err = provider.Up(ctx)
 	if err != nil {
 		return fmt.Errorf("goose up: %w", err)
 	}
@@ -70,18 +105,13 @@ func RunMigrationsAllowingGaps(rw *sql.DB) error {
 // AssertReady verifies the schema has been migrated. The server calls this at startup and refuses
 // to start if the ingestor hasn't migrated the database yet — the server
 // never runs migrations itself. If migration is missing, the server will exit with a clear error message instructing the user to restart the ingestor first. If the schema is out of order, it will error out with a message instructing the user to run the ingestor with --allow-missing to fill in the gaps. This is a safety measure to prevent the server from running against an incompatible schema.
-func AssertReady(ro *sql.DB) error {
-	provider, err := NewMigrationProvider(ro, false, false)
+func AssertReady(ctx context.Context, ro *sql.DB) error {
+	provider, err := NewMigrationProvider(ctx, ro, false, false)
 	if err != nil {
 		return fmt.Errorf("creating goose provider: %w", err)
 	}
-	pending, err := provider.HasPending(context.Background())
+	pending, err := provider.HasPending(ctx)
 	if err != nil {
-		// HasPending errors either on a genuine DB/connectivity problem, or when it
-		// detects out-of-order migrations (a gap below the current max version) —
-		// goose doesn't distinguish these with a typed error. The out-of-order case
-		// is the common one in practice: run the ingestor with --allow-missing to
-		// fill the gap. If the DB itself is unreachable, that will also surface here.
 		return fmt.Errorf(
 			"checking migration status (possible schema gap — restart the ingestor to apply missing schema changes): %w", err)
 	}
@@ -122,27 +152,40 @@ func BackupBeforeMigration(path string) error {
 // version for db. Returns 0 for a database with no migrations applied
 // yet (including a genuinely fresh database with no goose_db_version
 // table at all).
-func CurrentSchemaVersion(db *sql.DB) (int64, error) {
-	provider, err := NewMigrationProvider(db, false, false)
+func CurrentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
+	provider, err := NewMigrationProvider(ctx, db, false, false)
 	if err != nil {
 		return 0, fmt.Errorf("creating goose provider: %w", err)
 	}
-	ver, err := provider.GetDBVersion(context.Background())
+	ver, err := provider.GetDBVersion(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("getting goose version: %w", err)
 	}
 	return ver, nil
 }
 
+// LatestSchemaVersion returns the highest version among the embedded migrations.
+func LatestSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
+	provider, err := NewMigrationProvider(ctx, db, false, false)
+	if err != nil {
+		return 0, fmt.Errorf("creating goose provider: %w", err)
+	}
+	_, latest, err := provider.GetVersions(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("getting goose versions: %w", err)
+	}
+	return latest, nil
+}
+
 // MigrationApplied reports whether the given goose migration version
 // has been applied to db, by checking goose's own Status rather than
 // querying goose_db_version directly.
-func MigrationApplied(db *sql.DB, version int64) (bool, error) {
-	provider, err := NewMigrationProvider(db, false, false)
+func MigrationApplied(ctx context.Context, db *sql.DB, version int64) (bool, error) {
+	provider, err := NewMigrationProvider(ctx, db, false, false)
 	if err != nil {
 		return false, fmt.Errorf("creating goose provider: %w", err)
 	}
-	statuses, err := provider.Status(context.Background())
+	statuses, err := provider.Status(ctx)
 	if err != nil {
 		return false, fmt.Errorf("checking migration status: %w", err)
 	}
@@ -154,7 +197,7 @@ func MigrationApplied(db *sql.DB, version int64) (bool, error) {
 	return false, nil // no migration with that version number exists
 }
 
-func SeedUnstampedSchema(db *sql.DB, version int64) error {
+func SeedUnstampedSchema(ctx context.Context, db *sql.DB, version int64) error {
 	sub, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {
 		return fmt.Errorf("migrations sub filesystem: %w", err)
@@ -168,7 +211,7 @@ func SeedUnstampedSchema(db *sql.DB, version int64) error {
 	if err != nil {
 		return fmt.Errorf("creating unversioned provider: %w", err)
 	}
-	if _, err := provider.Up(context.Background()); err != nil {
+	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("applying migrations up to v%d (unstamped): %w", version, err)
 	}
 	return nil

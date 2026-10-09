@@ -41,8 +41,8 @@ type channelsCacheEntry struct {
 }
 
 type channelsCacheField struct {
-	entries sync.Map // string → *channelsCacheEntry
-	sf      singleflight.Group
+	entries   sync.Map // string → *channelsCacheEntry
+	sf        singleflight.Group
 	fillCount atomic.Int64 // test-only: counts singleflight wins
 }
 

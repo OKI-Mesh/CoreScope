@@ -99,19 +99,6 @@ func (h *prefixIdxHolder) store(idx prefixIndex) {
 	h.v.Store(idx)
 }
 
-// RefreshPrefixIndex rebuilds the in-memory prefix index from the
-// nodes table and publishes it atomically. Called on startup and from
-// the neighbor-edges builder tick (60s) so new nodes become resolvable
-// without per-insert DB scans.
-func (s *Store) RefreshPrefixIndex() error {
-	idx, err := buildPrefixIndex(s.db)
-	if err != nil {
-		return err
-	}
-	s.prefixIdx.store(idx)
-	return nil
-}
-
 // resolvedPubkeys flattens a resolved path to the non-nil pubkeys it
 // contains, deduplicating repeats within the same path. Used by the
 // relay-aware last_seen touch (#1598); nil entries are unresolved or

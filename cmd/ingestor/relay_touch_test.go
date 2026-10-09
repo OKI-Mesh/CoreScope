@@ -19,19 +19,18 @@ import (
 // the touch to that existing resolution point.
 
 // helper: seed a node so the prefix index can resolve a hop to it.
-func seedRelayNode(t *testing.T, s *Store, pubkey, name, lastSeen string) {
+func seedRelayNode(t *testing.T, s *Store, pubkey, name string, lastSeen time.Time) {
+	ctx := t.Context()
 	t.Helper()
-	if err := s.UpsertNode(pubkey, name, "repeater", nil, nil, lastSeen); err != nil {
+	if err := s.UpsertNode(ctx, pubkey, name, "repeater", nil, nil, lastSeen); err != nil {
 		t.Fatalf("seed node %s: %v", name, err)
 	}
 }
 
-func nodeLastSeen(t *testing.T, s *Store, pubkey string) string {
+func nodeLastSeen(t *testing.T, s *Store, pubkey string) time.Time {
 	t.Helper()
-	var ls string
-	if err := s.db.QueryRow(`SELECT COALESCE(last_seen,'') FROM nodes WHERE public_key=?`, pubkey).Scan(&ls); err != nil {
-		t.Fatalf("read last_seen for %s: %v", pubkey, err)
-	}
+	var ls time.Time
+	mustScan(t, testRow(t, s, `SELECT last_seen FROM nodes WHERE public_key = $1`, pubkey), &ls)
 	return ls
 }
 
@@ -40,15 +39,16 @@ func nodeLastSeen(t *testing.T, s *Store, pubkey string) string {
 // though it sent no ADVERT of its own.
 func TestTouchRelayNodes_AdvancesLastSeen(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
 	const relay = "aa11223344556677889900aabbccddeeff00112233445566778899aabbccddee"
-	seedRelayNode(t, store, relay, "RelayOnly", "2026-07-01T00:00:00Z")
+	seedRelayNode(t, store, relay, "RelayOnly", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
-	rxTime := "2026-07-10T12:00:00Z"
-	store.touchRelayNodesLocked([]string{relay}, rxTime)
+	rxTime := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store.touchRelayNodesLocked(ctx, []string{relay}, rxTime)
 
 	got := nodeLastSeen(t, store, relay)
-	if got != rxTime {
+	if !got.Equal(rxTime) {
 		t.Errorf("last_seen = %q, want %q — relay participation did not refresh the node", got, rxTime)
 	}
 	if n := store.Stats.RelayTouches.Load(); n != 1 {
@@ -61,13 +61,14 @@ func TestTouchRelayNodes_AdvancesLastSeen(t *testing.T) {
 // rewind a node's last_seen.
 func TestTouchRelayNodes_NeverGoesBackwards(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
 	const relay = "bb11223344556677889900aabbccddeeff00112233445566778899aabbccddee"
-	seedRelayNode(t, store, relay, "Backbone", "2026-07-10T12:00:00Z")
+	seedRelayNode(t, store, relay, "Backbone", time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
 
-	store.touchRelayNodesLocked([]string{relay}, "2026-07-09T00:00:00Z")
+	store.touchRelayNodesLocked(ctx, []string{relay}, time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC))
 
-	if got := nodeLastSeen(t, store, relay); got != "2026-07-10T12:00:00Z" {
+	if got := nodeLastSeen(t, store, relay); !got.Equal(time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("last_seen went backwards: got %q, want 2026-07-10T12:00:00Z", got)
 	}
 }
@@ -77,30 +78,31 @@ func TestTouchRelayNodes_NeverGoesBackwards(t *testing.T) {
 // hour and must not produce one UPDATE per observation.
 func TestTouchRelayNodes_Debounces(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
 	const relay = "cc11223344556677889900aabbccddeeff00112233445566778899aabbccddee"
-	seedRelayNode(t, store, relay, "Chatty", "2026-07-01T00:00:00Z")
+	seedRelayNode(t, store, relay, "Chatty", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
 	base := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	store.touchRelayNodesLocked([]string{relay}, base.Format(time.RFC3339))
+	store.touchRelayNodesLocked(ctx, []string{relay}, base)
 	// Second hit two minutes later — inside the debounce window, no write.
-	store.touchRelayNodesLocked([]string{relay}, base.Add(2*time.Minute).Format(time.RFC3339))
+	store.touchRelayNodesLocked(ctx, []string{relay}, base.Add(2*time.Minute))
 
 	if n := store.Stats.RelayTouches.Load(); n != 1 {
 		t.Errorf("RelayTouches = %d, want 1 (second touch should be debounced)", n)
 	}
-	if got := nodeLastSeen(t, store, relay); got != base.Format(time.RFC3339) {
-		t.Errorf("last_seen = %q, want %q", got, base.Format(time.RFC3339))
+	if got := nodeLastSeen(t, store, relay); !got.Equal(base) {
+		t.Errorf("last_seen = %q, want %q", got, base)
 	}
 
 	// Past the debounce window the write goes through again.
 	later := base.Add(6 * time.Minute)
-	store.touchRelayNodesLocked([]string{relay}, later.Format(time.RFC3339))
+	store.touchRelayNodesLocked(ctx, []string{relay}, later)
 	if n := store.Stats.RelayTouches.Load(); n != 2 {
 		t.Errorf("RelayTouches = %d, want 2 after debounce window elapsed", n)
 	}
-	if got := nodeLastSeen(t, store, relay); got != later.Format(time.RFC3339) {
-		t.Errorf("last_seen = %q, want %q", got, later.Format(time.RFC3339))
+	if got := nodeLastSeen(t, store, relay); !got.Equal(later) {
+		t.Errorf("last_seen = %q, want %q", got, later)
 	}
 }
 
@@ -109,16 +111,15 @@ func TestTouchRelayNodes_Debounces(t *testing.T) {
 // unknown pubkeys must not create rows.
 func TestTouchRelayNodes_IgnoresEmptyAndUnknown(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
-	store.touchRelayNodesLocked(nil, "2026-07-10T12:00:00Z")
-	store.touchRelayNodesLocked([]string{}, "2026-07-10T12:00:00Z")
-	store.touchRelayNodesLocked([]string{""}, "2026-07-10T12:00:00Z")
-	store.touchRelayNodesLocked([]string{"ff99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbb"}, "2026-07-10T12:00:00Z")
+	store.touchRelayNodesLocked(ctx, nil, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodesLocked(ctx, []string{}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodesLocked(ctx, []string{""}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodesLocked(ctx, []string{"ff99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbb"}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
 
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM nodes`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	count = countRows(t, store, "nodes")
 	if count != 0 {
 		t.Errorf("nodes count = %d, want 0 — touch must never insert rows", count)
 	}
@@ -131,13 +132,14 @@ func TestTouchRelayNodes_IgnoresEmptyAndUnknown(t *testing.T) {
 // a no-op rather als writing a garbage timestamp into the node directory.
 func TestTouchRelayNodes_MalformedTimestamp(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
 	const relay = "dd11223344556677889900aabbccddeeff00112233445566778899aabbccddee"
-	seedRelayNode(t, store, relay, "Fine", "2026-07-01T00:00:00Z")
+	seedRelayNode(t, store, relay, "Fine", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
-	store.touchRelayNodesLocked([]string{relay}, "not-a-timestamp")
+	store.touchRelayNodesLocked(ctx, []string{relay}, time.Time{})
 
-	if got := nodeLastSeen(t, store, relay); got != "2026-07-01T00:00:00Z" {
+	if got := nodeLastSeen(t, store, relay); !got.Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("last_seen = %q, want it unchanged on malformed rxTime", got)
 	}
 	if n := store.Stats.RelayTouches.Load(); n != 0 {

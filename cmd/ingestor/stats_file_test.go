@@ -43,6 +43,7 @@ func TestProcIORate_NormalPath(t *testing.T) {
 // stats snapshot includes a `procIO` block with the per-process I/O rate
 // fields required by issue #1120 ("Both ingestor and server").
 func TestStatsFileWriter_PublishesProcIO(t *testing.T) {
+
 	if _, err := os.Stat("/proc/self/io"); err != nil {
 		t.Skip("skip: /proc/self/io unavailable on this host")
 	}
@@ -50,10 +51,7 @@ func TestStatsFileWriter_PublishesProcIO(t *testing.T) {
 	statsPath := filepath.Join(dir, "ingestor-stats.json")
 	t.Setenv("CORESCOPE_INGESTOR_STATS", statsPath)
 
-	store, err := OpenStore(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := newTestStore(t)
 	defer store.Close()
 
 	t.Cleanup(StartStatsFileWriter(store, 50*time.Millisecond))

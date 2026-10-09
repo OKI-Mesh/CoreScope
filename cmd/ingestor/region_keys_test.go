@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRegionNameAcceptable(t *testing.T) {
@@ -45,9 +46,9 @@ func TestRankDeclaredRegionsPrefersWidelyDeclared(t *testing.T) {
 	// half the network declares. On live data "be" is declared by 127
 	// repeaters and "behss" by 3.
 	stats := []declaredRegionStat{
-		{Name: "behss", Declarers: 3, LastSeen: "2026-09-07T10:00:00Z"},
-		{Name: "be", Declarers: 127, LastSeen: "2026-09-01T10:00:00Z"},
-		{Name: "sol3", Declarers: 1, LastSeen: "2026-09-07T11:00:00Z"},
+		{Name: "behss", Declarers: 3, LastSeen: time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
+		{Name: "be", Declarers: 127, LastSeen: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},
+		{Name: "sol3", Declarers: 1, LastSeen: time.Date(2026, 9, 7, 11, 0, 0, 0, time.UTC)},
 	}
 	got := rankDeclaredRegions(stats, 2)
 	want := []string{"be", "behss"}
@@ -66,8 +67,8 @@ func TestRankDeclaredRegionsIsDeterministic(t *testing.T) {
 	// order, or the derived tier churns between refreshes and the add/drop
 	// logging becomes noise.
 	stats := []declaredRegionStat{
-		{Name: "zz", Declarers: 2, LastSeen: "2026-09-07T10:00:00Z"},
-		{Name: "aa", Declarers: 2, LastSeen: "2026-09-07T10:00:00Z"},
+		{Name: "zz", Declarers: 2, LastSeen: time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
+		{Name: "aa", Declarers: 2, LastSeen: time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
 	}
 	for i := 0; i < 20; i++ {
 		got := rankDeclaredRegions(stats, 10)
@@ -79,8 +80,8 @@ func TestRankDeclaredRegionsIsDeterministic(t *testing.T) {
 
 func TestRankDeclaredRegionsBreaksTiesOnRecency(t *testing.T) {
 	stats := []declaredRegionStat{
-		{Name: "old", Declarers: 2, LastSeen: "2026-01-01T00:00:00Z"},
-		{Name: "new", Declarers: 2, LastSeen: "2026-09-07T00:00:00Z"},
+		{Name: "old", Declarers: 2, LastSeen: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{Name: "new", Declarers: 2, LastSeen: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)},
 	}
 	got := rankDeclaredRegions(stats, 1)
 	if len(got) != 1 || got[0] != "new" {
@@ -90,8 +91,8 @@ func TestRankDeclaredRegionsBreaksTiesOnRecency(t *testing.T) {
 
 func TestRankDeclaredRegionsDropsUnacceptableNames(t *testing.T) {
 	stats := []declaredRegionStat{
-		{Name: "be", Declarers: 5, LastSeen: "2026-09-07T10:00:00Z"},
-		{Name: "b,ad", Declarers: 99, LastSeen: "2026-09-07T10:00:00Z"},
+		{Name: "be", Declarers: 5, LastSeen: time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
+		{Name: "b,ad", Declarers: 99, LastSeen: time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
 	}
 	got := rankDeclaredRegions(stats, 10)
 	if len(got) != 1 || got[0] != "be" {
@@ -334,15 +335,9 @@ func regionSetFromKeys(keys map[string][]byte) *regionKeySet {
 	return s
 }
 
-// matchScopeName reproduces the removed matchScope's signature over the new
-// type, so the tests written against it keep asserting the behaviour they were
-// written for rather than being rewritten alongside the change they guard.
-func matchScopeName(keys map[string][]byte, payloadType byte, payloadRaw []byte, code1 string) string {
-	return regionSetFromKeys(keys).snapshot().match(payloadType, payloadRaw, code1).Name
-}
-
 func TestDeclaredRegionSourcesAggregatesLatestAnswerPerTarget(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	// Two answers from the same target: only the newer one counts, exactly as
 	// CurrentDeclaredRegions orders (by observed_at, never ingested_at - a
 	// drive buffered offline can arrive days late).
@@ -350,7 +345,7 @@ func TestDeclaredRegionSourcesAggregatesLatestAnswerPerTarget(t *testing.T) {
 	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "be,new")
 	insertDeclaredRegionsRow(t, store, "bb"+strings.Repeat("22", 31), "2026-09-05T00:00:00Z", "be")
 
-	stats, err := store.declaredRegionSources()
+	stats, err := store.declaredRegionSources(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +356,7 @@ func TestDeclaredRegionSourcesAggregatesLatestAnswerPerTarget(t *testing.T) {
 	if got := byName["be"].Declarers; got != 2 {
 		t.Errorf("be declarers = %d, want 2", got)
 	}
-	if got := byName["be"].LastSeen; got != "2026-09-07T00:00:00Z" {
+	if got := byName["be"].LastSeen; got != time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC) {
 		t.Errorf("be lastSeen = %q, want the greatest observed_at", got)
 	}
 	if _, ok := byName["old"]; ok {
@@ -376,8 +371,9 @@ func TestDeclaredRegionSourcesIgnoresWildcard(t *testing.T) {
 	// '*' is the wildcard, not a region name. Deriving a key for it would add
 	// a permanent no-op entry to the cap on nearly every deployment.
 	store := newTestStore(t)
+	ctx := t.Context()
 	insertDeclaredRegionsRow(t, store, "cc"+strings.Repeat("33", 31), "2026-09-07T00:00:00Z", "*,be")
-	stats, err := store.declaredRegionSources()
+	stats, err := store.declaredRegionSources(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,34 +393,22 @@ func TestDeclaredRegionSourcesIgnoresWildcard(t *testing.T) {
 // wants the optional source has to bring it.
 func insertDeclaredRegionsRow(t *testing.T, s *Store, target, observedAt, regionsCSV string) {
 	t.Helper()
-	if _, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS node_declared_regions (
-			id          INTEGER PRIMARY KEY AUTOINCREMENT,
-			target      TEXT NOT NULL,
-			rx_pubkey   TEXT NOT NULL,
-			observed_at TEXT NOT NULL,
-			ingested_at TEXT NOT NULL,
-			regions_csv TEXT NOT NULL,
-			truncated   INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(target, rx_pubkey, observed_at)
-		)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(
-		`INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)
-		 VALUES (?, 'rx', ?, ?, ?, 0)`, target, observedAt, observedAt, regionsCSV); err != nil {
-		t.Fatal(err)
+	count := testExec(t, s, `INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)
+	 VALUES ($1, 'rx', $2, $3, $4, FALSE)`, target, observedAt, observedAt, regionsCSV)
+	if count != 1 {
+		t.Fatalf("expected 1 row to be inserted, got %d", count)
 	}
 }
 
 func TestRefreshFromStoreIsNoOpWhenDisabled(t *testing.T) {
 	store := newTestStore(t)
 	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "behss")
+	ctx := t.Context()
 
 	cfg := &Config{HashRegions: []string{"#be"}} // autoRegionKeys absent
 	set := newRegionKeySet(cfg)
 	before := len(set.snapshot().all)
-	set.refreshFromStore(store)
+	set.refreshFromStore(ctx, store)
 
 	if got := len(set.snapshot().all); got != before {
 		t.Errorf("key count %d -> %d with autoRegionKeys off, want unchanged", before, got)
@@ -440,7 +424,8 @@ func TestRefreshFromStoreDerivesWhenEnabled(t *testing.T) {
 
 	cfg := &Config{HashRegions: []string{"#be"}, AutoRegionKeys: &AutoRegionKeysConfig{Enabled: true}}
 	set := newRegionKeySet(cfg)
-	set.refreshFromStore(store)
+	ctx := t.Context()
+	set.refreshFromStore(ctx, store)
 
 	snap := set.snapshot()
 	for _, want := range []string{"#be", "#behss", "#fm-112"} {
@@ -461,7 +446,8 @@ func TestRefreshFromStoreHonoursTheCap(t *testing.T) {
 
 	cfg := &Config{AutoRegionKeys: &AutoRegionKeysConfig{Enabled: true, MaxDerived: 1}}
 	set := newRegionKeySet(cfg)
-	set.refreshFromStore(store)
+	ctx := t.Context()
+	set.refreshFromStore(ctx, store)
 
 	snap := set.snapshot()
 	if len(snap.all) != 1 {
@@ -581,10 +567,10 @@ func TestRegionKeySetConcurrentRefreshAndMatch(t *testing.T) {
 // which is exactly the spelling regionNameAcceptable has to accept.
 func TestDeclaredRegionSourcesReadsConfiguredScope(t *testing.T) {
 	store := newTestStore(t)
-	seedNodeWithConfiguredScope(t, store, "aa"+strings.Repeat("11", 31), "#be,#nl-li,*", "2026-09-07T00:00:00Z")
-	seedNodeWithConfiguredScope(t, store, "bb"+strings.Repeat("22", 31), "#be", "2026-09-08T00:00:00Z")
+	seedNodeWithConfiguredScope(t, store, "aa"+strings.Repeat("11", 31), "#be,#nl-li,*", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC))
+	seedNodeWithConfiguredScope(t, store, "bb"+strings.Repeat("22", 31), "#be", time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
 
-	stats, err := store.declaredRegionSources()
+	stats, err := store.declaredRegionSources(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +581,7 @@ func TestDeclaredRegionSourcesReadsConfiguredScope(t *testing.T) {
 	if got := byName["#be"].Declarers; got != 2 {
 		t.Errorf("#be declarers = %d, want 2 — both nodes declare it", got)
 	}
-	if got := byName["#be"].LastSeen; got != "2026-09-08T00:00:00Z" {
+	if got := byName["#be"].LastSeen; got != time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC) {
 		t.Errorf("#be lastSeen = %q, want the newer of the two answers", got)
 	}
 	if got := byName["#nl-li"].Declarers; got != 1 {
@@ -612,10 +598,10 @@ func TestDeclaredRegionSourcesReadsConfiguredScope(t *testing.T) {
 func TestDeclaredRegionSourcesMergesBothSources(t *testing.T) {
 	store := newTestStore(t)
 	pk := "cc" + strings.Repeat("33", 31)
-	seedNodeWithConfiguredScope(t, store, pk, "#be", "2026-09-07T00:00:00Z")
+	seedNodeWithConfiguredScope(t, store, pk, "#be", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC))
 	insertDeclaredRegionsRow(t, store, pk, "2026-09-08T00:00:00Z", "fm-112")
 
-	stats, err := store.declaredRegionSources()
+	stats, err := store.declaredRegionSources(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,11 +622,11 @@ func TestDeclaredRegionSourcesMergesBothSources(t *testing.T) {
 
 // seedNodeWithConfiguredScope writes one node with a confirmed scope list, the
 // shape handleNeighborsReport produces.
-func seedNodeWithConfiguredScope(t *testing.T, s *Store, pubkey, scopes, at string) {
+func seedNodeWithConfiguredScope(t *testing.T, s *Store, pubkey string, scopes string, at time.Time) {
 	t.Helper()
-	if _, err := s.db.Exec(
-		`INSERT INTO nodes (public_key, configured_scope, configured_scope_at) VALUES (?, ?, ?)`,
-		pubkey, scopes, at); err != nil {
-		t.Fatal(err)
+	count := testExec(t, s, `INSERT INTO nodes (public_key, configured_scope, configured_scope_at) VALUES ($1, $2, $3)`,
+		pubkey, scopes, at)
+	if count != 1 {
+		t.Fatalf("expected 1 row to be inserted, got %d", count)
 	}
 }

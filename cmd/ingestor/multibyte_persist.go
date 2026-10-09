@@ -1,12 +1,16 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"log"
 	"os"
+	"sort"
+	"strings"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // MultibyteCapPersistStats holds counts for /api/healthz exposure / logging.
@@ -15,6 +19,9 @@ type MultibyteCapPersistStats struct {
 	UpdatedActive   int64 // rows updated in nodes
 	UpdatedInactive int64 // rows updated in inactive_nodes
 	Skipped         int   // entries skipped (status=="unknown")
+	Updated         int64 // total rows updated (active + inactive)
+	Invalid         int   // entries with unrecognized status
+	Duplicates      int   // entries skipped due to duplicates
 }
 
 // RunMultibyteCapPersist consumes the latest multi-byte capability snapshot
@@ -39,98 +46,62 @@ type MultibyteCapPersistStats struct {
 // (cold start), when the snapshot is empty, when the snapshot is
 // malformed (#1386), or when running against a legacy DB that
 // pre-dates the multibyte_sup migration (#1386).
-func (s *Store) RunMultibyteCapPersist() (MultibyteCapPersistStats, error) {
+func (s *Store) RunMultibyteCapPersist(ctx context.Context) (MultibyteCapPersistStats, error) {
 	var stats MultibyteCapPersistStats
-	snap, err := mbcapqueue.ReadSnapshot(s.path)
+	if s.snapshotDir == "" {
+		return stats, nil // misconfigured; main() warns once at startup, not on every tick
+	}
+	snap, err := mbcapqueue.ReadSnapshot(s.snapshotDir)
 	if err != nil {
-		// os.ErrNotExist is the steady state until the server's first
-		// analytics cycle completes — silent no-op. A malformed file
-		// is operator-actionable: log it (but still no-op, no error
-		// surfaced to the ticker — a corrupt snapshot must not stop
-		// the maintenance loop).
-		if errors.Is(err, os.ErrNotExist) {
-			return stats, nil
+		// os.ErrNotExist is the steady state until the server's first analytics
+		// cycle completes: a silent no-op. Anything else (malformed or unreadable)
+		// is operator-actionable, but must not stop the maintenance ticker.
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("[multibyte-persist] read snapshot: %v (no-op)", err)
 		}
-		// All other ReadSnapshot errors today are wrap-arounds of
-		// io / unmarshal failures — both classify as "malformed
-		// snapshot on disk" from this loop's perspective.
-		var jsonErr *json.SyntaxError
-		if errors.As(err, &jsonErr) || isMalformedSnapshotErr(err) {
-			log.Printf("[multibyte-persist] malformed snapshot on disk (no-op): %v", err)
-			return stats, nil
-		}
-		log.Printf("[multibyte-persist] read snapshot: %v (no-op)", err)
 		return stats, nil
 	}
 	stats.ReadEntries = len(snap.Entries)
-	if len(snap.Entries) == 0 {
-		return stats, nil
-	}
 
-	// Defensive schema check: a legacy DB that pre-dates the
-	// multibyte_sup migration would fail at tx.Prepare with a SQL
-	// error. Detect early and skip cleanly so the ticker keeps
-	// running on heterogeneous deployments.
-	if !s.hasMultibyteSupColumns() {
-		log.Printf("[multibyte-persist] schema missing: nodes.multibyte_sup not present on this DB (legacy schema) — skipping %d entries", stats.ReadEntries)
-		return stats, nil
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return stats, err
-	}
-	defer tx.Rollback() //nolint:errcheck
-	// Combined dispatch: each pubkey lives in exactly one of nodes /
-	// inactive_nodes. The pre-#1386 implementation issued one UPDATE
-	// against each table per entry — 50% guaranteed-empty. We now
-	// look up the table once, then issue the matching UPDATE.
-	stmtN, err := tx.Prepare(`UPDATE nodes SET multibyte_sup=?, multibyte_evidence=? WHERE public_key=?`)
-	if err != nil {
-		return stats, err
-	}
-	defer stmtN.Close()
-	stmtI, err := tx.Prepare(`UPDATE inactive_nodes SET multibyte_sup=?, multibyte_evidence=? WHERE public_key=?`)
-	if err != nil {
-		return stats, err
-	}
-	defer stmtI.Close()
-	// Membership probe: one indexed PK lookup. Cheap; avoids the
-	// guaranteed-miss second UPDATE.
-	stmtProbe, err := tx.Prepare(`SELECT 1 FROM nodes WHERE public_key=? LIMIT 1`)
-	if err != nil {
-		return stats, err
-	}
-	defer stmtProbe.Close()
-
+	// One entry per node. The SQL is UPDATE ... FROM, which applies an arbitrary one of
+	// several matching rows, so duplicates are resolved here, keeping the highest level.
+	best := make(map[string]database.NodeMultibyteCap, len(snap.Entries))
 	for _, e := range snap.Entries {
-		sup := multibyteStatusToInt(e.Status)
-		if sup == 0 {
+		st, ok := types.ParseMultibyteSupport(e.Status)
+		if !ok {
+			stats.Invalid++
+			continue
+		}
+		if st == types.MultibyteUnknown { // never overwrite a confirmed/suspected value with a blank
 			stats.Skipped++
 			continue
 		}
-		// Probe once. If hit, UPDATE nodes; else UPDATE inactive_nodes.
-		var hit int
-		if err := stmtProbe.QueryRow(e.PublicKey).Scan(&hit); err == nil {
-			if r, err := stmtN.Exec(sup, e.Evidence, e.PublicKey); err == nil {
-				if n, _ := r.RowsAffected(); n > 0 {
-					stats.UpdatedActive += n
-				}
-			}
-		} else {
-			if r, err := stmtI.Exec(sup, e.Evidence, e.PublicKey); err == nil {
-				if n, _ := r.RowsAffected(); n > 0 {
-					stats.UpdatedInactive += n
-				}
+		key := strings.ToLower(e.PublicKey) // nodes.public_key is lowercase; dedupe on this form
+		c := database.NodeMultibyteCap{PublicKey: key, Sup: int32(st), Evidence: e.Evidence}
+		if cur, ok := best[key]; ok {
+			stats.Duplicates++
+			if c.Sup <= cur.Sup { // keep the highest; on a tie the first one wins
+				continue
 			}
 		}
+		best[key] = c
 	}
-	if err := tx.Commit(); err != nil {
+
+	caps := make([]database.NodeMultibyteCap, 0, len(best))
+	for _, c := range best {
+		caps = append(caps, c)
+	}
+	sort.Slice(caps, func(i, j int) bool { return caps[i].PublicKey < caps[j].PublicKey })
+
+	n, err := s.db.UpdateNodeMultibyteCaps(ctx, caps) // returns 0 for an empty slice
+
+	if err != nil {
 		return stats, err
 	}
-	if stats.UpdatedActive+stats.UpdatedInactive > 0 {
-		log.Printf("[multibyte-persist] applied snapshot: %d entries (%d skipped); updated %d active + %d inactive nodes",
-			stats.ReadEntries, stats.Skipped, stats.UpdatedActive, stats.UpdatedInactive)
+	stats.Updated = n
+	if n > 0 {
+		log.Printf("[multibyte-persist] applied snapshot: %d entries (%d skipped); updated %d nodes",
+			stats.ReadEntries, stats.Skipped, n)
 	}
 	return stats, nil
 }
@@ -180,42 +151,4 @@ func containsCI(s, sub string) bool {
 		}
 	}
 	return false
-}
-
-// hasMultibyteSupColumns probes whether the active DB carries the
-// multibyte_sup column on the `nodes` table. Used to short-circuit
-// RunMultibyteCapPersist on legacy DBs that pre-date the
-// internal/dbschema migration (#1386).
-func (s *Store) hasMultibyteSupColumns() bool {
-	rows, err := s.db.Query(`PRAGMA table_info(nodes)`)
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt interface{}
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false
-		}
-		if name == "multibyte_sup" {
-			return true
-		}
-	}
-	return false
-}
-
-// multibyteStatusToInt mirrors the mapping the server used before relocation.
-// 0 = unknown (never persisted), 1 = suspected, 2 = confirmed.
-func multibyteStatusToInt(status string) int {
-	switch status {
-	case "confirmed":
-		return 2
-	case "suspected":
-		return 1
-	default:
-		return 0
-	}
 }

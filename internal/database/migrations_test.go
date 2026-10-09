@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,7 +33,7 @@ func TestRunMigrations_FreshDatabase(t *testing.T) {
 	if ver == 0 {
 		t.Error("expected a nonzero schema version after running migrations")
 	}
-	if err := AssertReady(db); err != nil {
+	if err := AssertReady(context.Background(), db); err != nil {
 		t.Errorf("expected db ready after RunMigrations, got: %v", err)
 	}
 }

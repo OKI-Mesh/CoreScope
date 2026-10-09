@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"log"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // declaredRegionStat is one region name as reported over RF, with the two
@@ -16,7 +19,7 @@ import (
 type declaredRegionStat struct {
 	Name      string
 	Declarers int
-	LastSeen  string // ISO, greatest observed_at across declarers
+	LastSeen  time.Time // greatest observed_at across declarers; zero when unknown
 }
 
 // maxRegionNameLen bounds a derived region name. Firmware region names are
@@ -80,9 +83,9 @@ func regionNameAcceptable(name string) (string, bool) {
 // A node counts once per name however many times it declares it, so the
 // ranking below reflects how widely a region is claimed rather than how
 // chatty one node is.
-func (s *Store) declaredRegionSources() ([]declaredRegionStat, error) {
+func (s *Store) declaredRegionSources(ctx context.Context) ([]declaredRegionStat, error) {
 	agg := map[string]*declaredRegionStat{}
-	count := func(csv, at string) {
+	count := func(csv string, at time.Time) {
 		seenHere := map[string]bool{} // one node counts once per name
 		for _, name := range splitDeclaredRegionsCSV(csv) {
 			// '*' is the flood wildcard, not a region. regionNameAcceptable
@@ -100,58 +103,26 @@ func (s *Store) declaredRegionSources() ([]declaredRegionStat, error) {
 				agg[name] = st
 			}
 			st.Declarers++
-			if at > st.LastSeen {
+			if at.After(st.LastSeen) {
 				st.LastSeen = at
 			}
 		}
 	}
 
-	rows, err := s.db.Query(`
-		SELECT COALESCE(configured_scope, ''), COALESCE(configured_scope_at, '')
-		FROM nodes
-		WHERE configured_scope IS NOT NULL AND configured_scope != ''
-	`)
+	configured, err := s.db.ListConfiguredScopes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("declared regions from configured_scope: %w", err)
 	}
-	for rows.Next() {
-		var csv, at string
-		if err := rows.Scan(&csv, &at); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("declared regions from configured_scope scan: %w", err)
-		}
-		count(csv, at)
+	for _, r := range configured {
+		count(r.CSV, r.SeenAt)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("declared regions from configured_scope rows: %w", err)
-	}
-	rows.Close()
 
-	var present string
-	if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='node_declared_regions'`).Scan(&present); err == nil && present != "" {
-		ndr, err := s.db.Query(`
-			WITH ranked AS (
-				SELECT target, observed_at, regions_csv,
-					ROW_NUMBER() OVER (PARTITION BY target ORDER BY observed_at DESC) AS rn
-				FROM node_declared_regions
-			)
-			SELECT observed_at, regions_csv FROM ranked WHERE rn = 1
-		`)
-		if err != nil {
-			return nil, fmt.Errorf("declared regions from node_declared_regions: %w", err)
-		}
-		defer ndr.Close()
-		for ndr.Next() {
-			var at, csv string
-			if err := ndr.Scan(&at, &csv); err != nil {
-				return nil, fmt.Errorf("declared regions from node_declared_regions scan: %w", err)
-			}
-			count(csv, at)
-		}
-		if err := ndr.Err(); err != nil {
-			return nil, fmt.Errorf("declared regions from node_declared_regions rows: %w", err)
-		}
+	latest, err := s.db.ListLatestDeclaredRegions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("declared regions from node_declared_regions: %w", err)
+	}
+	for _, r := range latest {
+		count(r.CSV, r.SeenAt)
 	}
 
 	out := make([]declaredRegionStat, 0, len(agg))
@@ -178,8 +149,8 @@ func rankDeclaredRegions(stats []declaredRegionStat, max int) []string {
 		if kept[i].Declarers != kept[j].Declarers {
 			return kept[i].Declarers > kept[j].Declarers
 		}
-		if kept[i].LastSeen != kept[j].LastSeen {
-			return kept[i].LastSeen > kept[j].LastSeen
+		if !kept[i].LastSeen.Equal(kept[j].LastSeen) {
+			return kept[i].LastSeen.After(kept[j].LastSeen)
 		}
 		return kept[i].Name < kept[j].Name
 	})
@@ -363,7 +334,7 @@ type scopeMatch struct {
 // deliberately not built here; see
 // docs/specs/2026-09-07-auto-region-keys-design.md. The scopeReasonAmbiguous
 // counter is what measures whether it is worth building.)
-func (s *regionKeySnapshot) match(payloadType byte, payloadRaw []byte, code1 string) scopeMatch {
+func (s *regionKeySnapshot) match(payloadType types.PayloadType, payloadRaw []byte, code1 string) scopeMatch {
 	matched := matchingRegions(s.all, payloadType, payloadRaw, code1)
 	switch len(matched) {
 	case 0:
@@ -388,7 +359,7 @@ func (s *regionKeySnapshot) match(payloadType byte, payloadRaw []byte, code1 str
 // reduced to the string transmissions.scope_name stores, with the outcome
 // tallied for the counters. A nil set (no region keys at all) names nothing,
 // which is what an unconfigured instance did before this existed.
-func (s *regionKeySet) matchScopeName(payloadType byte, payloadRaw []byte, code1 string) string {
+func (s *regionKeySet) matchScopeName(payloadType types.PayloadType, payloadRaw []byte, code1 string) string {
 	m := s.snapshot().match(payloadType, payloadRaw, code1)
 	recordScopeMatch(m)
 	return m.Name
@@ -444,11 +415,11 @@ func logScopeMatchCounters() {
 // A DB error is logged and the CURRENT snapshot is kept. That matters: an
 // empty key set would silently unname all traffic, which looks exactly like
 // the bug this feature exists to fix.
-func (s *regionKeySet) refreshFromStore(store *Store) {
+func (s *regionKeySet) refreshFromStore(ctx context.Context, store *Store) {
 	if s == nil || !s.enabled {
 		return
 	}
-	stats, err := store.declaredRegionSources()
+	stats, err := store.declaredRegionSources(ctx)
 	if err != nil {
 		log.Printf("[regions] derived-key refresh failed, keeping %d existing key(s): %v", len(s.snapshot().all), err)
 		return

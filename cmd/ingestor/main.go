@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,6 +24,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -73,27 +77,24 @@ func main() {
 
 	sources := cfg.ResolvedSources()
 
-	store, err := OpenStoreWithInterval(cfg.DBPath, cfg.MetricsSampleInterval())
+	ctx := context.Background()
+	connStr := cfg.DB.ConnectionString
+
+	if err := database.Migrate(ctx, connStr); err != nil {
+		log.Fatalf("db: %v", err)
+	}
+
+	store, err := OpenStoreWithInterval(ctx, connStr, cfg.MetricsSampleInterval())
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
 	defer store.Close()
-	log.Printf("SQLite opened: %s", cfg.DBPath)
-
-	// Async backfill: path_json from raw_hex (#888) — must not block MQTT startup
-	store.BackfillPathJSONAsync()
+	log.Printf("Postgres opened")
 
 	// Soft-delete blacklisted observers (#1287 — moved from cmd/server).
 	if len(cfg.ObserverBlacklist) > 0 {
-		store.SoftDeleteBlacklistedObservers(cfg.ObserverBlacklist)
+		store.SoftDeleteBlacklistedObservers(ctx, cfg.ObserverBlacklist)
 	}
-
-	// Async backfill: from_pubkey for legacy ADVERT rows (#1143).
-	// Moved from cmd/server in #1287. Best-effort; must not block MQTT.
-	go store.BackfillFromPubkey(5000, 100*time.Millisecond, nil)
-
-	// Check auto_vacuum mode and optionally migrate (#919)
-	store.CheckAutoVacuum(cfg)
 
 	channelKeys := loadChannelKeys(cfg, *configPath)
 	if len(channelKeys) > 0 {
@@ -106,12 +107,10 @@ func main() {
 	if cfg.AutoRegionKeysEnabled() {
 		// Fill the derived tier before the first packet is matched, so a
 		// restart does not spend a refresh interval naming nothing.
-		regionSet.refreshFromStore(store)
+		regionSet.refreshFromStore(ctx, store)
 	} else {
 		log.Printf("[regions] autoRegionKeys disabled — only the %d configured hashRegions key(s) are in force", len(regionSet.snapshot().all))
 	}
-	store.BackfillDefaultScopeAsync(regionSet)
-	store.BackfillTransportCodesAsync()
 
 	// Subscribe-early + buffer (#1608): the MQTT subscription is brought up
 	// before startup maintenance so no packets are missed while the single
@@ -189,7 +188,7 @@ func main() {
 			markReceiptForTag(tag, time.Now())
 			status.MarkPacket(time.Now())
 			ingestBuffer.Submit(func() {
-				handleMessage(store, tag, src, m, channelKeys, regionSet, cfg)
+				handleMessage(ctx, store, tag, src, m, channelKeys, regionSet, cfg)
 			})
 		})
 
@@ -255,31 +254,31 @@ func main() {
 
 	// Node retention: move stale nodes to inactive_nodes on startup
 	nodeDays := cfg.NodeDaysOrDefault()
-	store.MoveStaleNodes(nodeDays)
+	store.MoveStaleNodes(ctx, nodeDays)
 
 	// Observer retention: remove stale observers on startup
 	observerDays := cfg.ObserverDaysOrDefault()
-	store.RemoveStaleObservers(observerDays)
+	store.RemoveStaleObservers(ctx, observerDays)
 
 	// Observer purge: second stage, hard-deletes long-inactive observers whose
 	// packets have already aged out. Always runs after the soft-delete so a row
 	// crossing both thresholds is finalised in a single pass. 0 = disabled.
 	observerPurgeDays := cfg.ObserverPurgeDaysOrZero()
-	if _, err := store.PurgeStaleObservers(observerPurgeDays); err != nil {
+	if _, err := store.PurgeStaleObservers(ctx, observerPurgeDays); err != nil {
 		log.Printf("[prune] error: %v", err)
 	}
 
 	// Metrics retention: prune old metrics on startup
 	metricsDays := cfg.MetricsRetentionDays()
-	store.PruneOldMetrics(metricsDays)
-	store.PruneDroppedPackets(metricsDays)
+	store.PruneOldMetrics(ctx, metricsDays)
+	store.PruneDroppedPackets(ctx, metricsDays)
 
 	// Packet (transmissions) retention: previously lived in cmd/server,
 	// moved to ingestor in #1283 to eliminate cross-process write
 	// contention (SQLITE_BUSY). 0 = disabled.
 	packetDays := cfg.PacketDaysOrZero()
 	if packetDays > 0 {
-		if n, err := store.PruneOldPackets(packetDays); err != nil {
+		if n, err := store.PruneOldPackets(ctx, packetDays); err != nil {
 			log.Printf("[prune] error: %v", err)
 		} else if n > 0 {
 			log.Printf("[prune] startup pruned %d transmissions older than %d days", n, packetDays)
@@ -291,7 +290,7 @@ func main() {
 	// the feature is turned off. 0 = disabled.
 	clientRxDays := cfg.ClientRxDaysOrZero()
 	if clientRxDays > 0 {
-		if n, err := store.PruneOldClientReceptions(clientRxDays); err != nil {
+		if n, err := store.PruneOldClientReceptions(ctx, clientRxDays); err != nil {
 			log.Printf("[prune] error: %v", err)
 		} else if n > 0 {
 			log.Printf("[prune] startup pruned %d client_receptions older than %d days", n, clientRxDays)
@@ -303,7 +302,7 @@ func main() {
 	// archival. 0 = disabled.
 	clientRxObsDays := cfg.ClientRxObsDaysOrZero()
 	if clientRxObsDays > 0 {
-		if n, err := store.PruneOldClientRxObservations(clientRxObsDays); err != nil {
+		if n, err := store.PruneOldClientRxObservations(ctx, clientRxObsDays); err != nil {
 			log.Printf("[prune] client_rx_observations: %v", err)
 		} else if n > 0 {
 			log.Printf("[prune] startup pruned %d client_rx_observations older than %d days", n, clientRxObsDays)
@@ -314,7 +313,7 @@ func main() {
 	// of clientRxDays/clientRxObsDays. 0 = disabled.
 	clientRfDays := cfg.ClientRfDaysOrZero()
 	if clientRfDays > 0 {
-		if n, err := store.PruneOldClientRfSamples(clientRfDays); err != nil {
+		if n, err := store.PruneOldClientRfSamples(ctx, clientRfDays); err != nil {
 			log.Printf("[prune] client_rf_samples: %v", err)
 		} else if n > 0 {
 			log.Printf("[prune] startup pruned %d client_rf_samples older than %d days", n, clientRfDays)
@@ -326,21 +325,13 @@ func main() {
 	// 0 = disabled.
 	clientRegionsDays := cfg.ClientRegionsDaysOrZero()
 	if clientRegionsDays > 0 {
-		if n, err := store.PruneOldClientDeclaredRegions(clientRegionsDays); err != nil {
+		if n, err := store.PruneOldClientDeclaredRegions(ctx, clientRegionsDays); err != nil {
 			log.Printf("[prune] node_declared_regions: %v", err)
 		} else if n > 0 {
 			log.Printf("[prune] startup pruned %d node_declared_regions older than %d days", n, clientRegionsDays)
 		}
 	}
 
-	vacuumPages := cfg.IncrementalVacuumPages()
-	store.RunIncrementalVacuum(vacuumPages)
-
-	// Gate open: the synchronous startup writes above cannot return until the
-	// single SQLite writer is free, which means any blocking async migration
-	// (e.g. the CREATE INDEX) has finished. WaitForAsyncMigrations() makes that
-	// explicit. Now drain everything the subscription buffered during startup.
-	store.WaitForAsyncMigrations()
 	ingestBuffer.Ready()
 	if d := ingestBuffer.Dropped(); d > 0 {
 		log.Printf("[ingest-buffer] write path ready; draining backlog (dropped %d during startup — consider raising ingestBufferSize)", d)
@@ -352,8 +343,7 @@ func main() {
 	retentionTicker := time.NewTicker(1 * time.Hour)
 	go func() {
 		for range retentionTicker.C {
-			store.MoveStaleNodes(nodeDays)
-			store.RunIncrementalVacuum(vacuumPages)
+			store.MoveStaleNodes(ctx, nodeDays)
 		}
 	}()
 
@@ -361,13 +351,12 @@ func main() {
 	observerRetentionTicker := time.NewTicker(24 * time.Hour)
 	go func() {
 		time.Sleep(90 * time.Second) // stagger after metrics prune
-		store.RemoveStaleObservers(observerDays)
-		store.PurgeStaleObservers(observerPurgeDays)
-		store.RunIncrementalVacuum(vacuumPages)
+		store.RemoveStaleObservers(ctx, observerDays)
+		store.PurgeStaleObservers(ctx, observerPurgeDays)
 		for range observerRetentionTicker.C {
-			store.RemoveStaleObservers(observerDays)
-			store.PurgeStaleObservers(observerPurgeDays)
-			store.RunIncrementalVacuum(vacuumPages)
+			store.RemoveStaleObservers(ctx, observerDays)
+			store.PurgeStaleObservers(ctx, observerPurgeDays)
+
 		}
 	}()
 
@@ -375,9 +364,8 @@ func main() {
 	metricsRetentionTicker := time.NewTicker(24 * time.Hour)
 	go func() {
 		for range metricsRetentionTicker.C {
-			store.PruneOldMetrics(metricsDays)
-			store.PruneDroppedPackets(metricsDays)
-			store.RunIncrementalVacuum(vacuumPages)
+			store.PruneOldMetrics(ctx, metricsDays)
+			store.PruneDroppedPackets(ctx, metricsDays)
 		}
 	}()
 
@@ -387,10 +375,10 @@ func main() {
 		packetRetentionTicker = time.NewTicker(24 * time.Hour)
 		go func() {
 			for range packetRetentionTicker.C {
-				if n, err := store.PruneOldPackets(packetDays); err != nil {
+				if n, err := store.PruneOldPackets(ctx, packetDays); err != nil {
 					log.Printf("[prune] error: %v", err)
 				} else if n > 0 {
-					store.RunIncrementalVacuum(vacuumPages)
+					continue
 				}
 			}
 		}()
@@ -407,31 +395,31 @@ func main() {
 		go func() {
 			for range clientRxRetentionTicker.C {
 				if clientRxDays > 0 {
-					if n, err := store.PruneOldClientReceptions(clientRxDays); err != nil {
+					if n, err := store.PruneOldClientReceptions(ctx, clientRxDays); err != nil {
 						log.Printf("[prune] error: %v", err)
 					} else if n > 0 {
-						store.RunIncrementalVacuum(vacuumPages)
+						continue
 					}
 				}
 				if clientRxObsDays > 0 {
-					if n, err := store.PruneOldClientRxObservations(clientRxObsDays); err != nil {
+					if n, err := store.PruneOldClientRxObservations(ctx, clientRxObsDays); err != nil {
 						log.Printf("[prune] client_rx_observations: %v", err)
 					} else if n > 0 {
-						store.RunIncrementalVacuum(vacuumPages)
+						continue
 					}
 				}
 				if clientRfDays > 0 {
-					if n, err := store.PruneOldClientRfSamples(clientRfDays); err != nil {
+					if n, err := store.PruneOldClientRfSamples(ctx, clientRfDays); err != nil {
 						log.Printf("[prune] client_rf_samples: %v", err)
 					} else if n > 0 {
-						store.RunIncrementalVacuum(vacuumPages)
+						continue
 					}
 				}
 				if clientRegionsDays > 0 {
-					if n, err := store.PruneOldClientDeclaredRegions(clientRegionsDays); err != nil {
+					if n, err := store.PruneOldClientDeclaredRegions(ctx, clientRegionsDays); err != nil {
 						log.Printf("[prune] node_declared_regions: %v", err)
 					} else if n > 0 {
-						store.RunIncrementalVacuum(vacuumPages)
+						continue
 					}
 				}
 			}
@@ -459,62 +447,11 @@ func main() {
 		regionRefreshTicker := time.NewTicker(interval)
 		go func() {
 			for range regionRefreshTicker.C {
-				regionSet.refreshFromStore(store)
+				regionSet.refreshFromStore(ctx, store)
 				logScopeMatchCounters()
 			}
 		}()
 		log.Printf("[regions] auto-derived region keys enabled: refreshing every %v, cap %d", interval, cfg.AutoRegionKeysMaxDerived())
-	}
-
-	// Hourly WAL checkpoint to prevent unbounded WAL growth.
-	// TRUNCATE resets the WAL file to zero bytes when all frames are flushed;
-	// if the server's read connection holds frames, remaining pages stay in the
-	// WAL until the next tick. Staggered 30s after startup to avoid competing
-	// with the initial burst of ingest writes.
-	walCheckpointTicker := time.NewTicker(1 * time.Hour)
-	go func() {
-		time.Sleep(30 * time.Second)
-		store.Checkpoint()
-		for range walCheckpointTicker.C {
-			store.Checkpoint()
-		}
-	}()
-	log.Printf("[db] WAL checkpoint scheduled every 1h")
-
-	// Daily planner statistics refresh (#2058), in two parts.
-	//
-	// The routine refresh is staggered 2 minutes past startup for the same reason
-	// as the checkpoint above: it takes the write lock, and by then the initial
-	// ingest burst has passed, so it also sees the rows that burst added.
-	//
-	// The build in front of it deliberately does compete with that burst, because
-	// a database with no statistics at all has nothing better to offer the queries
-	// arriving in those 2 minutes. It only runs once per database; see
-	// Store.EnsurePlannerStats, which also carries what that costs.
-	//
-	// Bounded by analysis_limit either way, so neither grows with the file the way
-	// an unbounded ANALYZE does: 2.0s against 242.9s on a 9.4 GB database, both
-	// timed warm. Cold, on a first start, it is 3m43.9s.
-	{
-		analysisLimit := cfg.AnalysisLimit()
-		if analysisLimit < 0 {
-			log.Printf("[analyze] planner statistics refresh disabled (db.analysisLimit=%d)", analysisLimit)
-		} else {
-			analyzeTicker := time.NewTicker(24 * time.Hour)
-			go func() {
-				// Before the stagger, and only on a database that has never been
-				// analyzed: the stagger is a 2 minute window in which the first
-				// query would otherwise run on no statistics at all. A restart
-				// finds sqlite_stat1 already in the file and skips this.
-				store.EnsurePlannerStats(analysisLimit)
-				time.Sleep(2 * time.Minute)
-				store.RefreshPlannerStats(analysisLimit)
-				for range analyzeTicker.C {
-					store.RefreshPlannerStats(analysisLimit)
-				}
-			}()
-			log.Printf("[analyze] planner statistics refresh scheduled every 24h (analysis_limit=%d)", analysisLimit)
-		}
 	}
 
 	// Daily neighbor_edges retention (#1287 — moved from cmd/server).
@@ -523,13 +460,13 @@ func main() {
 		neighborPruneTicker := time.NewTicker(24 * time.Hour)
 		go func() {
 			time.Sleep(4 * time.Minute) // stagger
-			if n, err := store.PruneNeighborEdges(nDays); err != nil {
+			if n, err := store.PruneNeighborEdges(ctx, nDays); err != nil {
 				log.Printf("[neighbor-prune] error: %v", err)
 			} else if n > 0 {
 				log.Printf("[neighbor-prune] startup pruned %d edges older than %d days", n, nDays)
 			}
 			for range neighborPruneTicker.C {
-				if n, err := store.PruneNeighborEdges(nDays); err != nil {
+				if n, err := store.PruneNeighborEdges(ctx, nDays); err != nil {
 					log.Printf("[neighbor-prune] error: %v", err)
 				} else if n > 0 {
 					log.Printf("[neighbor-prune] pruned %d edges older than %d days", n, nDays)
@@ -548,7 +485,7 @@ func main() {
 			// than the region-refresh one: the counters are recorded for
 			// every transport-scoped packet, including on instances that
 			// never enable autoRegionKeys and so never run that ticker.
-			if err := store.SaveScopeMatchTotals(); err != nil {
+			if err := store.SaveScopeMatchTotals(ctx); err != nil {
 				log.Printf("[regions] saving scope-match tally: %v", err)
 			}
 			if d := ingestBuffer.Dropped(); d > 0 || ingestBuffer.Pending() > 0 {
@@ -562,11 +499,11 @@ func main() {
 	// write handle) executes the DELETEs. Process on startup, then every
 	// 15 seconds — short enough for a one-click UX, long enough to avoid
 	// useless wake-ups.
-	store.RunPendingPruneRequests()
+	store.RunPendingPruneRequests(ctx)
 	pruneQueueTicker := time.NewTicker(15 * time.Second)
 	go func() {
 		for range pruneQueueTicker.C {
-			store.RunPendingPruneRequests()
+			store.RunPendingPruneRequests(ctx)
 		}
 	}()
 
@@ -582,11 +519,11 @@ func main() {
 	multibytePersistTicker := time.NewTicker(5 * time.Minute)
 	go func() {
 		time.Sleep(2 * time.Minute) // stagger after analytics warmup
-		if _, err := store.RunMultibyteCapPersist(); err != nil {
+		if _, err := store.RunMultibyteCapPersist(ctx); err != nil {
 			log.Printf("[multibyte-persist] error: %v", err)
 		}
 		for range multibytePersistTicker.C {
-			if _, err := store.RunMultibyteCapPersist(); err != nil {
+			if _, err := store.RunMultibyteCapPersist(ctx); err != nil {
 				log.Printf("[multibyte-persist] error: %v", err)
 			}
 		}
@@ -600,7 +537,7 @@ func main() {
 	// path-trust threshold. Resolved once here so every tick shares the
 	// same operator-configured value.
 	neighborTrust := cfg.GetPathTrust()
-	stopNeighborBuilder := store.StartNeighborEdgesBuilder(NeighborEdgesBuilderInterval, &neighborTrust)
+	stopNeighborBuilder := startNeighborEdgesBuilder(ctx, store, NeighborEdgesBuilderInterval, &neighborTrust)
 	defer stopNeighborBuilder()
 	log.Printf("[neighbor-build] enabled (interval=%s)", NeighborEdgesBuilderInterval)
 
@@ -623,12 +560,11 @@ func main() {
 	}
 	statsTicker.Stop()
 	pruneQueueTicker.Stop()
-	walCheckpointTicker.Stop()
 	stopWatchdog()
 	// A deploy is a SIGTERM, which is exactly the case that used to lose
 	// the tally: save before the process goes away rather than leaving up
 	// to 5 minutes of counting to the next tick that will not come.
-	if err := store.SaveScopeMatchTotals(); err != nil {
+	if err := store.SaveScopeMatchTotals(ctx); err != nil {
 		log.Printf("[regions] saving scope-match tally: %v", err)
 	}
 	store.LogStats() // final stats on shutdown
@@ -784,7 +720,7 @@ func buildForceReconnectFn(client mqtt.Client, tag string) func() {
 	}
 }
 
-func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, channelKeys map[string]string, regionSet *regionKeySet, cfg *Config) {
+func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSource, m mqtt.Message, channelKeys map[string]string, regionSet *regionKeySet, cfg *Config) {
 	// Liveness watchdog (#1212): record receipt before any processing so a
 	// slow handler still counts as "source is alive". Cheap atomic store.
 	markLivenessForTag(tag, time.Now())
@@ -830,15 +766,15 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		switch parts[3] {
 		case "packets":
 			if cfg.ClientRxCoverageEnabled() {
-				handleClientPacket(store, cfg, tag, parts[2], msg, channelKeys, regionSet)
+				handleClientPacket(ctx, store, cfg, tag, parts[2], msg, channelKeys, regionSet)
 			}
 		case "rf":
 			if cfg.ClientRfSamplesEnabled() {
-				handleClientRfSample(store, tag, parts[2], msg)
+				handleClientRfSample(ctx, store, tag, parts[2], msg)
 			}
 		case "regions":
 			if cfg.ClientRegionsEnabled() {
-				handleClientRegions(store, cfg, tag, parts[2], msg)
+				handleClientRegions(ctx, store, cfg, tag, parts[2], msg)
 			}
 		}
 		return
@@ -877,7 +813,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 	// metadata (region-independent), so the per-source packet IATA filter below
 	// does not apply.
 	if len(parts) >= 4 && parts[3] == "neighbors" {
-		handleNeighborsReport(store, tag, parts[2], msg)
+		handleNeighborsReport(ctx, store, tag, parts[2], msg)
 		return
 	}
 
@@ -900,7 +836,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		// bridge, where the flag does not survive the hop — see
 		// statusIsLiveness).
 		if m.Retained() || !statusIsLiveness(msg, time.Now().UTC()) {
-			if err := store.UpsertObserverRetained(observerID, name, iata, meta); err != nil {
+			if err := store.UpsertObserverRetained(ctx, observerID, name, iata, meta); err != nil {
 				log.Printf("MQTT [%s] retained observer status error: %v", tag, err)
 			}
 			log.Print(formatStatusLog(tag, firstNonEmpty(name, observerID), iata))
@@ -910,7 +846,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		// observer" — fundamentally an ingest-time question. Passing "" makes
 		// UpsertObserverAt use time.Now(), independent of the envelope timestamp
 		// (which can be stale/skewed even when well-formed). See #1465.
-		if err := store.UpsertObserverAt(observerID, name, iata, meta, ""); err != nil {
+		if err := store.UpsertObserverAt(ctx, observerID, name, iata, meta, time.Now().UTC()); err != nil {
 			log.Printf("MQTT [%s] observer status error: %v", tag, err)
 		}
 		// Insert metrics sample from status message
@@ -925,7 +861,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 				PacketsSent: meta.PacketsSent,
 				PacketsRecv: meta.PacketsRecv,
 			}
-			if err := store.InsertMetrics(metricsData); err != nil {
+			if err := store.InsertMetrics(ctx, metricsData); err != nil {
 				log.Printf("MQTT [%s] metrics insert error: %v", tag, err)
 			}
 		}
@@ -952,7 +888,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 	rawHex, _ := msg["raw"].(string)
 	if rawHex != "" {
 		validateSigs := cfg.ShouldValidateSignatures()
-		decoded, err := DecodePacket(rawHex, channelKeys, validateSigs)
+		decoded, err := decoder.DecodePacket(rawHex, channelKeys, validateSigs)
 		if err != nil {
 			// Per #1211: include enough context to repro malformed-packet drops,
 			// but NEVER log the full observer ID (PII / fingerprinting risk).
@@ -998,7 +934,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		mqttMsg.Timestamp, naiveSkewSec = resolveRxTime(msg, tag)
 		if naiveSkewSec != 0 && observerID != "" {
 			// Issue #1478: record so /api/observers can surface ⚠️ chip.
-			if err := store.RecordNaiveSkew(observerID, naiveSkewSec, time.Now()); err != nil {
+			if err := store.RecordNaiveSkew(ctx, observerID, naiveSkewSec, time.Now()); err != nil {
 				log.Printf("MQTT [%s] RecordNaiveSkew(%s): %v", tag, observerID, err)
 			}
 		}
@@ -1045,21 +981,21 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 		// For ADVERT packets with known coordinates, enforce geo_filter before
 		// storing anything — drop the entire message if outside the area.
 		if decoded.Header.PayloadTypeName == "ADVERT" && decoded.Payload.PubKey != "" {
-			ok, reason := ValidateAdvert(&decoded.Payload)
+			ok, reason := decoder.ValidateAdvert(&decoded.Payload)
 			if !ok {
 				log.Printf("MQTT [%s] skipping corrupted ADVERT: %s", tag, reason)
 				return
 			}
 			// Signature validation: drop adverts with invalid ed25519 signatures
 			if validateSigs && decoded.Payload.SignatureValid != nil && !*decoded.Payload.SignatureValid {
-				hash := ComputeContentHash(rawHex)
+				hash := decoder.ComputeContentHash(rawHex)
 				truncPK := decoded.Payload.PubKey
 				if len(truncPK) > 16 {
 					truncPK = truncPK[:16]
 				}
 				log.Printf("MQTT [%s] DROPPED invalid signature: hash=%s name=%s observer=%s pubkey=%s",
 					tag, hash, sanitizeLogString(decoded.Payload.Name), sanitizeLogString(firstNonEmpty(mqttMsg.Origin, observerID)), truncPK)
-				store.InsertDroppedPacket(&DroppedPacket{
+				store.InsertDroppedPacket(ctx, &types.DroppedPacket{
 					Hash:         hash,
 					RawHex:       rawHex,
 					Reason:       "invalid signature",
@@ -1092,33 +1028,33 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			}
 			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
 			pktData.Foreign = foreign
-			isNew, err := store.InsertTransmission(pktData)
+			isNew, err := store.InsertTransmission(ctx, pktData)
 			if err != nil {
 				log.Printf("MQTT [%s] db insert error: %v", tag, err)
 			}
-			role := advertRole(decoded.Payload.Flags)
-			if err := store.UpsertNode(decoded.Payload.PubKey, decoded.Payload.Name, role, decoded.Payload.Lat, decoded.Payload.Lon, pktData.Timestamp); err != nil {
+			role := decoder.AdvertRole(decoded.Payload.Flags)
+			if err := store.UpsertNode(ctx, decoded.Payload.PubKey, decoded.Payload.Name, role, decoded.Payload.Lat, decoded.Payload.Lon, pktData.Timestamp); err != nil {
 				log.Printf("MQTT [%s] node upsert error: %v", tag, err)
 			}
 			if foreign {
-				if err := store.MarkNodeForeign(decoded.Payload.PubKey); err != nil {
+				if err := store.MarkNodeForeign(ctx, decoded.Payload.PubKey); err != nil {
 					log.Printf("MQTT [%s] mark foreign error: %v", tag, err)
 				}
 			}
 			if isNew {
-				if err := store.IncrementAdvertCount(decoded.Payload.PubKey); err != nil {
+				if err := store.IncrementAdvertCount(ctx, decoded.Payload.PubKey); err != nil {
 					log.Printf("MQTT [%s] advert count error: %v", tag, err)
 				}
 			}
 			// Update telemetry if present in advert
 			if decoded.Payload.BatteryMv != nil || decoded.Payload.TemperatureC != nil {
-				if err := store.UpdateNodeTelemetry(decoded.Payload.PubKey, decoded.Payload.BatteryMv, decoded.Payload.TemperatureC); err != nil {
+				if err := store.UpdateNodeTelemetry(ctx, decoded.Payload.PubKey, decoded.Payload.BatteryMv, decoded.Payload.TemperatureC); err != nil {
 					log.Printf("MQTT [%s] node telemetry update error: %v", tag, err)
 				}
 			}
 			// Update default_scope when advert carries a matched transport scope (#899, #1534)
 			if shouldUpdateDefaultScope(pktData) {
-				if err := store.UpdateNodeDefaultScope(decoded.Payload.PubKey, pktData.ScopeName); err != nil {
+				if err := store.UpdateNodeDefaultScope(ctx, decoded.Payload.PubKey, pktData.ScopeName); err != nil {
 					log.Printf("MQTT [%s] node default_scope update error: %v", tag, err)
 				}
 			}
@@ -1126,7 +1062,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			// Non-ADVERT packets: store normally (routing/channel messages from
 			// in-area observers are relevant regardless of relay hop origin).
 			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
-			if _, err := store.InsertTransmission(pktData); err != nil {
+			if _, err := store.InsertTransmission(ctx, pktData); err != nil {
 				log.Printf("MQTT [%s] db insert error: %v", tag, err)
 			}
 		}
@@ -1142,7 +1078,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			// Same as the status-path call above: observer.last_seen is ingest
 			// time, not envelope time. Per-packet rxTime (stored in observations
 			// via InsertTransmission) still uses envelope time. See #1465.
-			if err := store.UpsertObserverAt(observerID, origin, effectiveRegion, nil, ""); err != nil {
+			if err := store.UpsertObserverAt(ctx, observerID, origin, effectiveRegion, nil, time.Now().UTC()); err != nil {
 				log.Printf("MQTT [%s] observer upsert error: %v", tag, err)
 			}
 		}
@@ -1186,7 +1122,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 
 		decodedJSON, _ := json.Marshal(channelMsg)
 
-		ingestNow := time.Now().UTC().Format(time.RFC3339)
+		ingestNow := time.Now().UTC()
 		hashInput := fmt.Sprintf("ch:%s:%s:%s", channelIdx, text, ingestNow)
 		h := sha256.Sum256([]byte(hashInput))
 		hash := hex.EncodeToString(h[:])[:16]
@@ -1242,7 +1178,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			ChannelHash:  channelName, // fast channel queries (#762)
 		}
 
-		if _, err := store.InsertTransmission(pktData); err != nil {
+		if _, err := store.InsertTransmission(ctx, pktData); err != nil {
 			log.Printf("MQTT [%s] channel insert error: %v", tag, err)
 		}
 
@@ -1279,8 +1215,8 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 
 		decodedJSON, _ := json.Marshal(dm)
 
-		ingestNow := time.Now().UTC().Format(time.RFC3339)
-		hashInput := fmt.Sprintf("dm:%s:%s", text, ingestNow)
+		ingestNow := time.Now().UTC()
+		hashInput := fmt.Sprintf("dm:%s:%s", text, ingestNow.Format(time.RFC3339))
 		h := sha256.Sum256([]byte(hashInput))
 		hash := hex.EncodeToString(h[:])[:16]
 
@@ -1334,7 +1270,7 @@ func handleMessage(store *Store, tag string, source MQTTSource, m mqtt.Message, 
 			DecodedJSON:  string(decodedJSON),
 		}
 
-		if _, err := store.InsertTransmission(pktData); err != nil {
+		if _, err := store.InsertTransmission(ctx, pktData); err != nil {
 			log.Printf("MQTT [%s] DM insert error: %v", tag, err)
 		}
 
@@ -1387,8 +1323,8 @@ func stripUnitSuffix(s string) string {
 
 // extractObserverMeta extracts hardware metadata from an MQTT status message.
 // Casts battery_mv and uptime_secs to integers (they're always whole numbers).
-func extractObserverMeta(msg map[string]interface{}) *ObserverMeta {
-	meta := &ObserverMeta{}
+func extractObserverMeta(msg map[string]interface{}) *types.ObserverMeta {
+	meta := &types.ObserverMeta{}
 	hasData := false
 
 	if v, ok := msg["model"].(string); ok && v != "" {
@@ -1565,74 +1501,7 @@ func resolveRxTime(msg map[string]interface{}, tag string) (string, int64) {
 // shared by its only production caller (handleClientPacket, which formats a
 // resolveRxTimeCore result with it directly) and by tests that need to
 // derive an rx_at they can query back by.
-const rxTimeMillisLayout = "2006-01-02T15:04:05.000Z07:00"
-
-// resolveRxTimeCore holds the validation/clamping logic shared by
-// resolveRxTime and any caller that needs the resolved time in a different
-// format (handleClientPacket formats it with rxTimeMillisLayout for
-// client_rx_observations). Returns UTC time so callers format it themselves —
-// a caller that needs two different formatted strings for the SAME packet
-// calls this once and formats twice, instead of parsing/validating/logging
-// twice and risking two independent time.Now() reads straddling a second
-// boundary.
-func resolveRxTimeCore(msg map[string]interface{}, tag string) (time.Time, int64) {
-	now := time.Now().UTC()
-	raw, _ := msg["timestamp"].(string)
-	if raw == "" {
-		return now, 0
-	}
-	t, naive, err := parseEnvelopeTime(raw)
-	if err != nil {
-		log.Printf("MQTT [%s] unparseable timestamp %q, using ingest time", tag, raw)
-		return now, 0
-	}
-	// Hard reject: > 14h ahead is a genuine clock error (UTC+14 is the maximum
-	// standard offset, so nothing valid should be further ahead than that).
-	if t.After(now.Add(14 * time.Hour)) {
-		log.Printf("MQTT [%s] future timestamp %q, using ingest time", tag, raw)
-		return now, 0
-	}
-	// Hard reject: > 30 days in the past is an RTC-reset node reporting a
-	// factory date (e.g. 2020-01-01). Such a value would permanently drag
-	// transmissions.first_seen backwards via stmtUpdateTxFirstSeen in
-	// InsertTransmission. No legitimate buffered upload is that stale.
-	if t.Before(now.Add(-30 * 24 * time.Hour)) {
-		log.Printf("MQTT [%s] stale timestamp %q (>30d old), using ingest time", tag, raw)
-		return now, 0
-	}
-	// Symmetric naive-timestamp clamp (issue #1463). Naive (zone-less) ISO
-	// values from observers in non-UTC zones are parsed as-if UTC, leaving a
-	// residual offset equal to the observer's UTC offset:
-	//   - UTC+N observer → value appears N hours in the future
-	//   - UTC-N observer → value appears N hours in the past
-	// The past case was silently stored verbatim, poisoning last_seen and
-	// rendering UTC-N observers perpetually "Stale" in the UI. Collapse any
-	// naive value more than 15 min off server-now to now() — well-behaved
-	// observers (Z-suffixed or explicit offset) are untouched regardless of
-	// skew so legitimate buffered uploads remain accurate.
-	const naiveTolerance = 15 * time.Minute
-	if naive {
-		signed := t.Sub(now) // signed: positive = ahead, negative = behind
-		abs := signed
-		if abs < 0 {
-			abs = -abs
-		}
-		if abs > naiveTolerance {
-			// Issue #1478: surface to UI via RecordNaiveSkew (called by handler).
-			// Per-message log was silenced in #1479 — chip + banner in the UI
-			// replace it.
-			deltaSec := int64(signed / time.Second)
-			return now, deltaSec
-		}
-	}
-	// Legacy soft clamp for zone-aware near-future values: any value ahead of
-	// now is from a slightly skewed observer clock — collapse to now so we
-	// don't render ⚠️ in the UI for live packets from those nodes.
-	if t.After(now) {
-		return now, 0
-	}
-	return t.UTC(), 0
-}
+// const rxTimeMillisLayout = "2006-01-02T15:04:05.000Z07:00"
 
 // parseEnvelopeTime parses the MQTT envelope timestamp. Two on-wire forms
 // occur: zone-aware ISO8601 (RFC3339), and a naive local-clock ISO string
@@ -1731,7 +1600,7 @@ func loadChannelKeys(cfg *Config, configPath string) map[string]string {
 
 	// 3. Explicit config keys (highest priority — overrides rainbow + derived)
 	for k, v := range cfg.ChannelKeys {
-		normalized := normalizeChannelName(k)
+		normalized := decoder.NormalizeChannelName(k)
 		if normalized != k {
 			log.Printf("[channels] Normalizing known channel key %q → %q for display", k, normalized)
 		}
@@ -1793,14 +1662,15 @@ func loadRegionKeys(cfg *Config) map[string][]byte {
 // The cost is unchanged: this is the same single pass over the same keys, it
 // just does not stop early. There is no indexable shortcut, because code1 is
 // an HMAC over the payload and nothing here is payload-independent.
-func matchingRegions(regionKeys map[string][]byte, payloadType byte, payloadRaw []byte, code1 string) []string {
-	if code1 == "0000" || len(regionKeys) == 0 || len(payloadRaw) == 0 {
+func matchingRegions(regionKeys map[string][]byte, payloadType types.PayloadType, payloadRaw []byte, code1 string) []string {
+	if code1 == decoder.NoScopeCode || len(regionKeys) == 0 || len(payloadRaw) == 0 {
 		return nil
 	}
 	var matched []string
 	for name, key := range regionKeys {
 		mac := hmac.New(sha256.New, key)
-		mac.Write([]byte{payloadType})
+		// The wire type nibble (0-15) is the first byte of the HMAC input, not the whole header byte.
+		mac.Write([]byte{byte(payloadType)})
 		mac.Write(payloadRaw)
 		hmacBytes := mac.Sum(nil)
 		code := uint16(hmacBytes[0]) | uint16(hmacBytes[1])<<8
@@ -1827,6 +1697,17 @@ func init() {
 	}
 }
 
+func reportTime(msg map[string]interface{}, now time.Time) time.Time {
+	s, _ := msg["timestamp"].(string)
+	if s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t.UTC()
+		}
+		log.Printf("neighbors report: unparseable timestamp %q, using ingest time", s)
+	}
+	return now
+}
+
 // handleNeighborsReport ingests an observer /neighbors report (#1865) and
 // records CONFIRMED region scopes into nodes.configured_scope:
 //   - the observer's own scopes from `self`, keyed by origin_id (the observer
@@ -1839,8 +1720,8 @@ func init() {
 // by ordering, so absent != gone). Report pubkeys are uppercase; nodes.public_key
 // is lowercase hex, so keys are lowercased before the UPDATE. Unknown neighbors
 // are a no-op (the UPDATE matches no row) until a later advert creates the node.
-func handleNeighborsReport(store *Store, tag string, observerID string, msg map[string]interface{}) {
-	reportedAt, _ := msg["timestamp"].(string)
+func handleNeighborsReport(ctx context.Context, store *Store, tag string, observerID string, msg map[string]interface{}) {
+	reportedAt := reportTime(msg, time.Now().UTC())
 
 	// self: the observer's own configured scopes.
 	originID, _ := msg["origin_id"].(string)
@@ -1850,7 +1731,7 @@ func handleNeighborsReport(store *Store, tag string, observerID string, msg map[
 	originID = strings.ToLower(originID)
 	if self, ok := msg["self"].(map[string]interface{}); ok && originID != "" {
 		if sc, ok := self["scopes"].(string); ok {
-			if err := store.UpdateNodeConfiguredScope(originID, sc, reportedAt); err != nil {
+			if err := store.UpdateNodeConfiguredScope(ctx, originID, sc, reportedAt); err != nil {
 				log.Printf("MQTT [%s] neighbors self scope error: %v", tag, err)
 			}
 		}
@@ -1872,7 +1753,7 @@ func handleNeighborsReport(store *Store, tag string, observerID string, msg map[
 			continue
 		}
 		scopes, _ := n["scopes"].(string)
-		if err := store.UpdateNodeConfiguredScope(pubkey, scopes, reportedAt); err != nil {
+		if err := store.UpdateNodeConfiguredScope(ctx, pubkey, scopes, reportedAt); err != nil {
 			log.Printf("MQTT [%s] neighbors scope error for %.8s: %v", tag, pubkey, err)
 		}
 	}

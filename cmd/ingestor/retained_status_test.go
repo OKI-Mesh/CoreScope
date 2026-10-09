@@ -20,55 +20,50 @@ func retainedStatusMsg(topic string, payload string) *mockMessage {
 }
 
 // seedObserver inserts an observer and forces last_seen to ageDays ago.
-func seedObserver(t *testing.T, s *Store, id string, ageDays int) string {
+func seedObserver(t *testing.T, s *Store, id string, ageDays int) time.Time {
+	ctx := t.Context()
 	t.Helper()
-	if err := s.UpsertObserver(id, id, "LAX", nil); err != nil {
+	if err := s.UpsertObserver(ctx, id, id, "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().UTC().AddDate(0, 0, -ageDays).Format(time.RFC3339)
-	if _, err := s.db.Exec(`UPDATE observers SET last_seen = ? WHERE id = ?`, old, id); err != nil {
-		t.Fatal(err)
-	}
+	old := time.Now().UTC().AddDate(0, 0, -ageDays)
+	testExec(t, s, `UPDATE observers SET last_seen = $1 WHERE id = $2`, old, id)
 	return old
 }
 
-func observerLastSeen(t *testing.T, s *Store, id string) string {
+func observerLastSeen(t *testing.T, s *Store, id string) time.Time {
 	t.Helper()
-	var got string
-	if err := s.db.QueryRow(`SELECT last_seen FROM observers WHERE id = ?`, id).Scan(&got); err != nil {
-		t.Fatal(err)
-	}
+	var got time.Time
+	mustScan(t, testRow(t, s, `SELECT last_seen FROM observers WHERE id = $1`, id), &got)
 	return got
 }
 
 func TestRetainedStatusDoesNotAdvanceLastSeen(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	want := seedObserver(t, store, "obs-retained", 60)
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		retainedStatusMsg(retainedStatusTopic, `{"origin":"obs-retained","noise_floor":-95.5}`),
 		nil, nil, &Config{})
 
-	if got := observerLastSeen(t, store, "obs-retained"); got != want {
+	if got := observerLastSeen(t, store, "obs-retained"); !got.Equal(want) {
 		t.Errorf("last_seen = %s, want %s (retained replay is not liveness)", got, want)
 	}
 }
 
 func TestRetainedStatusDoesNotReactivateInactiveObserver(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	seedObserver(t, store, "obs-retained", 60)
-	if _, err := store.db.Exec(`UPDATE observers SET inactive = 1 WHERE id = ?`, "obs-retained"); err != nil {
-		t.Fatal(err)
-	}
+	testExec(t, store, `UPDATE observers SET inactive = 1 WHERE id = $1`, "obs-retained")
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		retainedStatusMsg(retainedStatusTopic, `{"origin":"obs-retained","noise_floor":-95.5}`),
 		nil, nil, &Config{})
 
 	var inactive int
-	if err := store.db.QueryRow(`SELECT inactive FROM observers WHERE id = ?`, "obs-retained").Scan(&inactive); err != nil {
-		t.Fatal(err)
-	}
+	mustScan(t, testRow(t, store, `SELECT inactive FROM observers WHERE id = $1`, "obs-retained"), &inactive)
 	if inactive != 1 {
 		t.Errorf("inactive = %d, want 1 (retained replay must not resurrect a soft-deleted observer)", inactive)
 	}
@@ -79,15 +74,14 @@ func TestRetainedStatusDoesNotReactivateInactiveObserver(t *testing.T) {
 // permanently dead observer in the list.
 func TestRetainedStatusDoesNotCreateUnknownObserver(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		retainedStatusMsg("meshcore/LAX/obs-never-seen/status", `{"origin":"Ghost","noise_floor":-95.5}`),
 		nil, nil, &Config{})
 
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, "obs-never-seen").Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	count = countWhere(t, store, "observers", "id = $1", "obs-never-seen")
 	if count != 0 {
 		t.Errorf("observers row count = %d, want 0 (retained-only observer must not be created)", count)
 	}
@@ -98,17 +92,14 @@ func TestRetainedStatusDoesNotCreateUnknownObserver(t *testing.T) {
 func TestRetainedStatusDoesNotInsertMetricsSample(t *testing.T) {
 	store := newTestStore(t)
 	seedObserver(t, store, "obs-retained", 60)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		retainedStatusMsg(retainedStatusTopic, `{"origin":"obs-retained","noise_floor":-95.5,"battery_mv":3900}`),
 		nil, nil, &Config{})
 
 	var count int
-	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM observer_metrics WHERE observer_id = ?`, "obs-retained",
-	).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	count = countWhere(t, store, "observer_metrics", "observer_id = $1", "obs-retained")
 	if count != 0 {
 		t.Errorf("observer_metrics rows = %d, want 0 (retained replay is not a new sample)", count)
 	}
@@ -119,18 +110,15 @@ func TestRetainedStatusDoesNotInsertMetricsSample(t *testing.T) {
 func TestRetainedStatusStillUpdatesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	seedObserver(t, store, "obs-retained", 60)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		retainedStatusMsg(retainedStatusTopic, `{"origin":"obs-retained","firmware":"v1.2.3","noise_floor":-95.5}`),
 		nil, nil, &Config{})
 
 	var firmware string
 	var noiseFloor float64
-	if err := store.db.QueryRow(
-		`SELECT firmware, noise_floor FROM observers WHERE id = ?`, "obs-retained",
-	).Scan(&firmware, &noiseFloor); err != nil {
-		t.Fatal(err)
-	}
+	mustScan(t, testRow(t, store, `SELECT firmware, noise_floor FROM observers WHERE id = $1`, "obs-retained"), &firmware, &noiseFloor)
 	if firmware != "v1.2.3" {
 		t.Errorf("firmware = %q, want %q", firmware, "v1.2.3")
 	}
@@ -143,9 +131,10 @@ func TestRetainedStatusStillUpdatesMetadata(t *testing.T) {
 // with ingest time. Only the retained flag changes the behaviour.
 func TestLiveStatusStillAdvancesLastSeen(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	before := seedObserver(t, store, "obs-live", 60)
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		&mockMessage{topic: "meshcore/LAX/obs-live/status", payload: []byte(`{"origin":"obs-live","noise_floor":-95.5}`)},
 		nil, nil, &Config{})
 
@@ -156,15 +145,14 @@ func TestLiveStatusStillAdvancesLastSeen(t *testing.T) {
 
 func TestLiveStatusStillCreatesUnknownObserver(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		&mockMessage{topic: "meshcore/LAX/obs-fresh/status", payload: []byte(`{"origin":"Fresh","noise_floor":-95.5}`)},
 		nil, nil, &Config{})
 
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, "obs-fresh").Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	count = countWhere(t, store, "observers", "id = $1", "obs-fresh")
 	if count != 1 {
 		t.Errorf("observers row count = %d, want 1 (live status creates the observer)", count)
 	}

@@ -154,3 +154,51 @@ func TestResolveRxTimeNaiveTimestampClamp(t *testing.T) {
 		t.Errorf("naive timestamp within tolerance: got %q, expected %q (verbatim)", got, naiveCloseWant)
 	}
 }
+
+func TestResolveRxTimeAt(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	zoned := func(d time.Duration) map[string]interface{} {
+		return map[string]interface{}{"timestamp": now.Add(d).Format(time.RFC3339Nano)}
+	}
+	naive := func(d time.Duration) map[string]interface{} {
+		return map[string]interface{}{"timestamp": now.Add(d).Format("2006-01-02T15:04:05.000000")}
+	}
+
+	cases := []struct {
+		name    string
+		msg     map[string]interface{}
+		reason  rxReason
+		at      time.Time // zero means "expect now"
+		skewSec int64
+	}{
+		{"missing", map[string]interface{}{}, rxMissing, time.Time{}, 0},
+		{"garbage", map[string]interface{}{"timestamp": "not a time"}, rxUnparseable, time.Time{}, 0},
+		{"zoned recent", zoned(-time.Minute), rxFromEnvelope, now.Add(-time.Minute), 0},
+		{"zoned just under 30d", zoned(-rxMaxAge + time.Second), rxFromEnvelope, now.Add(-rxMaxAge + time.Second), 0},
+		{"zoned just over 30d", zoned(-rxMaxAge - time.Second), rxTooOld, time.Time{}, 0},
+		{"zoned just under 14h ahead", zoned(rxMaxFuture - time.Second), rxClampedToNow, time.Time{}, 0},
+		{"zoned just over 14h ahead", zoned(rxMaxFuture + time.Second), rxTooFarAhead, time.Time{}, 0},
+		{"zoned 2m ahead", zoned(2 * time.Minute), rxClampedToNow, time.Time{}, 0},
+		{"naive 14m behind", naive(-14 * time.Minute), rxFromEnvelope, now.Add(-14 * time.Minute), 0},
+		{"naive 16m behind", naive(-16 * time.Minute), rxNaiveClamped, time.Time{}, -960},
+		{"naive 5h ahead (UTC+5)", naive(5 * time.Hour), rxNaiveClamped, time.Time{}, 18000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveRxTimeAt(c.msg, now)
+			if got.Reason != c.reason {
+				t.Fatalf("reason = %v, want %v", got.Reason, c.reason)
+			}
+			want := c.at
+			if want.IsZero() {
+				want = now
+			}
+			if !got.At.Equal(want) {
+				t.Errorf("at = %v, want %v", got.At, want)
+			}
+			if got.SkewSec != c.skewSec {
+				t.Errorf("skew = %d, want %d", got.SkewSec, c.skewSec)
+			}
+		})
+	}
+}

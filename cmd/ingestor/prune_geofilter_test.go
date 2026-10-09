@@ -9,24 +9,20 @@ import (
 )
 
 func TestRunPendingPruneRequests(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := newTestStore(t)
+	store.pruneQueuePath = filepath.Join(t.TempDir(), "prunequeue")
 	defer store.Close()
 
 	// Seed two nodes; one will be pruned, one will be kept.
-	if _, err := store.db.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
+	count := testExec(t, store, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
 		VALUES ('aaaa', 'gone', 'companion', 1.0, 1.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
-		       ('bbbb', 'kept', 'companion', 2.0, 2.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatalf("seed: %v", err)
+		       ('bbbb', 'kept', 'companion', 2.0, 2.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	if count != 2 {
+		t.Fatalf("expected 2 nodes, got %d", count)
 	}
 
 	id := prunequeue.NewID()
-	if err := prunequeue.WriteRequest(dbPath, prunequeue.Request{
+	if err := prunequeue.WriteRequest(store.pruneQueuePath, prunequeue.Request{
 		ID:          id,
 		RequestedAt: time.Now().UTC(),
 		Reason:      "geo-prune-test",
@@ -35,13 +31,13 @@ func TestRunPendingPruneRequests(t *testing.T) {
 		t.Fatalf("WriteRequest: %v", err)
 	}
 
-	store.RunPendingPruneRequests()
+	store.RunPendingPruneRequests(t.Context())
 
 	// Request file gone, result file present.
-	if exists, _ := prunequeue.RequestExists(dbPath, id); exists {
+	if exists, _ := prunequeue.RequestExists(store.pruneQueuePath, id); exists {
 		t.Error("request file should have been consumed")
 	}
-	res, err := prunequeue.ReadResult(dbPath, id)
+	res, err := prunequeue.ReadResult(store.pruneQueuePath, id)
 	if err != nil || res == nil {
 		t.Fatalf("ReadResult: res=%v err=%v", res, err)
 	}
@@ -53,25 +49,21 @@ func TestRunPendingPruneRequests(t *testing.T) {
 	}
 
 	// Verify DB state: aaaa gone, bbbb kept.
-	var n int
-	store.db.QueryRow("SELECT COUNT(*) FROM nodes WHERE public_key='aaaa'").Scan(&n)
+	n := countWhere(t, store, "nodes", "public_key='aaaa'")
 	if n != 0 {
 		t.Errorf("expected 'aaaa' deleted, got count=%d", n)
 	}
-	store.db.QueryRow("SELECT COUNT(*) FROM nodes WHERE public_key='bbbb'").Scan(&n)
+	n = countWhere(t, store, "nodes", "public_key='bbbb'")
 	if n != 1 {
 		t.Errorf("expected 'bbbb' kept, got count=%d", n)
 	}
 }
 
 func TestRunPendingPruneRequests_EmptyQueueIsNoop(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := newTestStore(t)
+	ctx := t.Context()
+	store.pruneQueuePath = filepath.Join(t.TempDir(), "prunequeue")
 	defer store.Close()
 	// Must not panic / error on empty queue.
-	store.RunPendingPruneRequests()
+	store.RunPendingPruneRequests(ctx)
 }

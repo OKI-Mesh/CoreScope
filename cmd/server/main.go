@@ -204,10 +204,12 @@ func main() {
 	// (#1287). The server NEVER migrates — it only reads. If a required
 	// column/index/table is missing, the operator must restart the
 	// ingestor (which owns dbschema.Apply) before this server can start.
-	if err := database.AssertReady(db.conn); err != nil {
-		log.Fatalf("[db] schema not ready (ingestor must run migrations first): %v", err)
+	ctx := context.Background()
+	if err := database.WithMigrationHandle(ctx, connStr, func(migDB *sql.DB) error {
+		return database.AssertReady(ctx, migDB)
+	}); err != nil {
+		log.Fatalf("db: %v", err)
 	}
-
 	// In-memory packet store
 	store := NewPacketStore(db, cfg.PacketStore, cfg.CacheTTL)
 	store.config = cfg

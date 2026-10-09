@@ -24,9 +24,7 @@ func clientRfMsgWithRaw() *mockMessage {
 func clientRfSampleCount(t *testing.T, s *Store) int {
 	t.Helper()
 	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM client_rf_samples`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	mustScan(t, testRow(t, s, `SELECT COUNT(*) FROM client_rf_samples`), &n)
 	return n
 }
 
@@ -51,7 +49,7 @@ func TestClientRfSamplesGateOn(t *testing.T) {
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{ClientRfSamples: &ClientRfSamplesConfig{Enabled: true}}
 
-	handleMessage(store, "test", source, clientRfMsg(), nil, nil, cfg)
+	handleMessage(t.Context(), store, "test", source, clientRfMsg(), nil, nil, cfg)
 
 	if n := clientRfSampleCount(t, store); n != 1 {
 		t.Fatalf("feature ON: expected 1 client_rf_samples row, got %d", n)
@@ -69,30 +67,25 @@ func TestClientRfSamplesGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{} // ClientRfSamples nil ⇒ disabled
+	ctx := t.Context()
 
-	handleMessage(store, "test", source, clientRfMsgWithRaw(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientRfMsgWithRaw(), nil, nil, cfg)
 
 	if n := clientRfSampleCount(t, store); n != 0 {
 		t.Fatalf("feature OFF: expected 0 client_rf_samples rows, got %d", n)
 	}
 	var observerRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, testCompanionPK).Scan(&observerRows); err != nil {
-		t.Fatal(err)
-	}
+	observerRows = countWhere(t, store, "observers", "id = $1", testCompanionPK)
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}
 	var clientRegionRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE iata = 'client'`).Scan(&clientRegionRows); err != nil {
-		t.Fatal(err)
-	}
+	clientRegionRows = countWhere(t, store, "observers", "iata = $1", "client")
 	if clientRegionRows != 0 {
 		t.Fatalf("feature OFF: no observer should be registered under a bogus 'client' region, got %d rows", clientRegionRows)
 	}
 	var txRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM transmissions`).Scan(&txRows); err != nil {
-		t.Fatal(err)
-	}
+	txRows = countWhere(t, store, "transmissions", "1=1")
 	if txRows != 0 {
 		t.Fatalf("feature OFF: the client-topic sample must not be ingested as an ordinary observer packet, got %d transmissions rows", txRows)
 	}
@@ -108,8 +101,9 @@ func TestClientRfSamplesBlacklistedDropped(t *testing.T) {
 		ClientRfSamples:   &ClientRfSamplesConfig{Enabled: true},
 		ObserverBlacklist: []string{testCompanionPK},
 	}
+	ctx := t.Context()
 
-	handleMessage(store, "test", source, clientRfMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientRfMsg(), nil, nil, cfg)
 
 	if n := clientRfSampleCount(t, store); n != 0 {
 		t.Fatalf("blacklisted companion: expected 0 client_rf_samples rows, got %d", n)
@@ -127,8 +121,9 @@ func TestClientPacketsGateUnaffectedByRfGate(t *testing.T) {
 		ClientRxCoverage: &ClientRxCoverageConfig{Enabled: true},
 		ClientRfSamples:  &ClientRfSamplesConfig{Enabled: false},
 	}
+	ctx := t.Context()
 
-	handleMessage(store, "test", source, clientCoverageMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientCoverageMsg(), nil, nil, cfg)
 
 	if n := clientReceptionCount(t, store); n != 1 {
 		t.Fatalf("expected 1 client_receptions row with clientRxCoverage on / clientRfSamples off, got %d", n)

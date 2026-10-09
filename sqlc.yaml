@@ -1,0 +1,49 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "internal/database/postgres/queries"
+    schema: "internal/database/postgres/migrations"
+    gen:
+      go:
+        package: "pgdb"
+        out: "internal/database/pgdb"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+        emit_exact_table_names: false
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+        emit_result_struct_pointers: false
+        emit_params_struct_pointers: false
+        emit_methods_with_db_argument: false
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - column: "transmissions.payload_type"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "PayloadType"
+          - column: "transmissions.route_type"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "RouteType"
+          - column: "client_rx_observations.payload_type"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "PayloadType"
+          - column: "client_rx_observations.route_type"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "RouteType"
+          - column: "neighbor_observations.payload_type"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "PayloadType"
+          - column: "neighbor_observations.route_type"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "RouteType"
+          - column: "nodes.multibyte_sup"
+            go_type:
+              import: "github.com/OKI-Mesh/CoreScope/internal/types"
+              type: "MultibyteSupport"

@@ -19,11 +19,7 @@ func clientCoverageMsg() *mockMessage {
 
 func clientReceptionCount(t *testing.T, s *Store) int {
 	t.Helper()
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM client_receptions`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
+	return countRows(t, s, "client_receptions")
 }
 
 // TestClientRxCoverageEnabledDefault verifies the gate helper defaults OFF for
@@ -44,10 +40,11 @@ func TestClientRxCoverageEnabledDefault(t *testing.T) {
 // client-topic message must fall through and write no client_receptions rows.
 func TestClientRxCoverageGateOff(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{} // ClientRxCoverage nil ⇒ disabled
 
-	handleMessage(store, "test", source, clientCoverageMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientCoverageMsg(), nil, nil, cfg)
 
 	if n := clientReceptionCount(t, store); n != 0 {
 		t.Fatalf("feature OFF: expected 0 client_receptions rows, got %d", n)
@@ -58,10 +55,11 @@ func TestClientRxCoverageGateOff(t *testing.T) {
 // client-topic message must be dispatched and write exactly one row.
 func TestClientRxCoverageGateOn(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{ClientRxCoverage: &ClientRxCoverageConfig{Enabled: true}}
 
-	handleMessage(store, "test", source, clientCoverageMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientCoverageMsg(), nil, nil, cfg)
 
 	if n := clientReceptionCount(t, store); n != 1 {
 		t.Fatalf("feature ON: expected 1 client_receptions row, got %d", n)
@@ -84,30 +82,22 @@ func TestClientRxCoverageGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{} // ClientRxCoverage nil ⇒ disabled
+	ctx := t.Context()
 
-	handleMessage(store, "test", source, clientCoverageMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientCoverageMsg(), nil, nil, cfg)
 
 	if n := clientReceptionCount(t, store); n != 0 {
 		t.Fatalf("feature OFF: expected 0 client_receptions rows, got %d", n)
 	}
-	var observerRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, testCompanionPK).Scan(&observerRows); err != nil {
-		t.Fatal(err)
-	}
+	observerRows := countRows(t, store, "observers")
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}
-	var clientRegionRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE iata = 'client'`).Scan(&clientRegionRows); err != nil {
-		t.Fatal(err)
-	}
+	clientRegionRows := countWhere(t, store, "observers", "iata = $1", "client")
 	if clientRegionRows != 0 {
 		t.Fatalf("feature OFF: no observer should be registered under a bogus 'client' region, got %d rows", clientRegionRows)
 	}
-	var txRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM transmissions`).Scan(&txRows); err != nil {
-		t.Fatal(err)
-	}
+	txRows := countRows(t, store, "transmissions")
 	if txRows != 0 {
 		t.Fatalf("feature OFF: the client-topic packet must not be ingested as an ordinary observer packet, got %d transmissions rows", txRows)
 	}
@@ -119,13 +109,14 @@ func TestClientRxCoverageGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 // the gate the client dispatch runs before the blacklist check and inserts.
 func TestClientRxCoverageBlacklistedDropped(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{
 		ClientRxCoverage:  &ClientRxCoverageConfig{Enabled: true},
 		ObserverBlacklist: []string{testCompanionPK},
 	}
 
-	handleMessage(store, "test", source, clientCoverageMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientCoverageMsg(), nil, nil, cfg)
 
 	if n := clientReceptionCount(t, store); n != 0 {
 		t.Fatalf("blacklisted companion: expected 0 client_receptions rows, got %d", n)

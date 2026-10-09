@@ -1,334 +1,441 @@
 package main
 
 import (
-	"path/filepath"
+	"context"
+	"fmt"
+	"slices"
 	"testing"
+	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// TestNeighborEdgesBuilderUpsertsFromObservations enforces issue
-// #1287 Option 4: the INGESTOR builds neighbor_edges from raw
-// observations/transmissions and persists them. Server is read-only.
-//
-// Synthesize a tiny DB with one ADVERT observation whose path[0]
-// uniquely resolves to a known node, then assert the builder writes
-// the expected edge.
-func TestNeighborEdgesBuilderUpsertsFromObservations(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "build.db")
+const (
+	nbNodeA    = "aaaaaaaaaa" // the originator
+	nbNodeB    = "bbbbbbbbbb" // the node the hop prefix "bb" resolves to
+	nbObserver = "obs-1"      // the observer's pubkey
+)
 
-	// Open via the ingestor's normal opener so applySchema and
-	// dbschema.Apply both run (the builder requires neighbor_edges +
-	// observers.iata etc.).
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
+func noRefresh(context.Context) error { return nil }
 
-	// Seed two nodes whose pubkey prefixes will be used as hops.
-	if _, err := store.db.Exec(
-		`INSERT INTO nodes (public_key, name) VALUES (?, ?), (?, ?)`,
-		"aaaaaaaaaa", "from-node",
-		"bbbbbbbbbb", "first-hop",
-	); err != nil {
-		t.Fatal(err)
-	}
+func nbHop(s string) *string { return &s }
 
-	// Seed one observer.
-	if _, err := store.db.Exec(
-		`INSERT INTO observers (id, name) VALUES (?, ?)`,
-		"obs-1", "observer-1",
-	); err != nil {
-		t.Fatal(err)
-	}
-	var obsRowid int64
-	if err := store.db.QueryRow(`SELECT rowid FROM observers WHERE id = ?`, "obs-1").Scan(&obsRowid); err != nil {
-		t.Fatal(err)
-	}
-
-	// Insert one ADVERT transmission with from_pubkey = aaaaa…
-	res, err := store.db.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, from_pubkey)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		"", "h1", "2026-01-01T00:00:00Z", 0, payloadADVERT, 0, "{}", "aaaaaaaaaa",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	txID, _ := res.LastInsertId()
-
-	// Insert one observation whose path[0] = "bb" (2-hex prefix unique
-	// to bbbbb… in the nodes table). Expected edge: a↔b.
-	if _, err := store.db.Exec(
-		`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp) VALUES (?, ?, ?, ?)`,
-		txID, obsRowid, `["bb"]`, int64(1735689600),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	n, err := store.buildAndPersistNeighborEdges(trustAllPrefixes())
-	if err != nil {
-		t.Fatalf("buildAndPersistNeighborEdges: %v", err)
-	}
-	if n == 0 {
-		t.Fatal("expected at least 1 edge upserted, got 0")
-	}
-
-	var got int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM neighbor_edges WHERE node_a = ? AND node_b = ?`, "aaaaaaaaaa", "bbbbbbbbbb").Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got != 1 {
-		t.Fatalf("expected the a↔b edge to be persisted; got %d rows", got)
-	}
-}
-
-// (test ends here)
-
-// TestNeighborEdgesBuilderUpsertsFromAnonReqEphemeralPubKey verifies #1777:
-// ANON_REQ transmissions (payload type 7) carry the sender's full
-// ephemeral pubkey in decoded_json ("ephemeralPubKey"), not in the
-// from_pubkey column (which is only populated for ADVERT at write time,
-// see db.go's #1143 comment). The builder must fall back to parsing
-// decoded_json for ANON_REQ, exactly as it already does for ADVERT.
-func TestNeighborEdgesBuilderUpsertsFromAnonReqEphemeralPubKey(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "build.db")
-
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
-
-	if _, err := store.db.Exec(
-		`INSERT INTO nodes (public_key, name) VALUES (?, ?), (?, ?)`,
-		"aaaaaaaaaa", "sender",
-		"bbbbbbbbbb", "first-hop",
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := store.db.Exec(
-		`INSERT INTO observers (id, name) VALUES (?, ?)`,
-		"obs-1", "observer-1",
-	); err != nil {
-		t.Fatal(err)
-	}
-	var obsRowid int64
-	if err := store.db.QueryRow(`SELECT rowid FROM observers WHERE id = ?`, "obs-1").Scan(&obsRowid); err != nil {
-		t.Fatal(err)
-	}
-
-	// ANON_REQ transmission: from_pubkey left NULL (as real ingest does —
-	// only ADVERT populates it at write time), sender identity carried in
-	// decoded_json.ephemeralPubKey instead.
-	res, err := store.db.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"", "h2", "2026-01-01T00:00:00Z", 0, payloadAnonReq, 0, `{"ephemeralPubKey":"aaaaaaaaaa"}`,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	txID, _ := res.LastInsertId()
-
-	if _, err := store.db.Exec(
-		`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp) VALUES (?, ?, ?, ?)`,
-		txID, obsRowid, `["bb"]`, int64(1735689600),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	n, err := store.buildAndPersistNeighborEdges(trustAllPrefixes())
-	if err != nil {
-		t.Fatalf("buildAndPersistNeighborEdges: %v", err)
-	}
-	if n == 0 {
-		t.Fatal("expected at least 1 edge upserted, got 0")
-	}
-
-	var got int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM neighbor_edges WHERE node_a = ? AND node_b = ?`, "aaaaaaaaaa", "bbbbbbbbbb").Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got != 1 {
-		t.Fatalf("expected the sender\u2194first-hop edge from ANON_REQ to be persisted (#1777); got %d rows", got)
-	}
-}
-
-// TestNeighborEdgesBuilderExcludesOtherNonAdvertTypes verifies #1777's
-// scope boundary: a plain REQ (payload type 2, not ADVERT or ANON_REQ)
-// must NOT produce an originator↔path[0] edge, even if from_pubkey happens
-// to be set — REQ's src is only a 1-byte truncated hash of the originator,
-// not a full pubkey, and was explicitly rejected as an edge source in the
-// #1777 discussion (collision odds ~1/256).
-func TestNeighborEdgesBuilderExcludesOtherNonAdvertTypes(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "build.db")
-
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
-
-	if _, err := store.db.Exec(
-		`INSERT INTO nodes (public_key, name) VALUES (?, ?), (?, ?)`,
-		"aaaaaaaaaa", "sender",
-		"bbbbbbbbbb", "first-hop",
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := store.db.Exec(
-		`INSERT INTO observers (id, name) VALUES (?, ?)`,
-		"obs-1", "observer-1",
-	); err != nil {
-		t.Fatal(err)
-	}
-	var obsRowid int64
-	if err := store.db.QueryRow(`SELECT rowid FROM observers WHERE id = ?`, "obs-1").Scan(&obsRowid); err != nil {
-		t.Fatal(err)
-	}
-
-	const payloadREQ = 2
-	res, err := store.db.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, from_pubkey)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		"", "h3", "2026-01-01T00:00:00Z", 0, payloadREQ, 0, "{}", "aaaaaaaaaa",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	txID, _ := res.LastInsertId()
-
-	if _, err := store.db.Exec(
-		`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp) VALUES (?, ?, ?, ?)`,
-		txID, obsRowid, `["bb"]`, int64(1735689600),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := store.buildAndPersistNeighborEdges(trustAllPrefixes()); err != nil {
-		t.Fatalf("buildAndPersistNeighborEdges: %v", err)
-	}
-
-	var got int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM neighbor_edges WHERE node_a = ? AND node_b = ?`, "aaaaaaaaaa", "bbbbbbbbbb").Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got != 0 {
-		t.Fatalf("REQ should not produce an originator\u2194path[0] edge; got %d rows", got)
-	}
-}
-
-// trustAllPrefixes returns the pre-#1784 threshold, where 1-byte hop
-// hashes still count as mapping evidence. The builder tests above
-// exercise edge *shape* using 1-byte fixtures; pinning them to the
-// legacy threshold keeps their original intent intact, while the gate
-// itself is covered by the two tests below.
+// trustAllPrefixes returns the pre-#1784 threshold, where 1-byte hop hashes
+// still count as mapping evidence. Tests that exercise edge *shape* use 1-byte
+// fixtures, so they pin the legacy threshold; the gate itself is covered by
+// explicit-threshold cases in TestExtractEdges.
 func trustAllPrefixes() *packetpath.TrustConfig {
 	return &packetpath.TrustConfig{MinHashBytesForMapping: 1}
 }
 
-// seedTrustFixture builds the minimal DB shape shared by the path-trust
-// tests: two nodes, one observer, one ADVERT transmission, and one
-// observation carrying hop as its single path element.
-func seedTrustFixture(t *testing.T, store *Store, hop string) {
+// ---- Pure tests: no database ----
+
+// TestExtractEdges replaces the SQLite-seeded shape tests (builder upserts,
+// ANON_REQ #1777, other types excluded, path trust #1784). Edge extraction is
+// a pure function now, so each rule is one table row.
+func TestExtractEdges(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	trust1 := trustAllPrefixes()
+	// Passed explicitly rather than leaning on the package default: the gate is
+	// about what happens AT threshold 2, and coupling to the default made this
+	// fail the moment the default moved to 1 (#1929).
+	trust2 := &packetpath.TrustConfig{MinHashBytesForMapping: 2}
+	idx := newPrefixIndex([]string{nbNodeA, nbNodeB})
+	ambiguous := newPrefixIndex([]string{nbNodeA, nbNodeB, "bbbbbbbbbc"}) // "bb" now has two candidates
+
+	pair := func(x, y string) string { // canonical "a|b" form
+		if x > y {
+			x, y = y, x
+		}
+		return x + "|" + y
+	}
+	advert := database.NeighborObservation{
+		PayloadType: types.PayloadADVERT, FromPubkey: nbNodeA, Observer: nbObserver,
+		Timestamp: ts, FirstHop: nbHop("bb"), LastHop: nbHop("bb"),
+	}
+	with := func(base database.NeighborObservation, f func(*database.NeighborObservation)) database.NeighborObservation {
+		f(&base)
+		return base
+	}
+
+	cases := []struct {
+		name  string
+		obs   database.NeighborObservation
+		trust *packetpath.TrustConfig
+		idx   prefixIndex
+		want  []string
+	}{
+		{"relayed advert: originator to first hop, observer to last hop",
+			advert, trust1, idx,
+			[]string{pair(nbNodeA, nbNodeB), pair(nbObserver, nbNodeB)}},
+		{"zero-hop advert: the observer heard the originator directly",
+			with(advert, func(o *database.NeighborObservation) { o.FirstHop, o.LastHop = nil, nil }),
+			trust1, idx,
+			[]string{pair(nbNodeA, nbObserver)}},
+		{"ANON_REQ: the originator comes from decoded_json (#1777)",
+			with(advert, func(o *database.NeighborObservation) {
+				o.PayloadType, o.FromPubkey = types.PayloadANON_REQ, ""
+				o.DecodedJSON = `{"ephemeralPubKey":"` + nbNodeA + `"}`
+			}),
+			trust1, idx,
+			[]string{pair(nbNodeA, nbNodeB), pair(nbObserver, nbNodeB)}},
+		{"REQ: a 1-byte source hash never seeds an originator edge (#1777)",
+			with(advert, func(o *database.NeighborObservation) { o.PayloadType = types.PayloadREQ }),
+			trust1, idx,
+			[]string{pair(nbObserver, nbNodeB)}},
+		{"1-byte hop under a 2-byte threshold: no edge at all (#1784)",
+			advert, trust2, idx, nil},
+		{"2-byte hop under a 2-byte threshold: edges as normal",
+			with(advert, func(o *database.NeighborObservation) { o.FirstHop, o.LastHop = nbHop("bbbb"), nbHop("bbbb") }),
+			trust2, idx,
+			[]string{pair(nbNodeA, nbNodeB), pair(nbObserver, nbNodeB)}},
+		{"ambiguous prefix: two candidates, no edge",
+			advert, trust1, ambiguous, nil},
+		{"originator is the resolved hop: no self-edge",
+			with(advert, func(o *database.NeighborObservation) { o.FromPubkey = nbNodeB }),
+			trust1, idx,
+			[]string{pair(nbObserver, nbNodeB)}},
+		{"zero hops and no observer: nothing to connect",
+			with(advert, func(o *database.NeighborObservation) { o.FirstHop, o.LastHop, o.Observer = nil, nil, "" }),
+			trust1, idx, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got []string
+			for _, e := range extractEdges([]database.NeighborObservation{c.obs}, c.idx, c.trust) {
+				if e.a > e.b {
+					t.Errorf("edge %s|%s is not in canonical order", e.a, e.b)
+				}
+				got = append(got, e.a+"|"+e.b)
+			}
+			slices.Sort(got)
+			want := slices.Clone(c.want)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("edges = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestAggregateEdges(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := aggregateEdges([]edgeRow{
+		{nbNodeA, nbNodeB, t0},
+		{nbNodeA, nbNodeB, t0.Add(time.Minute)},
+		{nbNodeA, nbNodeB, t0.Add(-time.Hour)},
+		{nbNodeA, "cccccccccc", t0},
+	})
+	byPair := map[string]database.NeighborEdge{}
+	for _, e := range got {
+		byPair[e.NodeA+"|"+e.NodeB] = e
+	}
+	if len(byPair) != 2 {
+		t.Fatalf("got %d pairs, want 2 (duplicates must collapse): %v", len(byPair), got)
+	}
+	if ab := byPair[nbNodeA+"|"+nbNodeB]; ab.Hits != 3 || !ab.LastSeen.Equal(t0.Add(time.Minute)) {
+		t.Errorf("a|b = %+v, want 3 hits with the newest timestamp", ab)
+	}
+	if ac := byPair[nbNodeA+"|cccccccccc"]; ac.Hits != 1 {
+		t.Errorf("a|c = %+v, want 1 hit", ac)
+	}
+}
+
+// ---- Warm-up termination, against a fake store (no database) ----
+
+// fakeNeighborStore serves rows ordered by timestamp, honoring the since and
+// limit parameters the way the real query does.
+type fakeNeighborStore struct {
+	rows    []database.NeighborObservation
+	calls   int
+	upserts int
+}
+
+func (f *fakeNeighborStore) ListNodePublicKeys(context.Context) ([]string, error) { return nil, nil }
+func (f *fakeNeighborStore) LatestNeighborEdgeTime(context.Context) (time.Time, error) {
+	return time.Time{}, nil
+}
+func (f *fakeNeighborStore) ScanNeighborObservations(_ context.Context, since time.Time, limit int32,
+	_ []types.PayloadType) ([]database.NeighborObservation, error) {
+	f.calls++
+	var out []database.NeighborObservation
+	for _, r := range f.rows {
+		if r.Timestamp.After(since) {
+			out = append(out, r)
+			if int32(len(out)) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+func (f *fakeNeighborStore) UpsertNeighborEdges(_ context.Context, edges []database.NeighborEdge) (int64, error) {
+	f.upserts += len(edges)
+	return int64(len(edges)), nil
+}
+
+// TestWarmUpTerminatesWhenRowsProduceNoEdges is the regression test for the
+// drain loop. The loop must end on rows SCANNED, and the watermark must
+// advance past rows that produced no edge; otherwise a full batch of edge-less
+// rows is rescanned forever.
+func TestWarmUpTerminatesWhenRowsProduceNoEdges(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ rows, wantCalls int }{
+		{0, 1},  // nothing to do
+		{5, 1},  // one short batch
+		{10, 2}, // exactly one full batch: a second scan proves it is drained
+		{20, 3},
+		{25, 3}, // 10 + 10 + 5
+	} {
+		t.Run(fmt.Sprintf("%d rows", c.rows), func(t *testing.T) {
+			f := &fakeNeighborStore{}
+			for i := 0; i < c.rows; i++ {
+				f.rows = append(f.rows, database.NeighborObservation{
+					PayloadType: types.PayloadADVERT, FromPubkey: nbNodeA, Observer: nbObserver,
+					Timestamp: base.Add(time.Duration(i) * time.Second),
+					FirstHop:  nbHop("zz"), LastHop: nbHop("zz"), // unresolvable: no edges
+				})
+			}
+			b := &neighborBuilder{db: f, trust: trustAllPrefixes(), maxBatch: 10,
+				refreshPrefixIndex: noRefresh, refreshGraph: noRefresh}
+
+			done := make(chan struct{})
+			go func() { b.WarmUp(t.Context()); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("WarmUp did not terminate: rows that produce no edge were rescanned forever")
+			}
+
+			if f.calls != c.wantCalls {
+				t.Errorf("scan calls = %d, want %d", f.calls, c.wantCalls)
+			}
+			if f.upserts != 0 {
+				t.Errorf("upserts = %d, want 0 (nothing resolves)", f.upserts)
+			}
+			if c.rows > 0 {
+				if want := base.Add(time.Duration(c.rows-1) * time.Second); !b.since.Equal(want) {
+					t.Errorf("watermark = %v, want %v (past every scanned row)", b.since, want)
+				}
+			}
+		})
+	}
+}
+
+// ---- Database-backed tests: the real SQL ----
+
+func newTestNeighborBuilder(s *Store, batch int) *neighborBuilder {
+	return &neighborBuilder{db: s.db, trust: trustAllPrefixes(), maxBatch: batch,
+		refreshPrefixIndex: noRefresh, refreshGraph: noRefresh}
+}
+
+func seedNeighborNode(t *testing.T, s *Store, pk string) {
 	t.Helper()
-	if _, err := store.db.Exec(
-		`INSERT INTO nodes (public_key, name) VALUES (?, ?), (?, ?)`,
-		"aaaaaaaaaa", "from-node",
-		"bbbbbbbbbb", "first-hop",
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`INSERT INTO observers (id, name) VALUES (?, ?)`, "obs-1", "observer-1"); err != nil {
-		t.Fatal(err)
-	}
-	var obsRowid int64
-	if err := store.db.QueryRow(`SELECT rowid FROM observers WHERE id = ?`, "obs-1").Scan(&obsRowid); err != nil {
-		t.Fatal(err)
-	}
-	res, err := store.db.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, from_pubkey)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		"", "h1", "2026-01-01T00:00:00Z", 0, payloadADVERT, 0, "{}", "aaaaaaaaaa",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	txID, _ := res.LastInsertId()
-	if _, err := store.db.Exec(
-		`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp) VALUES (?, ?, ?, ?)`,
-		txID, obsRowid, `["`+hop+`"]`, int64(1735689600),
-	); err != nil {
+	if err := s.UpsertNode(testCtx(t), pk, "node-"+pk[:2], "repeater", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// TestNeighborEdgesBuilderPathTrustExcludesOneByte pins #1784 at the
-// builder: under the default threshold (2 bytes) a 1-byte hop hash
-// produces no edge, even though it resolves to exactly one candidate in
-// the nodes table. Uniqueness of a 1-byte prefix is a property of the
-// nodes we happen to know about — on a mesh large enough to occupy all
-// 256 values (SaarMesh: 1071 nodes, 13 of them uniquely resolvable by
-// one byte) a later-joining repeater sharing that byte turns today's
-// "unique" resolution into a wrong edge.
-func TestNeighborEdgesBuilderPathTrustExcludesOneByte(t *testing.T) {
-	store, err := OpenStore(filepath.Join(t.TempDir(), "trust1.db"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
-	seedTrustFixture(t, store, "bb")
-
-	// Pass the threshold explicitly rather than leaning on the package default.
-	// This test is about what happens AT threshold 2, not about what the default
-	// happens to be, and coupling the two made it fail the moment the default
-	// moved to 1 (#1929).
-	trust := &packetpath.TrustConfig{MinHashBytesForMapping: 2}
-	if _, err := store.buildAndPersistNeighborEdges(trust); err != nil {
-		t.Fatalf("buildAndPersistNeighborEdges: %v", err)
-	}
-
-	var got int
-	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM neighbor_edges WHERE node_a = ? AND node_b = ?`,
-		"aaaaaaaaaa", "bbbbbbbbbb").Scan(&got); err != nil {
+// seedNeighborObserver creates the observer and returns its surrogate id.
+func seedNeighborObserver(t *testing.T, s *Store) int64 {
+	t.Helper()
+	if err := s.UpsertObserver(testCtx(t), nbObserver, "observer-1", "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got != 0 {
-		t.Fatalf("1-byte hop must not produce an edge under the default threshold, got %d", got)
+	var id int64
+	mustScan(t, testRow(t, s, `SELECT id FROM observers WHERE pubkey = $1`, nbObserver), &id)
+	return id
+}
+
+// seedNeighborObservation inserts one transmission, one observation and its hop
+// rows with plain SQL, so the test controls every column the builder reads.
+// obsID 0 means "no observer row"; an empty from leaves from_pubkey NULL.
+// Adjust the column lists if your schema has other NOT NULL columns.
+func seedNeighborObservation(t *testing.T, s *Store, obsID int64, hash string, at time.Time,
+	from string, pt types.PayloadType, hops ...string) {
+	t.Helper()
+	if from != "" {
+		testExec(t, s, `INSERT INTO nodes (public_key, name, role, last_seen)
+		                VALUES ($1, $1, 'repeater', now())
+		                ON CONFLICT (public_key) DO NOTHING`, from)
+	}
+
+	var txID int64
+	mustScan(t, testRow(t, s, `INSERT INTO transmissions
+		(raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, from_pubkey)
+		VALUES ('', $1, $2, $3, $4, 0, '{}', NULLIF($5, '')) RETURNING id`,
+		hash, at, int32(types.RouteFlood), int32(pt), from), &txID)
+
+	var observer any // NULL when there is no observer row
+	if obsID != 0 {
+		observer = obsID
+	}
+	var obsRowID int64
+	mustScan(t, testRow(t, s, `INSERT INTO observations (transmission_id, observer_idx, timestamp)
+		VALUES ($1, $2, $3) RETURNING id`, txID, observer, at), &obsRowID)
+
+	for i, h := range hops {
+		testExec(t, s, `INSERT INTO observation_path_hops (observation_id, hop_index, prefix)
+			VALUES ($1, $2, $3)`, obsRowID, i, h)
 	}
 }
 
-// TestNeighborEdgesBuilderPathTrustAllowsTwoByte is the positive half of
-// the gate: the same fixture with a 2-byte hop still produces the edge,
-// so the threshold narrows the evidence base rather than disabling the
-// builder.
-func TestNeighborEdgesBuilderPathTrustAllowsTwoByte(t *testing.T) {
-	store, err := OpenStore(filepath.Join(t.TempDir(), "trust2.db"))
+func TestNeighborBuilderPersistsEdges(t *testing.T) {
+	s := newTestStore(t)
+	ctx := testCtx(t)
+	for _, pk := range []string{nbNodeA, nbNodeB, nbObserver} {
+		seedNeighborNode(t, s, pk)
+	}
+	obsID := seedNeighborObserver(t, s)
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	seedNeighborObservation(t, s, obsID, "h1", at, nbNodeA, types.PayloadADVERT, "bb")
+
+	scanned, edges, err := newTestNeighborBuilder(s, 0).build(ctx)
 	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
-	seedTrustFixture(t, store, "bbbb")
-
-	if _, err := store.buildAndPersistNeighborEdges(nil); err != nil {
-		t.Fatalf("buildAndPersistNeighborEdges: %v", err)
-	}
-
-	var got int
-	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM neighbor_edges WHERE node_a = ? AND node_b = ?`,
-		"aaaaaaaaaa", "bbbbbbbbbb").Scan(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got != 1 {
-		t.Fatalf("2-byte hop must still produce the edge, got %d", got)
+	if scanned != 1 || edges != 2 {
+		t.Fatalf("scanned/edges = %d/%d, want 1/2 (originator-hop and observer-hop)", scanned, edges)
+	}
+
+	var count int32
+	var lastSeen time.Time
+	mustScan(t, testRow(t, s,
+		`SELECT count, last_seen FROM neighbor_edges WHERE node_a = $1 AND node_b = $2`, nbNodeA, nbNodeB),
+		&count, &lastSeen)
+	if count != 1 || !lastSeen.Equal(at) {
+		t.Errorf("a|b edge: count=%d last_seen=%v, want 1 and %v", count, lastSeen, at)
+	}
+}
+
+// TestScanNeighborObservationsHandlesNulls runs the real scan query over the
+// shapes that produce NULLs: zero hops, no observer, no from_pubkey. A scan
+// into a non-null Go type fails at runtime, not at compile time, so only real
+// rows catch it.
+func TestScanNeighborObservationsHandlesNulls(t *testing.T) {
+	s := newTestStore(t)
+	ctx := testCtx(t)
+	obsID := seedNeighborObserver(t, s)
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+
+	seedNeighborObservation(t, s, obsID, "direct", at, nbNodeA, types.PayloadADVERT) // zero hops
+	seedNeighborObservation(t, s, obsID, "relayed", at.Add(1*time.Second), nbNodeA, types.PayloadADVERT, "aa", "bb")
+	seedNeighborObservation(t, s, 0, "no-observer", at.Add(2*time.Second), "", types.PayloadREQ, "cc")
+	seedNeighborObservation(t, s, obsID, "advert-no-from", at.Add(3*time.Second), "", types.PayloadADVERT, "dd")
+
+	rows, err := s.db.ScanNeighborObservations(ctx, time.Time{}, 100, neighborOriginatorTypes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("got %d rows, want 4", len(rows))
+	}
+	if rows[0].FirstHop != nil || rows[0].LastHop != nil {
+		t.Errorf("zero-hop row has hops: %v / %v", rows[0].FirstHop, rows[0].LastHop)
+	}
+	if rows[1].FirstHop == nil || *rows[1].FirstHop != "aa" || rows[1].LastHop == nil || *rows[1].LastHop != "bb" {
+		t.Errorf("relayed row first/last hop = %v / %v, want aa / bb", rows[1].FirstHop, rows[1].LastHop)
+	}
+	if rows[2].Observer != "" || rows[2].FromPubkey != "" {
+		t.Errorf("no-observer row = observer %q from %q, want both empty", rows[2].Observer, rows[2].FromPubkey)
+	}
+	// decoded_json is only returned for the requested payload types when from_pubkey is NULL.
+	if rows[0].DecodedJSON != "" {
+		t.Errorf("row with from_pubkey set returned decoded_json %q", rows[0].DecodedJSON)
+	}
+	if rows[2].DecodedJSON != "" {
+		t.Errorf("REQ row returned decoded_json %q, but REQ was not requested", rows[2].DecodedJSON)
+	}
+	if rows[3].DecodedJSON != "{}" {
+		t.Errorf("ADVERT row with NULL from_pubkey: decoded_json = %q, want {}", rows[3].DecodedJSON)
+	}
+}
+
+// TestNeighborBuilderDeltaScan replaces the 100k-row timing test (#1339). Wall
+// clock pinned SQLite lock behavior and is flaky; what matters is how many rows
+// each tick SCANS, which is deterministic.
+func TestNeighborBuilderDeltaScan(t *testing.T) {
+	s := newTestStore(t)
+	ctx := testCtx(t)
+	for _, pk := range []string{nbNodeA, nbNodeB, nbObserver} {
+		seedNeighborNode(t, s, pk)
+	}
+	obsID := seedNeighborObserver(t, s)
+	base := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+
+	seed := func(from, to int) {
+		for i := from; i < to; i++ {
+			seedNeighborObservation(t, s, obsID, fmt.Sprintf("h%d", i),
+				base.Add(time.Duration(i)*time.Second), nbNodeA, types.PayloadADVERT, "bb")
+		}
+	}
+	pairCount := func() int32 {
+		var n int32
+		mustScan(t, testRow(t, s,
+			`SELECT count FROM neighbor_edges WHERE node_a = $1 AND node_b = $2`, nbNodeA, nbNodeB), &n)
+		return n
+	}
+
+	// Warm-up drains 25 rows in three scans of at most 10.
+	seed(0, 25)
+	b := newTestNeighborBuilder(s, 10)
+	b.WarmUp(ctx)
+	if got := pairCount(); got != 25 {
+		t.Fatalf("after warm-up the a|b edge counts %d observations, want 25 (no batch skipped or double counted)", got)
+	}
+	if want := base.Add(24 * time.Second); !b.since.Equal(want) {
+		t.Fatalf("watermark = %v, want %v", b.since, want)
+	}
+
+	// A tick with nothing new scans nothing.
+	scanned, edges, err := b.build(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned != 0 || edges != 0 {
+		t.Fatalf("empty-delta tick scanned/edges = %d/%d, want 0/0 (#1339)", scanned, edges)
+	}
+
+	// New observations are the only rows the next tick scans.
+	seed(25, 30)
+	scanned, _, err = b.build(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned != 5 {
+		t.Fatalf("delta tick scanned %d rows, want 5: the watermark must exclude everything already processed (#1339)", scanned)
+	}
+	if got := pairCount(); got != 30 {
+		t.Fatalf("a|b edge counts %d observations, want 30", got)
+	}
+
+	// A restarted builder resumes from the table, not from scratch.
+	b2 := newTestNeighborBuilder(s, 10)
+	b2.WarmUp(ctx)
+	if got := pairCount(); got != 30 {
+		t.Fatalf("after restart a|b edge counts %d, want 30 (resumed, did not recount)", got)
+	}
+}
+
+// TestNeighborBuilderEdgeToObserverWithoutNodeRow pins the decision on the
+// neighbor_edges foreign keys (plan item 5.8). Observers often have no nodes
+// row, and a single violation fails the whole batched upsert. While the table
+// has FKs to nodes this test fails. Either drop the FKs (this assertion is
+// written for that choice), or filter such edges in the builder and flip it.
+func TestNeighborBuilderEdgeToObserverWithoutNodeRow(t *testing.T) {
+	s := newTestStore(t)
+	seedNeighborNode(t, s, nbNodeA)
+	seedNeighborNode(t, s, nbNodeB) // the observer is deliberately NOT a node
+	obsID := seedNeighborObserver(t, s)
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	seedNeighborObservation(t, s, obsID, "h1", at, nbNodeA, types.PayloadADVERT, "bb")
+
+	if _, _, err := newTestNeighborBuilder(s, 0).build(testCtx(t)); err != nil {
+		t.Fatalf("an observer without a nodes row broke the whole batch: %v", err)
+	}
+	if n := countWhere(t, s, "neighbor_edges", "node_b = $1", nbObserver); n != 1 {
+		t.Errorf("observer edge rows = %d, want 1", n)
 	}
 }

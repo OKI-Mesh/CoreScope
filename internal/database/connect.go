@@ -1,52 +1,52 @@
 package database
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// OpenReadWrite opens or creates a SQLite database at path with
-// CoreScope's standard read-write pragma configuration. Does not touch
-// schema state in any way — callers that need the database migrated
-// or asserted-ready compose this with internal/database/migrate.
-func OpenReadWrite(path string) (*sql.DB, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating data dir: %w", err)
+// OpenReadWrite opens a connection pool to the Postgres database at connStr
+// with CoreScope's standard read-write configuration. Does not touch schema
+// state in any way — callers that need the database migrated or
+// asserted-ready compose this with internal/database/migrate.
+func OpenReadWrite(ctx context.Context, connStr string) (*DB, error) {
+	cfg, err := pgxpool.ParseConfig(connStr)
+	if err != nil {
+		return nil, fmt.Errorf("parsing connection string: %w", err)
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=auto_vacuum(INCREMENTAL)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
+	// adjust to a real figure once worker-pool sizing is settled
+	cfg.MaxConns = 10
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("pinging db: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	return db, nil
+	return New(pool), nil
 }
 
-// OpenReadOnly opens path as a read-only SQLite connection. Does not
-// assert readiness — callers needing that guarantee compose this with
+// OpenReadOnly opens connStr as a read-only Postgres connection pool. Does
+// not assert readiness — callers needing that guarantee compose this with
 // migrate.AssertReady.
-func OpenReadOnly(path string) (*sql.DB, error) {
-	conn, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+func OpenReadOnly(ctx context.Context, connStr string) (*DB, error) {
+	cfg, err := pgxpool.ParseConfig(connStr)
+	if err != nil {
+		return nil, fmt.Errorf("parsing connection string: %w", err)
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
-	if err := conn.Ping(); err != nil {
-		conn.Close()
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("pinging db: %w", err)
 	}
-	// Belt-and-suspenders: enforce read-only at the SQLite level
-	// directly, independent of whether the driver honored mode=ro in
-	// the DSN. query_only rejects any write statement outright.
-	if _, err := conn.Exec(`PRAGMA query_only = ON`); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("setting query_only pragma: %w", err)
-	}
-	return conn, nil
+	return New(pool), nil
 }

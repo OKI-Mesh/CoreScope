@@ -32,9 +32,10 @@ func statusPayload(origin, status string, ts time.Time) string {
 
 func TestStaleStatusPayloadDoesNotAdvanceLastSeen(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	want := seedObserver(t, store, "obs-zombie", 60)
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-zombie/status",
 			statusPayload("obs-zombie", "online", time.Now().UTC().AddDate(0, -4, 0))),
 		nil, nil, &Config{})
@@ -48,16 +49,15 @@ func TestStaleStatusPayloadDoesNotAdvanceLastSeen(t *testing.T) {
 // the bridge replays its months-old retained snapshot with RETAIN cleared.
 func TestStaleStatusPayloadDoesNotCreateObserver(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/OST/obs-purged/status",
 			statusPayload("BE-BGS-RRY120-RES", "offline", time.Now().UTC().AddDate(0, -4, 0))),
 		nil, nil, &Config{})
 
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, "obs-purged").Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	count = countWhere(t, store, "observers", "id = $1", "obs-purged")
 	if count != 0 {
 		t.Errorf("observers row count = %d, want 0 (replayed snapshot must not resurrect a purged observer)", count)
 	}
@@ -68,8 +68,8 @@ func TestStaleStatusPayloadDoesNotCreateObserver(t *testing.T) {
 func TestOfflineStatusIsNotLiveness(t *testing.T) {
 	store := newTestStore(t)
 	want := seedObserver(t, store, "obs-offline", 60)
-
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	ctx := t.Context()
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-offline/status",
 			statusPayload("obs-offline", "offline", time.Now().UTC())),
 		nil, nil, &Config{})
@@ -81,20 +81,16 @@ func TestOfflineStatusIsNotLiveness(t *testing.T) {
 
 func TestStaleStatusPayloadDoesNotReactivateInactiveObserver(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	seedObserver(t, store, "obs-zombie", 60)
-	if _, err := store.db.Exec(`UPDATE observers SET inactive = 1 WHERE id = ?`, "obs-zombie"); err != nil {
-		t.Fatal(err)
-	}
-
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	testExec(t, store, `UPDATE observers SET inactive = 1 WHERE id = ?`, "obs-zombie")
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-zombie/status",
 			statusPayload("obs-zombie", "online", time.Now().UTC().AddDate(0, -4, 0))),
 		nil, nil, &Config{})
 
 	var inactive int
-	if err := store.db.QueryRow(`SELECT inactive FROM observers WHERE id = ?`, "obs-zombie").Scan(&inactive); err != nil {
-		t.Fatal(err)
-	}
+	mustScan(t, testRow(t, store, `SELECT inactive FROM observers WHERE id = $1`, "obs-zombie"), &inactive)
 	if inactive != 1 {
 		t.Errorf("inactive = %d, want 1 (a replay must not undo the soft-delete)", inactive)
 	}
@@ -105,8 +101,9 @@ func TestStaleStatusPayloadDoesNotReactivateInactiveObserver(t *testing.T) {
 func TestFreshStatusStillCountsAsLiveness(t *testing.T) {
 	store := newTestStore(t)
 	stale := seedObserver(t, store, "obs-live", 60)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-live/status",
 			statusPayload("obs-live", "online", time.Now().UTC())),
 		nil, nil, &Config{})
@@ -121,8 +118,8 @@ func TestFreshStatusStillCountsAsLiveness(t *testing.T) {
 func TestNaiveClockSkewStillCountsAsLiveness(t *testing.T) {
 	store := newTestStore(t)
 	stale := seedObserver(t, store, "obs-skewed", 60)
-
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	ctx := t.Context()
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-skewed/status",
 			statusPayload("obs-skewed", "online", time.Now().UTC().Add(-12*time.Hour))),
 		nil, nil, &Config{})
@@ -135,8 +132,8 @@ func TestNaiveClockSkewStillCountsAsLiveness(t *testing.T) {
 func TestStatusWithoutTimestampStillCountsAsLiveness(t *testing.T) {
 	store := newTestStore(t)
 	stale := seedObserver(t, store, "obs-nots", 60)
-
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	ctx := t.Context()
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-nots/status", `{"origin":"obs-nots","noise_floor":-95.5}`),
 		nil, nil, &Config{})
 
@@ -148,8 +145,9 @@ func TestStatusWithoutTimestampStillCountsAsLiveness(t *testing.T) {
 func TestStatusWithUnparseableTimestampStillCountsAsLiveness(t *testing.T) {
 	store := newTestStore(t)
 	stale := seedObserver(t, store, "obs-badts", 60)
+	ctx := t.Context()
 
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-badts/status",
 			`{"origin":"obs-badts","status":"online","timestamp":"not-a-time","noise_floor":-95.5}`),
 		nil, nil, &Config{})
@@ -164,17 +162,16 @@ func TestStatusWithUnparseableTimestampStillCountsAsLiveness(t *testing.T) {
 func TestStaleStatusPayloadStillUpdatesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	seedObserver(t, store, "obs-zombie", 60)
-
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	ctx := t.Context()
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-zombie/status",
 			fmt.Sprintf(`{"origin":"obs-zombie","status":"online","timestamp":%q,"firmware":"v1.14.1","noise_floor":-95.5}`,
 				time.Now().UTC().AddDate(0, -4, 0).Format("2006-01-02T15:04:05.000000"))),
 		nil, nil, &Config{})
 
 	var firmware string
-	if err := store.db.QueryRow(`SELECT firmware FROM observers WHERE id = ?`, "obs-zombie").Scan(&firmware); err != nil {
-		t.Fatal(err)
-	}
+	mustScan(t, testRow(t, store, `SELECT firmware FROM observers WHERE id = $1`, "obs-zombie"), &firmware)
+
 	if firmware != "v1.14.1" {
 		t.Errorf("firmware = %q, want %q (metadata from a replay is still the last known state)", firmware, "v1.14.1")
 	}
@@ -185,18 +182,14 @@ func TestStaleStatusPayloadStillUpdatesMetadata(t *testing.T) {
 func TestStaleStatusPayloadDoesNotInsertMetricsSample(t *testing.T) {
 	store := newTestStore(t)
 	seedObserver(t, store, "obs-zombie", 60)
-
-	handleMessage(store, "test", MQTTSource{Name: "test"},
+	ctx := t.Context()
+	handleMessage(ctx, store, "test", MQTTSource{Name: "test"},
 		liveStatusMsg("meshcore/LAX/obs-zombie/status",
 			statusPayload("obs-zombie", "online", time.Now().UTC().AddDate(0, -4, 0))),
 		nil, nil, &Config{})
 
 	var count int
-	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM observer_metrics WHERE observer_id = ?`, "obs-zombie",
-	).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	count = countWhere(t, store, "observer_metrics", "observer_id = $1", "obs-zombie")
 	if count != 0 {
 		t.Errorf("observer_metrics rows = %d, want 0 (a replayed reading is not a new sample)", count)
 	}

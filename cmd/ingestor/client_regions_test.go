@@ -4,16 +4,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // declaredRegionsCount returns the row count in node_declared_regions.
 func declaredRegionsCount(t *testing.T, s *Store) int {
 	t.Helper()
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM node_declared_regions`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
+	return countRows(t, s, "node_declared_regions")
 }
 
 // testTargetPK is a valid, exactly-64-hex-char target pubkey (the repeater
@@ -27,6 +25,7 @@ const testTargetPK = "bb11223344556677889900aabbccddeeff00112233445566778899aabb
 // writes exactly one node_declared_regions row and touches nothing else.
 func TestHandleClientRegionsWritesRow(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"type": "REGIONS", "timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
@@ -34,12 +33,12 @@ func TestHandleClientRegionsWritesRow(t *testing.T) {
 		"truncated": false,
 		"gps":       map[string]interface{}{"lat": 51.05, "lon": 3.72, "acc_m": 8.0},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
 	if n := declaredRegionsCount(t, s); n != 1 {
 		t.Fatalf("rows = %d, want 1", n)
 	}
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,9 +54,7 @@ func TestHandleClientRegionsWritesRow(t *testing.T) {
 	if cur.Lat == nil || cur.Lon == nil || *cur.Lat != 51.05 || *cur.Lon != 3.72 {
 		t.Errorf("lat/lon = %v/%v, want 51.05/3.72", cur.Lat, cur.Lon)
 	}
-	if _, err := time.Parse(rxTimeMillisLayout, cur.ObservedAt); err != nil {
-		t.Errorf("observed_at = %q, want rxTimeMillisLayout format: %v", cur.ObservedAt, err)
-	}
+
 }
 
 // TestHandleClientRegionsInvalidTopicPubkeyDropped proves an invalid topic
@@ -65,12 +62,13 @@ func TestHandleClientRegionsWritesRow(t *testing.T) {
 // guard used by every other client sub-topic handler.
 func TestHandleClientRegionsInvalidTopicPubkeyDropped(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 	}
-	handleClientRegions(s, &Config{}, "test", "NOT-HEX!", msg)
+	handleClientRegions(ctx, s, &Config{}, "test", "NOT-HEX!", msg)
 
 	if n := declaredRegionsCount(t, s); n != 0 {
 		t.Fatalf("rows = %d, want 0 for an invalid topic pubkey", n)
@@ -81,6 +79,7 @@ func TestHandleClientRegionsInvalidTopicPubkeyDropped(t *testing.T) {
 // before being trusted — it is payload data, not ACL-bound identity.
 func TestHandleClientRegionsRejectsInvalidTarget(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	base := func() map[string]interface{} {
 		return map[string]interface{}{
 			"timestamp": "2026-08-18T10:00:00.000Z",
@@ -89,15 +88,15 @@ func TestHandleClientRegionsRejectsInvalidTarget(t *testing.T) {
 	}
 
 	missing := base()
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, missing)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, missing)
 
 	invalid := base()
 	invalid["target"] = "not-hex!"
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, invalid)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, invalid)
 
 	empty := base()
 	empty["target"] = ""
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, empty)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, empty)
 
 	if n := declaredRegionsCount(t, s); n != 0 {
 		t.Fatalf("rows = %d, want 0 — all three target values must be rejected", n)
@@ -115,12 +114,13 @@ func TestHandleClientRegionsRejectsInvalidTarget(t *testing.T) {
 // would just accumulate silently as junk that looks like data.
 func TestHandleClientRegionsRejectsWrongLengthTarget(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK[:8], // valid hex, but only 8 of the required 64 chars
 		"regions":   []interface{}{"be"},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
 	if n := declaredRegionsCount(t, s); n != 0 {
 		t.Fatalf("rows = %d, want 0 — a target shorter than 64 hex chars must be rejected", n)
@@ -132,17 +132,18 @@ func TestHandleClientRegionsRejectsWrongLengthTarget(t *testing.T) {
 // malformed/missing field.
 func TestHandleClientRegionsEmptyListIsValid(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
 	if n := declaredRegionsCount(t, s); n != 1 {
 		t.Fatalf("rows = %d, want 1 — an empty regions list is a valid observation", n)
 	}
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +161,7 @@ func TestHandleClientRegionsEmptyListIsValid(t *testing.T) {
 // answer", which would blur "declared nothing" with "did not answer".
 func TestHandleClientRegionsMalformedPayloadDropped(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	base := func() map[string]interface{} {
 		return map[string]interface{}{
 			"timestamp": "2026-08-18T10:00:00.000Z",
@@ -168,15 +170,15 @@ func TestHandleClientRegionsMalformedPayloadDropped(t *testing.T) {
 	}
 
 	missing := base()
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, missing)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, missing)
 
 	wrongType := base()
 	wrongType["regions"] = "be,be-vlg"
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, wrongType)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, wrongType)
 
 	badElement := base()
 	badElement["regions"] = []interface{}{"be", 42.0}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, badElement)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, badElement)
 
 	if n := declaredRegionsCount(t, s); n != 0 {
 		t.Fatalf("rows = %d, want 0 — all three malformed payloads must be dropped, not half-stored", n)
@@ -188,17 +190,18 @@ func TestHandleClientRegionsMalformedPayloadDropped(t *testing.T) {
 // is stored with NULL lat/lon rather than dropped.
 func TestHandleClientRegionsNoGPSStoresNullLatLon(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
 	if n := declaredRegionsCount(t, s); n != 1 {
 		t.Fatalf("rows = %d, want 1 — no GPS must not drop the observation", n)
 	}
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,15 +218,16 @@ func TestHandleClientRegionsNoGPSStoresNullLatLon(t *testing.T) {
 // re-detects).
 func TestHandleClientRegionsTruncatedCarriedThrough(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 		"truncated": true,
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,15 +243,16 @@ func TestHandleClientRegionsTruncatedCarriedThrough(t *testing.T) {
 // though the app publishes it and the docs show it in the payload example.
 func TestHandleClientRegionsRepeaterClockRoundTrips(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp":      "2026-08-18T10:00:00.000Z",
 		"target":         testTargetPK,
 		"regions":        []interface{}{"be"},
 		"repeater_clock": 1755518096.0,
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,14 +269,15 @@ func TestHandleClientRegionsRepeaterClockRoundTrips(t *testing.T) {
 // rule this codebase enforces for recv_errors (client_rf_sample.go).
 func TestHandleClientRegionsOmittedRepeaterClockIsNull(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,15 +294,16 @@ func TestHandleClientRegionsOmittedRepeaterClockIsNull(t *testing.T) {
 // previously dropped even though the app publishes it.
 func TestHandleClientRegionsPosAccMRoundTrips(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 		"gps":       map[string]interface{}{"lat": 51.05, "lon": 3.72, "acc_m": 8.5},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,15 +319,16 @@ func TestHandleClientRegionsPosAccMRoundTrips(t *testing.T) {
 // object omits acc_m stores NULL, not 0.
 func TestHandleClientRegionsOmittedPosAccMIsNull(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 		"gps":       map[string]interface{}{"lat": 51.05, "lon": 3.72},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,15 +345,16 @@ func TestHandleClientRegionsOmittedPosAccMIsNull(t *testing.T) {
 // pos_acc_m beside a NULL lat/lon describes the precision of no position.
 func TestHandleClientRegionsRejectedPositionDropsPosAccM(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-18T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"be"},
 		"gps":       map[string]interface{}{"lat": 151.05, "lon": 3.72, "acc_m": 8.5},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,9 +371,11 @@ func TestHandleClientRegionsRejectedPositionDropsPosAccM(t *testing.T) {
 
 func TestDeclaredRegionsCurrentIsLatestObservation(t *testing.T) {
 	s := newTestStore(t)
-	ins := func(at, csv string) {
-		if _, err := s.InsertClientDeclaredRegions(&ClientDeclaredRegions{
-			Target: "bb11", RxPubkey: "aa11", ObservedAt: at, IngestedAt: "2026-08-18T00:00:00.000Z",
+	ctx := t.Context()
+
+	ins := func(at time.Time, csv string) {
+		if _, err := s.InsertClientDeclaredRegions(ctx, &types.ClientDeclaredRegions{
+			Target: "bb11", RxPubkey: "aa11", ObservedAt: at, IngestedAt: time.Now(),
 			RegionsCSV: csv,
 		}); err != nil {
 			t.Fatalf("insert %s: %v", at, err)
@@ -372,10 +383,10 @@ func TestDeclaredRegionsCurrentIsLatestObservation(t *testing.T) {
 	}
 	// Deliberately inserted newest-first, so a query ordering by rowid or by
 	// ingest order would pick the wrong one.
-	ins("2026-08-18T10:00:00.000Z", "be,be-vlg,be-van")
-	ins("2026-08-17T10:00:00.000Z", "be,be-vlg")
+	ins(time.Now().UTC().Add(-24*time.Hour), "be,be-vlg,be-van")
+	ins(time.Now().UTC().Add(-48*time.Hour), "be,be-vlg")
 
-	cur, err := s.CurrentDeclaredRegions("bb11")
+	cur, err := s.CurrentDeclaredRegions(ctx, "bb11")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,12 +397,13 @@ func TestDeclaredRegionsCurrentIsLatestObservation(t *testing.T) {
 
 func TestDeclaredRegionsIdempotent(t *testing.T) {
 	s := newTestStore(t)
-	o := &ClientDeclaredRegions{Target: "bb11", RxPubkey: "aa11",
-		ObservedAt: "2026-08-18T10:00:00.000Z", IngestedAt: "2026-08-18T10:00:01.000Z", RegionsCSV: "be"}
-	if ins, err := s.InsertClientDeclaredRegions(o); err != nil || !ins {
+	ctx := t.Context()
+	o := &types.ClientDeclaredRegions{Target: "bb11", RxPubkey: "aa11",
+		ObservedAt: time.Now().UTC(), IngestedAt: time.Now().UTC().Add(1 * time.Second), RegionsCSV: "be"}
+	if ins, err := s.InsertClientDeclaredRegions(ctx, o); err != nil || !ins {
 		t.Fatalf("first: ins=%v err=%v", ins, err)
 	}
-	if ins, err := s.InsertClientDeclaredRegions(o); err != nil || ins {
+	if ins, err := s.InsertClientDeclaredRegions(ctx, o); err != nil || ins {
 		t.Fatalf("duplicate must be a no-op: ins=%v err=%v", ins, err)
 	}
 }
@@ -404,13 +416,14 @@ func TestDeclaredRegionsIdempotent(t *testing.T) {
 // return }` guard.
 func TestDeclaredRegionsEmptyListRoundTrips(t *testing.T) {
 	s := newTestStore(t)
-	o := &ClientDeclaredRegions{Target: "bb11", RxPubkey: "aa11",
-		ObservedAt: "2026-08-18T10:00:00.000Z", IngestedAt: "2026-08-18T10:00:01.000Z", RegionsCSV: ""}
-	if ins, err := s.InsertClientDeclaredRegions(o); err != nil || !ins {
+	ctx := t.Context()
+	o := &types.ClientDeclaredRegions{Target: "bb11", RxPubkey: "aa11",
+		ObservedAt: time.Now().UTC(), IngestedAt: time.Now().UTC().Add(1 * time.Second), RegionsCSV: ""}
+	if ins, err := s.InsertClientDeclaredRegions(ctx, o); err != nil || !ins {
 		t.Fatalf("insert: ins=%v err=%v", ins, err)
 	}
 
-	cur, err := s.CurrentDeclaredRegions("bb11")
+	cur, err := s.CurrentDeclaredRegions(ctx, "bb11")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,19 +445,17 @@ func TestDeclaredRegionsEmptyListRoundTrips(t *testing.T) {
 // instead of silently discarding the second reporter's reading.
 func TestDeclaredRegionsDifferentReportersPersistBoth(t *testing.T) {
 	s := newTestStore(t)
-	at := "2026-08-18T10:00:00.000Z"
+	ctx := t.Context()
+	at := time.Now().UTC()
 	for _, rx := range []string{"aa11", "aa22"} {
-		if _, err := s.InsertClientDeclaredRegions(&ClientDeclaredRegions{
+		if _, err := s.InsertClientDeclaredRegions(ctx, &types.ClientDeclaredRegions{
 			Target: "bb11", RxPubkey: rx, ObservedAt: at, IngestedAt: at, RegionsCSV: "be",
 		}); err != nil {
 			t.Fatalf("insert %s: %v", rx, err)
 		}
 	}
 
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM node_declared_regions WHERE target = ? AND observed_at = ?`, "bb11", at).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	n := countWhere(t, s, "node_declared_regions", "target = $1 AND observed_at = $2", "bb11", at)
 	if n != 2 {
 		t.Errorf("rows = %d, want 2 — two different reporters observing the same target at the same time must both persist", n)
 	}
@@ -457,14 +468,15 @@ func TestDeclaredRegionsDifferentReportersPersistBoth(t *testing.T) {
 // this table's read query must not repeat.
 func TestCurrentDeclaredRegionsNormalizesTargetCase(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.InsertClientDeclaredRegions(&ClientDeclaredRegions{
+	ctx := t.Context()
+	if _, err := s.InsertClientDeclaredRegions(ctx, &types.ClientDeclaredRegions{
 		Target: "bb11", RxPubkey: "aa11",
-		ObservedAt: "2026-08-18T10:00:00.000Z", IngestedAt: "2026-08-18T10:00:01.000Z", RegionsCSV: "be",
+		ObservedAt: time.Now().UTC(), IngestedAt: time.Now().UTC().Add(1 * time.Second), RegionsCSV: "be",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	cur, err := s.CurrentDeclaredRegions("BB11")
+	cur, err := s.CurrentDeclaredRegions(ctx, "BB11")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,24 +490,14 @@ func TestCurrentDeclaredRegionsNormalizesTargetCase(t *testing.T) {
 
 // TestPruneClientDeclaredRegionsUsesIndex pins the retention DELETE to an
 // index seek on idx_ndr_prune rather than a full table scan.
+// TestPruneClientDeclaredRegionsUsesIndex verifies the retention DELETE can
+// seek idx_ndr_prune instead of scanning the whole table.
 func TestPruneClientDeclaredRegionsUsesIndex(t *testing.T) {
 	s := newTestStore(t)
-	rows, err := s.db.Query(`EXPLAIN QUERY PLAN DELETE FROM node_declared_regions WHERE observed_at < ?`, "2026-01-01T00:00:00Z")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	plan := ""
-	for rows.Next() {
-		var id, parent, notused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-			t.Fatal(err)
-		}
-		plan += detail + "\n"
-	}
+	plan := explainPlan(t, s,
+		`DELETE FROM node_declared_regions WHERE observed_at < '2026-01-01T00:00:00Z'::timestamptz`)
 	if !strings.Contains(plan, "idx_ndr_prune") {
-		t.Fatalf("retention DELETE should use idx_ndr_prune, plan was:\n%s", plan)
+		t.Fatalf("retention DELETE should be able to use idx_ndr_prune, plan was:\n%s", plan)
 	}
 }
 
@@ -509,27 +511,28 @@ func TestPruneClientDeclaredRegionsUsesIndex(t *testing.T) {
 // that test's comment for why this one deliberately does not attempt it.
 func TestPruneOldClientDeclaredRegions(t *testing.T) {
 	s := newTestStore(t)
-	now := time.Now().UTC()
-	recent := now.AddDate(0, 0, -1).Format(rxTimeMillisLayout)
-	old := now.AddDate(0, 0, -40).Format(rxTimeMillisLayout)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	recent := now.AddDate(0, 0, -1)
+	old := now.AddDate(0, 0, -40)
 
-	mk := func(observedAt string) *ClientDeclaredRegions {
-		return &ClientDeclaredRegions{
+	mk := func(observedAt time.Time) *types.ClientDeclaredRegions {
+		return &types.ClientDeclaredRegions{
 			Target: "bb11", RxPubkey: "aa11", ObservedAt: observedAt, IngestedAt: observedAt,
 			RegionsCSV: "be",
 		}
 	}
-	if _, err := s.InsertClientDeclaredRegions(mk(recent)); err != nil {
+	if _, err := s.InsertClientDeclaredRegions(ctx, mk(recent)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.InsertClientDeclaredRegions(mk(old)); err != nil {
+	if _, err := s.InsertClientDeclaredRegions(ctx, mk(old)); err != nil {
 		t.Fatal(err)
 	}
 
-	if n, _ := s.PruneOldClientDeclaredRegions(0); n != 0 {
+	if n, _ := s.PruneOldClientDeclaredRegions(ctx, 0); n != 0 {
 		t.Fatalf("days=0 must be a no-op, got %d", n)
 	}
-	n, err := s.PruneOldClientDeclaredRegions(7)
+	n, err := s.PruneOldClientDeclaredRegions(ctx, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,32 +570,32 @@ func TestPruneOldClientDeclaredRegions(t *testing.T) {
 // depends on wall-clock phase.
 func TestPruneOldClientDeclaredRegionsAtMillisecondBoundary(t *testing.T) {
 	s := newTestStore(t)
-	cutoffInstant := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC).Add(400 * time.Millisecond)
-	before := cutoffInstant.Add(-1 * time.Millisecond).Format(rxTimeMillisLayout)
-	boundary := cutoffInstant.Add(1 * time.Millisecond).Format(rxTimeMillisLayout)
+	ctx := t.Context()
+	cutoffInstant := time.Now().AddDate(0, 0, -1).UTC().Truncate(time.Millisecond).Add(400 * time.Millisecond)
+	before := cutoffInstant.Add(-1 * time.Millisecond)
+	boundary := cutoffInstant.Add(1 * time.Millisecond)
 
-	mk := func(observedAt string) *ClientDeclaredRegions {
-		return &ClientDeclaredRegions{
+	mk := func(observedAt time.Time) *types.ClientDeclaredRegions {
+		return &types.ClientDeclaredRegions{
 			Target: "bb11", RxPubkey: "aa11", ObservedAt: observedAt, IngestedAt: observedAt,
 			RegionsCSV: "be",
 		}
 	}
-	if _, err := s.InsertClientDeclaredRegions(mk(before)); err != nil {
+	if _, err := s.InsertClientDeclaredRegions(ctx, mk(before)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.InsertClientDeclaredRegions(mk(boundary)); err != nil {
+	if _, err := s.InsertClientDeclaredRegions(ctx, mk(boundary)); err != nil {
 		t.Fatal(err)
 	}
 
-	n, err := s.pruneOldClientDeclaredRegionsAt(cutoffInstant)
+	n, err := s.pruneOldClientDeclaredRegionsAt(ctx, cutoffInstant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("expected 1 row pruned (1ms before the cutoff), got %d", n)
 	}
-	var boundarySurvived int
-	s.db.QueryRow(`SELECT COUNT(*) FROM node_declared_regions WHERE observed_at = ?`, boundary).Scan(&boundarySurvived)
+	boundarySurvived := countWhere(t, s, "node_declared_regions", "observed_at = $1", boundary)
 	if boundarySurvived != 1 {
 		t.Fatalf("boundary row (1ms after a cutoff with a non-zero millisecond component) must survive; an RFC3339 (no-ms) cutoff would wrongly delete it because '.' < 'Z' lexicographically — got %d", boundarySurvived)
 	}
@@ -607,14 +610,15 @@ func TestPruneOldClientDeclaredRegionsAtMillisecondBoundary(t *testing.T) {
 // no observed scope and reads as a region declared but never forwarded.
 func TestHandleClientRegionsTrimsBlockPadding(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-19T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"*", "be", "be-vli\x00\x00\x00"},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,14 +634,15 @@ func TestHandleClientRegionsTrimsBlockPadding(t *testing.T) {
 // padding is not a declared region and must not become an empty-named one.
 func TestHandleClientRegionsPaddingOnlyEntryDropped(t *testing.T) {
 	s := newTestStore(t)
+	ctx := t.Context()
 	msg := map[string]interface{}{
 		"timestamp": "2026-08-19T10:00:00.000Z",
 		"target":    testTargetPK,
 		"regions":   []interface{}{"*", "\x00\x00\x00\x00"},
 	}
-	handleClientRegions(s, &Config{}, "test", testCompanionPK, msg)
+	handleClientRegions(ctx, s, &Config{}, "test", testCompanionPK, msg)
 
-	cur, err := s.CurrentDeclaredRegions(testTargetPK)
+	cur, err := s.CurrentDeclaredRegions(ctx, testTargetPK)
 	if err != nil {
 		t.Fatal(err)
 	}

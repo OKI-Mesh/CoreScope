@@ -1,40 +1,51 @@
 package database
 
 import (
+	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 )
 
-// ObjectExists reports whether a sqlite_master object of the given type
-// (e.g. "table", "view", "index") and name exists in db.
-func ObjectExists(db *sql.DB, objType, name string) (bool, error) {
-	var got string
-	err := db.QueryRow(
-		`SELECT name FROM sqlite_master WHERE type = ? AND name = ?`, objType, name,
-	).Scan(&got)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+// ObjectExists reports whether a table or view with the given name exists
+// in the public schema. objType is "table" or "view" (matching Postgres's
+// own information_schema.tables.table_type values via the switch below —
+// view checks go through information_schema.views instead, which doesn't
+// use table_type at all).
+func ObjectExists(ctx context.Context, db *sql.DB, objType, name string) (bool, error) {
+	var query string
+	switch objType {
+	case "table":
+		query = `SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = $1
+		)`
+	case "view":
+		query = `SELECT EXISTS (
+			SELECT 1 FROM information_schema.views
+			WHERE table_schema = 'public' AND table_name = $1
+		)`
+	default:
+		return false, fmt.Errorf("unsupported object type %q", objType)
 	}
-	if err != nil {
+	var exists bool
+	if err := db.QueryRow(query, name).Scan(&exists); err != nil {
 		return false, fmt.Errorf("checking %s %q: %w", objType, name, err)
 	}
-	return true, nil
+	return exists, nil
 }
 
-// TableExists reports whether a table with the given name exists.
-func TableExists(db *sql.DB, name string) (bool, error) {
-	return ObjectExists(db, "table", name)
+func TableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	return ObjectExists(ctx, db, "table", name)
 }
 
 // ViewExists reports whether a view with the given name exists.
-func ViewExists(db *sql.DB, name string) (bool, error) {
-	return ObjectExists(db, "view", name)
+func ViewExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	return ObjectExists(ctx, db, "view", name)
 }
 
 // IndexExists reports whether an index with the given name exists.
-func IndexExists(db *sql.DB, name string) (bool, error) {
-	return ObjectExists(db, "index", name)
+func IndexExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	return ObjectExists(ctx, db, "index", name)
 }
 
 // TableColumns returns a map of column name -> declared SQLite type for
@@ -44,7 +55,7 @@ func IndexExists(db *sql.DB, name string) (bool, error) {
 //
 // Note: table names cannot be parameterized in PRAGMA statements, so
 // callers must only pass fixed/known table names, never user input.
-func TableColumns(db *sql.DB, table string) (map[string]string, error) {
+func TableColumns(ctx context.Context, db *sql.DB, table string) (map[string]string, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%q)", table))
 	if err != nil {
 		return nil, fmt.Errorf("reading table_info for %q: %w", table, err)

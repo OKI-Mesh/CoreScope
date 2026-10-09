@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -16,46 +17,44 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 )
 
-// DeleteNodesByPubkeys deletes nodes by public key. Returns the count deleted.
-// Only the ingestor calls this (server has no write handle).
-func (s *Store) DeleteNodesByPubkeys(pubkeys []string) (int64, error) {
+type pruneBatchFn func(ctx context.Context, cutoff time.Time, limit int32) (int64, error)
+
+// pruneInBatches calls fn until a short batch proves nothing is left below the
+// cutoff. On error it returns what the earlier batches already deleted, since
+// those rows are gone and reporting 0 would be wrong.
+func pruneInBatches(ctx context.Context, cutoff time.Time, batch int32, fn pruneBatchFn) (total int64, batches int, err error) {
+	for {
+		n, err := fn(ctx, cutoff, batch)
+		if err != nil {
+			return total, batches, err
+		}
+		batches++
+		total += n
+		if n < int64(batch) {
+			return total, batches, nil
+		}
+	}
+}
+
+// DeleteNodesByPubkeys deletes nodes by public key and returns how many nodes
+// were removed. Their neighbor_edges go with them, because edges reference
+// nodes by foreign key. Observation and transmission history that mentions
+// the pubkeys is retained for audit and ages out through the regular packet
+// retention prune (observation_path_hops.resolved_pubkey is deliberately not
+// cleared). Only the ingestor calls this (the server has no write handle).
+func (s *Store) DeleteNodesByPubkeys(ctx context.Context, pubkeys []string) (int64, error) {
 	if len(pubkeys) == 0 {
 		return 0, nil
 	}
-	// Chunk to keep statements under SQLite's variable limit (default 999).
-	const chunk = 500
-	var total int64
-	for start := 0; start < len(pubkeys); start += chunk {
-		end := start + chunk
-		if end > len(pubkeys) {
-			end = len(pubkeys)
-		}
-		batch := pubkeys[start:end]
-		placeholders := strings.Repeat("?,", len(batch))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]interface{}, len(batch))
-		for i, pk := range batch {
-			args[i] = pk
-		}
-		// Cascade cleanup: a node row carries the canonical identity, but
-		// observations/transmissions reference the pubkey too via observer
-		// metadata and originator fields. There are no FK constraints in
-		// the current schema (#669 review note), so we explicitly clear
-		// the most obvious follow-on rows that would otherwise become
-		// orphans visible to operators.
-		//
-		// Conservative scope: only the `nodes` row is removed here. The
-		// referenced observation/transmission history is retained for
-		// audit; operators can run the regular packet-retention prune to
-		// age it out. If a future schema introduces FKs, revisit.
-		res, err := s.db.Exec("DELETE FROM nodes WHERE public_key IN ("+placeholders+")", args...)
-		if err != nil {
-			return total, fmt.Errorf("delete batch [%d:%d]: %w", start, end, err)
-		}
-		n, _ := res.RowsAffected()
-		total += n
+	keys := make([]string, len(pubkeys))
+	for i, pk := range pubkeys {
+		keys[i] = strings.ToLower(pk) // nodes.public_key is stored lowercase
 	}
-	return total, nil
+	n, err := s.db.DeleteNodesByPubkeys(ctx, keys)
+	if err != nil {
+		return 0, fmt.Errorf("delete nodes: %w", err)
+	}
+	return n, nil
 }
 
 // RunPendingPruneRequests scans the prune-requests/ directory next to the
@@ -67,8 +66,8 @@ func (s *Store) DeleteNodesByPubkeys(pubkeys []string) (int64, error) {
 // prunequeue.WriteResult).
 //
 // Safe to call from a ticker — no-op when the queue is empty.
-func (s *Store) RunPendingPruneRequests() {
-	paths, err := prunequeue.ListPending(s.path)
+func (s *Store) RunPendingPruneRequests(ctx context.Context) {
+	paths, err := prunequeue.ListPending(s.pruneQueuePath)
 	if err != nil {
 		log.Printf("[prune-queue] list pending failed: %v", err)
 		return
@@ -86,7 +85,7 @@ func (s *Store) RunPendingPruneRequests() {
 		log.Printf("[prune-queue] processing request %s: %d pubkey(s) (%s)",
 			req.ID, len(req.Pubkeys), req.Reason)
 		start := time.Now()
-		deleted, derr := s.DeleteNodesByPubkeys(req.Pubkeys)
+		deleted, derr := s.DeleteNodesByPubkeys(ctx, req.Pubkeys)
 		res := prunequeue.Result{
 			ID:          req.ID,
 			RequestedAt: req.RequestedAt,
@@ -99,8 +98,29 @@ func (s *Store) RunPendingPruneRequests() {
 		} else {
 			log.Printf("[prune-queue] request %s deleted %d node(s) in %s", req.ID, deleted, time.Since(start))
 		}
-		if werr := prunequeue.WriteResult(s.path, res); werr != nil {
+		if werr := prunequeue.WriteResult(s.pruneQueuePath, res); werr != nil {
 			log.Printf("[prune-queue] write result for %s failed: %v", req.ID, werr)
 		}
 	}
+}
+
+func (s *Store) PruneOldPackets(ctx context.Context, days int) (int64, error) {
+	return s.pruneOldPackets(ctx, days, pruneBatchTransmissions)
+}
+
+// pruneOldPackets takes the batch size as a parameter so tests can cross several
+// batches with a few hundred rows instead of tens of thousands.
+func (s *Store) pruneOldPackets(ctx context.Context, days int, batch int32) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	total, _, err := pruneInBatches(ctx, cutoff, batch, s.db.PruneTransmissionsBatch)
+	if err != nil {
+		return total, err
+	}
+	if total > 0 {
+		log.Printf("[prune] deleted %d transmissions older than %d days", total, days)
+	}
+	return total, nil
 }

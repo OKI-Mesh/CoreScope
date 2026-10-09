@@ -4,33 +4,6 @@ import (
 	"testing"
 )
 
-func TestNormalizeChannelName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		// Known channel: "public" should be normalized to "Public"
-		{"public", "Public"},
-		{"Public", "Public"},
-		{"PUBLIC", "Public"},
-		// Hashtag channels should be left untouched
-		{"#LongFast", "#LongFast"},
-		{"#wardrive", "#wardrive"},
-		// Custom/unknown channels should be left untouched
-		{"myChannel", "myChannel"},
-		{"testchannel", "testchannel"},
-		// Empty string
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		got := normalizeChannelName(tt.input)
-		if got != tt.expected {
-			t.Errorf("normalizeChannelName(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestLoadChannelKeys_NormalizesKnownDisplayNames(t *testing.T) {
 	// Verify that known channel keys with wrong casing get normalized
 	cfg := &Config{
