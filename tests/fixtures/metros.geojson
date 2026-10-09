@@ -1,0 +1,5 @@
+{"type":"FeatureCollection","features":[
+{"type":"Feature","properties":{"iata":"CVG"},"geometry":{"type":"Polygon","coordinates":[[[-84.95,38.85],[-84.15,38.85],[-84.15,39.4],[-84.95,39.4],[-84.95,38.85]]]}},
+{"type":"Feature","properties":{"iata":"IND"},"geometry":{"type":"Polygon","coordinates":[[[-86.45,39.5],[-85.85,39.5],[-85.85,40.05],[-86.45,40.05],[-86.45,39.5]]]}},
+{"type":"Feature","properties":{"iata":"CMH"},"geometry":{"type":"Polygon","coordinates":[[[-83.35,39.75],[-82.65,39.75],[-82.65,40.2],[-83.35,40.2],[-83.35,39.75]]]}}
+]}

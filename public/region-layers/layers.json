@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "layers": [
+    {
+      "id": "macro",
+      "label": "Regions",
+      "colorBy": "feature",
+      "highlight": false,
+      "coverage": "full",
+      "url": [
+        { "url": "us-midwest.geojson",   "name": "us-midwest" },
+        { "url": "us-southeast.geojson", "name": "us-southeast" }
+      ],
+      "codes": ["us-midwest", "us-southeast"]
+    },
+    {
+      "id": "mesh",
+      "label": "Regional Meshes",
+      "url": ["us-midwest.geojson", "us-southeast.geojson"],
+      "groupBy": "meshregion",
+      "codes": ["oki"]
+    },
+    {
+      "id": "state",
+      "label": "State",
+      "url": ["us-midwest.geojson", "us-southeast.geojson"],
+      "nameProperty": "shapeISO",
+      "codes": ["us-oh", "us-in", "us-ky"]
+    },
+    {
+      "id": "metro",
+      "label": "Metro",
+      "optional": true,
+      "url": ["cvg.geojson", "day.geojson", "ind.geojson", "fwa.geojson"],
+      "nameProperty": "iata",
+      "colorBy": "feature",
+      "codes": ["cvg", "day", "ind", "fwa"]
+    }
+  ]
+}

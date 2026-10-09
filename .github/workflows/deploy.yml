@@ -565,6 +565,8 @@ jobs:
           CHROMIUM_REQUIRE=1 BASE_URL=http://localhost:13581 node tests/e2e/test-home-coverage-e2e.js 2>&1 | tee -a e2e-output.txt
           echo "=== E2E SUITE: test-path-inspector-coverage-e2e.js ==="
           CHROMIUM_REQUIRE=1 BASE_URL=http://localhost:13581 node tests/e2e/test-path-inspector-coverage-e2e.js 2>&1 | tee -a e2e-output.txt
+          echo "=== E2E SUITE: test-region-def-e2e.js ==="
+          CHROMIUM_REQUIRE=1 BASE_URL=http://localhost:13581 node tests/e2e/test-region-def-e2e.js 2>&1 | tee -a e2e-output.txt
           echo "=== E2E SUITE: test-issue-1206-resize-observer-leak-e2e.js ==="
           CHROMIUM_REQUIRE=1 BASE_URL=http://localhost:13581 node tests/e2e/test-issue-1206-resize-observer-leak-e2e.js 2>&1 | tee -a e2e-output.txt
           echo "=== E2E SUITE: test-nav-drawer-1064-e2e.js ==="
