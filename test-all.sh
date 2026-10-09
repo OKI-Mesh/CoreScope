@@ -179,6 +179,10 @@ node tests/unit/test-pull-to-reconnect-1091.js
 node tests/unit/test-pull-to-reconnect.js
 node tests/unit/test-repeater-metric-scatter.js
 node tests/unit/test-region-def.js
+node tests/unit/test-region-layers-manifest.js
+node tests/unit/test-region-def-known-points.js
+node tests/unit/test-check-region-data.js
+node tests/unit/test-simplify-region-layers.js
 node tests/unit/test-rx-coverage-config-race.js
 node tests/unit/test-rx-coverage-escape.js
 node tests/unit/test-rx-coverage-viewport.js
