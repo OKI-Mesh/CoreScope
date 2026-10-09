@@ -1106,7 +1106,8 @@ registerPage('tools-landing', {
         '<div class="tools-menu">' +
           '<a href="#/tools/path-inspector" class="tools-card"><h3><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-magnifying-glass"/></svg> Path Inspector</h3><p>Resolve prefix paths to candidate full-pubkey routes with confidence scoring.</p></a>' +
           '<a href="#/tools/trace/" class="tools-card"><h3><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-broadcast"/></svg> Trace Viewer</h3><p>View detailed packet traces by hash.</p></a>' +
-        '</div>' +
+          '<a href="#/tools/region-def" class="tools-card"><h3><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-map-pin"/></svg> Region Def</h3><p>Look up an address and get the repeater <code>region def</code> commands for its regions.</p></a>' +
+          '</div>' +
       '</div>';
   },
   destroy: function () {}
@@ -1190,6 +1191,9 @@ function navigate() {
     } else if (routeParam === 'path-inspector' || (routeParam && routeParam.startsWith('path-inspector'))) {
       basePage = 'path-inspector';
       routeParam = null;
+    } else if (routeParam === 'region-def' || (routeParam && routeParam.startsWith('region-def'))) {
+      basePage = 'region-def';
+      routeParam = null;
     } else if (!routeParam) {
       // Default tools landing shows menu with both entries.
       basePage = 'tools-landing';
@@ -1202,7 +1206,7 @@ function navigate() {
 
   // Update nav active state
   document.querySelectorAll('.nav-link[data-route]').forEach(el => {
-    el.classList.toggle('active', el.dataset.route === basePage || (el.dataset.route === 'tools' && (basePage === 'traces' || basePage === 'path-inspector' || basePage === 'tools-landing')));
+    el.classList.toggle('active', el.dataset.route === basePage || (el.dataset.route === 'tools' && (basePage === 'traces' || basePage === 'path-inspector' || basePage === 'region-def' || basePage === 'tools-landing')));
   });
   // Update "More" button to show active state if a low-priority page is selected
   var moreBtn = document.getElementById('navMoreBtn');
