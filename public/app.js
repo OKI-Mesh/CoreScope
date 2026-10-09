@@ -1183,7 +1183,7 @@ function navigate() {
     basePage = 'observer-detail';
   }
 
-  // Tools sub-routing (issue #944): tools/trace/<hash>, tools/path-inspector
+  // Tools sub-routing (issue #944): tools/trace/<hash>, tools/path-inspector, tools/region-def (issue #187)
   if (basePage === 'tools') {
     if (routeParam && routeParam.startsWith('trace/')) {
       basePage = 'traces';
@@ -1191,7 +1191,7 @@ function navigate() {
     } else if (routeParam === 'path-inspector' || (routeParam && routeParam.startsWith('path-inspector'))) {
       basePage = 'path-inspector';
       routeParam = null;
-    } else if (routeParam === 'region-def' || (routeParam && routeParam.startsWith('region-def'))) {
+    } else if (routeParam === 'region-def') {
       basePage = 'region-def';
       routeParam = null;
     } else if (!routeParam) {
