@@ -1119,6 +1119,20 @@
     try { localStorage.setItem(CHANNEL_SORT_KEY, JSON.stringify(state)); } catch (e) {}
   }
 
+  // The server sends the channel hash byte as a decimal string ("17"); show it
+  // as hex (0x11) like the rest of the UI. Non-numeric ids (e.g. "enc_A1B2")
+  // pass through untouched.
+  function channelHashNum(h) {
+    if (typeof h === 'number') return h;
+    return (typeof h === 'string' && /^\d+$/.test(h)) ? parseInt(h, 10) : NaN;
+  }
+
+  function formatChannelHash(h) {
+    var n = channelHashNum(h);
+    if (!isNaN(n)) return '0x' + n.toString(16).toUpperCase().padStart(2, '0');
+    return h == null ? '' : esc(String(h));
+  }
+
   function sortChannels(channels, col, dir) {
     var sorted = channels.slice();
     var mult = dir === 'asc' ? 1 : -1;
@@ -1129,10 +1143,9 @@
           av = (a.name || '').toLowerCase(); bv = (b.name || '').toLowerCase();
           return av < bv ? -1 * mult : av > bv ? 1 * mult : 0;
         case 'hash':
-          av = typeof a.hash === 'number' ? a.hash : String(a.hash);
-          bv = typeof b.hash === 'number' ? b.hash : String(b.hash);
-          if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mult;
-          av = String(av).toLowerCase(); bv = String(bv).toLowerCase();
+          av = channelHashNum(a.hash); bv = channelHashNum(b.hash);
+          if (!isNaN(av) && !isNaN(bv)) return (av - bv) * mult;
+          av = String(a.hash).toLowerCase(); bv = String(b.hash).toLowerCase();
           return av < bv ? -1 * mult : av > bv ? 1 * mult : 0;
         case 'messages': return (a.messages - b.messages) * mult;
         case 'senders': return (a.senders - b.senders) * mult;
@@ -1160,7 +1173,7 @@
       : esc(c.displayName || c.name || 'Unknown');
     return '<tr class="clickable-row" data-action="navigate" data-value="#/channels?ch=' + c.hash + '" tabindex="0" role="row">' +
       '<td><strong>' + nameHtml + '</strong></td>' +
-      '<td class="mono">' + (typeof c.hash === 'number' ? '0x' + c.hash.toString(16).toUpperCase().padStart(2, '0') : c.hash) + '</td>' +
+      '<td class="mono">' + formatChannelHash(c.hash) + '</td>' +
       '<td>' + c.messages + '</td>' +
       '<td>' + c.senders + '</td>' +
       '<td>' + timeAgo(c.lastActivity) + '</td>' +

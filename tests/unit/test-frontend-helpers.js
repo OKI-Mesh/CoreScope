@@ -2244,6 +2244,33 @@ console.log('\n=== analytics.js: sortChannels ===');
     assert.ok(chatIdx < generalIdx, 'Chat (100 msgs) should come before General (50)');
   });
 
+  // #190: server sends the hash byte as a decimal string; the table must show hex.
+  test('tbodyHtml renders decimal-string hash as hex (#190)', () => {
+    const data = [
+      { name: 'Public', hash: '17', messages: 3, senders: 1, lastActivity: '', encrypted: false },
+      { name: 'Wardriving', hash: '129', messages: 2, senders: 1, lastActivity: '', encrypted: false },
+      { name: 'Low', hash: '5', messages: 1, senders: 1, lastActivity: '', encrypted: false },
+    ];
+    const html = tbodyHtml(data, 'messages', 'desc');
+    assert.ok(html.includes('>0x11<'), 'hash "17" should render as 0x11');
+    assert.ok(html.includes('>0x81<'), 'hash "129" should render as 0x81');
+    assert.ok(html.includes('>0x05<'), 'hash "5" should be zero-padded to 0x05');
+    assert.ok(!html.includes('>17<') && !html.includes('>129<'), 'decimal must not be displayed');
+    assert.ok(html.includes('?ch=17"'), 'deep link keeps the decimal value');
+  });
+
+  test('tbodyHtml leaves non-numeric hash ids untouched and escaped (#190)', () => {
+    const html = tbodyHtml([{ name: 'X', hash: 'enc_A1B2', messages: 1, senders: 1, lastActivity: '', encrypted: true }], 'messages', 'desc');
+    assert.ok(html.includes('>enc_A1B2<'));
+    const evil = tbodyHtml([{ name: 'X', hash: '<b>', messages: 1, senders: 1, lastActivity: '', encrypted: false }], 'messages', 'desc');
+    assert.ok(!evil.includes('<td class="mono"><b>'), 'hash must be HTML-escaped');
+  });
+
+  test('sort by hash is numeric for decimal-string hashes (#190)', () => {
+    const data = [{ hash: '129' }, { hash: '17' }, { hash: '5' }];
+    assert.deepStrictEqual(sortChannels(data, 'hash', 'asc').map(c => c.hash), ['5', '17', '129']);
+  });
+
   test('sort by string hash values', () => {
     const data = [
       { name: 'A', hash: 'zz', messages: 1, senders: 1, lastActivity: '', encrypted: false },
