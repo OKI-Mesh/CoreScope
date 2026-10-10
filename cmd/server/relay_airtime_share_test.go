@@ -97,7 +97,7 @@ func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 	if !ok {
 		t.Fatalf("result['preset'] missing or wrong type: %T", result["preset"])
 	}
-	if preset.SF == 0 || preset.BWkHz == 0 || preset.CR == 0 || preset.Preamble == 0 || preset.FreqHz == 0 {
+	if preset.SF == 0 || preset.BWkHz == 0 || preset.CR == 0 || preset.Preamble == 0 {
 		t.Errorf("result['preset'] has zero fields: %+v", preset)
 	}
 
@@ -160,18 +160,18 @@ func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 // gate: airtime_pct must follow true LoRa Time-on-Air, NOT bytes.
 //
 // Setup: 1 ADVERT (200 B, 1 relay) and 1 ACK (10 B, 1 relay) with the
-// default EU preset (869.6 MHz / BW 62.5 kHz / SF 8 / CR 4/5,
+// default US preset (BW 62.5 kHz / SF 7 / CR 4/5,
 // preamble 32 per firmware preambleLengthForSF).
 //
 // Old byte-proxy would give ADVERT 200/(200+10) = 95.24 %.
 // True ToA per #1768 closed form:
 //
-//	T_sym = 256 / 62500 = 4.096 ms
-//	ADVERT (PL=200): symbols = 36.25 + (8 + ceil((1600-32+44)/32)*5)
-//	               = 36.25 + (8 + 51*5) = 299.25 → 1225.728 ms
-//	ACK    (PL=10):  symbols = 36.25 + (8 + ceil((80-32+44)/32)*5)
-//	               = 36.25 + (8 + 3*5) = 59.25 → 242.688 ms
-//	ADVERT share = 1225.728 / (1225.728 + 242.688) = 0.83476 → 83.48 %
+//	T_sym = 128 / 62500 = 2.048 ms
+//	ADVERT (PL=200): symbols = 36.25 + (8 + ceil((1600-28+44)/28)*5)
+//	               = 36.25 + (8 + 58*5) = 334.25
+//	ACK    (PL=10):  symbols = 36.25 + (8 + ceil((80-28+44)/28)*5)
+//	               = 36.25 + (8 + 4*5) = 64.25
+//	ADVERT share = 334.25 / (334.25 + 64.25) = 0.83877 → 83.88 %
 //
 // 83 % vs 95 % is the whole point: small frames are no longer crushed
 // against large ones because the additive preamble + fixed-overhead
@@ -214,11 +214,11 @@ func TestRelayAirtimeShare_ToAReplacesByteProxy(t *testing.T) {
 	// Sanity guards on the independent calculation. Tolerances ±0.05 pp
 	// around the AN1200.13 hand-computed values keep this honest if the
 	// upstream lora package ever drifts.
-	if math.Abs(wantAdvert-83.4754) > 0.05 {
-		t.Fatalf("independent ADVERT ToA share drifted: got %.4f want ~83.4754", wantAdvert)
+	if math.Abs(wantAdvert-83.8770) > 0.05 {
+		t.Fatalf("independent ADVERT ToA share drifted: got %.4f want ~83.8770", wantAdvert)
 	}
-	if math.Abs(wantAck-16.5246) > 0.05 {
-		t.Fatalf("independent ACK ToA share drifted: got %.4f want ~16.5246", wantAck)
+	if math.Abs(wantAck-16.1230) > 0.05 {
+		t.Fatalf("independent ACK ToA share drifted: got %.4f want ~16.1230", wantAck)
 	}
 	if math.Abs(advertPct-wantAdvert) > 0.2 {
 		t.Errorf("ADVERT airtime_pct = %.4f, want %.4f (true ToA)", advertPct, wantAdvert)

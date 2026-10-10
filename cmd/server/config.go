@@ -1023,8 +1023,8 @@ type AnalyticsConfig struct {
 	RecomputeIntervalSeconds map[string]int `json:"recomputeIntervalSeconds,omitempty"`
 	// LoRaPreset is the assumed PHY preset used by the relay-airtime-share
 	// metric to compute true Time-on-Air (issue #1768). Defaults to the
-	// EU MeshCore deployment: 869.6 MHz / BW 62.5 kHz / SF 8 / CR 4/5.
-	// freq is informational only and surfaces in the analytics caption.
+	// MeshCore deployment: BW 62.5 kHz / SF 7 / CR 4/5.
+	// freq is informational only and is not displayed or used in ToA.
 	LoRaPreset *LoRaPresetConfig `json:"loraPreset,omitempty"`
 }
 
