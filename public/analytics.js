@@ -521,13 +521,11 @@
     var preset = data && data.preset;
     var presetCaption = '';
     if (preset && typeof preset === 'object') {
-      var freqMHz = Number(preset.freq_hz || 0) / 1e6;
       var bwKhz = Number(preset.bw_khz || 0);
       var bwStr = bwKhz ? bwKhz.toFixed(1).replace(/\.0$/, '') : '0';
       presetCaption =
         '<div class="dumbbell-preset text-muted" style="font-size:11px;padding:0 4px 6px 4px">' +
         'Assumed LoRa preset: ' +
-        (freqMHz ? esc(freqMHz.toFixed(3)) + ' MHz / ' : '') +
         'BW ' + esc(bwStr) + ' kHz / ' +
         'SF ' + esc(String(Number(preset.sf || 0))) + ' / ' +
         'CR 4/' + esc(String(Number(preset.cr || 0))) +
@@ -3175,6 +3173,7 @@ function destroy() { _stopRolesRefresh(); _stopScopesRefresh(); _stopDistanceRet
     window._analyticsRetransmissionBucketFor = retransmissionBucketFor;
     window._analyticsRenderRetransmissionChart = renderRetransmissionChart;
     window._analyticsScopeAdvertsByRoleHtml = scopeAdvertsByRoleHtml;
+    window._analyticsRenderRelayAirtimeDumbbell = renderRelayAirtimeDumbbell;
   }
 
   // ─── Neighbor Graph Tab ─────────────────────────────────────────────────────
