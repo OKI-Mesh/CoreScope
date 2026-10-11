@@ -6937,6 +6937,31 @@ console.log('\n=== map.js: hash size fallback ===');
   });
 }
 
+// ===== analytics.js: Relay Airtime Share preset caption (#189) =====
+console.log('\n=== analytics.js: renderRelayAirtimeDumbbell preset caption ===');
+{
+  const ctx = makeSandbox();
+  loadInCtx(ctx, 'public/roles.js');
+  loadInCtx(ctx, 'public/app.js');
+  try { loadInCtx(ctx, 'public/analytics.js'); } catch (e) { /* IIFE side-effects ok */ }
+  const render = ctx.window._analyticsRenderRelayAirtimeDumbbell;
+  test('renderRelayAirtimeDumbbell is exposed', () => assert.ok(render));
+  if (render) {
+    const data = {
+      total_score: 10,
+      rows: [{ payload_type: 'ADVERT', count: 1, count_pct: 50, airtime_pct: 50, score: 5 }],
+      preset: { freq_hz: 869600000, bw_khz: 62.5, sf: 7, cr: 5, preamble: 32 },
+    };
+    test('caption shows BW / SF / CR but never the frequency (#189)', () => {
+      const html = render(data);
+      assert.ok(html.includes('BW 62.5 kHz'), 'BW missing');
+      assert.ok(html.includes('SF 7'), 'SF missing');
+      assert.ok(html.includes('CR 4/5'), 'CR missing');
+      assert.ok(!/MHz/.test(html), 'frequency must not be displayed: ' + html);
+    });
+  }
+}
+
 // ===== SUMMARY =====
 Promise.allSettled(pendingTests).then(() => {
   console.log(`\n${'═'.repeat(40)}`);

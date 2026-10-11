@@ -22,7 +22,7 @@ import (
 //
 // The PHY preset is config-driven (analytics.loraPreset in
 // config.example.json); defaults match the actual deployment
-// preset 869.6 MHz / BW 62.5 kHz / SF 8 / CR 4/5, with the
+// preset BW 62.5 kHz / SF 7 / CR 4/5, with the
 // SF-dependent preamble pulled from internal/lora.PreambleForSF.
 //
 // Aggregated by payload_type. Originator TX is deliberately excluded — a
@@ -30,14 +30,13 @@ import (
 // "relay amplification" metric. In-memory only; no SQL, no new index.
 
 // defaultLoRaPreset is the canonical fallback when config is absent.
-// Matches the reporter's `get radio` output `869.6179809, 62.5, 8, 5`.
+// Frequency does not affect ToA; it is kept only as an optional config field.
 func defaultLoRaPreset() lora.Preset {
 	return lora.Preset{
-		FreqHz:   869.6e6,
 		BWkHz:    62.5,
-		SF:       8,
+		SF:       7,
 		CR:       5,
-		Preamble: lora.PreambleForSF(8),
+		Preamble: lora.PreambleForSF(7),
 	}
 }
 
