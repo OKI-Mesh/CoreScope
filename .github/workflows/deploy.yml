@@ -972,20 +972,25 @@ jobs:
           docker compose -f docker-compose.yml -p corescope-dev up -d --force-recreate corescope
           echo "Recreated corescope-dev on the CI :edge image ✅"
 
-      - name: Healthcheck corescope-dev
+      - name: Wait for corescope-dev to be ready
+        env:
+          TIMEOUT: ${{ vars.HEALTH_TIMEOUT || '300' }}
         run: |
-          for i in $(seq 1 90); do
-            HEALTH=$(docker inspect corescope-dev --format '{{.State.Health.Status}}' 2>/dev/null || echo "starting")
-            if [ "$HEALTH" = "healthy" ]; then
-              echo "corescope-dev healthy after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 90 ]; then
-              echo "corescope-dev failed health check after 90s"
-              docker logs corescope-dev --tail 50
+          start=$(date +%s)
+          while :; do
+            elapsed=$(( $(date +%s) - start ))
+            state=$(docker inspect corescope-dev --format '{{.State.Status}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || echo "missing")
+            body=$(docker exec corescope-dev wget -qO- http://localhost:3000/api/healthz 2>/dev/null || true)
+            case "$body" in *'"ready":true'*) echo "ready after ${elapsed}s"; exit 0;; esac
+            case "$state" in exited*|dead*|missing*) echo "container is $state"; docker logs corescope-dev --tail 100; exit 1;; esac
+            [ $((elapsed % 15)) -lt 2 ] && echo "${elapsed}s: $state ${body:-no response}"
+            if [ "$elapsed" -ge "$TIMEOUT" ]; then
+              echo "not ready after ${elapsed}s: $state"
+              docker inspect corescope-dev --format '{{json .State.Health}}'
+              docker logs corescope-dev --tail 100
               exit 1
             fi
-            sleep 1
+            sleep 2
           done
 
       - name: Smoke test API
