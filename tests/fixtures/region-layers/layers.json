@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "layers": [
+    {
+      "id": "macro",
+      "label": "Macro region",
+      "url": [
+        {
+          "url": "macro-midwest.geojson",
+          "name": "US Midwest",
+          "code": "us-midwest"
+        },
+        {
+          "url": "macro-southeast.geojson",
+          "name": "US Southeast",
+          "code": "us-southeast"
+        }
+      ],
+      "codes": [
+        "us-midwest",
+        "us-southeast"
+      ]
+    },
+    {
+      "id": "mesh",
+      "label": "Mesh region",
+      "url": "states.geojson",
+      "groupBy": "meshregion",
+      "codes": [
+        "oki"
+      ]
+    },
+    {
+      "id": "state",
+      "label": "State",
+      "url": "states.geojson",
+      "nameProperty": "shapeISO",
+      "codes": [
+        "us-oh",
+        "us-in",
+        "us-ky",
+        "us-mi",
+        "us-il",
+        "us-pa",
+        "us-wv"
+      ]
+    },
+    {
+      "id": "metro",
+      "label": "Metro",
+      "url": "metros.geojson",
+      "nameProperty": "iata",
+      "codes": [
+        "cvg",
+        "ind",
+        "cmh"
+      ]
+    }
+  ]
+}
