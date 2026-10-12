@@ -21,7 +21,7 @@ const { chromium } = require('playwright');
 
 const BASE = process.env.BASE_URL || 'http://localhost:13581';
 const FIX = path.join(__dirname, '..', 'fixtures', 'region-layers');
-const CMD_TAIL = '\nregion save\nregion allowf *';
+const CMD_TAIL = '\nregion allowf *\nregion save';
 
 let passed = 0, failed = 0;
 async function step(name, fn) {
