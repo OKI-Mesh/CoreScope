@@ -392,22 +392,7 @@ jobs:
           SQL
 
       - name: Start Go server with fixture DB
-        run: |
-          fuser -k 13581/tcp 2>/dev/null || true
-          sleep 1
-          ./corescope-server -port 13581 -db test-fixtures/e2e-fixture.db -public public-instrumented &
-          echo $! > .server.pid
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:13581/api/healthz > /dev/null 2>&1; then
-              echo "Server ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Server failed to start within 30s"
-              exit 1
-            fi
-            sleep 1
-          done
+        run: bash scripts/e2e-fresh-server.sh
 
       - name: Run Playwright E2E tests (fail-fast)
         run: |
@@ -665,6 +650,7 @@ jobs:
           run_e2e_suite || {
             echo "::warning::E2E suite failed - flake-guard retry once (issue #61)"
             cp e2e-output.txt e2e-output.attempt1.txt 2>/dev/null || true
+            bash scripts/e2e-fresh-server.sh
             run_e2e_suite
           }
 
