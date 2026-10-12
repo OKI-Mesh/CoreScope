@@ -45,3 +45,7 @@ deploy-live.sh
 deploy-staging.sh
 
 .DS_Store
+
+#geojson files. Only allow the example ones.
+public/region-layers/*
+!public/region-layers/*.example

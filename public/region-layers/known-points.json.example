@@ -1,0 +1,158 @@
+[
+ {
+  "name": "Cincinnati OH",
+  "lat": 39.1031,
+  "lon": -84.512,
+  "expect": "us-midwest oki us-oh cvg"
+ },
+ {
+  "name": "Columbus OH",
+  "lat": 39.9612,
+  "lon": -82.9988,
+  "expect": "us-midwest oki us-oh cmh"
+ },
+ {
+  "name": "Dayton OH (no metro)",
+  "lat": 39.7589,
+  "lon": -84.1916,
+  "expect": "us-midwest oki us-oh"
+ },
+ {
+  "name": "Cleveland OH",
+  "lat": 41.4993,
+  "lon": -81.6944,
+  "expect": "us-midwest oki us-oh"
+ },
+ {
+  "name": "Indianapolis IN",
+  "lat": 39.7684,
+  "lon": -86.1581,
+  "expect": "us-midwest oki us-in ind"
+ },
+ {
+  "name": "Fort Wayne IN",
+  "lat": 41.0793,
+  "lon": -85.1394,
+  "expect": "us-midwest oki us-in"
+ },
+ {
+  "name": "Covington KY (CVG metro spans the river)",
+  "lat": 39.0837,
+  "lon": -84.5086,
+  "expect": "us-southeast oki us-ky cvg"
+ },
+ {
+  "name": "Lexington KY",
+  "lat": 38.0406,
+  "lon": -84.5037,
+  "expect": "us-southeast oki us-ky"
+ },
+ {
+  "name": "Louisville KY",
+  "lat": 38.2527,
+  "lon": -85.7585,
+  "expect": "us-southeast oki us-ky"
+ },
+ {
+  "name": "Detroit MI",
+  "lat": 42.3314,
+  "lon": -83.0458,
+  "expect": "us-midwest us-mi"
+ },
+ {
+  "name": "Chicago IL",
+  "lat": 41.8781,
+  "lon": -87.6298,
+  "expect": "us-midwest us-il"
+ },
+ {
+  "name": "Charleston WV",
+  "lat": 38.3498,
+  "lon": -81.6326,
+  "expect": "us-southeast us-wv"
+ },
+ {
+  "name": "Pittsburgh PA (no macro, no mesh)",
+  "lat": 40.4406,
+  "lon": -79.9959,
+  "expect": "us-pa"
+ },
+ {
+  "name": "mid-Atlantic Ocean",
+  "lat": 35.0,
+  "lon": -70.0,
+  "expect": ""
+ },
+ {
+  "name": "OH/IN line, Indiana side, lat 40.5",
+  "lat": 40.5,
+  "lon": -84.83,
+  "expect": "us-midwest oki us-in"
+ },
+ {
+  "name": "OH/IN line, Ohio side, lat 40.5",
+  "lat": 40.5,
+  "lon": -84.81,
+  "expect": "us-midwest oki us-oh"
+ },
+ {
+  "name": "OH/IN line, Indiana side, lat 41.2",
+  "lat": 41.2,
+  "lon": -84.83,
+  "expect": "us-midwest oki us-in"
+ },
+ {
+  "name": "OH/IN line, Ohio side, lat 41.2",
+  "lat": 41.2,
+  "lon": -84.81,
+  "expect": "us-midwest oki us-oh"
+ },
+ {
+  "name": "IN/IL line, Illinois side",
+  "lat": 40.0,
+  "lon": -87.54,
+  "expect": "us-midwest us-il"
+ },
+ {
+  "name": "IN/IL line, Indiana side",
+  "lat": 40.0,
+  "lon": -87.52,
+  "expect": "us-midwest oki us-in"
+ },
+ {
+  "name": "OH/PA line, Ohio side",
+  "lat": 40.95,
+  "lon": -80.53,
+  "expect": "us-midwest oki us-oh"
+ },
+ {
+  "name": "OH/PA line, Pennsylvania side",
+  "lat": 40.95,
+  "lon": -80.51,
+  "expect": "us-pa"
+ },
+ {
+  "name": "WV panhandle (east of the Ohio River edge)",
+  "lat": 40.3,
+  "lon": -80.55,
+  "expect": "us-southeast us-wv"
+ },
+ {
+  "name": "Ohio just west of the panhandle",
+  "lat": 40.3,
+  "lon": -80.66,
+  "expect": "us-midwest oki us-oh"
+ },
+ {
+  "name": "Ohio River, north bank",
+  "lat": 39.11,
+  "lon": -84.51,
+  "expect": "us-midwest oki us-oh cvg"
+ },
+ {
+  "name": "Ohio River, south bank",
+  "lat": 39.08,
+  "lon": -84.51,
+  "expect": "us-southeast oki us-ky cvg"
+ }
+]
