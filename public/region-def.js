@@ -23,6 +23,7 @@
   var DEFAULT_LAYER_TIMEOUT_MS = 20000;
   var DEFAULT_GEOCODE_TIMEOUT_MS = 10000;
   function fmtMs(ms) { return ms >= 1000 ? Math.round(ms / 1000) + ' s' : ms + ' ms'; }
+  function fmtMiles(meters) { return (meters / window.RegionDef.MILE_M).toFixed(1); }
   function cfgMs(key, dflt) {
     var c = window.RegionDefConfig;
     return (c && typeof c[key] === 'number' && c[key] > 0) ? c[key] : dflt;
@@ -160,14 +161,15 @@
     return cssVar('--region-layer-' + ((index % PALETTE_SIZE) + 1), '#3388ff');
   }
 
-  function featureStyle(layer, index, feature, matched) {
+  // matched: the region containing the point; near: touched by the ring but not containing the point.
+  function featureStyle(layer, index, feature, matched, near) {
     var color = window.RegionDef.featureColorOverride(layer, feature) || layerColor(layer, index);
     return {
       color: color,
-      weight: matched ? 3 : 1,
-      opacity: matched ? 1 : 0.7,
+      weight: matched ? 3 : (near ? 2 : 1),
+      opacity: (matched || near) ? 1 : 0.7,
       fillColor: color,
-      fillOpacity: matched ? 0.25 : 0.06,
+      fillOpacity: matched ? 0.25 : (near ? 0.15 : 0.06),
       dashArray: DASHES[index % DASHES.length]
     };
   }
@@ -203,10 +205,12 @@
     var per = null;
     for (var k = 0; k < result.perLayer.length; k++) if (result.perLayer[k].id === entry.layer.id) per = result.perLayer[k];
     var hit = per && per.match ? per.match.feature : null;
+    var reach = ((S.ringHits && S.ringHits[entry.layer.id]) || []).map(function (m) { return m.feature; });
     entry.group.eachLayer(function (gj) {
       var matched = !!hit && gj._rdFeature === hit && entry.layer.highlight;
-      gj.setStyle(featureStyle(entry.layer, entry.index, gj._rdFeature, matched));
-      if (matched && gj.bringToFront) gj.bringToFront();
+      var isNear = !matched && entry.layer.highlight && reach.indexOf(gj._rdFeature) >= 0;
+      gj.setStyle(featureStyle(entry.layer, entry.index, gj._rdFeature, matched, isNear));
+      if ((matched || isNear) && gj.bringToFront) gj.bringToFront();
     });
   }
 
@@ -275,6 +279,14 @@
       pre.setAttribute('aria-label', 'Repeater commands');
       out.appendChild(pre);
 
+      var reachedCmd = [];
+      result.perLayer.forEach(function (row) {
+        (row.near || []).forEach(function (m) { reachedCmd.push(m.name + ' (' + m.code + ')'); });
+      });
+      if (reachedCmd.length) {
+        out.appendChild(el('p', 'rd-cmd-near', 'Border point: the command also covers ' + reachedCmd.join(', ') + ' (layers that set nearMiles).'));
+      }
+
       // What these commands do to a repeater that already has regions (see docs/region-def.md).
       var apply = el('div', 'rd-apply');
       apply.appendChild(el('strong', null, 'Before you apply this'));
@@ -303,6 +315,9 @@
       details.appendChild(ul);
     }
 
+    if (S.ringMiles > 0) {
+      details.appendChild(el('p', 'rd-ring-note', 'NEAR lists regions within ' + S.ringMiles + ' miles of the point (the dashed ring on the map).'));
+    }
     var rows = el('ul', 'rd-rows');
     result.perLayer.forEach(function (row) {
       var li = el('li', 'rd-row');
@@ -313,6 +328,13 @@
         var txt = row.match.name + ' (' + row.match.code + ')';
         if (row.matches.length > 1) txt += ' - overlaps ' + (row.matches.length - 1) + ' more';
         li.appendChild(el('span', 'rd-row-name', txt));
+      }
+      var reached = ((S.ringHits && S.ringHits[row.id]) || []).filter(function (m) { return m.distance > 0; });
+      if (reached.length) {
+        li.appendChild(el('span', 'rd-badge rd-b-out rd-b-near', 'NEAR'));
+        li.appendChild(el('span', 'rd-row-near', reached.map(function (m) {
+          return m.name + ' (' + m.code + '), ' + fmtMiles(m.distance) + ' mi';
+        }).join('; ')));
       }
       rows.appendChild(li);
     });
@@ -330,13 +352,27 @@
     S.marker = L.circleMarker([lat, lon], {
       radius: 7, weight: 2, color: cssVar('--accent', '#3388ff'), fillColor: cssVar('--accent', '#3388ff'), fillOpacity: 0.8
     }).addTo(S.map);
+    // The ring is display only: every layer is checked for regions within reach of the point, whether or not
+    // the layer adds them to the command (that is the layer's own nearMiles).
+    if (S.ring) S.map.removeLayer(S.ring);
+    S.ring = null;
+    S.ringHits = {};
+    if (S.ringMiles > 0) {
+      var meters = S.ringMiles * window.RegionDef.MILE_M;
+      usable.forEach(function (layer) { S.ringHits[layer.id] = window.RegionDef.matchNear(layer, lat, lon, meters); });
+      S.ring = L.circle([lat, lon], {
+        radius: meters, color: cssVar('--accent', '#3388ff'), weight: 2, dashArray: '4 6', fill: false, interactive: false
+      }).addTo(S.map);
+    }
     restyle(result);
     fitSmart(lat, lon);
     renderResult(result, label || (lat.toFixed(5) + ', ' + lon.toFixed(5)));
     S.latlon = { lat: lat, lon: lon };
+    S.lastLabel = label;
   }
 
   function setUrl(params) {
+    if (S && S.ringMiles !== S.ringDefault) params.ring = S.ringMiles;
     var qs = new URLSearchParams();
     Object.keys(params).forEach(function (k) { if (params[k] !== null && params[k] !== undefined) qs.set(k, params[k]); });
     var s = qs.toString();
@@ -461,6 +497,11 @@
             '<input type="text" id="rd-input" class="input" autocomplete="off" placeholder="123 Main St, Cincinnati OH  or  39.10, -84.51">' +
             '<button type="button" id="rd-go" class="btn btn-primary">Look up</button>' +
           '</div>' +
+          '<div class="rd-ring-row">' +
+            '<label for="rd-ring">Show regions within</label>' +
+            '<input type="number" id="rd-ring" class="input" min="0" max="100" step="1" value="10">' +
+            '<span>miles of the point (0 hides the ring)</span>' +
+          '</div>' +
           '<div id="rd-msg" class="rd-msg" role="status" aria-live="polite"></div>' +
           '<div id="rd-cands" class="rd-cands"></div>' +
           '<div id="rd-out" class="rd-out" aria-live="polite"></div>' +
@@ -473,6 +514,8 @@
     S = {
       map: null, tiles: null, marker: null, loaded: [], loadWarnings: [], latlon: null,
       busy: false, lastResult: null, observer: null, onTheme: null,
+      ring: null, ringHits: {}, ringMiles: 10, ringDefault: 10, lastLabel: undefined,
+      ringInput: app.querySelector('#rd-ring'),
       input: app.querySelector('#rd-input'), btn: app.querySelector('#rd-go'),
       msg: app.querySelector('#rd-msg'), cands: app.querySelector('#rd-cands'),
       out: app.querySelector('#rd-out'), toggles: app.querySelector('#rd-toggles'),
@@ -491,6 +534,17 @@
     }
     setTimeout(function () { if (S === mine && S.map) S.map.invalidateSize(); }, 0);
 
+    S.ringInput.addEventListener('change', function () {
+      var v = parseFloat(S.ringInput.value);
+      if (!isFinite(v) || v < 0) v = 0;
+      if (v > window.RegionDef.MAX_NEAR_MILES) v = window.RegionDef.MAX_NEAR_MILES;
+      S.ringMiles = v;
+      S.ringInput.value = v;
+      if (S.latlon) {
+        lookup(S.latlon.lat, S.latlon.lon, S.lastLabel);
+        setUrl({ lat: S.latlon.lat.toFixed(5), lon: S.latlon.lon.toFixed(5) });
+      }
+    });
     S.btn.addEventListener('click', function () { submit(S.input.value); });
     S.input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(S.input.value); });
     S.map.on('click', function (e) {
@@ -522,6 +576,12 @@
       drawLayers();
       renderToggles();
       var p = hashParams();
+      var widest = 0;
+      loaded.forEach(function (e) { if (e.layer && e.layer.nearMiles > widest) widest = e.layer.nearMiles; });
+      S.ringDefault = widest || 10;
+      var ringParam = parseFloat(p.get('ring'));
+      S.ringMiles = (isFinite(ringParam) && ringParam >= 0 && ringParam <= window.RegionDef.MAX_NEAR_MILES) ? ringParam : S.ringDefault;
+      S.ringInput.value = S.ringMiles;
       var ll = window.RegionDef.parseLatLon((p.get('lat') || '') + ',' + (p.get('lon') || ''));
       if (ll) { S.input.value = ll.lat + ', ' + ll.lon; lookup(ll.lat, ll.lon); }
       else if (p.get('q')) { S.input.value = p.get('q'); submit(p.get('q')); }

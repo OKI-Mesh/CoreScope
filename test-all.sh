@@ -179,6 +179,7 @@ node tests/unit/test-pull-to-reconnect-1091.js
 node tests/unit/test-pull-to-reconnect.js
 node tests/unit/test-repeater-metric-scatter.js
 node tests/unit/test-region-def.js
+node tests/unit/test-region-def-near.js
 node tests/unit/test-region-layers-manifest.js
 node tests/unit/test-region-def-known-points.js
 node tests/unit/test-check-region-data.js

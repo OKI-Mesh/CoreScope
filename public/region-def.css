@@ -58,6 +58,11 @@
 .rd-b-in { color: var(--accent); border-color: var(--accent); }
 .rd-b-out { color: var(--text-muted); }
 .rd-row-name { word-break: break-word; }
+.rd-b-near { border-style: dashed; }
+.rd-row-near { word-break: break-word; color: var(--text-muted); }
+.rd-ring-note, .rd-cmd-near { margin: 0 0 8px 0; font-size: 13px; color: var(--text-muted); }
+.rd-ring-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 8px 0 0 0; font-size: 13px; }
+.rd-ring-row .input { width: 5em; }
 
 .rd-toggles { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 14px; font-size: 13px; }
 .rd-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -68,7 +73,8 @@
   .rd-page { flex-direction: column; height: auto; min-height: 0; padding: 12px; }
   .rd-panel { flex: 0 0 auto; overflow: visible; }
   .rd-map { height: 55vh; min-height: 280px; flex: 0 0 auto; }
-  .rd-input-row .input { font-size: 16px; } /* stops iOS zooming on focus */
+  .rd-input-row .input, .rd-ring-row .input { font-size: 16px; } /* stops iOS zooming on focus */
+  .rd-ring-row .input { min-height: 44px; }
   .rd-input-row .btn, .rd-cand, .rd-details > summary { min-height: 44px; }
   .rd-row-label { flex-basis: 100%; }
   .rd-toggles { gap: 10px 14px; }
