@@ -97,6 +97,88 @@
     return false;
   }
 
+  // True when two geometries share any area: a vertex of one lies in the other, or two edges cross.
+  // Used to decide which neighbouring region a near region belongs under (see buildRegionDef).
+  function segmentsCross(a, b, c, d) {
+    function orient(p, q, r) { return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]); }
+    var o1 = orient(a, b, c), o2 = orient(a, b, d), o3 = orient(c, d, a), o4 = orient(c, d, b);
+    return ((o1 > 0) !== (o2 > 0)) && o1 !== 0 && o2 !== 0 && ((o3 > 0) !== (o4 > 0)) && o3 !== 0 && o4 !== 0;
+  }
+  function geometriesTouch(g1, g2) {
+    var b1 = geometryBBox(g1), b2 = geometryBBox(g2);
+    if (b1[0] > b2[2] || b2[0] > b1[2] || b1[1] > b2[3] || b2[1] > b1[3]) return false;
+    var p1 = polysOf(g1), p2 = polysOf(g2), i, j, k, m;
+    function anyVertexIn(polysA, polysB) {
+      for (var a = 0; a < polysA.length; a++) {
+        var ring = polysA[a][0] || [];
+        for (var v = 0; v < ring.length; v++) {
+          for (var b = 0; b < polysB.length; b++) if (polygonContains(polysB[b], ring[v][0], ring[v][1])) return true;
+        }
+      }
+      return false;
+    }
+    if (anyVertexIn(p1, p2) || anyVertexIn(p2, p1)) return true;
+    for (i = 0; i < p1.length; i++) {
+      var r1 = p1[i][0] || [];
+      for (j = 0; j < p2.length; j++) {
+        var r2 = p2[j][0] || [];
+        for (k = 1; k < r1.length; k++) {
+          for (m = 1; m < r2.length; m++) if (segmentsCross(r1[k - 1], r1[k], r2[m - 1], r2[m])) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Centre of a region: the area centroid of its largest polygon (outer ring only). A metro that spills a
+  // little across a state line has its centre in the state it belongs to.
+  function geometryAnchor(geom) {
+    var best = null, bestArea = -1;
+    polysOf(geom).forEach(function (poly) {
+      var ring = poly[0] || [], a = 0, cx = 0, cy = 0;
+      for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        var f = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+        a += f; cx += (ring[j][0] + ring[i][0]) * f; cy += (ring[j][1] + ring[i][1]) * f;
+      }
+      var area = Math.abs(a) / 2;
+      if (area > bestArea && a !== 0) { bestArea = area; best = [cx / (3 * a), cy / (3 * a)]; }
+    });
+    if (best) return best;
+    var b = geometryBBox(geom);
+    return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+  }
+
+  // ---- distance ---------------------------------------------------------------
+
+
+
+  // Short distances only (tens of miles): positions are flattened around the query point
+  // (longitude scaled by cos(latitude)) and measured in metres. Over 10 miles that is accurate to
+  // a few metres; it is not meant for continental distances.
+  var M_PER_DEG = 111195;   // metres per degree of latitude (spherical earth, R = 6371.0088 km)
+  var MILE_M = 1609.344;
+
+  // Metres from (lon, lat) to the nearest point of the geometry; 0 inside or on its edge.
+  function distanceToGeometry(geom, lon, lat) {
+    if (geometryContains(geom, lon, lat)) return 0;
+    var kx = M_PER_DEG * Math.cos(lat * Math.PI / 180), ky = M_PER_DEG;
+    var best = Infinity;
+    polysOf(geom).forEach(function (poly) {
+      poly.forEach(function (ring) { // outer ring and holes: a point inside a hole is outside the polygon
+        for (var i = 1; i < ring.length; i++) {
+          var ax = (ring[i - 1][0] - lon) * kx, ay = (ring[i - 1][1] - lat) * ky;
+          var bx = (ring[i][0] - lon) * kx, by = (ring[i][1] - lat) * ky;
+          var dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+          var t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+          var px = ax + t * dx, py = ay + t * dy;
+          var d2 = px * px + py * py;
+          if (d2 < best) best = d2;
+        }
+      });
+    });
+    return Math.sqrt(best);
+  }
+
   function countVertices(geom) {
     var n = 0;
     polysOf(geom).forEach(function (poly) { poly.forEach(function (ring) { n += ring.length; }); });
@@ -265,6 +347,9 @@
       color: def.color || null,
       colorBy: def.colorBy || null,
       highlight: def.highlight !== false,
+      nearMiles: (typeof def.nearMiles === 'number' && isFinite(def.nearMiles) && def.nearMiles > 0) ? def.nearMiles : 0,
+      root: def.root === true,
+      parentProperty: def.parentProperty || null,
       features: built
     };
   }
@@ -282,28 +367,153 @@
     return { matches: matches, unnamed: unnamed };
   }
 
+  // Every named region of the layer that contains the point or lies within `meters` of it:
+  // [{ feature, name, code, distance (metres, 0 = contains), order }], containing first, then nearest first.
+  // The bounding box (widened by the radius) is the cheap test; the exact distance runs only for survivors.
+  function matchNear(layer, lat, lon, meters) {
+    var dLat = meters / M_PER_DEG;
+    var dLon = dLat / Math.max(Math.cos(lat * Math.PI / 180), 0.01);
+    var out = [];
+    layer.features.forEach(function (e, idx) {
+      var b = e.bbox;
+      if (lon < b[0] - dLon || lon > b[2] + dLon || lat < b[1] - dLat || lat > b[3] + dLat) return;
+      if (!e.code) return;
+      var d = distanceToGeometry(e.feature.geometry, lon, lat);
+      if (d <= meters) out.push({ feature: e.feature, name: String(e.name || e.code), code: e.code, distance: d, order: idx });
+    });
+    out.sort(function (a, b) { return (a.distance - b.distance) || (a.order - b.order); });
+    return out;
+  }
+
   // layers: result of buildLayer() in output order.
-  // returns { tokens:[code...], value:'a b c', perLayer:[{id,label,match,matches}], warnings:[string] }
+  // returns { tokens:[token...], value:'a b c', perLayer:[{id,label,match,matches,near,unnamed,gap}],
+  //           warnings:[string], blocked:[string] }
+  //
+  // `region def` builds a tree (MeshCore docs/cli_commands.md): a plain token is created as a child of the
+  // cursor and the cursor moves to it; `name|jump` creates name, then moves the cursor to `jump`.
+  // With none of the layer keys below the layers form a plain chain, layer 1 > layer 2 > ..., and the value
+  // is the codes joined by spaces. With any of them the value is serialised from a tree instead:
+  //   root: true           the layer's regions hang off the wildcard `*`
+  //   parentProperty: 'p'  a region's parent is the code stored in its feature property p
+  //                        (for example a state carries the code of its macro region)
+  //   nearMiles: n         every region of the layer within n miles of the point is included, not only the
+  //                        one containing it: the containing region first, then the nearest first
+  // A layer with none of these hangs off the containing region of the nearest layer above that had one;
+  // its near regions (those not containing the point) hang off the region of that layer they are centred in.
   function buildRegionDef(layers, lat, lon) {
     var tokens = [], perLayer = [], warnings = [];
-    layers.forEach(function (layer) {
+    var treeMode = layers.some(function (l) { return l.root || l.parentProperty || l.nearMiles; });
+    var nodes = Object.create(null), order = [];
+    var cursor = null, cursorBefore = [], cursorLayer = -1, cursorLayerBefore = [], picksByLayer = [];
+
+    // A near region that does not contain the point hangs under the region of the layer above that it is
+    // centred in (a Fort Wayne metro seen from an Ohio repeater goes under Indiana even if its outline spills
+    // into Ohio). Failing that: the point's own region if it overlaps it, else the nearest one it overlaps.
+    // A region that contains the point always hangs under the point's own region.
+    function homeParent(li, feature, distance) {
+      var home = cursorBefore[li] || '*';
+      var above = cursorLayerBefore[li];
+      if (!(distance > 0) || above < 0 || !picksByLayer[above]) return home;
+      var cands = picksByLayer[above];
+      // 1. the region of the layer above that the near region is centred in
+      var anchor = geometryAnchor(feature.geometry);
+      for (var a = 0; a < cands.length; a++) {
+        if (geometryContains(cands[a].feature.geometry, anchor[0], anchor[1])) return cands[a].code;
+      }
+      // 2. else the point's own region if the near region overlaps it, else any region it overlaps
+      for (var c = 0; c < cands.length; c++) {
+        if (cands[c].code === home && geometriesTouch(feature.geometry, cands[c].feature.geometry)) return home;
+      }
+      for (var d = 0; d < cands.length; d++) {
+        if (geometriesTouch(feature.geometry, cands[d].feature.geometry)) return cands[d].code;
+      }
+      return home;
+    }
+    function parentOf(li, feature, distance) {
+      var layer = layers[li];
+      if (layer.root) return '*';
+      if (layer.parentProperty) {
+        var v = pick(feature.properties || {}, layer.parentProperty);
+        v = v === null ? '' : String(v).trim();
+        if (CODE_RE.test(v)) return v;
+        warnings.push(layer.label + ': "' + featureName(feature, layer.nameProperty) + '" has no usable parent code in "' +
+          [].concat(layer.parentProperty).join('" / "') + '"; attached to the wildcard.');
+        return '*';
+      }
+      return homeParent(li, feature, distance);
+    }
+    function addNode(code, li, feature, distance) {
+      var p = parentOf(li, feature, distance);
+      if (p !== '*' && !nodes[p]) addAncestor(p, li);
+      nodes[code] = { code: code, parent: p, layer: li };
+      order.push(nodes[code]);
+    }
+    // The parent of a region that is not itself part of the result: take it from the layers above.
+    function addAncestor(code, belowLi) {
+      for (var j = belowLi - 1; j >= 0; j--) {
+        var feats = layers[j].features;
+        for (var k = 0; k < feats.length; k++) {
+          if (feats[k].code === code) { addNode(code, j, feats[k].feature); return; }
+        }
+      }
+      warnings.push(layers[belowLi].label + ': parent "' + code + '" is not a region of any layer above; attached to the wildcard.');
+      nodes[code] = { code: code, parent: '*', layer: -1 };
+      order.push(nodes[code]);
+    }
+
+    layers.forEach(function (layer, i) {
       var r = matchLayer(layer, lat, lon);
       var first = r.matches.length ? r.matches[0] : null;
-      if (r.matches.length > 1) {
+      var picks = layer.nearMiles ? matchNear(layer, lat, lon, layer.nearMiles * MILE_M) : (first ? [first] : []);
+      if (r.matches.length > 1 && !layer.nearMiles) {
         warnings.push(layer.label + ': point is in ' + r.matches.length + ' overlapping regions (' +
           r.matches.map(function (m) { return m.code; }).join(', ') + '); using ' + first.code + '.');
       }
       if (r.unnamed) {
         warnings.push(layer.label + ': point is in ' + r.unnamed + ' polygon(s) with no usable code; skipped.');
       }
-      if (first) {
+      cursorBefore[i] = cursor;
+      cursorLayerBefore[i] = cursorLayer;
+      picksByLayer[i] = picks;
+      if (treeMode) {
+        picks.forEach(function (m) {
+          if (nodes[m.code]) {
+            if (!layer.nearMiles && nodes[m.code].layer !== i) {
+              warnings.push(layer.label + ': code "' + m.code + '" is already used by a higher layer; it is only defined once.');
+            }
+            return;
+          }
+          addNode(m.code, i, m.feature, m.distance);
+        });
+      } else if (first) {
         if (tokens.indexOf(first.code) >= 0) {
           warnings.push(layer.label + ': code "' + first.code + '" is already used by a higher layer; region def would repeat it.');
         }
         tokens.push(first.code);
       }
-      perLayer.push({ id: layer.id, label: layer.label, match: first, matches: r.matches, unnamed: r.unnamed, gap: false });
+      if (first) { cursor = first.code; cursorLayer = i; }
+      perLayer.push({
+        id: layer.id, label: layer.label, match: first, matches: r.matches,
+        near: picks.filter(function (m) { return m.distance > 0; }),
+        unnamed: r.unnamed, gap: false
+      });
     });
+
+    if (treeMode) {
+      // Pre-order walk of the tree; a token takes `|<parent of the next token>` whenever the next token is
+      // not its own child, which moves the cursor back to where the next token belongs.
+      var kids = Object.create(null);
+      order.forEach(function (n) { (kids[n.parent] = kids[n.parent] || []).push(n); });
+      var pre = [];
+      (function walk(parent) {
+        (kids[parent] || []).forEach(function (n) { pre.push(n); walk(n.code); });
+      })('*');
+      pre.forEach(function (n, k) {
+        var next = pre[k + 1];
+        tokens.push(next && next.parent !== n.code ? n.code + '|' + next.parent : n.code);
+      });
+    }
+
     // coverage:"full" layers promise to cover every place the other layers cover. A miss there
     // while some other layer matched is a hole in the data, not a legitimate exclusion.
     layers.forEach(function (layer, i) {
@@ -322,16 +532,25 @@
   }
 
   // Reasons `region def <value>` cannot be pasted into a repeater as-is (empty list = fine).
+  // A token is `name` or `name|jump`; the repeater splits a token at most once on '|', and the jump
+  // target must be `*` or a name created earlier in the same command.
   function commandProblems(value) {
     var problems = [];
     if (!value) return problems;
     var tokens = value.split(' ');
+    var defined = Object.create(null), regions = 0;
     tokens.forEach(function (t) {
-      if (!CODE_RE.test(t)) problems.push('"' + t + '" is not a valid region name for the repeater (lowercase a-z 0-9 _ -, at most ' + FW_MAX_NAME_LEN + ' characters).');
+      var parts = t.split('|');
+      if (parts.length > 2) { problems.push('"' + t + '" has more than one "|"; the repeater splits a token at most once.'); return; }
+      var name = parts[0], jump = parts.length === 2 ? parts[1] : null;
+      if (!CODE_RE.test(name)) problems.push('"' + name + '" is not a valid region name for the repeater (lowercase a-z 0-9 _ -, at most ' + FW_MAX_NAME_LEN + ' characters).');
+      regions++;
+      defined[name] = true;
+      if (jump !== null && jump !== '*' && !defined[jump]) problems.push('"' + t + '": the jump target "' + jump + '" is not defined earlier in the command.');
     });
     var line = 'region def ' + value;
     if (line.length > FW_MAX_LINE_LEN) problems.push('The command line is ' + line.length + ' characters; the repeater accepts at most ' + FW_MAX_LINE_LEN + ' and would cut it off.');
-    if (tokens.length > FW_MAX_REGIONS) problems.push('The command defines ' + tokens.length + ' regions; a repeater holds at most ' + FW_MAX_REGIONS + ' in total.');
+    if (regions > FW_MAX_REGIONS) problems.push('The command defines ' + regions + ' regions; a repeater holds at most ' + FW_MAX_REGIONS + ' in total.');
     return problems;
   }
 
@@ -364,8 +583,10 @@
 
   var MANIFEST_VERSION = 1;
   var MAX_LAYERS = 16;
+  var MAX_NEAR_MILES = 100;
   var LAYER_KEYS = ['id', 'label', 'url', 'nameProperty', 'codeProperty', 'codes', 'groupBy', 'coverage',
-                    'color', 'colorBy', 'highlight', 'optional', 'allowOverlap', 'ignoreCodes'];
+                    'color', 'colorBy', 'highlight', 'optional', 'allowOverlap', 'ignoreCodes',
+                    'root', 'parentProperty', 'nearMiles'];
 
   function isStrOrStrArray(v) {
     return typeof v === 'string' ? v.length > 0 :
@@ -428,7 +649,13 @@
       if (def.coverage !== undefined && def.coverage !== 'partial' && def.coverage !== 'full') errors.push(at + ': "coverage" must be "partial" or "full".');
       if (def.colorBy !== undefined && def.colorBy !== 'feature') errors.push(at + ': "colorBy" can only be "feature".');
       if (def.color !== undefined && (typeof def.color !== 'string' || !/^#[0-9a-fA-F]{3,8}$|^[a-zA-Z]+$/.test(def.color))) errors.push(at + ': "color" must be a hex or named colour.');
-      ['highlight', 'optional', 'allowOverlap'].forEach(function (k) {
+      if (def.nearMiles !== undefined && (typeof def.nearMiles !== 'number' || !isFinite(def.nearMiles) || def.nearMiles <= 0 || def.nearMiles > MAX_NEAR_MILES)) {
+        errors.push(at + ': "nearMiles" must be a number above 0 and at most ' + MAX_NEAR_MILES + '.');
+      }
+      if (def.parentProperty !== undefined && !isStrOrStrArray(def.parentProperty)) errors.push(at + ': "parentProperty" must be a string or array of strings.');
+      if (def.root === true && def.parentProperty !== undefined) warnings.push(at + ': "root" and "parentProperty" are both set; "root" wins and the layer hangs off the wildcard.');
+      if (def.parentProperty !== undefined && def.groupBy !== undefined) warnings.push(at + ': "parentProperty" has no effect together with "groupBy" (grouped regions do not keep their feature properties).');
+      ['highlight', 'optional', 'allowOverlap', 'root'].forEach(function (k) {
         if (def[k] !== undefined && typeof def[k] !== 'boolean') errors.push(at + ': "' + k + '" must be true or false.');
       });
       Object.keys(def).forEach(function (k) {
@@ -444,7 +671,8 @@
     ringLocate: ringLocate, polygonContains: polygonContains, geometryContains: geometryContains,
     mergeFeatures: mergeFeatures, groupFeatures: groupFeatures, slug: slug, featureName: featureName,
     buildLayer: buildLayer, matchLayer: matchLayer, buildRegionDef: buildRegionDef,
-    repeaterCommands: repeaterCommands, parseLatLon: parseLatLon, featureColorOverride: featureColorOverride
+    repeaterCommands: repeaterCommands, parseLatLon: parseLatLon, featureColorOverride: featureColorOverride,
+    distanceToGeometry: distanceToGeometry, geometriesTouch: geometriesTouch, geometryAnchor: geometryAnchor, matchNear: matchNear, MILE_M: MILE_M, MAX_NEAR_MILES: MAX_NEAR_MILES
   };
 
   root.RegionDef = api;

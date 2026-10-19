@@ -142,6 +142,39 @@ says why.
 | `colorBy: "feature"` | use each feature's own `properties.color` |
 | `highlight` | `false` stops the matched polygon being emphasised on the map |
 | `optional` | `true` lets the page still show a command when this layer is unavailable (flagged as incomplete). Default: a layer that fails to load, has no valid polygons, hits a polygon with no usable code, or breaks its coverage promise makes the page withhold the command, because pasting a command with a missing code would set the wrong regions |
+| `root` | `true` makes this layer's regions top-level: each is a child of `*` in the generated command (written `name\|*`), not nested under the other layers. Use it for the mesh region (`oki`) and the macro regions |
+| `parentProperty` | feature property holding the code of this region's parent, for example `region` on the state layer pointing at `us-midwest` or `us-southeast`. The parent must come from another layer. Cannot be combined with `groupBy` or `root` |
+| `nearMiles` | 1 to 100. The layer adds every region within this many miles of the point, not only the one containing it, so a border repeater carries both designations. Neighbours bring their parent along (a Kentucky state code brings `us-southeast`) |
+
+### Border repeaters
+
+A repeater near a boundary should carry the regions on both sides. Two things handle this:
+
+- **The ring.** The page draws a dashed ring (default: the largest `nearMiles` of any layer, else 10
+  miles; change it in the box under the address field or with `?ring=` in the link) and lists every
+  region the ring touches, in every layer, as **NEAR** rows with the distance. Those regions are
+  also outlined on the map. This is display only.
+- **The command.** Only layers with `nearMiles` add neighbours to the command. Typical settings:
+  mesh `root: true, nearMiles: 10`; macro `root: true`; state `parentProperty: region, nearMiles: 10`;
+  metro `nearMiles: 10`.
+
+Once any layer uses `root`, `parentProperty` or `nearMiles`, the command is a tree rather than a
+chain. MeshCore reads `region def` with a cursor that starts at `*`; a plain token becomes a child
+of the cursor and moves the cursor to it, and `name|jump` creates `name` and then moves the cursor to
+`jump` (`*` is the root). The page writes the tree in pre-order and adds `|parent` wherever the
+next token is not a child of the current one:
+
+| Where the repeater is | Command |
+|---|---|
+| deep in Ohio | `oki\|* us-midwest us-oh` |
+| Ohio side near Kentucky, inside cvg | `oki\|* us-midwest us-oh cvg\|* us-southeast us-ky` |
+| inside cvg, near the Dayton metro | `oki\|* us-midwest us-oh cvg\|us-oh day` |
+| Kentucky side near Ohio and Indiana | `oki\|* us-southeast us-ky cvg\|* us-midwest us-oh\|us-midwest us-in` |
+
+(`\|` is a literal `|`; escaped only so the table renders.) A region that contains the repeater hangs under the repeater's own state. A neighbouring region the ring
+reaches hangs under the state it overlaps: the repeater's own state if it overlaps that, otherwise the nearest
+neighbouring state it overlaps (so an Indiana-only metro seen from an Ohio repeater lands under `us-in`). The 160-character line limit and 32-region limit still apply and are checked. With none of
+these keys set, the command is the plain chain it always was.
 
 ### Canonical codes
 
@@ -257,6 +290,8 @@ degraded states with fixtures and also run a smoke test against the deployed
 ## Tests
 
 - `tests/unit/test-region-def.js`: geometry, codes, coverage, manifest validation, wiring.
+- `tests/unit/test-region-def-near.js`: distance to a polygon, the ring, and the tree-shaped command
+  (exact strings for the Ohio/Kentucky/Indiana/cvg/day cases).
 - `tests/unit/test-region-layers-manifest.js`: `layers.json.example` must always validate. If you
   commit a real `public/region-layers/layers.json` it is checked too: every file exists and
   parses, every layer has polygons, every polygon has a canonical code (in the layer's `codes`

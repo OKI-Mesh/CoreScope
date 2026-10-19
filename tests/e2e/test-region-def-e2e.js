@@ -355,6 +355,57 @@ async function typeAndGo(pg, value) { await pg.fill('#rd-input', value); await p
     });
   });
 
+  // ---------------------------------------------------------------- border repeaters (ring + tree command)
+  // Ohio sits above 39.1 and Kentucky below it; the CVG metro straddles the line, DAY sits just north of CVG.
+  const borderMutate = (f) => {
+    const midwest = f['macro-midwest.geojson'], southeast = f['macro-southeast.geojson'];
+    midwest.features = [polyFeature({}, box(-90, 39.1, -80, 45))];
+    southeast.features = [polyFeature({}, box(-90, 33, -80, 39.1))];
+    f['states.geojson'].features = [
+      polyFeature({ shapeISO: 'US-OH', meshregion: 'OKI', region: 'us-midwest' }, box(-85, 39.1, -82, 41)),
+      polyFeature({ shapeISO: 'US-KY', meshregion: 'OKI', region: 'us-southeast' }, box(-85, 37, -82, 39.1)),
+      polyFeature({ shapeISO: 'US-IN', meshregion: 'OKI', region: 'us-midwest' }, box(-88, 37, -85, 41))
+    ];
+    f['metros.geojson'].features = [
+      polyFeature({ iata: 'CVG' }, box(-84.9, 38.8, -84.0, 39.4)),
+      polyFeature({ iata: 'DAY' }, box(-84.6, 39.4, -83.8, 40.0))
+    ];
+    const L = f['layers.json'].layers;
+    L[0].root = true;
+    L[1].root = true; L[1].nearMiles = 10;
+    L[2].parentProperty = 'region'; L[2].nearMiles = 10; L[2].codes = ['us-oh', 'us-ky', 'us-in'];
+    L[3].nearMiles = 10; L[3].codes = ['cvg', 'day'];
+    L.unshift(L.splice(1, 1)[0]); // mesh first, so oki is the first top-level token
+  };
+  await step('border repeater: the ring lists every region it touches and the command is a tree', async () => {
+    await withPage({ mutate: borderMutate }, async (pg) => {
+      // Ohio side of the line, inside CVG: Kentucky and its macro region come along.
+      await goto(pg, '?lat=39.15&lon=-84.0');
+      await expectCommand(pg, 'oki|* us-midwest us-oh cvg|* us-southeast us-ky');
+      const near = await pg.$$eval('.rd-row-near', (els) => els.map((e) => e.textContent));
+      ok(near.some((t) => /Kentucky|US-KY|us-ky/.test(t)), 'state row should list Kentucky as near: ' + near.join(' | '));
+      ok(await pg.$('.rd-b-near'), 'a NEAR badge should be shown');
+      ok(await pg.$('.rd-cmd-near'), 'the command should say why it has extra codes');
+      // Deep inside Ohio, nothing is near.
+      await goto(pg, '?lat=40.5&lon=-83.5');
+      await pg.reload();
+      await expectCommand(pg, 'oki|* us-midwest us-oh');
+      eq((await pg.$$('.rd-b-near')).length, 0, 'no NEAR rows deep inside Ohio');
+      // Inside CVG near Dayton: both metros under the home state.
+      await goto(pg, '?lat=39.35&lon=-84.3');
+      await pg.reload();
+      await expectCommand(pg, 'oki|* us-midwest us-oh cvg|us-oh day');
+    });
+  });
+
+  await step('border repeater: ring radius 0 hides the NEAR rows but keeps the layer nearMiles command', async () => {
+    await withPage({ mutate: borderMutate }, async (pg) => {
+      await goto(pg, '?lat=39.15&lon=-84.0&ring=0');
+      await expectCommand(pg, 'oki|* us-midwest us-oh cvg|* us-southeast us-ky');
+      eq((await pg.$$('.rd-b-near')).length, 0, 'no NEAR rows');
+    });
+  });
+
   await step('coverage:"full" mesh layer: a state outside the mesh region is a data gap and the command is withheld', async () => {
     await withPage({ mutate: (f) => { f['layers.json'].layers[1].coverage = 'full'; } }, async (pg) => {
       const p = point('Detroit MI');

@@ -14,5 +14,10 @@
   },
   "remoteEnv": {
     "CI": "true"
-  }
+  },
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": { "label": "CoreScope dev", "onAutoForward": "silent" }
+  },
+  "postStartCommand": "PORT=8080 setsid nohup node scripts/dev-server.js > /tmp/dev-server.log 2>&1 &"
 }
