@@ -82,6 +82,19 @@ type DB struct {
 	// GetEncryptedChannels. Nil in production.
 	encChannelsQueryHook func()
 
+	// Region node index (#214, region_node_index.go). regionSnap is nil until
+	// the background index publishes its first build; until then GetNodes
+	// falls back to the region query, coalesced per region set by
+	// regionColdSF and run one at a time under regionColdMu, so the fallback
+	// can hold at most one read connection.
+	regionSnap   atomic.Pointer[regionNodeSnapshot]
+	regionColdSF singleflight.Group
+	regionColdMu sync.Mutex
+	// Test-only hook fired inside regionColdMu, immediately before the
+	// fallback query (once per coalesced miss, not once per caller). Nil in
+	// production.
+	regionColdHook func()
+
 	// Channel messages cache, keyed by hash+limit+offset+region. Unlike
 	// GetChannels, this previously had no cache at all — every page
 	// view/poll re-ran the full paginated query.
@@ -1139,29 +1152,20 @@ func (db *DB) GetNodes(limit, offset int, role, search, before, lastHeard, sortB
 	if region != "" {
 		codes := normalizeRegionCodes(region)
 		if len(codes) > 0 {
-			placeholders := make([]string, len(codes))
-			regionArgs := make([]interface{}, len(codes))
-			for i, c := range codes {
-				placeholders[i] = "?"
-				regionArgs[i] = c
+			// #214: membership comes from the region node index, or its gated
+			// fallback before the first build, so the count and the page below
+			// no longer each re-join every advert. Passed as one JSON
+			// parameter so the parameter count never grows with node count.
+			pubkeys, err := db.regionPubkeys(codes)
+			if err != nil {
+				return nil, 0, nil, err
 			}
-			joinCond := "obs.rowid = o.observer_idx"
-			if !db.isV3 {
-				joinCond = "obs.id = o.observer_id"
+			list, err := json.Marshal(pubkeys)
+			if err != nil {
+				return nil, 0, nil, err
 			}
-			// #1143: from_pubkey is a dedicated, indexed column populated at
-			// ingest (and backfilled) for ADVERT rows specifically so pubkey
-			// lookups don't need to JSON_EXTRACT + parse decoded_json per row.
-			subq := fmt.Sprintf(`public_key IN (
-				SELECT DISTINCT t.from_pubkey
-				FROM transmissions t
-				JOIN observations o ON o.transmission_id = t.id
-				JOIN observers obs ON %s
-				WHERE t.payload_type = 4
-				AND UPPER(TRIM(obs.iata)) IN (%s)
-			)`, joinCond, strings.Join(placeholders, ","))
-			where = append(where, subq)
-			args = append(args, regionArgs...)
+			where = append(where, "public_key IN (SELECT value FROM json_each(?))")
+			args = append(args, string(list))
 		}
 	}
 
