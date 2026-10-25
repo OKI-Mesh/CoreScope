@@ -356,6 +356,18 @@ func main() {
 		log.Printf("[server] readiness: ready=true (background init complete)")
 	}()
 
+	// Region node index (#214). Region-filtered /api/nodes reads a background
+	// snapshot instead of joining every advert per request. Its first build
+	// takes tens of seconds on a large database, so it starts only after
+	// readiness and never lands inside the startup or deploy health window;
+	// until it finishes, GetNodes uses the gated fallback query.
+	regionIdx := db.newRegionNodeIndex(regionNodeIndexInterval)
+	go func() {
+		initWg.Wait()
+		regionIdx.Start()
+	}()
+	defer regionIdx.Stop()
+
 	// WebSocket hub
 	hub := NewHub()
 	hub.SetAllowedOrigins(cfg.CORSAllowedOrigins)
@@ -533,6 +545,11 @@ func main() {
 		if stopAnalyticsRecomp != nil {
 			stopAnalyticsRecomp()
 		}
+		// Same reason for the region node index (#214): Stop cancels its
+		// background build and waits for it to return. A request already in
+		// its fallback query is an HTTP request like any other and is drained
+		// by httpServer.Shutdown below.
+		regionIdx.Stop()
 
 		// 2. Gracefully drain HTTP connections (up to 15s)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
