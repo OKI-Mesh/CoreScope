@@ -21,7 +21,7 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/mosquitto.conf /etc/mosquitto/mosquitto.conf
 COPY docker/Caddyfile /etc/caddy/Caddyfile
 
-# Create data directory for SQLite + Mosquitto persistence + Caddy certs
+# Create data directory for Mosquitto persistence + Caddy certs
 RUN mkdir -p /app/data /var/lib/mosquitto /data/caddy && \
     chown -R node:node /app/data && \
     chown -R mosquitto:mosquitto /var/lib/mosquitto

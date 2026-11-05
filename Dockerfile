@@ -2,12 +2,6 @@
 # Build stage always runs natively on the builder's arch ($BUILDPLATFORM) and
 # cross-compiles to $TARGETOS/$TARGETARCH. No QEMU for compilation.
 #
-# The SQLite driver is github.com/mattn/go-sqlite3, which is cgo, so the Go
-# toolchain alone can no longer cross-compile this: it needs a C compiler that
-# can target the other architecture. `zig cc` is that compiler. Targeting musl
-# makes the result fully static (see -extldflags below), so the runtime stage
-# has no libc dependency on the base image at all.
-#
 # BUILDPLATFORM is auto-set by buildx; default to linux/amd64 so plain
 # `docker build` (without buildx) doesn't fail on an empty platform string.
 ARG BUILDPLATFORM=linux/amd64
@@ -26,7 +20,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-# Build server (pure-Go sqlite — no CGO needed, cross-compiles cleanly)
+# Build server (pure Go, CGO disabled: cross-compiles without a C toolchain)
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags "-X main.Version=${APP_VERSION} -X main.Commit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" -o /corescope-server ./cmd/server
 
@@ -55,10 +49,6 @@ COPY --from=builder /corescope-server /corescope-ingestor /corescope-decrypt /co
 # Frontend assets + config
 COPY public/ ./public/
 COPY config.example.json channel-rainbow.json ./
-
-# Bake git commit SHA — manage.sh and CI write .git-commit before build
-# Default to "unknown" if not provided
-RUN echo "unknown" > .git-commit
 
 # Supervisor + Mosquitto + Caddy config
 COPY docker/supervisord-go.conf /etc/supervisor/conf.d/supervisord.conf
