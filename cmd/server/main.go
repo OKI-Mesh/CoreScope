@@ -205,6 +205,9 @@ func main() {
 	// In-memory packet store
 	store := NewPacketStore(db, cfg.PacketStore, cfg.CacheTTL)
 	store.config = cfg
+	if err := store.StartNodeCache(ctx); err != nil {
+		log.Fatalf("[store] %v", err)
+	}
 
 	// Load the persisted neighbor graph BEFORE the packet load so the
 	// chunked loader can resolve relay-hop pubkeys from path_json. Since

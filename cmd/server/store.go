@@ -123,6 +123,17 @@ func (o *StoreObs) ParsedTime() (time.Time, bool) {
 	return o.tsParsed, o.tsParsedOK
 }
 
+// StartNodeCache loads the first node snapshot before returning, so the first
+// request never sees an empty node list, then keeps it fresh in the background
+// until ctx is cancelled.
+func (s *PacketStore) StartNodeCache(ctx context.Context) error {
+	if err := s.RefreshNodeCache(ctx); err != nil {
+		return fmt.Errorf("initial node cache: %w", err)
+	}
+	go s.RunNodeCacheRefresher(ctx)
+	return nil
+}
+
 // ParsedDecoded returns the parsed DecodedJSON map, caching the result.
 // Thread-safe via sync.Once — the first call parses, subsequent calls return cached.
 func (tx *StoreTx) ParsedDecoded() map[string]interface{} {
