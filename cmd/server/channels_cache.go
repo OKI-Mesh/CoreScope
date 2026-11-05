@@ -34,6 +34,10 @@ func channelsCacheKey(region string, includeEncrypted bool) string {
 type channelsCacheEntry struct {
 	resp ChannelListResponse
 	at   time.Time
+	// background marks a copy written by channelsRefresher (#225). It is
+	// served at any age up to channelsRefreshMaxAge instead of expiring at
+	// the TTL, because the refresher replaces it on its own schedule.
+	background bool
 }
 
 type channelsCacheField struct {
@@ -47,6 +51,19 @@ func (s *Server) isChannelsListCacheStale(cachedAt time.Time) bool {
 		return true
 	}
 	return time.Since(cachedAt) >= s.effectiveChannelsCacheTTL()
+}
+
+// channelsEntryServable reports whether a cached channel list may be returned
+// without a rebuild: a background copy up to channelsRefreshMaxAge, any other
+// copy until the TTL.
+func (s *Server) channelsEntryServable(e *channelsCacheEntry) bool {
+	if e == nil {
+		return false
+	}
+	if e.background {
+		return time.Since(e.at) < channelsRefreshMaxAge
+	}
+	return !s.isChannelsListCacheStale(e.at)
 }
 
 func (s *Server) fetchChannelsList(region string, includeEncrypted bool) (ChannelListResponse, error) {

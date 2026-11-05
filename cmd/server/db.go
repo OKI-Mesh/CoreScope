@@ -2050,6 +2050,19 @@ func (db *DB) setEncChannelsCache(key string, res []map[string]interface{}) {
 	db.encChannelsCache[key] = dbchannelsCacheEntry{res: res, exp: time.Now().Add(channelsCacheTTL)}
 }
 
+// dropChannelsCaches discards the cached GetChannels and GetEncryptedChannels
+// results for key, so the next call reads the database. The background
+// channel-list refresh (#225) calls this first; otherwise it would re-store a
+// result up to channelsCacheTTL old under a fresh timestamp.
+func (db *DB) dropChannelsCaches(key string) {
+	db.channelsCacheMu.Lock()
+	delete(db.channelsCache, key)
+	db.channelsCacheMu.Unlock()
+	db.encChannelsCacheMu.Lock()
+	delete(db.encChannelsCache, key)
+	db.encChannelsCacheMu.Unlock()
+}
+
 // getMsgCache/setMsgCache cache GetChannelMessages results, keyed by
 // hash+limit+offset+region. GetChannelMessages previously had no cache at
 // all, so every page view/poll re-ran the full paginated query even though
