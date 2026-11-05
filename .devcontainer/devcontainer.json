@@ -1,8 +1,8 @@
 {
   "name": "CoreScope (CI parity)",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/CoreScope",
   "postCreateCommand": "npm ci --production=false && npx playwright install --with-deps chromium",
   "customizations": {
     "vscode": {

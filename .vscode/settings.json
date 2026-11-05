@@ -1,10 +1,8 @@
 {
     "go.testFlags": [
-        "-timeout=120s"
+        "-timeout=15m"
     ],
     "go.testEnvVars": {
-        "DOCKER_HOST": "unix:///Users/rwilson2/.colima/default/docker.sock",
-        "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE": "/var/run/docker.sock",
         "TEST_POSTGRES_IMAGE": "imresamu/postgis:18-3.6"
     }
 }

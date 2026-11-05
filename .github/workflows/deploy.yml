@@ -38,9 +38,6 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  STAGING_COMPOSE_FILE: docker-compose.staging.yml
-  STAGING_SERVICE: staging-go
-  STAGING_CONTAINER: corescope-staging-go
   GO_VERSION: '1.26'
 
 # Pipeline:
@@ -264,6 +261,20 @@ jobs:
     # failed before a test ran. 24.04 is the image every green run used. Move
     # back to ubuntu-latest only alongside a Playwright that supports it.
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: imresamu/postgis:18-3.6
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      E2E_PG_URL: postgres://postgres:postgres@localhost:5432
     defaults:
       run:
         shell: bash
@@ -313,91 +324,6 @@ jobs:
 
       - name: Instrument frontend JS for coverage
         run: sh scripts/instrument-frontend.sh
-
-      - name: Freshen fixture timestamps
-        run: bash tools/freshen-fixture.sh test-fixtures/e2e-fixture.db
-
-      - name: Migrate fixture DB to current schema (#1287)
-        # Server now ASSERTs schema is migrated and refuses to start
-        # otherwise (cmd/server/main.go: dbschema.AssertReady). In prod
-        # the ingestor owns dbschema.Apply, but CI starts only the
-        # server against the committed e2e fixture — so we run the
-        # standalone migrate tool here to bring the fixture up to the
-        # required shape before the server boots.
-        run: ./corescope-migrate -db test-fixtures/e2e-fixture.db -baseline-stamp-migrate
-
-      - name: Seed observer IATA codes (post-migration-reconstruction fixture repair)
-        run: |
-          sqlite3 test-fixtures/e2e-fixture.db "UPDATE observers SET iata = CASE (rowid % 5) WHEN 0 THEN 'IND' WHEN 1 THEN 'FWA' WHEN 2 THEN 'EVV' WHEN 3 THEN 'CVG' WHEN 4 THEN 'DAY' END WHERE iata IS NULL OR iata = '';"         
-
-      - name: Seed grouped-packet row for #1486 collapse test
-        # The committed fixture has 499 packets, each with exactly ONE
-        # observation, so the packets-page renders only flat
-        # (select-hash) rows. The #1486 repro needs at least one grouped
-        # (toggle-select) row. Insert a NEW transmission with 3
-        # observations.
-        #
-        # The server's async hash-migrate (cmd/server/hash_migrate.go)
-        # recomputes `transmissions.hash` from `raw_hex` via
-        # ComputeContentHash(), so the inserted hash MUST equal that
-        # function's output for the chosen raw_hex — otherwise the row
-        # gets relabelled and the E2E can't find it.
-        #
-        # raw_hex 15000102030405060708090a0b0c0d0e0f
-        #   → header=0x15 (route_type=1, payload_type=5)
-        #   → ComputeContentHash(...) = fae0c9e6d357a814
-        #
-        # The first_seen / observation timestamps are pinned to a date
-        # within retentionHours but outside the default 15-min UI
-        # window so the row is hidden in the default view (keeping
-        # test-e2e-playwright's first-10-rows hex-pane test
-        # unaffected) and reachable via the explicit ?timeWindow=0
-        # deep-link the #1486 test uses.
-        run: |
-          sqlite3 test-fixtures/e2e-fixture.db <<'SQL'
-          -- Sort the seeded row LAST in BOTH default packets views:
-          --   • flat view sorts by transmissions.id DESC → id=0 puts it last
-          --   • grouped view (#default for the packets page) sorts by
-          --     MAX(observations.timestamp) DESC → we must keep our obs
-          --     timestamps OLDER than every other fixture observation.
-          -- Fixture (after freshen) has obs timestamps spanning
-          --   2026-05-17 16:01:39Z .. 2026-05-28 00:00:00Z (max).
-          --   Note: freshen only shifts transmissions.first_seen forward
-          --   to ~now; observation.timestamp is left alone except for
-          --   the timestamp=0 case.
-          -- Use 2026-05-15 (~2 days older than the oldest fixture obs)
-          -- so our row sorts LAST in the grouped view too, keeping
-          -- test-e2e-playwright's first-10-rows hex-pane test
-          -- unaffected. The #1486 test still reaches the row via the
-          -- explicit hash + ?timeWindow=0 deep-link.
-          INSERT INTO transmissions(id,raw_hex,hash,first_seen,route_type,payload_type,payload_version,decoded_json,channel_hash,from_pubkey)
-            VALUES (0,'15000102030405060708090a0b0c0d0e0f','fae0c9e6d357a814','2026-05-15T00:00:00Z',1,5,0,'{"type":"CHAN","channel":"#test","text":"#1486 fixture"}',NULL,NULL);
-          INSERT INTO observations(transmission_id,observer_idx,direction,snr,rssi,score,path_json,timestamp,resolved_path) VALUES
-            (0,1,'rx',5.0,-95,0,'["AA"]',CAST(strftime('%s','2026-05-15T00:00:00Z') AS INTEGER),'["aa00000000000000000000000000000000000000000000000000000000000000"]'),
-            (0,2,'rx',5.5,-92,0,'["BB"]',CAST(strftime('%s','2026-05-15T00:00:00Z') AS INTEGER),'["bb00000000000000000000000000000000000000000000000000000000000000"]'),
-            (0,3,'rx',6.0,-90,0,'["CC"]',CAST(strftime('%s','2026-05-15T00:00:00Z') AS INTEGER),'["cc00000000000000000000000000000000000000000000000000000000000000"]');
-          -- #1791 fixture: a single GRP_DATA (payload_type=6) packet so the
-          -- E2E "Group Data filter" test has at least one row to filter on.
-          -- Use an obs timestamp within the default UI window so the row
-          -- appears with no time-window override.
-          --
-          -- raw_hex header byte 0x19 = bits 5-2 (payload)=0110=6 (GRP_DATA),
-          --                            bits 1-0 (route)=01=1 (FLOOD).
-          -- path_len byte 0x00 = hash_size=1, hash_count=0 (zero-hop on-wire,
-          -- typical GRP_DATA going FLOOD). path_json/resolved_path are kept
-          -- EMPTY so the rendered hop-row count matches the hex-path byte
-          -- count (a prior fixture used path_json=["AA"] but raw_hex
-          -- path_len=0, which broke the "hex strip Path range matches hop
-          -- row count" E2E).
-          --
-          -- Note: id=-1000000 is a deliberately out-of-band sentinel id so
-          -- this synthetic fixture row cannot collide with real ingested
-          -- transmissions (real ids are positive autoincrement values).
-          INSERT INTO transmissions(id,raw_hex,hash,first_seen,route_type,payload_type,payload_version,decoded_json,channel_hash,from_pubkey)
-            VALUES (-1000000,'19000102030405060708090a0b0c0d0e0f','17910000deadbeef',strftime('%Y-%m-%dT%H:%M:%SZ','now'),1,6,0,'{"type":"GRP_DATA","channel":"#test","raw":"deadbeef"}',NULL,NULL);
-          INSERT INTO observations(transmission_id,observer_idx,direction,snr,rssi,score,path_json,timestamp,resolved_path) VALUES
-            (-1000000,1,'rx',7.0,-88,0,'[]',CAST(strftime('%s','now') AS INTEGER),'[]');
-          SQL
 
       - name: Start Go server with fixture DB
         run: bash scripts/e2e-fresh-server.sh
@@ -772,13 +698,14 @@ jobs:
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
           echo "Build: version=$APP_VERSION commit=$GIT_COMMIT time=$BUILD_TIME"
 
-      - name: Build Go Docker image (local staging)
+      - name: Build Go Docker image
         run: |
-          GIT_COMMIT="${{ steps.meta.outputs.git_commit }}" \
-          APP_VERSION="${{ steps.meta.outputs.app_version }}" \
-          BUILD_TIME="${{ steps.meta.outputs.build_time }}" \
-          docker compose -f "$STAGING_COMPOSE_FILE" -p corescope-staging build "$STAGING_SERVICE"
-          echo "Built Go staging image ✅"
+          docker build \
+            --build-arg GIT_COMMIT="${{ steps.meta.outputs.git_commit }}" \
+            --build-arg APP_VERSION="${{ steps.meta.outputs.app_version }}" \
+            --build-arg BUILD_TIME="${{ steps.meta.outputs.build_time }}" \
+            -t corescope:ci .
+          echo "Built Go image ✅"
 
       # #107: publish on a normal master push AND on a tag-ref workflow_dispatch
       # (the release-fast-path fallback), so the fallback actually pushes
