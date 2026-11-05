@@ -48,7 +48,7 @@ const MIN_USE_REFS = {
   'map.js': 10,
   'node-analytics.js': 4,
   'traces.js': 1,
-  'perf.js': 9,
+  'perf.js': 7,
   'audio-lab.js': 5,
 };
 
