@@ -189,7 +189,8 @@ jobs:
           PREFLIGHT_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
           set -e
-          git fetch origin master --depth=50 2>&1 | tail -3 || true
+          # Must succeed: the XSS check below diffs against origin/master (#229).
+          git fetch origin master --depth=50
           # Materialize PR body to a file for the opt-out parser.
           printf '%s' "$PR_BODY" > /tmp/pr-body.md
           PREFLIGHT_PR_BODY=/tmp/pr-body.md bash scripts/check-xss-sinks.sh --diff origin/master
@@ -258,7 +259,11 @@ jobs:
   e2e-test:
     name: "🎭 Playwright E2E Tests"
     needs: [changes, go-test]
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest (#229): when ubuntu-latest moved to 26.04 the
+    # installed Playwright could not provide Chromium there and every E2E run
+    # failed before a test ran. 24.04 is the image every green run used. Move
+    # back to ubuntu-latest only alongside a Playwright that supports it.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
@@ -298,10 +303,13 @@ jobs:
       - name: Install npm dependencies
         run: npm ci --production=false
 
+      # No 2>/dev/null || true (#229). E2E cannot run without the browser, so a
+      # failed install must fail this step with its own error, not surface
+      # later as "Executable doesn't exist" inside the test run.
       - name: Install Playwright browser
         run: |
-          npx playwright install chromium 2>/dev/null || true
-          npx playwright install-deps chromium 2>/dev/null || true
+          npx playwright install chromium
+          npx playwright install-deps chromium
 
       - name: Instrument frontend JS for coverage
         run: sh scripts/instrument-frontend.sh
