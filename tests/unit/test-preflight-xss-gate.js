@@ -98,6 +98,24 @@ for (const c of cases) {
   }
 }
 
+// --diff must fail closed (#229). When git diff could not run (missing base or
+// merge base), the gate used to report "no changes to scan" and exit 0, passing
+// without scanning anything.
+{
+  const res = spawnSync('bash', [SCRIPT, '--diff', 'no-such-ref-229'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  if (res.status !== 2) {
+    console.error(`FAIL: --diff with a missing base — expected exit 2, got ${res.status}`);
+    if (res.stdout) console.error('  stdout:', res.stdout.trim());
+    if (res.stderr) console.error('  stderr:', res.stderr.trim());
+    failed++;
+  } else {
+    console.log('PASS: --diff with a missing base fails closed (exit 2)');
+  }
+}
+
 if (failed > 0) {
   console.error(`\n${failed} assertion(s) failed.`);
   process.exit(1);
