@@ -379,6 +379,11 @@ func main() {
 	srv := NewServer(db, cfg, hub)
 	srv.configDir = configDir
 	srv.store = store
+
+	// All Regions channel list kept warm in the background (#225). Started
+	// just before the listener binds, below; stopped in shutdown.
+	chRefresh := srv.newChannelsRefresher(channelsRefreshInterval)
+	defer chRefresh.Stop()
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 
@@ -550,6 +555,9 @@ func main() {
 		// its fallback query is an HTTP request like any other and is drained
 		// by httpServer.Shutdown below.
 		regionIdx.Stop()
+		// And the channel list refresher (#225). Stop waits up to 5 s for a
+		// rebuild in progress, the same bound as the analytics recomputers.
+		chRefresh.Stop()
 
 		// 2. Gracefully drain HTTP connections (up to 15s)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -577,6 +585,11 @@ func main() {
 
 	// Migrate old content hashes in background (one-time, idempotent).
 	go migrateContentHashesAsync(store, 5000, 100*time.Millisecond)
+
+	// #225: first channel-list rebuild here, after the startup warm-ups and
+	// as the listener binds, so it never lengthens the window in which the
+	// server is not yet accepting connections (#223).
+	chRefresh.Start()
 
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("[server] %v", err)

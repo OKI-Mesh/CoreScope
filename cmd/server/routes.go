@@ -2674,7 +2674,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	cacheKey := channelsCacheKey(region, includeEncrypted)
 
 	if v, ok := s.channelsCache.entries.Load(cacheKey); ok {
-		if e, ok := v.(*channelsCacheEntry); ok && e != nil && !s.isChannelsListCacheStale(e.at) {
+		if e, ok := v.(*channelsCacheEntry); ok && s.channelsEntryServable(e) {
 			w.Header().Set("X-Cache-Age-Seconds", cacheAgeSecondsHeader(time.Since(e.at)))
 			writeJSON(w, e.resp)
 			return
@@ -2683,7 +2683,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 
 	v, err, _ := s.channelsCache.sf.Do(cacheKey, func() (interface{}, error) {
 		if v, ok := s.channelsCache.entries.Load(cacheKey); ok {
-			if e, ok := v.(*channelsCacheEntry); ok && e != nil && !s.isChannelsListCacheStale(e.at) {
+			if e, ok := v.(*channelsCacheEntry); ok && s.channelsEntryServable(e) {
 				return e, nil
 			}
 		}
