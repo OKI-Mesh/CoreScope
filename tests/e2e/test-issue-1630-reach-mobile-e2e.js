@@ -31,13 +31,18 @@ async function pickRepeaterWithReach(page) {
   const list = await page.request.get(BASE + '/api/nodes?role=repeater&limit=80');
   if (!list.ok()) throw new Error('GET /api/nodes failed: ' + list.status());
   const nodes = (await list.json()).nodes || [];
+  const outcomes = {};
+  const tally = (key) => { outcomes[key] = (outcomes[key] || 0) + 1; };
   for (const n of nodes) {
     const r = await page.request.get(BASE + '/api/nodes/' + n.public_key + '/reach?days=30');
-    if (!r.ok()) continue;
+    if (!r.ok()) { tally('http ' + r.status()); continue; }
     const j = await r.json();
-    if (Array.isArray(j.links) && j.links.length >= 2) return n.public_key;
+    const count = Array.isArray(j.links) ? j.links.length : -1;
+    if (count >= 2) return n.public_key;
+    tally('links=' + count + ' tokens=' + (Array.isArray(j.reliable_tokens) ? j.reliable_tokens.length : -1));
   }
-  throw new Error('no repeater with reach links found in fixture');
+  throw new Error('no repeater with reach links found in fixture: ' + nodes.length +
+    ' repeaters checked, outcomes ' + JSON.stringify(outcomes));
 }
 
 async function loadReachPage(page, pubkey) {
