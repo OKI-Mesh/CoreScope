@@ -383,9 +383,15 @@ scan_file() {
 
 scan_diff() {
   local base="$1"
-  local files
-  files=$(git diff "$base"...HEAD --name-only --diff-filter=AM \
-            | grep -E '^public/.*\.(js|html)$' || true)
+  local changed files
+  # Run the diff on its own so its failure is seen (#229). Piped straight into
+  # grep with `|| true`, a missing base or merge base left $files empty, and
+  # the check reported "no changes" and passed without scanning anything.
+  if ! changed=$(git diff "$base"...HEAD --name-only --diff-filter=AM); then
+    echo "check-xss-sinks: git diff $base...HEAD failed; refusing to report no changes" >&2
+    return 2
+  fi
+  files=$(printf '%s\n' "$changed" | grep -E '^public/.*\.(js|html)$' || true)
   [ -z "$files" ] && { echo "check-xss-sinks: no public/**/*.{js,html} changes to scan"; return 0; }
   local rc=0
   local file
