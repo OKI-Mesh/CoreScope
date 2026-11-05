@@ -71,13 +71,13 @@ func TestMoveStaleNodes(t *testing.T) {
 	ctx := t.Context()
 
 	// Insert a node with last_seen 30 days ago
-	err := store.UpsertNode(ctx, "deadbeef1234567890abcdef12345678", "OldNode", "companion", nil, nil, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	err := upsertNode(ctx, store, "deadbeef1234567890abcdef12345678", "OldNode", "companion", nil, nil, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Insert a recent node
-	err = store.UpsertNode(ctx, "aabbccdd1234567890abcdef12345678", "NewNode", "repeater", nil, nil, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
+	err = upsertNode(ctx, store, "aabbccdd1234567890abcdef12345678", "NewNode", "repeater", nil, nil, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestUpsertNodeDefaultTimestamp(t *testing.T) {
 
 	before := time.Now().UTC().Add(-time.Second)
 	// Zero lastSeen → uses ingest time
-	if err := store.UpsertNode(ctx, pk, "Node", "companion", nil, nil, time.Time{}); err != nil {
+	if err := upsertNode(ctx, store, pk, "Node", "companion", nil, nil, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	after := time.Now().UTC().Add(time.Second)
@@ -537,7 +537,7 @@ func TestUpsertNodeWithLatLon(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 	lat, lon := 37.0, -122.0
-	err := store.UpsertNode(ctx, "pk_latlon_0000000000000000000000000000000001", "Node", "repeater", &lat, &lon, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	err := upsertNode(ctx, store, "pk_latlon_0000000000000000000000000000000001", "Node", "repeater", &lat, &lon, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +710,7 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 		t.Errorf("goose version = %d, want %d (latest embedded)", current, latest)
 	}
 
-	for _, tbl := range []string{"nodes", "observers", "transmissions", "observations", "observation_path_hops"} {
+	for _, tbl := range []string{"nodes", "observers", "transmissions", "observations"} {
 		if n := countWhere(t, store, "pg_tables", "schemaname = 'public' AND tablename = $1", tbl); n != 1 {
 			t.Errorf("table %s should exist", tbl)
 		}
@@ -718,8 +718,8 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 	if n := countWhere(t, store, "pg_tables", "schemaname = 'public' AND tablename = $1", "inactive_nodes"); n != 0 {
 		t.Error("inactive_nodes should not exist; nodes carries an inactive flag")
 	}
-	if n := countWhere(t, store, "pg_views", "schemaname = 'public' AND viewname = $1", "packets_v"); n != 1 {
-		t.Error("packets_v view should exist")
+	if n := countWhere(t, store, "pg_views", "schemaname = 'public' AND viewname = $1", "packets_v"); n != 0 {
+		t.Error("packets_v should not exist; packets are read from transmissions and observations")
 	}
 }
 
@@ -731,10 +731,10 @@ func TestMoveStaleNodesMarksInactive(t *testing.T) {
 	const stale = "stale_node_0000000000000000000000000000000000000001"
 	const fresh = "fresh_node_0000000000000000000000000000000000000001"
 
-	if err := store.UpsertNode(ctx, stale, "StaleNode", "repeater", nil, nil, now.AddDate(0, 0, -40)); err != nil {
+	if err := upsertNode(ctx, store, stale, "StaleNode", "repeater", nil, nil, now.AddDate(0, 0, -40)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertNode(ctx, fresh, "FreshNode", "repeater", nil, nil, now.Add(-time.Hour)); err != nil {
+	if err := upsertNode(ctx, store, fresh, "FreshNode", "repeater", nil, nil, now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

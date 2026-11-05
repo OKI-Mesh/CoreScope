@@ -28,8 +28,12 @@
 package main
 
 import (
+	"context"
+	"log"
 	"sort"
 	"strings"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // directHeardAgg accumulates one observer's direct receptions of one node.
@@ -83,7 +87,7 @@ func lastPathHop(pathJSON string) string {
 // transmission is not an ADVERT or carries no decodable pubkey. Mirrors the
 // field probing in trackAdvertPubkey.
 func advertOriginPubkey(tx *StoreTx) string {
-	if tx.PayloadType == nil || *tx.PayloadType != PayloadADVERT || tx.DecodedJSON == "" {
+	if tx.PayloadType == nil || *tx.PayloadType != types.PayloadADVERT || tx.DecodedJSON == "" {
 		return ""
 	}
 	d := tx.ParsedDecoded()
@@ -109,10 +113,10 @@ func directHeardNode(tx *StoreTx, obs *StoreObs, pm *prefixMap) string {
 	}
 	hop := lastPathHop(obs.PathJSON)
 	switch *tx.RouteType {
-	case RouteFlood, RouteTransportFlood:
+	case types.RouteFlood, types.RouteTransportFlood:
 		// Handled below: empty path means the originator, otherwise the last
 		// hop is whoever was heard.
-	case RouteDirect, RouteTransportDirect:
+	case types.RouteDirect, types.RouteTransportDirect:
 		// A direct route normally says nothing about the transmitter, because
 		// the forwarder calls removeSelfFromPath before retransmitting
 		// (firmware Mesh.cpp) and the path left behind is the REMAINING route.
@@ -224,24 +228,25 @@ func (s *PacketStore) loadDirectHeard() directHeardIndex {
 // canRelaySets fetches the two inputs behind the can_relay tri-state badge
 // (#1290, PR #1624): the observers that reported repeat:off, and the
 // observers we have any repeat field for at all. Both are lowercase to match
-// pm.nonRelay and GetNonRelayObserverPubkeys; two case conventions on the
-// same upstream string would be a latent regression. A read failure degrades
-// to "no badge" rather than a wrong badge.
-func (s *PacketStore) canRelaySets() (nonRelay, seen map[string]struct{}) {
+// pm.nonRelay; two case conventions on the same upstream string would be a
+// latent regression. A read failure degrades to "no badge" rather than a
+// wrong badge.
+func (s *PacketStore) canRelaySets(ctx context.Context) (nonRelay, seen map[string]struct{}) {
 	nonRelay = map[string]struct{}{}
 	seen = map[string]struct{}{}
-	if s.db == nil || s.db.conn == nil {
+	if s.db == nil {
 		return nonRelay, seen
 	}
-	if pks, err := s.db.GetNonRelayObserverPubkeys(); err == nil {
-		for _, pk := range pks {
-			nonRelay[strings.ToLower(pk)] = struct{}{}
-		}
+	state, err := s.db.GetObserverRelayState(ctx)
+	if err != nil {
+		log.Printf("can_relay sets: %v", err) // both stay empty: no badge
+		return nonRelay, seen
 	}
-	if pks, err := s.db.GetCanRelaySeenObserverPubkeys(); err == nil {
-		for _, pk := range pks {
-			seen[strings.ToLower(pk)] = struct{}{}
-		}
+	for _, pk := range state.NonRelay {
+		nonRelay[strings.ToLower(pk)] = struct{}{}
+	}
+	for _, pk := range state.Seen {
+		seen[strings.ToLower(pk)] = struct{}{}
 	}
 	return nonRelay, seen
 }

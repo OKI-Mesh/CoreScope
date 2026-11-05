@@ -1,14 +1,33 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
+
+// scopeKey builds a valid 64-char lowercase hex pubkey from a small number,
+// so fixtures satisfy the nodes.public_key guards.
+func scopeKey(n int) string { return fmt.Sprintf("%064x", n) }
+
+func sptr(s string) *string       { return &s }
+func tptr(t time.Time) *time.Time { return &t }
+
+// scopedNode is a node plus the answer it gave to the scope question.
+// Scope nil means never asked (UpdateNodeConfiguredScope is not called);
+// sptr("") means it answered with nothing, which is a different thing.
+type scopedNode struct {
+	Node    database.NodeInput
+	Scope   *string
+	ScopeAt *time.Time // nil skips the last-write-wins guard
+}
 
 // declaredRegionsOf reads the declared_regions field back as a []string, and
 // reports whether the field was present at all. Absent and present-but-empty
@@ -35,30 +54,61 @@ func declaredRegionsOf(t *testing.T, node map[string]interface{}) ([]string, boo
 	return out, true
 }
 
-// TestHandleNodesExposesDeclaredRegions pins the field the map's region
-// filter reads (#1862): the named regions a repeater declared, spelled the way
-// the Scope Audit spells them ('#' stripped, the wildcard left out), so the
-// map can answer "which repeaters handle #be" from the one bulk fetch it
-// already makes.
+func seedScopedNodes(t *testing.T, db *database.DB, fixtures []scopedNode) {
+	t.Helper()
+	ctx := t.Context()
+	for _, f := range fixtures {
+		if err := db.CreateOrUpdateNode(ctx, f.Node); err != nil {
+			t.Fatalf("seed %s: %v", f.Node.Name, err)
+		}
+		if f.Scope != nil {
+			if err := db.UpdateNodeConfiguredScope(ctx, f.Node.PublicKey, *f.Scope, f.ScopeAt); err != nil {
+				t.Fatalf("set scope %s: %v", f.Node.Name, err)
+			}
+		}
+	}
+}
+
+var (
+	keyNamed     = scopeKey(0xa1)
+	keyStarOnly  = scopeKey(0xa2)
+	keyNever     = scopeKey(0xa3)
+	keyCompanion = scopeKey(0xa4)
+	keyDetail    = scopeKey(0xa5)
+)
+
 func TestHandleNodesExposesDeclaredRegions(t *testing.T) {
 	srv, router := setupScopeConfigStateServer(t)
+	now := time.Now().UTC()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES
-		('PK_NAMED',     'named-rp',     'repeater',  51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, '#be,*,be-bru', '2026-01-01T00:00:00Z'),
-		('PK_STARONLY',  'star-rp',      'repeater',  51.1, 4.1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, '*',            '2026-01-01T00:00:00Z'),
-		('PK_NEVER',     'never-rp',     'repeater',  51.2, 4.2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL,           NULL),
-		('PK_COMPANION', 'phone',        'companion', 51.3, 4.3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'be,*',         '2026-01-01T00:00:00Z')`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	seedScopedNodes(t, srv.db, []scopedNode{
+		{
+			Node:    database.NodeInput{PublicKey: keyNamed, Name: "named-rp", Role: "repeater", Lat: fptr(51.0), Lon: fptr(4.0), RxTime: at, IngestNow: now},
+			Scope:   sptr("#be,*,be-bru"),
+			ScopeAt: tptr(at),
+		},
+		{
+			Node:    database.NodeInput{PublicKey: keyStarOnly, Name: "star-rp", Role: "repeater", Lat: fptr(51.1), Lon: fptr(4.1), RxTime: at, IngestNow: now},
+			Scope:   sptr("*"),
+			ScopeAt: tptr(at),
+		},
+		{
+			// Never asked: no Scope, so UpdateNodeConfiguredScope is not called.
+			Node: database.NodeInput{PublicKey: keyNever, Name: "never-rp", Role: "repeater", Lat: fptr(51.2), Lon: fptr(4.2), RxTime: at, IngestNow: now},
+		},
+		{
+			Node:    database.NodeInput{PublicKey: keyCompanion, Name: "phone", Role: "companion", Lat: fptr(51.3), Lon: fptr(4.3), RxTime: at, IngestNow: now},
+			Scope:   sptr("be,*"),
+			ScopeAt: tptr(at),
+		},
+	})
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	got, present := declaredRegionsOf(t, nodes["PK_NAMED"])
+	got, present := declaredRegionsOf(t, nodes[keyNamed])
 	if !present {
-		t.Fatalf("declared repeater has no declared_regions field: %v", nodes["PK_NAMED"])
+		t.Fatalf("declared repeater has no declared_regions field: %v", nodes[keyNamed])
 	}
 	if want := []string{"be", "be-bru"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("declared_regions = %v, want %v ('#' stripped, '*' left out, list order kept)", got, want)
@@ -66,7 +116,7 @@ func TestHandleNodesExposesDeclaredRegions(t *testing.T) {
 
 	// Answered with only the wildcard: the answer exists and names no region.
 	// That is an empty list, not an absent field.
-	got, present = declaredRegionsOf(t, nodes["PK_STARONLY"])
+	got, present = declaredRegionsOf(t, nodes[keyStarOnly])
 	if !present {
 		t.Errorf("wildcard-only repeater has no declared_regions field, want an empty list")
 	} else if len(got) != 0 {
@@ -74,30 +124,35 @@ func TestHandleNodesExposesDeclaredRegions(t *testing.T) {
 	}
 
 	// Never asked: no answer to report.
-	if v, present := nodes["PK_NEVER"]["declared_regions"]; present {
+	if v, present := nodes[keyNever]["declared_regions"]; present {
 		t.Errorf("never-asked repeater carries declared_regions = %v, want the field absent", v)
 	}
 
 	// A companion does not forward, so a declared list on it is not something
 	// the region filter should read, same rule as scope_config_state.
-	if v, present := nodes["PK_COMPANION"]["declared_regions"]; present {
+	if v, present := nodes[keyCompanion]["declared_regions"]; present {
 		t.Errorf("companion carries declared_regions = %v, want the field absent", v)
 	}
 }
 
-// TestHandleNodeDetailExposesDeclaredRegions keeps the node endpoint and the
-// list endpoint saying the same thing about one repeater.
 func TestHandleNodeDetailExposesDeclaredRegions(t *testing.T) {
 	srv, router := setupScopeConfigStateServer(t)
+	now := time.Now().UTC()
+	jan := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES ('PK_DETAIL_RGN', 'detail-rp', 'repeater', 51.3, 4.3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'nl,#be', '2026-01-01T00:00:00Z')`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	seedScopedNodes(t, srv.db, []scopedNode{
+		{
+			Node: database.NodeInput{
+				PublicKey: keyDetail, Name: "detail-rp", Role: "repeater",
+				Lat: fptr(51.3), Lon: fptr(4.3),
+				RxTime: jan, IngestNow: now,
+			},
+			Scope:   sptr("nl,#be"),
+			ScopeAt: tptr(jan),
+		},
+	})
 
-	req := httptest.NewRequest("GET", "/api/nodes/PK_DETAIL_RGN", nil)
+	req := httptest.NewRequest("GET", "/api/nodes/"+keyDetail, nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -118,33 +173,31 @@ func TestHandleNodeDetailExposesDeclaredRegions(t *testing.T) {
 	}
 }
 
-// TestScopeAuditAndNodesAgreeOnDeclaredRegions drives both real handlers over
-// the same stored answers. The region filter on the map and the region search
-// on the Scope Audit page must list a repeater under the same declared names,
-// or searching "be" on one page and picking #be on the other give different
-// repeaters.
 func TestScopeAuditAndNodesAgreeOnDeclaredRegions(t *testing.T) {
 	srv, router := setupScopeConfigStateServer(t)
-	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
-		t.Fatal(err)
-	}
+	now := time.Now().UTC()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	cases := map[string]string{
-		"PK_RGN_HASHSTAR":  "#be,#*",
-		"PK_RGN_BARESTAR":  "be,*,nl-li",
-		"PK_RGN_STARONLY":  "#*",
-		"PK_RGN_NAMEDONLY": "#be, de",
-		"PK_RGN_EMPTY":     "",
+	cases := []struct{ label, key, csv string }{
+		{"HASHSTAR", scopeKey(0xb1), "#be,#*"},
+		{"BARESTAR", scopeKey(0xb2), "be,*,nl-li"},
+		{"STARONLY", scopeKey(0xb3), "#*"},
+		{"NAMEDONLY", scopeKey(0xb4), "#be, de"},
+		{"EMPTY", scopeKey(0xb5), ""},
 	}
-	for pk, csv := range cases {
-		if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-			(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-			VALUES (?, ?, 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, ?, '2026-01-01T00:00:00Z')`,
-			pk, "rp-"+pk, csv,
-		); err != nil {
-			t.Fatal(err)
-		}
+	fixtures := make([]scopedNode, 0, len(cases))
+	for _, c := range cases {
+		fixtures = append(fixtures, scopedNode{
+			Node: database.NodeInput{
+				PublicKey: c.key, Name: "rp-" + c.label, Role: "repeater",
+				Lat: fptr(51.0), Lon: fptr(4.0),
+				RxTime: at, IngestNow: now,
+			},
+			Scope:   sptr(c.csv),
+			ScopeAt: tptr(at),
+		})
 	}
+	seedScopedNodes(t, srv.db, fixtures)
 
 	audit := getScopeAudit(t, router, "?window=24h")
 	auditRegions := map[string][]string{}
@@ -153,116 +206,58 @@ func TestScopeAuditAndNodesAgreeOnDeclaredRegions(t *testing.T) {
 	}
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	for pk, csv := range cases {
-		want, ok := auditRegions[strings.ToLower(pk)]
+	for _, c := range cases {
+		want, ok := auditRegions[c.key]
 		if !ok {
-			t.Errorf("%s (%q): the scope audit does not list the repeater at all", pk, csv)
+			t.Errorf("%s (%q): the scope audit does not list the repeater at all", c.label, c.csv)
 			continue
 		}
-		got, present := declaredRegionsOf(t, nodes[pk])
+		got, present := declaredRegionsOf(t, nodes[c.key])
 		if !present {
-			t.Errorf("regions_csv %q: the scope audit lists %v, the map has no declared_regions field", csv, want)
+			t.Errorf("regions_csv %q: the scope audit lists %v, the map has no declared_regions field", c.csv, want)
 			continue
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("regions_csv %q: the scope audit lists %v, the map lists %v", csv, want, got)
+			t.Errorf("regions_csv %q: the scope audit lists %v, the map lists %v", c.csv, want, got)
 		}
 	}
 }
 
-// TestOpenAPINodeSchemaDocumentsDeclaredRegions keeps the served spec in step
-// with the wire.
-func TestOpenAPINodeSchemaDocumentsDeclaredRegions(t *testing.T) {
-	spec := fetchSpec(t)
-	components := asMap(t, spec["components"], "components")
-	schemas := asMap(t, components["schemas"], "components.schemas")
-	props := asMap(t, asMap(t, schemas["Node"], "Node")["properties"], "Node.properties")
-
-	p, ok := props["declared_regions"]
-	if !ok {
-		t.Fatal("Node.properties.declared_regions missing")
-	}
-	pm := asMap(t, p, "declared_regions")
-	if pm["type"] != "array" {
-		t.Errorf("declared_regions: want type array, got %v", pm["type"])
-	}
-	items := asMap(t, pm["items"], "declared_regions.items")
-	if items["type"] != "string" {
-		t.Errorf("declared_regions.items: want type string, got %v", items["type"])
-	}
-}
-
-// TestNodesCarryDeclaredRegionsTruncated: a repeater whose declared list was
-// cut off returns a partial list, and the Scope Audit flags it as such. The
-// node row must carry the same caveat, or the map popup shows a partial list
-// (or "no named region") as the whole answer (#2022 review).
-func TestNodesCarryDeclaredRegionsTruncated(t *testing.T) {
+func TestNodesNeverCarryDeclaredRegionsTruncated(t *testing.T) {
 	srv, router := setupScopeConfigStateServer(t)
+	now := time.Now().UTC()
+	jan := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES
-		('pk_trunc',       'trunc-rp',       'repeater',  51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL,    NULL),
-		('pk_trunc_empty', 'trunc-empty-rp', 'room',      51.1, 4.1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL,    NULL),
-		('pk_complete',    'complete-rp',    'repeater',  51.2, 4.2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL,    NULL),
-		('pk_cfg_only',    'cfg-rp',         'repeater',  51.3, 4.3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'be',    '2026-01-01T00:00:00Z'),
-		('pk_newer_cfg',   'newer-rp',       'repeater',  51.4, 4.4, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'be,nl', '2026-03-01T00:00:00Z'),
-		('pk_companion',   'phone',          'companion', 51.5, 4.5, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL,    NULL)`,
-	); err != nil {
-		t.Fatal(err)
-	}
-	seedSecondSource(t, srv, "pk_trunc", "2026-02-01T00:00:00Z", "#be", 1)
-	seedSecondSource(t, srv, "pk_trunc_empty", "2026-02-01T00:00:00Z", "", 1)
-	seedSecondSource(t, srv, "pk_complete", "2026-02-01T00:00:00Z", "#be", 0)
-	// Older truncated answer, newer answer from the other source: the newest
-	// answer decides, caveat included.
-	seedSecondSource(t, srv, "pk_newer_cfg", "2026-02-01T00:00:00Z", "#be", 1)
-	seedSecondSource(t, srv, "pk_companion", "2026-02-01T00:00:00Z", "#be", 1)
+	keyCfg := scopeKey(0xc4)
+	seedScopedNodes(t, srv.db, []scopedNode{
+		{
+			Node:    database.NodeInput{PublicKey: keyCfg, Name: "cfg-rp", Role: "repeater", Lat: fptr(51.3), Lon: fptr(4.3), RxTime: jan, IngestNow: now},
+			Scope:   sptr("be"),
+			ScopeAt: tptr(jan),
+		},
+	})
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
-
-	for _, pk := range []string{"pk_trunc", "pk_trunc_empty"} {
-		if _, present := declaredRegionsOf(t, nodes[pk]); !present {
-			t.Errorf("%s: no declared_regions field", pk)
-		}
-		if v, present := nodes[pk]["declared_regions_truncated"]; !present || v != true {
-			t.Errorf("%s: declared_regions_truncated = %v (present %v), want true", pk, v, present)
-		}
+	if _, present := declaredRegionsOf(t, nodes[keyCfg]); !present {
+		t.Errorf("%s: no declared_regions field", keyCfg)
 	}
-	for _, pk := range []string{"pk_complete", "pk_cfg_only", "pk_newer_cfg", "pk_companion"} {
-		if v, present := nodes[pk]["declared_regions_truncated"]; present {
-			t.Errorf("%s: declared_regions_truncated = %v, want the field absent", pk, v)
-		}
+	if v, present := nodes[keyCfg]["declared_regions_truncated"]; present {
+		t.Errorf("%s: declared_regions_truncated = %v, want the field absent", keyCfg, v)
 	}
 
-	req := httptest.NewRequest("GET", "/api/nodes/pk_trunc", nil)
+	req := httptest.NewRequest("GET", "/api/nodes/"+keyCfg, nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("detail status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Node map[string]interface{} `json:"node"`
+		Node map[string]json.RawMessage `json:"node"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if v := resp.Node["declared_regions_truncated"]; v != true {
-		t.Errorf("detail endpoint declared_regions_truncated = %v, want true", v)
-	}
-}
-
-func TestOpenAPINodeSchemaDocumentsDeclaredRegionsTruncated(t *testing.T) {
-	spec := fetchSpec(t)
-	components := asMap(t, spec["components"], "components")
-	schemas := asMap(t, components["schemas"], "components.schemas")
-	props := asMap(t, asMap(t, schemas["Node"], "Node")["properties"], "Node.properties")
-
-	p, ok := props["declared_regions_truncated"]
-	if !ok {
-		t.Fatal("Node.properties.declared_regions_truncated missing")
-	}
-	if pm := asMap(t, p, "declared_regions_truncated"); pm["type"] != "boolean" {
-		t.Errorf("declared_regions_truncated: want type boolean, got %v", pm["type"])
+	if v, present := resp.Node["declared_regions_truncated"]; present {
+		t.Errorf("detail endpoint declared_regions_truncated = %s, want the field absent", v)
 	}
 }

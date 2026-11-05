@@ -14,8 +14,8 @@ import (
 func TestChannelsCacheServesWarmEntry(t *testing.T) {
 	s := &Server{}
 	resp := ChannelListResponse{
-		Channels: []map[string]interface{}{
-			{"hash": "enc_SENTINEL", "encrypted": true, "name": "enc_SENTINEL"},
+		Channels: []ChannelResponse{
+			{Hash: "enc_SENTINEL", Encrypted: true, Name: "enc_SENTINEL"},
 		},
 	}
 	cacheKey := channelsCacheKey("", true)
@@ -40,7 +40,9 @@ func TestChannelsCacheServesWarmEntry(t *testing.T) {
 }
 
 func TestChannelsCacheTTLBoundary(t *testing.T) {
-	s := &Server{}
+	db := setupTestDB(t)
+	s := NewServer(db, &Config{Port: 3000}, NewHub())
+
 	if !s.isChannelsListCacheStale(time.Time{}) {
 		t.Error("zero time should be expired")
 	}
@@ -53,7 +55,7 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 
 	cacheKey := channelsCacheKey("", false)
 	fresh := ChannelListResponse{
-		Channels: []map[string]interface{}{{"hash": "fresh-sentinel", "name": "fresh-sentinel"}},
+		Channels: []ChannelResponse{{Hash: "fresh-sentinel", Name: "fresh-sentinel"}},
 	}
 	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: fresh, at: time.Now()})
 	req := httptest.NewRequest("GET", "/api/channels", nil)
@@ -64,7 +66,7 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 	}
 
 	stale := ChannelListResponse{
-		Channels: []map[string]interface{}{{"hash": "stale-sentinel", "name": "stale-sentinel"}},
+		Channels: []ChannelResponse{{Hash: "stale-sentinel", Name: "stale-sentinel"}},
 	}
 	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: stale, at: time.Now().Add(-channelsCacheTTL - time.Second)})
 	w2 := httptest.NewRecorder()
@@ -77,6 +79,13 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 func TestChannelsCacheEncryptedSecondCallDoesNotRefill(t *testing.T) {
 	srv, router := setupTestServer(t)
 	seedEncryptedChannelData(t, srv.db)
+
+	var enc, total int
+	if err := srv.db.SQL().QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FILTER (WHERE channel_encrypted), COUNT(*) FROM transmissions WHERE payload_type = 5`).Scan(&enc, &total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	t.Logf("encrypted=%d total=%d", enc, total)
 
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest("GET", "/api/channels?includeEncrypted=true", nil)
@@ -91,13 +100,13 @@ func TestChannelsCacheEncryptedSecondCallDoesNotRefill(t *testing.T) {
 		}
 		foundEnc := false
 		for _, ch := range body.Channels {
-			if enc, ok := ch["encrypted"].(bool); ok && enc {
+			if ch.Encrypted {
 				foundEnc = true
 				break
 			}
 		}
 		if !foundEnc {
-			t.Fatalf("call %d: expected encrypted channel in response", i+1)
+			t.Fatalf("call %d: expected encrypted channel in response, body=%s", i+1, w.Body.String())
 		}
 	}
 	if got := srv.channelsCache.fillCount.Load(); got != 1 {
@@ -172,12 +181,12 @@ func TestChannelsCacheDoesNotCacheOnEncryptedQueryError(t *testing.T) {
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 
-	if _, err := db.GetChannels(""); err != nil {
-		t.Fatalf("warm db cache: %v", err)
+	// Warm the query-level channel list cache so only the encrypted query
+	// hits the database after the table is gone.
+	if _, err := srv.getChannels(t.Context(), ""); err != nil {
+		t.Fatalf("warm channels cache: %v", err)
 	}
-	if _, err := db.conn.Exec("DROP TABLE transmissions"); err != nil {
-		t.Fatalf("drop transmissions: %v", err)
-	}
+	mustExecDB(t, db, `DROP TABLE transmissions CASCADE`)
 
 	req := httptest.NewRequest("GET", "/api/channels?includeEncrypted=true", nil)
 	for i := 0; i < 2; i++ {

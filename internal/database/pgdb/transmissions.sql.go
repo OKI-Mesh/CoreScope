@@ -20,8 +20,8 @@ WHERE id = $2 AND (last_seen IS NULL OR last_seen < $1)
 `
 
 type BumpTxLastSeenParams struct {
-	LastSeen pgtype.Timestamptz `json:"last_seen"`
-	ID       int64              `json:"id"`
+	LastSeen pgtype.Timestamptz
+	ID       int64
 }
 
 func (q *Queries) BumpTxLastSeen(ctx context.Context, arg BumpTxLastSeenParams) error {
@@ -29,13 +29,143 @@ func (q *Queries) BumpTxLastSeen(ctx context.Context, arg BumpTxLastSeenParams) 
 	return err
 }
 
+const countFloodAdverts = `-- name: CountFloodAdverts :one
+SELECT COUNT(*)::bigint
+FROM (
+    SELECT 1
+    FROM transmissions
+    WHERE from_pubkey = $1
+      AND payload_type = $2
+      AND route_type = $3
+      AND first_seen > $4::timestamptz
+    LIMIT $5::int
+) AS capped
+`
+
+type CountFloodAdvertsParams struct {
+	Pubkey      pgtype.Text
+	PayloadType types.PayloadType
+	RouteType   types.RouteType
+	Since       time.Time
+	RowCap      int32
+}
+
+func (q *Queries) CountFloodAdverts(ctx context.Context, arg CountFloodAdvertsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countFloodAdverts,
+		arg.Pubkey,
+		arg.PayloadType,
+		arg.RouteType,
+		arg.Since,
+		arg.RowCap,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countFloodAdvertsForNode = `-- name: CountFloodAdvertsForNode :one
+SELECT count(*)::bigint
+FROM transmissions
+WHERE from_pubkey   = $1
+  AND payload_type  = $2
+  AND route_type    = $3
+  AND first_seen    > $4
+`
+
+type CountFloodAdvertsForNodeParams struct {
+	Pubkey      pgtype.Text
+	PayloadType types.PayloadType
+	RouteType   types.RouteType
+	Cutoff      time.Time
+}
+
+func (q *Queries) CountFloodAdvertsForNode(ctx context.Context, arg CountFloodAdvertsForNodeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countFloodAdvertsForNode,
+		arg.Pubkey,
+		arg.PayloadType,
+		arg.RouteType,
+		arg.Cutoff,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countTransmissions = `-- name: CountTransmissions :one
+SELECT COUNT(*)::bigint FROM transmissions
+`
+
+func (q *Queries) CountTransmissions(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countTransmissions)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countTransmissionsByFromPubkeys = `-- name: CountTransmissionsByFromPubkeys :one
+SELECT COUNT(*)::bigint
+FROM transmissions t
+WHERE t.from_pubkey = ANY($1::text[])
+  AND ($2::timestamptz IS NULL OR t.first_seen >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR t.first_seen <= $3::timestamptz)
+`
+
+type CountTransmissionsByFromPubkeysParams struct {
+	Pubkeys []string
+	Since   pgtype.Timestamptz
+	Until   pgtype.Timestamptz
+}
+
+func (q *Queries) CountTransmissionsByFromPubkeys(ctx context.Context, arg CountTransmissionsByFromPubkeysParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTransmissionsByFromPubkeys, arg.Pubkeys, arg.Since, arg.Until)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countTransmissionsSince = `-- name: CountTransmissionsSince :one
+SELECT COUNT(*)::bigint
+FROM transmissions t2
+WHERE ($1::timestamptz IS NULL OR t2.last_seen >= $1::timestamptz)
+`
+
+// since NULL = no retention filter.
+func (q *Queries) CountTransmissionsSince(ctx context.Context, since pgtype.Timestamptz) (int64, error) {
+	row := q.db.QueryRow(ctx, countTransmissionsSince, since)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const getMaxTransmissionID = `-- name: GetMaxTransmissionID :one
+SELECT COALESCE(MAX(id), 0)::bigint FROM transmissions
+`
+
+func (q *Queries) GetMaxTransmissionID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxTransmissionID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const getTransmissionIDByHash = `-- name: GetTransmissionIDByHash :one
+SELECT id FROM transmissions WHERE hash = $1
+`
+
+func (q *Queries) GetTransmissionIDByHash(ctx context.Context, hash string) (int64, error) {
+	row := q.db.QueryRow(ctx, getTransmissionIDByHash, hash)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getTransmissionbyHash = `-- name: GetTransmissionbyHash :one
 SELECT id, first_seen FROM transmissions WHERE hash = $1
 `
 
 type GetTransmissionbyHashRow struct {
-	ID        int64     `json:"id"`
-	FirstSeen time.Time `json:"first_seen"`
+	ID        int64
+	FirstSeen time.Time
 }
 
 func (q *Queries) GetTransmissionbyHash(ctx context.Context, hash string) (GetTransmissionbyHashRow, error) {
@@ -48,10 +178,10 @@ func (q *Queries) GetTransmissionbyHash(ctx context.Context, hash string) (GetTr
 const insertTransmission = `-- name: InsertTransmission :one
 INSERT INTO transmissions (
     raw_hex, hash, first_seen, route_type, payload_type, payload_version,
-    decoded_json, channel_hash, scope_name, from_pubkey, last_seen, code1, code2
+    decoded_json, channel_hash, scope_name, from_pubkey, last_seen, code1, code2, channel_encrypted
 )
 VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 )
 ON CONFLICT (hash) DO UPDATE SET
     first_seen = LEAST(transmissions.first_seen, EXCLUDED.first_seen)
@@ -59,24 +189,25 @@ RETURNING id, (xmax = 0) AS inserted
 `
 
 type InsertTransmissionParams struct {
-	RawHex         string             `json:"raw_hex"`
-	Hash           string             `json:"hash"`
-	FirstSeen      time.Time          `json:"first_seen"`
-	RouteType      types.RouteType    `json:"route_type"`
-	PayloadType    types.PayloadType  `json:"payload_type"`
-	PayloadVersion pgtype.Int4        `json:"payload_version"`
-	DecodedJson    pgtype.Text        `json:"decoded_json"`
-	ChannelHash    pgtype.Text        `json:"channel_hash"`
-	ScopeName      pgtype.Text        `json:"scope_name"`
-	FromPubkey     pgtype.Text        `json:"from_pubkey"`
-	LastSeen       pgtype.Timestamptz `json:"last_seen"`
-	Code1          pgtype.Text        `json:"code1"`
-	Code2          pgtype.Text        `json:"code2"`
+	RawHex           []byte
+	Hash             string
+	FirstSeen        time.Time
+	RouteType        types.RouteType
+	PayloadType      types.PayloadType
+	PayloadVersion   int32
+	DecodedJson      pgtype.Text
+	ChannelHash      pgtype.Text
+	ScopeName        pgtype.Text
+	FromPubkey       pgtype.Text
+	LastSeen         pgtype.Timestamptz
+	Code1            pgtype.Text
+	Code2            pgtype.Text
+	ChannelEncrypted bool
 }
 
 type InsertTransmissionRow struct {
-	ID       int64 `json:"id"`
-	Inserted bool  `json:"inserted"`
+	ID       int64
+	Inserted bool
 }
 
 func (q *Queries) InsertTransmission(ctx context.Context, arg InsertTransmissionParams) (InsertTransmissionRow, error) {
@@ -94,10 +225,387 @@ func (q *Queries) InsertTransmission(ctx context.Context, arg InsertTransmission
 		arg.LastSeen,
 		arg.Code1,
 		arg.Code2,
+		arg.ChannelEncrypted,
 	)
 	var i InsertTransmissionRow
 	err := row.Scan(&i.ID, &i.Inserted)
 	return i, err
+}
+
+const listPacketsByIDs = `-- name: ListPacketsByIDs :many
+SELECT
+    t.id,
+    t.raw_hex,
+    t.hash,
+    t.first_seen,
+    t.route_type,
+    t.payload_type,
+    t.decoded_json::text AS decoded_json,
+    t.from_pubkey,
+    (SELECT COUNT(*) FROM observations oc WHERE oc.transmission_id = t.id)::bigint AS observation_count,
+    obs.pubkey                      AS observer_id,
+    obs.name                        AS observer_name,
+    COALESCE(obs.iata, '')::text    AS observer_iata,
+    rep.id                          AS observation_id,
+    rep.snr,
+    rep.rssi,
+    rep.score,
+    rep.direction,
+    rep.timestamp AS obs_timestamp,
+    t.scope_name,
+    COALESCE(rep.hop_prefixes, '{}')::text[] AS hop_prefixes
+FROM transmissions t
+LEFT JOIN observations rep ON rep.id = (
+    SELECT o.id
+    FROM observations o
+    WHERE o.transmission_id = t.id
+    ORDER BY cardinality(o.hop_prefixes) DESC,
+             o.id ASC
+    LIMIT 1
+)
+LEFT JOIN observers obs ON obs.id = rep.observer_idx
+WHERE t.id = ANY($1::bigint[])
+ORDER BY array_position($1::bigint[], t.id)
+`
+
+type ListPacketsByIDsRow struct {
+	ID               int64
+	RawHex           []byte
+	Hash             string
+	FirstSeen        time.Time
+	RouteType        types.RouteType
+	PayloadType      types.PayloadType
+	DecodedJson      string
+	FromPubkey       pgtype.Text
+	ObservationCount int64
+	ObserverID       pgtype.Text
+	ObserverName     pgtype.Text
+	ObserverIata     string
+	ObservationID    pgtype.Int8
+	Snr              pgtype.Float8
+	Rssi             pgtype.Float8
+	Score            pgtype.Float8
+	Direction        pgtype.Text
+	ObsTimestamp     pgtype.Timestamptz
+	ScopeName        pgtype.Text
+	HopPrefixes      []string
+}
+
+func (q *Queries) ListPacketsByIDs(ctx context.Context, ids []int64) ([]ListPacketsByIDsRow, error) {
+	rows, err := q.db.Query(ctx, listPacketsByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPacketsByIDsRow{}
+	for rows.Next() {
+		var i ListPacketsByIDsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RawHex,
+			&i.Hash,
+			&i.FirstSeen,
+			&i.RouteType,
+			&i.PayloadType,
+			&i.DecodedJson,
+			&i.FromPubkey,
+			&i.ObservationCount,
+			&i.ObserverID,
+			&i.ObserverName,
+			&i.ObserverIata,
+			&i.ObservationID,
+			&i.Snr,
+			&i.Rssi,
+			&i.Score,
+			&i.Direction,
+			&i.ObsTimestamp,
+			&i.ScopeName,
+			&i.HopPrefixes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransmissionsAfterID = `-- name: ListTransmissionsAfterID :many
+SELECT
+    id,
+    raw_hex,
+    hash,
+    first_seen,
+    route_type,
+    payload_type,
+    payload_version,
+    decoded_json::text AS decoded_json
+FROM transmissions
+WHERE id > $1
+ORDER BY id ASC
+LIMIT $2
+`
+
+type ListTransmissionsAfterIDParams struct {
+	AfterID  int64
+	RowLimit int32
+}
+
+type ListTransmissionsAfterIDRow struct {
+	ID             int64
+	RawHex         []byte
+	Hash           string
+	FirstSeen      time.Time
+	RouteType      types.RouteType
+	PayloadType    types.PayloadType
+	PayloadVersion int32
+	DecodedJson    string
+}
+
+func (q *Queries) ListTransmissionsAfterID(ctx context.Context, arg ListTransmissionsAfterIDParams) ([]ListTransmissionsAfterIDRow, error) {
+	rows, err := q.db.Query(ctx, listTransmissionsAfterID, arg.AfterID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTransmissionsAfterIDRow{}
+	for rows.Next() {
+		var i ListTransmissionsAfterIDRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RawHex,
+			&i.Hash,
+			&i.FirstSeen,
+			&i.RouteType,
+			&i.PayloadType,
+			&i.PayloadVersion,
+			&i.DecodedJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTransmissionsChunk = `-- name: ListTransmissionsChunk :many
+SELECT id, hash, raw_hex, first_seen, route_type, payload_type,
+       payload_version, decoded_json, scope_name
+FROM transmissions
+WHERE id > $1
+  AND ($2::timestamptz IS NULL OR COALESCE(last_seen, first_seen) >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR COALESCE(last_seen, first_seen) <  $3::timestamptz)
+ORDER BY id ASC
+LIMIT $4::int
+`
+
+type ListTransmissionsChunkParams struct {
+	AfterID  int64
+	Since    pgtype.Timestamptz
+	Until    pgtype.Timestamptz
+	RowLimit int32
+}
+
+type ListTransmissionsChunkRow struct {
+	ID             int64
+	Hash           string
+	RawHex         []byte
+	FirstSeen      time.Time
+	RouteType      types.RouteType
+	PayloadType    types.PayloadType
+	PayloadVersion int32
+	DecodedJson    pgtype.Text
+	ScopeName      pgtype.Text
+}
+
+func (q *Queries) ListTransmissionsChunk(ctx context.Context, arg ListTransmissionsChunkParams) ([]ListTransmissionsChunkRow, error) {
+	rows, err := q.db.Query(ctx, listTransmissionsChunk,
+		arg.AfterID,
+		arg.Since,
+		arg.Until,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTransmissionsChunkRow{}
+	for rows.Next() {
+		var i ListTransmissionsChunkRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Hash,
+			&i.RawHex,
+			&i.FirstSeen,
+			&i.RouteType,
+			&i.PayloadType,
+			&i.PayloadVersion,
+			&i.DecodedJson,
+			&i.ScopeName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnmatchedTransmissions = `-- name: ListUnmatchedTransmissions :many
+SELECT t.id, t.raw_hex
+FROM transmissions t
+WHERE t.first_seen >= $1
+  AND t.scope_name = ''
+  AND t.route_type = ANY($2::int[])
+ORDER BY t.first_seen DESC, t.id DESC
+LIMIT $3::int
+`
+
+type ListUnmatchedTransmissionsParams struct {
+	Since      time.Time
+	RouteTypes []int32
+	RowLimit   int32
+}
+
+type ListUnmatchedTransmissionsRow struct {
+	ID     int64
+	RawHex []byte
+}
+
+func (q *Queries) ListUnmatchedTransmissions(ctx context.Context, arg ListUnmatchedTransmissionsParams) ([]ListUnmatchedTransmissionsRow, error) {
+	rows, err := q.db.Query(ctx, listUnmatchedTransmissions, arg.Since, arg.RouteTypes, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnmatchedTransmissionsRow{}
+	for rows.Next() {
+		var i ListUnmatchedTransmissionsRow
+		if err := rows.Scan(&i.ID, &i.RawHex); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const nthNewestTransmissionID = `-- name: NthNewestTransmissionID :one
+SELECT id
+FROM transmissions
+WHERE ($1::timestamptz IS NULL OR COALESCE(last_seen, first_seen) >= $1::timestamptz)
+ORDER BY id DESC
+OFFSET $2::bigint
+LIMIT 1
+`
+
+type NthNewestTransmissionIDParams struct {
+	Since pgtype.Timestamptz
+	Skip  int64
+}
+
+func (q *Queries) NthNewestTransmissionID(ctx context.Context, arg NthNewestTransmissionIDParams) (int64, error) {
+	row := q.db.QueryRow(ctx, nthNewestTransmissionID, arg.Since, arg.Skip)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const pageTransmissionIDsByFromPubkeysAsc = `-- name: PageTransmissionIDsByFromPubkeysAsc :many
+SELECT t.id
+FROM transmissions t
+WHERE t.from_pubkey = ANY($1::text[])
+  AND ($2::timestamptz IS NULL OR t.first_seen >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR t.first_seen <= $3::timestamptz)
+ORDER BY t.id ASC
+LIMIT $5::int OFFSET $4::int
+`
+
+type PageTransmissionIDsByFromPubkeysAscParams struct {
+	Pubkeys   []string
+	Since     pgtype.Timestamptz
+	Until     pgtype.Timestamptz
+	RowOffset int32
+	RowLimit  int32
+}
+
+func (q *Queries) PageTransmissionIDsByFromPubkeysAsc(ctx context.Context, arg PageTransmissionIDsByFromPubkeysAscParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, pageTransmissionIDsByFromPubkeysAsc,
+		arg.Pubkeys,
+		arg.Since,
+		arg.Until,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pageTransmissionIDsByFromPubkeysDesc = `-- name: PageTransmissionIDsByFromPubkeysDesc :many
+SELECT t.id
+FROM transmissions t
+WHERE t.from_pubkey = ANY($1::text[])
+  AND ($2::timestamptz IS NULL OR t.first_seen >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR t.first_seen <= $3::timestamptz)
+ORDER BY t.id DESC
+LIMIT $5::int OFFSET $4::int
+`
+
+type PageTransmissionIDsByFromPubkeysDescParams struct {
+	Pubkeys   []string
+	Since     pgtype.Timestamptz
+	Until     pgtype.Timestamptz
+	RowOffset int32
+	RowLimit  int32
+}
+
+func (q *Queries) PageTransmissionIDsByFromPubkeysDesc(ctx context.Context, arg PageTransmissionIDsByFromPubkeysDescParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, pageTransmissionIDsByFromPubkeysDesc,
+		arg.Pubkeys,
+		arg.Since,
+		arg.Until,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneTransmissionsBatch = `-- name: PruneTransmissionsBatch :execrows
@@ -106,21 +614,13 @@ WITH batch AS (
     WHERE first_seen < $1::timestamptz
     ORDER BY first_seen, id
     LIMIT $2::int
-),
-del_hops AS (
-    DELETE FROM observation_path_hops
-    WHERE observation_id IN (
-        SELECT o.id FROM observations o JOIN batch b ON o.transmission_id = b.id)
-),
-del_obs AS (
-    DELETE FROM observations WHERE transmission_id IN (SELECT id FROM batch)
 )
 DELETE FROM transmissions WHERE id IN (SELECT id FROM batch)
 `
 
 type PruneTransmissionsBatchParams struct {
-	Cutoff    time.Time `json:"cutoff"`
-	BatchSize int32     `json:"batch_size"`
+	Cutoff    time.Time
+	BatchSize int32
 }
 
 func (q *Queries) PruneTransmissionsBatch(ctx context.Context, arg PruneTransmissionsBatchParams) (int64, error) {
@@ -136,8 +636,8 @@ UPDATE transmissions SET first_seen = $1 WHERE id = $2 RETURNING id
 `
 
 type UpdateTransmissionFirstSeenParams struct {
-	FirstSeen time.Time `json:"first_seen"`
-	ID        int64     `json:"id"`
+	FirstSeen time.Time
+	ID        int64
 }
 
 func (q *Queries) UpdateTransmissionFirstSeen(ctx context.Context, arg UpdateTransmissionFirstSeenParams) (int64, error) {

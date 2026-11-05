@@ -12,7 +12,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createOrUpdateObserver = `-- name: CreateOrUpdateObserver :exec
+const countActiveObservers = `-- name: CountActiveObservers :one
+SELECT COUNT(*)::bigint
+FROM observers
+WHERE NOT COALESCE(inactive, false)
+`
+
+func (q *Queries) CountActiveObservers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveObservers)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const createOrUpdateObserver = `-- name: CreateOrUpdateObserver :one
 INSERT INTO observers (
     pubkey, name, iata, last_seen, first_seen, packet_count,
     model, firmware, client_version, radio, battery_mv, uptime_secs,
@@ -53,26 +66,27 @@ ON CONFLICT (pubkey) DO UPDATE SET
     can_relay      = COALESCE($12::boolean, observers.can_relay),
     can_relay_seen = CASE WHEN $12::boolean IS NULL
                           THEN observers.can_relay_seen ELSE true END
+    RETURNING id
 `
 
 type CreateOrUpdateObserverParams struct {
-	Pubkey        string        `json:"pubkey"`
-	Name          pgtype.Text   `json:"name"`
-	Iata          pgtype.Text   `json:"iata"`
-	LastSeen      time.Time     `json:"last_seen"`
-	Model         pgtype.Text   `json:"model"`
-	Firmware      pgtype.Text   `json:"firmware"`
-	ClientVersion pgtype.Text   `json:"client_version"`
-	Radio         pgtype.Text   `json:"radio"`
-	BatteryMv     pgtype.Int4   `json:"battery_mv"`
-	UptimeSecs    pgtype.Int4   `json:"uptime_secs"`
-	NoiseFloor    pgtype.Float8 `json:"noise_floor"`
-	CanRelay      pgtype.Bool   `json:"can_relay"`
-	IngestNow     time.Time     `json:"ingest_now"`
+	Pubkey        string
+	Name          pgtype.Text
+	Iata          pgtype.Text
+	LastSeen      time.Time
+	Model         pgtype.Text
+	Firmware      pgtype.Text
+	ClientVersion pgtype.Text
+	Radio         pgtype.Text
+	BatteryMv     pgtype.Int4
+	UptimeSecs    pgtype.Int8
+	NoiseFloor    pgtype.Float8
+	CanRelay      pgtype.Bool
+	IngestNow     time.Time
 }
 
-func (q *Queries) CreateOrUpdateObserver(ctx context.Context, arg CreateOrUpdateObserverParams) error {
-	_, err := q.db.Exec(ctx, createOrUpdateObserver,
+func (q *Queries) CreateOrUpdateObserver(ctx context.Context, arg CreateOrUpdateObserverParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createOrUpdateObserver,
 		arg.Pubkey,
 		arg.Name,
 		arg.Iata,
@@ -87,7 +101,9 @@ func (q *Queries) CreateOrUpdateObserver(ctx context.Context, arg CreateOrUpdate
 		arg.CanRelay,
 		arg.IngestNow,
 	)
-	return err
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getObserverByPubkey = `-- name: GetObserverByPubkey :one
@@ -135,6 +151,263 @@ func (q *Queries) GetObserverID(ctx context.Context, pubkey string) (int64, erro
 	return id, err
 }
 
+const getObserverLastSeen = `-- name: GetObserverLastSeen :one
+SELECT last_seen FROM observers WHERE pubkey = $1
+`
+
+func (q *Queries) GetObserverLastSeen(ctx context.Context, pubkey string) (time.Time, error) {
+	row := q.db.QueryRow(ctx, getObserverLastSeen, pubkey)
+	var last_seen time.Time
+	err := row.Scan(&last_seen)
+	return last_seen, err
+}
+
+const listActiveObservers = `-- name: ListActiveObservers :many
+SELECT id, pubkey, name, last_seen, first_seen, packet_count, model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor, inactive, last_packet_at, raw_hex, clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at, iata, can_relay, can_relay_seen FROM observers WHERE NOT inactive ORDER BY last_seen DESC, id ASC
+`
+
+// Active (not soft-deleted) observers, most recently seen first.
+// can_relay is tri-state: NULL unless the observer ever reported the firmware
+// 1.16 `repeat` flag (can_relay_seen), so legacy rows don't masquerade as
+// confirmed repeaters (#1290).
+func (q *Queries) ListActiveObservers(ctx context.Context) ([]Observer, error) {
+	rows, err := q.db.Query(ctx, listActiveObservers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Observer{}
+	for rows.Next() {
+		var i Observer
+		if err := rows.Scan(
+			&i.ID,
+			&i.Pubkey,
+			&i.Name,
+			&i.LastSeen,
+			&i.FirstSeen,
+			&i.PacketCount,
+			&i.Model,
+			&i.Firmware,
+			&i.ClientVersion,
+			&i.Radio,
+			&i.BatteryMv,
+			&i.UptimeSecs,
+			&i.NoiseFloor,
+			&i.Inactive,
+			&i.LastPacketAt,
+			&i.RawHex,
+			&i.ClockSkewSeconds,
+			&i.ClockSkewCount24h,
+			&i.ClockLastNaiveAt,
+			&i.Iata,
+			&i.CanRelay,
+			&i.CanRelaySeen,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDistinctObserverIATAs = `-- name: ListDistinctObserverIATAs :many
+SELECT DISTINCT iata::text AS iata
+FROM observers
+WHERE iata IS NOT NULL
+ORDER BY iata
+`
+
+func (q *Queries) ListDistinctObserverIATAs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDistinctObserverIATAs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var iata string
+		if err := rows.Scan(&iata); err != nil {
+			return nil, err
+		}
+		items = append(items, iata)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeBatteryHistory = `-- name: ListNodeBatteryHistory :many
+SELECT timestamp, battery_mv::int AS battery_mv
+FROM observer_metrics
+WHERE observer_id = $1::text
+  AND battery_mv IS NOT NULL
+  AND timestamp >= $2::timestamptz
+ORDER BY timestamp ASC
+`
+
+type ListNodeBatteryHistoryParams struct {
+	Pubkey string
+	Since  time.Time
+}
+
+type ListNodeBatteryHistoryRow struct {
+	Timestamp time.Time
+	BatteryMv int32
+}
+
+// battery_mv is cast because the IS NOT NULL filter does not narrow the column type for sqlc.
+func (q *Queries) ListNodeBatteryHistory(ctx context.Context, arg ListNodeBatteryHistoryParams) ([]ListNodeBatteryHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listNodeBatteryHistory, arg.Pubkey, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeBatteryHistoryRow{}
+	for rows.Next() {
+		var i ListNodeBatteryHistoryRow
+		if err := rows.Scan(&i.Timestamp, &i.BatteryMv); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNonRelayObserverPubkeys = `-- name: ListNonRelayObserverPubkeys :many
+SELECT pubkey
+FROM observers
+WHERE NOT can_relay AND NOT inactive
+ORDER BY pubkey
+`
+
+func (q *Queries) ListNonRelayObserverPubkeys(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listNonRelayObserverPubkeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var pubkey string
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, err
+		}
+		items = append(items, pubkey)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObserverNames = `-- name: ListObserverNames :many
+SELECT pubkey, COALESCE(name, '')::text AS name
+FROM observers
+ORDER BY pubkey
+`
+
+type ListObserverNamesRow struct {
+	Pubkey string
+	Name   string
+}
+
+// Every observer, active or not: the node-info map enriches names for any observer key.
+func (q *Queries) ListObserverNames(ctx context.Context) ([]ListObserverNamesRow, error) {
+	rows, err := q.db.Query(ctx, listObserverNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObserverNamesRow{}
+	for rows.Next() {
+		var i ListObserverNamesRow
+		if err := rows.Scan(&i.Pubkey, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObserverPubkeysByIATA = `-- name: ListObserverPubkeysByIATA :many
+SELECT pubkey
+FROM observers
+WHERE upper(btrim(iata)) = ANY($1::text[])
+ORDER BY pubkey
+`
+
+func (q *Queries) ListObserverPubkeysByIATA(ctx context.Context, codes []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listObserverPubkeysByIATA, codes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var pubkey string
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, err
+		}
+		items = append(items, pubkey)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReportedRelayObservers = `-- name: ListReportedRelayObservers :many
+SELECT lower(pubkey)::text AS pubkey, can_relay
+FROM observers
+WHERE can_relay_seen AND NOT inactive
+ORDER BY pubkey
+`
+
+type ListReportedRelayObserversRow struct {
+	Pubkey   string
+	CanRelay bool
+}
+
+func (q *Queries) ListReportedRelayObservers(ctx context.Context) ([]ListReportedRelayObserversRow, error) {
+	rows, err := q.db.Query(ctx, listReportedRelayObservers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReportedRelayObserversRow{}
+	for rows.Next() {
+		var i ListReportedRelayObserversRow
+		if err := rows.Scan(&i.Pubkey, &i.CanRelay); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markObserverInactive = `-- name: MarkObserverInactive :exec
+UPDATE observers SET inactive = true
+WHERE pubkey = $1
+`
+
+func (q *Queries) MarkObserverInactive(ctx context.Context, pubkey string) error {
+	_, err := q.db.Exec(ctx, markObserverInactive, pubkey)
+	return err
+}
+
 const markStaleObserversInactive = `-- name: MarkStaleObserversInactive :execrows
 UPDATE observers
 SET inactive = true
@@ -177,31 +450,30 @@ func (q *Queries) ReactivateObserver(ctx context.Context, pubkey string) error {
 }
 
 const recordNaiveSkew = `-- name: RecordNaiveSkew :exec
-INSERT INTO observers (pubkey, clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at)
-VALUES ($1, $2, 1, $3)
-ON CONFLICT (pubkey) DO UPDATE SET
-    clock_skew_seconds   = EXCLUDED.clock_skew_seconds,
-    clock_last_naive_at  = EXCLUDED.clock_last_naive_at,
+UPDATE observers SET
+    clock_skew_seconds   = $1,
+    clock_last_naive_at  = $2,
     clock_skew_count_24h = CASE
-        WHEN observers.clock_last_naive_at IS NULL OR observers.clock_last_naive_at < $4
+        WHEN clock_last_naive_at IS NULL OR clock_last_naive_at < $3
             THEN 1
-        ELSE COALESCE(observers.clock_skew_count_24h, 0) + 1
+        ELSE COALESCE(clock_skew_count_24h, 0) + 1
     END
+WHERE pubkey = $4
 `
 
 type RecordNaiveSkewParams struct {
-	Pubkey           string             `json:"pubkey"`
-	ClockSkewSeconds pgtype.Int4        `json:"clock_skew_seconds"`
-	ClockLastNaiveAt pgtype.Timestamptz `json:"clock_last_naive_at"`
-	Cutoff           pgtype.Timestamptz `json:"cutoff"`
+	ClockSkewSeconds pgtype.Int4
+	ClockLastNaiveAt pgtype.Timestamptz
+	Cutoff           pgtype.Timestamptz
+	Pubkey           string
 }
 
 func (q *Queries) RecordNaiveSkew(ctx context.Context, arg RecordNaiveSkewParams) error {
 	_, err := q.db.Exec(ctx, recordNaiveSkew,
-		arg.Pubkey,
 		arg.ClockSkewSeconds,
 		arg.ClockLastNaiveAt,
 		arg.Cutoff,
+		arg.Pubkey,
 	)
 	return err
 }
@@ -229,8 +501,8 @@ WHERE id = $2
 `
 
 type TouchObserverLastSeenParams struct {
-	LastSeen pgtype.Timestamptz `json:"last_seen"`
-	ID       int64              `json:"id"`
+	LastSeen time.Time
+	ID       int64
 }
 
 func (q *Queries) TouchObserverLastSeen(ctx context.Context, arg TouchObserverLastSeenParams) error {
@@ -255,17 +527,17 @@ WHERE pubkey = $11
 `
 
 type UpdateObserverMetadataIfRetainedParams struct {
-	Name          pgtype.Text   `json:"name"`
-	Iata          pgtype.Text   `json:"iata"`
-	Model         pgtype.Text   `json:"model"`
-	Firmware      pgtype.Text   `json:"firmware"`
-	ClientVersion pgtype.Text   `json:"client_version"`
-	Radio         pgtype.Text   `json:"radio"`
-	BatteryMv     pgtype.Int4   `json:"battery_mv"`
-	UptimeSecs    pgtype.Int4   `json:"uptime_secs"`
-	NoiseFloor    pgtype.Float8 `json:"noise_floor"`
-	CanRelay      pgtype.Bool   `json:"can_relay"`
-	Pubkey        string        `json:"pubkey"`
+	Name          pgtype.Text
+	Iata          pgtype.Text
+	Model         pgtype.Text
+	Firmware      pgtype.Text
+	ClientVersion pgtype.Text
+	Radio         pgtype.Text
+	BatteryMv     pgtype.Int4
+	UptimeSecs    pgtype.Int8
+	NoiseFloor    pgtype.Float8
+	CanRelay      pgtype.Bool
+	Pubkey        string
 }
 
 func (q *Queries) UpdateObserverMetadataIfRetained(ctx context.Context, arg UpdateObserverMetadataIfRetainedParams) error {

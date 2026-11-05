@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -13,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 	"golang.org/x/sync/singleflight"
 )
@@ -34,7 +37,7 @@ var reachScanRowLimit = 200000
 type pathRow struct {
 	observerPK  string // lowercase pubkey of the observer (may be "")
 	fromPubkey  string // lowercase originator pubkey (may be "")
-	payloadType int
+	payloadType types.PayloadType
 	path        []string
 	snr         float64
 	snrValid    bool
@@ -84,7 +87,7 @@ func attributeDirections(rows []pathRow, ourTokens map[string]bool, ourPK string
 				if pk := resolve(r.path[i-1]); pk != "" && pk != ourPK {
 					d.we[pk]++
 				}
-			} else if r.payloadType == PayloadADVERT && r.fromPubkey != "" && r.fromPubkey != ourPK {
+			} else if r.payloadType == types.PayloadADVERT && r.fromPubkey != "" && r.fromPubkey != ourPK {
 				d.we[r.fromPubkey]++
 			}
 			// successor → it heard us; or if we're the last hop, the observer did
@@ -191,51 +194,39 @@ func newResolver(pm *prefixMap) func(string) string {
 // observer /neighbors report has confirmed it, the configured_scope and the
 // instant that confirmation was reported (#1865).
 //
-// Both columns are optional: they are added by migration and an older database
-// simply lacks them, so each is gated on the schema flag the handle probed at
-// open time. Every return value is best-effort — a missing row, a missing
-// column or a scan error yields empty strings, because a reach report must
-// still render for a node we know nothing else about.
-func (s *Server) reachNodeScopes(ctx context.Context, pubkey string) (string, string, string) {
-	if s.db == nil || s.db.conn == nil {
+// Every return value is best-effort — a missing node or a read error yields
+// empty strings, because a reach report must still render for a node we know
+// nothing else about.
+func (s *Server) reachNodeScopes(ctx context.Context, pubkey string) (defaultScope, configuredScope, configuredAt string) {
+	if s.db == nil {
 		return "", "", ""
 	}
-	cols := make([]string, 0, 3)
-	if s.db.hasDefaultScope {
-		cols = append(cols, "default_scope")
-	}
-	if s.db.hasConfiguredScope {
-		cols = append(cols, "configured_scope", "configured_scope_at")
-	}
-	if len(cols) == 0 {
-		return "", "", ""
-	}
-	vals := make([]sql.NullString, len(cols))
-	args := make([]interface{}, len(cols))
-	for i := range vals {
-		args[i] = &vals[i]
-	}
-	row := s.db.conn.QueryRowContext(ctx,
-		"SELECT "+strings.Join(cols, ", ")+" FROM nodes WHERE public_key = ?", pubkey)
-	if err := row.Scan(args...); err != nil {
-		return "", "", ""
-	}
-	out := map[string]string{}
-	for i, c := range cols {
-		if vals[i].Valid {
-			out[c] = vals[i].String
+	n, err := s.db.GetNodeByPubkey(ctx, pubkey)
+	if err != nil {
+		if !errors.Is(err, database.ErrNotFound) {
+			log.Printf("[reach] node scopes for %s: %v", pubkey, err)
 		}
+		return "", "", ""
 	}
-	return out["default_scope"], out["configured_scope"], out["configured_scope_at"]
+	if n.DefaultScope != nil {
+		defaultScope = *n.DefaultScope
+	}
+	if n.ConfiguredScope != nil {
+		configuredScope = *n.ConfiguredScope
+	}
+	if n.ConfiguredScopeAt != nil {
+		configuredAt = formatTS(*n.ConfiguredScopeAt)
+	}
+	return defaultScope, configuredScope, configuredAt
 }
 
 type NodeReachInfo struct {
-	Pubkey    string   `json:"pubkey"`
-	Name      string   `json:"name"`
-	Role      string   `json:"role"`
-	Lat       *float64 `json:"lat"`
-	Lon       *float64 `json:"lon"`
-	FirstSeen string   `json:"first_seen"`
+	Pubkey    string         `json:"pubkey"`
+	Name      string         `json:"name"`
+	Role      types.NodeRole `json:"role"`
+	Lat       *float64       `json:"lat"`
+	Lon       *float64       `json:"lon"`
+	FirstSeen time.Time      `json:"first_seen"`
 	// #1865: region scopes, so a printed reach report says which region the
 	// node actually serves. DefaultScope is INFERRED from the transport scope
 	// of observed adverts; ConfiguredScope is CONFIRMED, read back off the node
@@ -268,16 +259,16 @@ type NodeReachObserver struct {
 	DistanceKm *float64 `json:"distance_km"`
 }
 type NodeReachLink struct {
-	Pubkey     string   `json:"pubkey"`
-	Name       string   `json:"name"`
-	Role       string   `json:"role"`
-	Lat        *float64 `json:"lat"`
-	Lon        *float64 `json:"lon"`
-	WeHear     int      `json:"we_hear"`
-	TheyHear   int      `json:"they_hear"`
-	Bottleneck int      `json:"bottleneck"`
-	Bidir      bool     `json:"bidir"`
-	DistanceKm *float64 `json:"distance_km"`
+	Pubkey     string         `json:"pubkey"`
+	Name       string         `json:"name"`
+	Role       types.NodeRole `json:"role"`
+	Lat        *float64       `json:"lat"`
+	Lon        *float64       `json:"lon"`
+	WeHear     int            `json:"we_hear"`
+	TheyHear   int            `json:"they_hear"`
+	Bottleneck int            `json:"bottleneck"`
+	Bidir      bool           `json:"bidir"`
+	DistanceKm *float64       `json:"distance_km"`
 }
 type NodeReachResponse struct {
 	Node            NodeReachInfo       `json:"node"`
@@ -386,19 +377,14 @@ func (s *Server) reachPurgeIfBlacklistGenChanged(gen uint64) {
 	s.reach.cacheMu.Unlock()
 }
 
-// isHexPubkey reports whether s is a full 64-char lowercase-hex public key.
-// The handler lowercases input first, so we only accept [0-9a-f].
+// isHexPubkey reports whether s is a full 64-char hex public key.
+// Callers lowercase the input first; uppercase hex would also pass here.
 func isHexPubkey(s string) bool {
 	if len(s) != 64 {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 func (s *Server) reachCachePut(key string, raw []byte) {
@@ -440,6 +426,7 @@ func (s *Server) evictReachLocked() {
 }
 
 func (s *Server) handleNodeReach(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	pubkey := strings.ToLower(mux.Vars(r)["pubkey"])
 	// Reject malformed pubkeys up front (cheap defense against cache-key
 	// pollution + wasted work on bogus IDs).
@@ -451,7 +438,7 @@ func (s *Server) handleNodeReach(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "Not found")
 		return
 	}
-	if s.isPubkeyHidden(pubkey) {
+	if s.isPubkeyHidden(ctx, pubkey) {
 		writeError(w, 404, "Not found")
 		return
 	}
@@ -528,10 +515,10 @@ func (s *Server) handleNodeReach(w http.ResponseWriter, r *http.Request) {
 // real backend failure (e.g. DB scan exploded) — caller should render 500,
 // not 404 (issue #1631).
 func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) (NodeReachResponse, bool, error) {
-	if s.store == nil || s.db == nil || s.db.conn == nil {
+	if s.store == nil || s.db == nil {
 		return NodeReachResponse{}, false, nil
 	}
-	nodeMap := s.buildNodeInfoMap()
+	nodeMap := s.buildNodeInfoMap(ctx)
 	self, found := nodeMap[pubkey]
 	if !found {
 		return NodeReachResponse{}, false, nil
@@ -540,11 +527,10 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	tokens := reliableTokens(pubkey, pm)
 
 	since := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
-	sinceEpoch := since.Unix()
 
 	var d dirCounts
 	if len(tokens) > 0 {
-		rows, err := s.scanReachRows(ctx, tokens, sinceEpoch)
+		rows, err := s.scanReachRows(ctx, tokens, since)
 		if err != nil {
 			return NodeReachResponse{}, false, err
 		}
@@ -689,26 +675,16 @@ func (s *Server) getDegreeSnapshot(ctx context.Context) *degreeSnapshot {
 	// Rebuild WITHOUT holding the lock so concurrent reach requests aren't
 	// serialized behind the aggregate query. A brief cold-start herd may run a
 	// few redundant queries; the last writer wins.
-	rows, err := s.db.conn.QueryContext(ctx, `
-		SELECT pk, COUNT(*) neigh FROM (
-			SELECT node_a pk FROM neighbor_edges
-			UNION ALL SELECT node_b FROM neighbor_edges
-		) GROUP BY pk`)
+	degrees, err := s.db.ListNodeDegrees(ctx)
 	if err != nil {
 		log.Printf("[reach] degree snapshot query failed: %v (serving stale)", err)
 		return stale // serve stale on error rather than zeroing
 	}
-	defer rows.Close()
-	deg := make(map[string]int)
-	var sortedDesc []int
-	for rows.Next() {
-		var pk string
-		var neigh int
-		if rows.Scan(&pk, &neigh) != nil {
-			continue
-		}
-		deg[strings.ToLower(pk)] = neigh
-		sortedDesc = append(sortedDesc, neigh)
+	deg := make(map[string]int, len(degrees))
+	sortedDesc := make([]int, 0, len(degrees))
+	for _, d := range degrees {
+		deg[d.Pubkey] = d.Degree
+		sortedDesc = append(sortedDesc, d.Degree)
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(sortedDesc)))
 	snap := &degreeSnapshot{at: time.Now(), total: len(deg), deg: deg, sortedDesc: sortedDesc}
@@ -728,67 +704,30 @@ func (s *Server) getDegreeSnapshot(ctx context.Context) *degreeSnapshot {
 // callers MUST treat that as a 500 (issue #1631 — previously the error was
 // swallowed, surfacing a transient DB failure as a misleading 404 / empty
 // reach to operators).
-func (s *Server) scanReachRows(ctx context.Context, tokens map[string]bool, sinceEpoch int64) ([]pathRow, error) {
+func (s *Server) scanReachRows(ctx context.Context, tokens map[string]bool, since time.Time) ([]pathRow, error) {
 	if len(tokens) == 0 {
-		return nil, nil // defensive: an empty LIKE chain would render `AND ()` (SQL error)
+		return nil, nil
 	}
-	likes := make([]string, 0, len(tokens))
-	args := []interface{}{sinceEpoch}
-	// Sort tokens so the generated SQL text is byte-stable across requests
-	// with the same token set — preserves the driver's prepared-statement
-	// cache and keeps query plans reproducible (Independent r2 #3).
-	toks := make([]string, 0, len(tokens))
+	stored := make([]string, 0, len(tokens))
 	for tok := range tokens {
-		toks = append(toks, tok)
+		stored = append(stored, strings.ToLower(tok))
 	}
-	sort.Strings(toks)
-	for _, tok := range toks {
-		likes = append(likes, "o.path_json LIKE ?")
-		args = append(args, "%\""+tok+"\"%")
-	}
-	q := `SELECT LOWER(COALESCE(obs.id,'')), LOWER(COALESCE(t.from_pubkey,'')), COALESCE(t.payload_type,0), o.path_json, o.snr
-	      FROM observations o
-	      JOIN transmissions t ON t.id = o.transmission_id
-	      LEFT JOIN observers obs ON obs.rowid = o.observer_idx
-	      WHERE o.timestamp >= ? AND (` + strings.Join(likes, " OR ") + `)
-	      LIMIT ?`
-	args = append(args, reachScanRowLimit)
-	rows, err := s.db.conn.QueryContext(ctx, q, args...)
+	rows, err := s.db.ListObservedPathsThrough(ctx, stored, since, reachScanRowLimit)
 	if err != nil {
 		log.Printf("[reach] scan query failed: %v", err)
 		return nil, err
 	}
-	defer rows.Close()
-	// Modest preallocation: most nodes return far fewer than the cap, so seed a
-	// reasonable capacity rather than reserving reachScanRowLimit up front.
-	out := make([]pathRow, 0, 2048)
-	var skipped int // malformed/empty rows discarded — surfaced below so ingest bugs aren't silent
-	for rows.Next() {
-		var oid, fpk, pj string
-		var pt int
-		var snr sql.NullFloat64
-		if err := rows.Scan(&oid, &fpk, &pt, &pj, &snr); err != nil {
-			skipped++
-			continue
+	out := make([]pathRow, len(rows))
+	for i, r := range rows {
+		path := make([]string, len(r.Path))
+		for j, h := range r.Path {
+			path[j] = strings.ToUpper(h)
 		}
-		path := parsePathTokens(pj)
-		if len(path) == 0 {
-			skipped++
-			continue
+		pr := pathRow{observerPK: r.ObserverPK, fromPubkey: r.FromPubkey, payloadType: r.PayloadType, path: path}
+		if r.SNR != nil {
+			pr.snr, pr.snrValid = *r.SNR, true
 		}
-		pr := pathRow{observerPK: oid, fromPubkey: fpk, payloadType: pt, path: path}
-		if snr.Valid {
-			pr.snr = snr.Float64
-			pr.snrValid = true
-		}
-		out = append(out, pr)
-	}
-	if skipped > 0 {
-		log.Printf("[reach] scan discarded %d malformed/empty rows (kept %d)", skipped, len(out))
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("[reach] scan rows iteration failed: %v", err)
-		return nil, err
+		out[i] = pr
 	}
 	return out, nil
 }

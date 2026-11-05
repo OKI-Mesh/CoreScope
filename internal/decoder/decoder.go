@@ -161,7 +161,7 @@ type DecodedPacket struct {
 	Payload        Payload         `json:"payload"`
 	Raw            string          `json:"raw"`
 	Anomaly        string          `json:"anomaly,omitempty"`
-	PayloadRaw     []byte
+	PayloadRaw     []byte          `json:"-"`
 }
 
 // IsTransportScoped reports whether the packet carries a region scope: it has
@@ -175,17 +175,11 @@ func decodeHeader(b byte) Header {
 	pt := types.PayloadType((b >> 2) & 0x0F)
 	pv := int((b >> 6) & 0x03)
 
-	rtName := rt.String()
-	ptName := pt.String()
-	if ptName == "" {
-		ptName = "UNKNOWN"
-	}
-
 	return Header{
 		RouteType:       rt,
-		RouteTypeName:   rtName,
+		RouteTypeName:   rt.String(),
 		PayloadType:     pt,
-		PayloadTypeName: ptName,
+		PayloadTypeName: pt.Name(),
 		PayloadVersion:  pv,
 	}
 }
@@ -950,16 +944,22 @@ func ComputeContentHash(rawHex string) string {
 	return hex.EncodeToString(h[:])[:16]
 }
 
-// DecodePacket decodes a hex-encoded MeshCore packet.
-func DecodePacket(hexString string, channelKeys map[string]string, validateSignatures bool) (*DecodedPacket, error) {
-	hexString = strings.ReplaceAll(hexString, " ", "")
-	hexString = strings.ReplaceAll(hexString, "\n", "")
-	hexString = strings.ReplaceAll(hexString, "\r", "")
+// Envelope is the outer structure of a packet: everything a router reads
+// before it looks inside the payload.
+type Envelope struct {
+	Header         Header
+	TransportCodes *TransportCodes // nil unless the route type carries transport codes
+	Path           Path
+	PathByte       byte   // the wire path-length byte: hash size in the top 2 bits, hop count in the low 6
+	Payload        []byte // aliases the input buffer
+}
 
-	buf, err := hex.DecodeString(hexString)
-	if err != nil {
-		return nil, fmt.Errorf("invalid hex: %w", err)
-	}
+// ParseEnvelope splits a raw frame into header, transport codes, path and
+// payload bytes without decoding the payload itself. It enforces the same
+// bounds DecodePacket always has, including the firmware's payload cap, so a
+// caller that only needs the envelope cannot disagree with DecodePacket about
+// what a valid frame is.
+func ParseEnvelope(buf []byte) (*Envelope, error) {
 	if len(buf) < 2 {
 		return nil, fmt.Errorf("packet too short (need at least header + pathLength)")
 	}
@@ -985,9 +985,9 @@ func DecodePacket(hexString string, channelKeys map[string]string, validateSigna
 	pathByte := buf[offset]
 	offset++
 
-	path, bytesConsumed, decodeErr := decodePath(pathByte, buf, offset)
-	if decodeErr != nil {
-		return nil, decodeErr
+	path, bytesConsumed, err := decodePath(pathByte, buf, offset)
+	if err != nil {
+		return nil, err
 	}
 	offset += bytesConsumed
 
@@ -1000,11 +1000,38 @@ func DecodePacket(hexString string, channelKeys map[string]string, validateSigna
 		return nil, fmt.Errorf("packet path length (%d bytes claimed by pathByte 0x%02X) exceeds buffer (%d bytes)", bytesConsumed, pathByte, len(buf))
 	}
 
-	payloadBuf := buf[offset:]
+	payload := buf[offset:]
 	// Firmware caps payload at MAX_PACKET_PAYLOAD=184 (firmware/src/MeshCore.h:19).
-	if len(payloadBuf) > maxPacketPayload {
-		return nil, fmt.Errorf("packet payload (%d bytes) exceeds firmware MAX_PACKET_PAYLOAD=%d (MeshCore.h:19)", len(payloadBuf), maxPacketPayload)
+	if len(payload) > maxPacketPayload {
+		return nil, fmt.Errorf("packet payload (%d bytes) exceeds firmware MAX_PACKET_PAYLOAD=%d (MeshCore.h:19)", len(payload), maxPacketPayload)
 	}
+
+	return &Envelope{
+		Header:         header,
+		TransportCodes: tc,
+		Path:           path,
+		PathByte:       pathByte,
+		Payload:        payload,
+	}, nil
+}
+
+// DecodePacket decodes a hex-encoded MeshCore packet.
+func DecodePacket(hexString string, channelKeys map[string]string, validateSignatures bool) (*DecodedPacket, error) {
+	hexString = strings.ReplaceAll(hexString, " ", "")
+	hexString = strings.ReplaceAll(hexString, "\n", "")
+	hexString = strings.ReplaceAll(hexString, "\r", "")
+
+	buf, err := hex.DecodeString(hexString)
+	if err != nil {
+		return nil, fmt.Errorf("invalid hex: %w", err)
+	}
+
+	env, err := ParseEnvelope(buf)
+	if err != nil {
+		return nil, err
+	}
+	header, path, pathByte, payloadBuf := env.Header, env.Path, env.PathByte, env.Payload
+
 	payload := decodePayload(header.PayloadType, payloadBuf, channelKeys, validateSignatures)
 
 	// TRACE packets store hop IDs in the payload (buf[9:]) rather than the header
@@ -1070,7 +1097,7 @@ func DecodePacket(hexString string, channelKeys map[string]string, validateSigna
 
 	return &DecodedPacket{
 		Header:         header,
-		TransportCodes: tc,
+		TransportCodes: env.TransportCodes,
 		Path:           path,
 		Payload:        payload,
 		Raw:            strings.ToUpper(hexString),
@@ -1135,19 +1162,6 @@ func ValidateAdvert(p *Payload) (bool, string) {
 		}
 	}
 
-	if p.Flags != nil {
-		role := AdvertRole(p.Flags)
-		// Accept canonical labels plus "none" (ADV_TYPE_NONE=0) and the
-		// "type-N" placeholders we now return for ADV_TYPE 5-15 (FUTURE)
-		// — see firmware/src/helpers/AdvertDataHelpers.h:7-12.
-		validRoles := map[string]bool{
-			"repeater": true, "companion": true, "room": true, "sensor": true, "none": true,
-		}
-		if !validRoles[role] && !strings.HasPrefix(role, "type-") {
-			return false, fmt.Sprintf("unknown role: %s", role)
-		}
-	}
-
 	return true, ""
 }
 
@@ -1170,26 +1184,14 @@ func sanitizeName(s string) string {
 //
 // Previously this coerced both 0 (NONE) and 5-15 (FUTURE) to "companion",
 // silently relabelling unknown/reserved types — see issue #1279 P1 #3.
-func AdvertRole(f *AdvertFlags) string {
+func AdvertRole(f *AdvertFlags) (types.NodeRole, bool) {
 	if f == nil {
-		return "companion"
+		return "", false
 	}
-	switch f.Type {
-	case 0:
-		return "none"
-	case 1:
-		return "companion"
-	case 2:
-		return "repeater"
-	case 3:
-		return "room"
-	case 4:
-		return "sensor"
-	default:
-		return fmt.Sprintf("type-%d", f.Type)
-	}
+	return types.NodeRoleFromAdvertType(f.Type)
 }
 
 func epochToISO(epoch uint32) string {
-	return time.Unix(int64(epoch), 0).UTC().Format("2006-01-02T15:04:05.000Z")
+	t := time.Unix(int64(epoch), 0)
+	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }

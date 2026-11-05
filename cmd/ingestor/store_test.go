@@ -5,98 +5,28 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-const templateDB = "corescope_template"
-
-func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
 
 var (
-	adminPool   *pgxpool.Pool // connected to the maintenance database, used to create and drop test databases
-	baseConnStr string
-	dbSeq       atomic.Int64
-	storeConn   sync.Map // *Store -> connection string, for testConnStr
+	storeConn sync.Map // *Store -> connection string, for testConnStr
 )
-
-// The image the tests run against. It defaults to the prod tag. On Apple
-// Silicon the official postgis/postgis has no arm64 build, so set
-// TEST_POSTGRES_IMAGE to an arm64-capable build of the same versions.
-var postgresImage = envOr("TEST_POSTGRES_IMAGE", "postgis/postgis:18-3.6")
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-// runTests exists so the deferred cleanups run before os.Exit.
-func runTests(m *testing.M) int {
-	ctx := context.Background()
-
-	ctr, err := postgres.Run(ctx, postgresImage,
-		postgres.WithDatabase("postgres"),
-		postgres.WithUsername("test"),
-		postgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(90*time.Second)),
-	)
-	if err != nil {
-		// Fail loudly. Skipping every database test when Docker is missing would hide everything in CI.
-		fmt.Fprintf(os.Stderr, "starting postgres container: %v\n", err)
-		return 1
-	}
-	defer ctr.Terminate(ctx)
-
-	if baseConnStr, err = ctr.ConnectionString(ctx, "sslmode=disable"); err != nil {
-		fmt.Fprintf(os.Stderr, "connection string: %v\n", err)
-		return 1
-	}
-	if adminPool, err = pgxpool.New(ctx, baseConnStr); err != nil {
-		fmt.Fprintf(os.Stderr, "admin pool: %v\n", err)
-		return 1
-	}
-	defer adminPool.Close()
-
-	// Migrate once, into the template, through the real goose path.
-	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{templateDB}.Sanitize()); err != nil {
-		fmt.Fprintf(os.Stderr, "create template: %v\n", err)
-		return 1
-	}
-	if err := database.Migrate(ctx, connStrFor(templateDB)); err != nil {
-		fmt.Fprintf(os.Stderr, "migrating template: %v\n", err)
-		return 1
-	}
-	// A template can't be cloned while anything is connected to it.
-	if _, err := adminPool.Exec(ctx,
-		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, templateDB); err != nil {
-		fmt.Fprintf(os.Stderr, "releasing template: %v\n", err)
-		return 1
-	}
-
-	return m.Run()
-}
 
 // newTestStore returns a Store backed by its own copy of the migrated schema.
 // It starts no background goroutines. If the constructor ever does, tests that
@@ -104,17 +34,9 @@ func runTests(m *testing.M) int {
 // backfills in main().
 func newTestStore(t testing.TB) *Store {
 	t.Helper()
-	ctx := context.Background() // t.Context() is already cancelled when cleanups run
+	connStr := pgtest.NewDatabase(t)
 
-	name := fmt.Sprintf("t_%d", dbSeq.Add(1))
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s",
-		quoted, pgx.Identifier{templateDB}.Sanitize())); err != nil {
-		t.Fatalf("cloning test database: %v", err)
-	}
-
-	connStr := connStrFor(name)
-	s, err := OpenStore(ctx, connStr) // whatever opens a Store from a connection string; migrations are already in the template
+	s, err := OpenStore(context.Background(), connStr, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,54 +45,13 @@ func newTestStore(t testing.TB) *Store {
 	t.Cleanup(func() {
 		s.Close()
 		storeConn.Delete(s)
-		if _, err := adminPool.Exec(context.Background(),
-			"DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
-			t.Logf("dropping %s: %v", name, err)
-		}
 	})
 	return s
 }
 
-// connStrFor returns baseConnStr pointed at another database in the container.
-func connStrFor(db string) string {
-	u, err := url.Parse(baseConnStr)
-	if err != nil {
-		panic(err)
-	}
-	u.Path = "/" + db
-	return u.String()
-}
-
-// testConnStr returns the connection string for a test store's database.
-func testConnStr(t testing.TB, s *Store) string {
-	t.Helper()
-	v, ok := storeConn.Load(s)
-	if !ok {
-		t.Fatal("testConnStr: store was not created by newTestStore")
-	}
-	return v.(string)
-}
-
-// newTestDatabase clones the migrated template into a fresh database and
-// returns its connection string. The database is dropped when the test ends.
 func newTestDatabase(t testing.TB) string {
 	t.Helper()
-	if adminPool == nil {
-		t.Fatal("no test container: this package needs the harness TestMain (adminPool is nil)")
-	}
-	name := fmt.Sprintf("t_%d", dbSeq.Add(1))
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := adminPool.Exec(t.Context(), fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s",
-		quoted, pgx.Identifier{templateDB}.Sanitize())); err != nil {
-		t.Fatalf("cloning test database: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := adminPool.Exec(context.Background(),
-			"DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
-			t.Logf("dropping %s: %v", name, err)
-		}
-	})
-	return connStrFor(name)
+	return pgtest.NewDatabase(t)
 }
 
 func TestOpenStore(t *testing.T) {
@@ -178,7 +59,7 @@ func TestOpenStore(t *testing.T) {
 	// this test is about OpenStore itself.
 	connStr := newTestDatabase(t)
 
-	s, err := OpenStore(t.Context(), connStr)
+	s, err := OpenStore(t.Context(), connStr, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,49 +72,6 @@ func TestOpenStore(t *testing.T) {
 		t.Fatalf("store opened but the pool can't reach the database: %v", err)
 	}
 }
-func TestPacketsViewQueryable(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
-	ctx := t.Context()
-
-	// Insert observer so the LEFT JOIN resolves
-	if err := s.UpsertObserver(ctx, "obs1", "TestObserver", "SJC", nil); err != nil {
-		t.Fatal(err)
-	}
-
-	snr := 3.5
-	rssi := -95.0
-	data := &PacketData{
-		RawHex:      "AABB",
-		Timestamp:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		ObserverID:  "obs1",
-		Hash:        "viewtesthash",
-		RouteType:   1,
-		PayloadType: 4,
-		PathJSON:    "[]",
-		DecodedJSON: `{"type":"ADVERT"}`,
-		SNR:         &snr,
-		RSSI:        &rssi,
-	}
-	if _, err := s.InsertTransmission(ctx, data); err != nil {
-		t.Fatal(err)
-	}
-
-	// Query through packets_v — the view the Go server relies on
-	var obsID, obsName sql.NullString
-	var hash string
-	mustScan(t, testRow(t, s, "SELECT observer_id, observer_name, hash FROM packets_v LIMIT 1"), &obsID, &obsName, &hash)
-	if hash != "viewtesthash" {
-		t.Errorf("hash=%s, want viewtesthash", hash)
-	}
-	if !obsID.Valid || obsID.String != "obs1" {
-		t.Errorf("observer_id=%v, want obs1", obsID)
-	}
-	if !obsName.Valid || obsName.String != "TestObserver" {
-		t.Errorf("observer_name=%v, want TestObserver", obsName)
-	}
-}
-
 func TestUpsertNode(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
@@ -241,7 +79,7 @@ func TestUpsertNode(t *testing.T) {
 
 	lat := 37.0
 	lon := -122.0
-	if err := s.UpsertNode(ctx, "aabbccdd", "TestNode", "repeater", &lat, &lon, time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC)); err != nil {
+	if err := upsertNode(ctx, s, "aabbccdd", "TestNode", "repeater", &lat, &lon, time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -255,7 +93,7 @@ func TestUpsertNode(t *testing.T) {
 	}
 
 	// Upsert again — should update
-	if err := s.UpsertNode(ctx, "aabbccdd", "UpdatedNode", "repeater", &lat, &lon, time.Date(2026, 3, 25, 1, 0, 0, 0, time.UTC)); err != nil {
+	if err := upsertNode(ctx, s, "aabbccdd", "UpdatedNode", "repeater", &lat, &lon, time.Date(2026, 3, 25, 1, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,12 +114,13 @@ func TestUpsertObserver(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 	ctx := t.Context()
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", " sjc ", nil); err != nil {
+	observerID := strings.Repeat("2c", 32)
+	if err := s.UpsertObserver(ctx, observerID, "Observer1", " sjc ", nil); err != nil {
 		t.Fatal(err)
 	}
 
 	var name, iata string
-	mustScan(t, testRow(t, s, "SELECT name, iata FROM observers WHERE id = 'obs1'"), &name, &iata)
+	mustScan(t, testRow(t, s, "SELECT name, iata FROM observers WHERE pubkey = $1", observerID), &name, &iata)
 	if name != "Observer1" {
 		t.Errorf("name=%s, want Observer1", name)
 	}
@@ -294,6 +133,7 @@ func TestUpsertObserverWithMeta(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 	ctx := t.Context()
+	observerID := strings.Repeat("2d", 32)
 
 	battery := 3500
 	uptime := int64(86400)
@@ -312,16 +152,15 @@ func TestUpsertObserverWithMeta(t *testing.T) {
 		NoiseFloor:    &noise,
 	}
 
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", meta); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", meta); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify correct types in DB
 	var batteryMv int
 	var uptimeSecs int64
 	var noiseFloor float64
 	var gotModel, gotFirmware, gotClientVersion, gotRadio string
-	mustScan(t, testRow(t, s, "SELECT model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor FROM observers WHERE id = 'obs1'"), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &uptimeSecs, &noiseFloor)
+	mustScan(t, testRow(t, s, "SELECT model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor FROM observers WHERE pubkey = $1", observerID), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &uptimeSecs, &noiseFloor)
 	if gotModel != model {
 		t.Errorf("model=%s, want %s", gotModel, model)
 	}
@@ -343,26 +182,13 @@ func TestUpsertObserverWithMeta(t *testing.T) {
 	if noiseFloor != -115.5 {
 		t.Errorf("noise_floor=%f, want -115.5", noiseFloor)
 	}
-
-	// Verify typeof returns correct SQLite types
-	var typBattery, typUptime, typNoise string
-	mustScan(t, testRow(t, s, "SELECT typeof(battery_mv), typeof(uptime_secs), typeof(noise_floor) FROM observers WHERE id = 'obs1'"), &typBattery, &typUptime, &typNoise)
-	if typBattery != "integer" {
-		t.Errorf("typeof(battery_mv)=%s, want integer", typBattery)
-	}
-	if typUptime != "integer" {
-		t.Errorf("typeof(uptime_secs)=%s, want integer", typUptime)
-	}
-	if typNoise != "real" {
-		t.Errorf("typeof(noise_floor)=%s, want real", typNoise)
-	}
 }
 
 func TestUpsertObserverMetaPreservesExisting(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
+	observerID := strings.Repeat("2e", 32)
 
-	// First upsert with metadata
 	battery := 3500
 	noise := -115.5
 	model := "L1"
@@ -377,19 +203,18 @@ func TestUpsertObserverMetaPreservesExisting(t *testing.T) {
 		BatteryMv:     &battery,
 		NoiseFloor:    &noise,
 	}
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", meta); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", meta); err != nil {
 		t.Fatal(err)
 	}
 
-	// Second upsert without metadata — should preserve existing values
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
 	var batteryMv int
 	var noiseFloor float64
 	var gotModel, gotFirmware, gotClientVersion, gotRadio string
-	mustScan(t, testRow(t, s, "SELECT model, firmware, client_version, radio, battery_mv, noise_floor FROM observers WHERE id = 'obs1'"), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &noiseFloor)
+	mustScan(t, testRow(t, s, "SELECT model, firmware, client_version, radio, battery_mv, noise_floor FROM observers WHERE pubkey = $1", observerID), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &noiseFloor)
 	if gotModel != model {
 		t.Errorf("model=%s after nil-meta upsert, want %s (preserved)", gotModel, model)
 	}
@@ -539,28 +364,33 @@ func TestInsertTransmissionUpdatesObserverLastSeen(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
 	defer s.Close()
+	observerID := strings.Repeat("2f", 32)
 
-	// Insert observer with an old last_seen
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	oldTime := time.Date(2026, 3, 24, 22, 0, 0, 0, time.UTC)
+	if _, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        observerID,
+		Name:      "Observer1",
+		IATA:      "SJC",
+		Meta:      nil,
+		LastSeen:  oldTime,
+		IngestNow: oldTime,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	// Backdate last_seen to 2 hours ago
-	oldTime := time.Date(2026, 3, 24, 22, 0, 0, 0, time.UTC)
-	testExec(t, s, "UPDATE observers SET last_seen = $1 WHERE id = $2", oldTime, "obs1")
 
-	// Verify it was backdated
-	var lastSeenBefore time.Time
-	mustScan(t, testRow(t, s, `SELECT last_seen FROM observers WHERE id = $1`, "obs1"), &lastSeenBefore)
+	lastSeenBefore, err := s.db.GetObserverLastSeen(ctx, observerID)
 	if !lastSeenBefore.Equal(oldTime) {
 		t.Fatalf("expected last_seen=%s, got %s", oldTime, lastSeenBefore)
 	}
+	if err != nil {
+		t.Fatalf("Can't retrieve observer: %s", observerID)
+	}
 
-	// Insert a packet from this observer
 	data := &PacketData{
 		RawHex:      "0A00D69F",
 		Timestamp:   time.Date(2026, 3, 25, 1, 0, 0, 0, time.UTC),
-		ObserverID:  "obs1",
-		Hash:        "lastseentest123456",
+		ObserverID:  observerID,
+		Hash:        "1a57000000000463",
 		RouteType:   2,
 		PayloadType: 2,
 		PathJSON:    "[]",
@@ -572,9 +402,8 @@ func TestInsertTransmissionUpdatesObserverLastSeen(t *testing.T) {
 	}
 	after := time.Now().Unix()
 
-	// Verify last_seen was updated to INGEST time, not envelope time (#1465).
 	var lastSeenAfter time.Time
-	mustScan(t, testRow(t, s, `SELECT last_seen FROM observers WHERE id = $1`, "obs1"), &lastSeenAfter)
+	mustScan(t, testRow(t, s, `SELECT last_seen FROM observers WHERE pubkey = $1`, observerID), &lastSeenAfter)
 	if lastSeenAfter.Equal(oldTime) {
 		t.Error("observer last_seen was NOT updated after packet insertion — low-traffic observers will appear offline")
 	}
@@ -590,24 +419,23 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 	ctx := t.Context()
+	observerID := strings.Repeat("3a", 32)
 
-	// Insert observer via status path — last_packet_at should be NULL
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
 	var lastPacketAt *time.Time
-	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, "obs1"), &lastPacketAt)
+	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAt)
 	if lastPacketAt != nil {
 		t.Fatalf("expected last_packet_at to be NULL after UpsertObserver, got %s", lastPacketAt)
 	}
 
-	// Insert a packet from this observer — last_packet_at should be set
 	data := &PacketData{
 		RawHex:      "0A00D69F",
 		Timestamp:   time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC),
-		ObserverID:  "obs1",
-		Hash:        "lastpackettest123456",
+		ObserverID:  observerID,
+		Hash:        "1a57000000000464",
 		RouteType:   2,
 		PayloadType: 2,
 		PathJSON:    "[]",
@@ -619,26 +447,22 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 	}
 	after := time.Now().Unix()
 
-	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE id = $1`, "obs1"), &lastPacketAt)
+	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAt)
 	if lastPacketAt == nil {
 		t.Fatal("expected last_packet_at to be non-NULL after InsertTransmission")
 	}
-	// last_packet_at, like last_seen, is "when did the analyzer last receive a
-	// packet from this observer" — an ingest-time question, independent of the
-	// envelope timestamp. See #1465.
 	lp := *lastPacketAt
 	if lp.Unix() < before-5 || lp.Unix() > after+5 {
 		t.Errorf("expected last_packet_at ≈ server now (in [%d, %d]), got %s (epoch %d)",
 			before, after, lastPacketAt, lp.Unix())
 	}
 
-	// UpsertObserver again (status path) — last_packet_at should NOT change
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
 	var lastPacketAtAfterStatus *time.Time
-	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, "obs1"), &lastPacketAtAfterStatus)
+	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAtAfterStatus)
 	if lastPacketAtAfterStatus == nil || !lastPacketAtAfterStatus.Equal(*lastPacketAt) {
 		t.Errorf("UpsertObserver should not change last_packet_at; expected %s, got %v", lastPacketAt, lastPacketAtAfterStatus)
 	}
@@ -649,7 +473,6 @@ func TestEndToEndIngest(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 
-	// Simulate full pipeline: decode + insert
 	rawHex := "120046D62DE27D4C5194D7821FC5A34A45565DCC2537B300B9AB6275255CEFB65D840CE5C169C94C9AED39E8BCB6CB6EB0335497A198B33A1A610CD3B03D8DCFC160900E5244280323EE0B44CACAB8F02B5B38B91CFA18BD067B0B5E63E94CFC85F758A8530B9240933402E0E6B8F84D5252322D52"
 
 	decoded, err := decoder.DecodePacket(rawHex, nil, false)
@@ -661,27 +484,67 @@ func TestEndToEndIngest(t *testing.T) {
 		Raw: rawHex,
 	}
 	pktData := BuildPacketData(msg, decoded, "obs1", "SJC", nil)
+	pktData.Advert = advertNode(&decoded.Payload, pktData.Timestamp)
+	if pktData.Advert == nil {
+		t.Fatalf("advert from %s has no valid role", decoded.Payload.PubKey)
+	}
 	if _, err := s.InsertTransmission(ctx, pktData); err != nil {
 		t.Fatal(err)
 	}
 
-	// Process advert node upsert
-	if decoded.Payload.Type == "ADVERT" && decoded.Payload.PubKey != "" {
-		ok, _ := decoder.ValidateAdvert(&decoded.Payload)
-		if ok {
-			role := decoder.AdvertRole(decoded.Payload.Flags)
-			err := s.UpsertNode(ctx, decoded.Payload.PubKey, decoded.Payload.Name, role, decoded.Payload.Lat, decoded.Payload.Lon, pktData.Timestamp)
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	// Verify node was created
 	var nodeName string
 	mustScan(t, testRow(t, s, `SELECT name FROM nodes WHERE public_key = $1`, decoded.Payload.PubKey), &nodeName)
 	if !strings.Contains(nodeName, "MRR2-R") {
 		t.Errorf("node name=%s, want MRR2-R", nodeName)
+	}
+
+	var fromPubkey string
+	mustScan(t, testRow(t, s, `SELECT from_pubkey FROM transmissions WHERE hash = $1`, pktData.Hash), &fromPubkey)
+	if fromPubkey != strings.ToLower(decoded.Payload.PubKey) {
+		t.Errorf("transmission from_pubkey = %q, want the advert's pubkey %q", fromPubkey, strings.ToLower(decoded.Payload.PubKey))
+	}
+}
+
+func TestIngestUnknownAdvertTypeStoresPacketWithoutNode(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	defer s.Close()
+
+	rawHex := "1200" + strings.Repeat("AA", 32) + "00000000" + strings.Repeat("BB", 64) + "07"
+
+	decoded, err := decoder.DecodePacket(rawHex, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Payload.Flags == nil || decoded.Payload.Flags.Type != 7 {
+		t.Fatalf("fixture must decode to advert type 7, got %+v", decoded.Payload.Flags)
+	}
+
+	pktData := BuildPacketData(&MQTTPacketMessage{Raw: rawHex}, decoded, "obs1", "SJC", nil)
+	pktData.Advert = advertNode(&decoded.Payload, pktData.Timestamp)
+	if pktData.Advert != nil {
+		t.Fatalf("type 7 must not produce a node, got %+v", pktData.Advert)
+	}
+	if _, err := s.InsertTransmission(ctx, pktData); err != nil {
+		t.Fatalf("a packet without a node must still be stored: %v", err)
+	}
+
+	var transmissions int
+	mustScan(t, testRow(t, s, `SELECT COUNT(*) FROM transmissions WHERE hash = $1`, pktData.Hash), &transmissions)
+	if transmissions != 1 {
+		t.Errorf("transmissions stored = %d, want 1", transmissions)
+	}
+
+	var fromIsNull bool
+	mustScan(t, testRow(t, s, `SELECT from_pubkey IS NULL FROM transmissions WHERE hash = $1`, pktData.Hash), &fromIsNull)
+	if !fromIsNull {
+		t.Error("from_pubkey must be NULL when no node was recorded")
+	}
+
+	var nodes int
+	mustScan(t, testRow(t, s, `SELECT COUNT(*) FROM nodes WHERE public_key = $1`, strings.ToLower(decoded.Payload.PubKey)), &nodes)
+	if nodes != 0 {
+		t.Errorf("nodes created = %d, want 0 for an unknown advert type", nodes)
 	}
 }
 
@@ -693,15 +556,14 @@ func TestInsertTransmissionEmptyHash(t *testing.T) {
 	data := &PacketData{
 		RawHex:    "0A00",
 		Timestamp: time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC),
-		Hash:      "", // empty hash → should return nil
+		Hash:      "",
 	}
 	_, err := s.InsertTransmission(ctx, data)
 	if err != nil {
 		t.Errorf("empty hash should return nil, got %v", err)
 	}
 
-	var count int
-	count = countRows(t, s, "SELECT COUNT(*) FROM transmissions")
+	count := countRows(t, s, "transmissions")
 	if count != 0 {
 		t.Errorf("no transmission should be inserted for empty hash, got count=%d", count)
 	}
@@ -714,8 +576,8 @@ func TestInsertTransmissionEmptyTimestamp(t *testing.T) {
 
 	data := &PacketData{
 		RawHex:    "0A00D69F",
-		Timestamp: time.Time{}, // empty → uses current time
-		Hash:      "emptyts123456789",
+		Timestamp: time.Time{},
+		Hash:      "e0e0000000000001",
 		RouteType: 2,
 	}
 	_, err := s.InsertTransmission(ctx, data)
@@ -723,9 +585,9 @@ func TestInsertTransmissionEmptyTimestamp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var firstSeen string
+	var firstSeen time.Time
 	mustScan(t, testRow(t, s, `SELECT first_seen FROM transmissions WHERE hash = $1`, data.Hash), &firstSeen)
-	if firstSeen == "" {
+	if firstSeen.IsZero() {
 		t.Error("first_seen should be set even with empty timestamp")
 	}
 }
@@ -735,32 +597,31 @@ func TestInsertTransmissionEarlierFirstSeen(t *testing.T) {
 	defer s.Close()
 	ctx := t.Context()
 
-	// Insert with later timestamp
 	data := &PacketData{
 		RawHex:    "0A00D69F",
 		Timestamp: time.Date(2026, 3, 25, 12, 0, 0, 0, time.UTC),
-		Hash:      "firstseen12345678",
+		Hash:      "f157000000000001",
 		RouteType: 2,
 	}
 	if _, err := s.InsertTransmission(ctx, data); err != nil {
 		t.Fatal(err)
 	}
 
-	// Insert again with earlier timestamp
 	data2 := &PacketData{
 		RawHex:    "0A00D69F",
-		Timestamp: time.Date(2026, 3, 25, 6, 0, 0, 0, time.UTC), // earlier
-		Hash:      "firstseen12345678",                          // same hash
+		Timestamp: time.Date(2026, 3, 25, 6, 0, 0, 0, time.UTC),
+		Hash:      "f157000000000001",
 		RouteType: 2,
 	}
 	if _, err := s.InsertTransmission(ctx, data2); err != nil {
 		t.Fatal(err)
 	}
 
-	var firstSeen string
+	var firstSeen time.Time
 	mustScan(t, testRow(t, s, `SELECT first_seen FROM transmissions WHERE hash = $1`, data.Hash), &firstSeen)
-	if firstSeen != "2026-03-25 06:00:00 +0000 UTC" {
-		t.Errorf("first_seen=%s, want 2026-03-25 06:00:00 +0000 UTC (earlier timestamp)", firstSeen)
+	want := time.Date(2026, 3, 25, 6, 0, 0, 0, time.UTC)
+	if !firstSeen.Equal(want) {
+		t.Errorf("first_seen=%s, want %s (earlier timestamp)", firstSeen, want)
 	}
 }
 
@@ -874,7 +735,7 @@ func TestBuildPacketData(t *testing.T) {
 	if pkt.Timestamp.IsZero() {
 		t.Errorf("timestamp must be populated (server ingest time, #1370 reverts #1233)")
 	}
-	if pkt.Timestamp == time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC) {
+	if pkt.Timestamp.Equal(time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)) {
 		t.Errorf("timestamp=%s; must NOT be the envelope value (#1370 reverts #1233's "+
 			"premise that envelope timestamp is trustworthy — buggy client clocks poison ordering)", pkt.Timestamp)
 	}
@@ -917,17 +778,17 @@ func TestBuildPacketDataNilSNRRSSI(t *testing.T) {
 func TestUpsertNodeEmptyLastSeen(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
+	nodePK := strings.Repeat("aa", 32)
 
 	lat := 37.0
 	lon := -122.0
-	// Empty lastSeen → should use current time
-	if err := s.UpsertNode(ctx, "aabbccdd", "TestNode", "repeater", &lat, &lon, time.Time{}); err != nil {
+	if err := upsertNode(ctx, s, nodePK, "TestNode", "repeater", &lat, &lon, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
-	var lastSeen string
-	mustScan(t, testRow(t, s, "SELECT last_seen FROM nodes WHERE public_key = 'aabbccdd'"), &lastSeen)
-	if lastSeen == "" {
+	var lastSeen time.Time
+	mustScan(t, testRow(t, s, "SELECT last_seen FROM nodes WHERE public_key = $1", nodePK), &lastSeen)
+	if lastSeen.IsZero() {
 		t.Error("last_seen should be set even with empty input")
 	}
 }
@@ -938,7 +799,7 @@ func TestRestartAgainstMigratedDatabase(t *testing.T) {
 	connStr := newTestDatabase(t) // cloned from the migrated template
 	ctx := testCtx(t)
 
-	s1, err := OpenStore(ctx, connStr)
+	s1, err := OpenStore(ctx, connStr, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -949,7 +810,7 @@ func TestRestartAgainstMigratedDatabase(t *testing.T) {
 	if err := database.Migrate(ctx, connStr); err != nil {
 		t.Fatalf("second Migrate on an already-migrated database: %v", err)
 	}
-	s2, err := OpenStore(ctx, connStr)
+	s2, err := OpenStore(ctx, connStr, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1035,7 +896,7 @@ func TestConcurrentWrites(t *testing.T) {
 				}
 				// Also do node + observer upserts to simulate the full pipeline.
 				lat, lon := 37.0, -122.0
-				if err := s.UpsertNode(ctx, fmt.Sprintf("node_%02d_%03d", gIdx, i), "Node", "repeater", &lat, &lon, data.Timestamp); err != nil {
+				if err := upsertNode(ctx, s, fmt.Sprintf("node_%02d_%03d", gIdx, i), "Node", "repeater", &lat, &lon, data.Timestamp); err != nil {
 					errCh <- fmt.Errorf("goroutine %d node upsert %d: %w", gIdx, i, err)
 					return
 				}
@@ -1082,9 +943,10 @@ func TestConcurrentWrites(t *testing.T) {
 
 func TestDBStats(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := t.Context()
+	nodePK := strings.Repeat("b1", 32)
+	observerID := strings.Repeat("b2", 32)
 
-	// Initial stats should be zero. They belong to this store, so no reset is needed.
 	if s.Stats.TransmissionsInserted.Load() != 0 {
 		t.Error("initial TransmissionsInserted should be 0")
 	}
@@ -1092,12 +954,11 @@ func TestDBStats(t *testing.T) {
 		t.Error("initial WriteErrors should be 0")
 	}
 
-	// Insert a transmission
 	rxTime := time.Date(2026, 3, 28, 0, 0, 0, 0, time.UTC)
 	data := &PacketData{
 		RawHex:    "0A00D69F",
 		Timestamp: rxTime,
-		Hash:      "stats_test_12345",
+		Hash:      "5a75000000000001",
 		RouteType: types.RouteDirect,
 		PathJSON:  "[]",
 	}
@@ -1111,40 +972,46 @@ func TestDBStats(t *testing.T) {
 		t.Errorf("ObservationsInserted=%d, want 1", s.Stats.ObservationsInserted.Load())
 	}
 
-	// Insert duplicate. Counted exactly once: a double increment of this
-	// counter slipped into InsertTransmission before, and this is the assertion
-	// that catches it.
 	if _, err := s.InsertTransmission(ctx, data); err != nil {
 		t.Fatal(err)
 	}
 	if s.Stats.DuplicateTransmissions.Load() != 1 {
 		t.Errorf("DuplicateTransmissions=%d, want 1", s.Stats.DuplicateTransmissions.Load())
 	}
+	if got := s.Stats.ObservationsInserted.Load(); got != 1 {
+		t.Errorf("ObservationsInserted=%d after duplicate, want 1", got)
+	}
+	if n := countRows(t, s, "observations"); n != 1 {
+		t.Errorf("observations rows=%d after duplicate, want 1", n)
+	}
 
-	// Node upsert
 	lat, lon := 37.0, -122.0
-	if err := s.UpsertNode(ctx, "pk1", "Node1", "repeater", &lat, &lon, rxTime); err != nil {
+	data.Advert = &database.NodeInput{
+		PublicKey: nodePK,
+		Name:      "Node1",
+		Role:      "repeater",
+		Lat:       &lat,
+		Lon:       &lon,
+		RxTime:    rxTime,
+	}
+	if _, err := s.InsertTransmission(ctx, data); err != nil {
 		t.Fatal(err)
 	}
 	if s.Stats.NodeUpserts.Load() != 1 {
 		t.Errorf("NodeUpserts=%d, want 1", s.Stats.NodeUpserts.Load())
 	}
 
-	// Observer upsert
-	if err := s.UpsertObserver(ctx, "obs1", "Obs1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, "Obs1", "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 	if s.Stats.ObserverUpserts.Load() != 1 {
 		t.Errorf("ObserverUpserts=%d, want 1", s.Stats.ObserverUpserts.Load())
 	}
 
-	// None of the above should have failed a write. The old test only checked
-	// that the counter started at zero.
 	if got := s.Stats.WriteErrors.Load(); got != 0 {
 		t.Errorf("WriteErrors=%d after a clean run, want 0", got)
 	}
 
-	// LogStats should not panic
 	s.LogStats()
 }
 
@@ -1212,7 +1079,7 @@ func TestLoadTestThroughput(t *testing.T) {
 				lat := 37.0 + float64(gIdx)*0.001
 				lon := -122.0 + float64(i)*0.001
 				pubKey := "node_" + id
-				if err := s.UpsertNode(ctx, pubKey, "Node", "repeater", &lat, &lon, rxTime); err != nil {
+				if err := upsertNode(ctx, s, pubKey, "Node", "repeater", &lat, &lon, rxTime); err != nil {
 					fail("upsert node", err)
 				}
 				if err := s.IncrementAdvertCount(ctx, pubKey); err != nil {
@@ -1287,7 +1154,7 @@ func TestUpdateNodeTelemetry(t *testing.T) {
 
 	lat := 37.0
 	lon := -122.0
-	if err := s.UpsertNode(ctx, "telem1", "TelemetryNode", "sensor", &lat, &lon, time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC)); err != nil {
+	if err := upsertNode(ctx, s, "telem1", "TelemetryNode", "sensor", &lat, &lon, time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1470,15 +1337,15 @@ func TestExtractObserverMetaNestedNilSkipsTopLevel(t *testing.T) {
 func TestRequiredIndexesExist(t *testing.T) {
 	s := newTestStore(t)
 	for _, c := range []struct{ table, index string }{
-		{"observations", "idx_observations_timestamp"}, // the neighbor builder's watermark scan
+		{"observations", "idx_observations_timestamp"},
 		{"observations", "idx_observations_dedup"},
-		{"transmissions", "idx_transmissions_first_seen"}, // the packet prune's batch select
-		{"transmissions", "idx_tx_channel_hash"},          // the channel list
+		{"transmissions", "idx_transmissions_first_seen"},
+		{"transmissions", "idx_tx_channel"},
 		{"client_receptions", "idx_client_recept_rxat"},
 		{"client_rx_observations", "idx_cro_prune"},
 		{"client_rf_samples", "idx_crf_sampled_at"},
 		{"node_declared_regions", "idx_ndr_prune"},
-		{"dropped_packets", "idx_dropped_dropped_at"},
+		{"dropped_packets", "idx_dropped_packets_dropped_at"},
 	} {
 		t.Run(c.index, func(t *testing.T) {
 			n := countWhere(t, s, "pg_indexes",
@@ -1566,7 +1433,6 @@ func TestInsertTransmissionWithScoreAndDirection(t *testing.T) {
 }
 
 func ptrFloat(f float64) *float64 { return &f }
-func ptrInt(i int) *int           { return &i }
 
 func TestRoundToInterval(t *testing.T) {
 	tests := []struct {
@@ -1592,6 +1458,8 @@ func TestInsertMetrics(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 	ctx := t.Context()
+	observerID := strings.Repeat("c1", 32)
+	seedObserver(t, s, observerID, 0)
 
 	nf := -112.5
 	txAir := 100
@@ -1599,7 +1467,7 @@ func TestInsertMetrics(t *testing.T) {
 	recvErr := 3
 	batt := 3720
 	data := &MetricsData{
-		ObserverID: "obs1",
+		ObserverID: observerID,
 		NoiseFloor: &nf,
 		TxAirSecs:  &txAir,
 		RxAirSecs:  &rxAir,
@@ -1611,17 +1479,14 @@ func TestInsertMetrics(t *testing.T) {
 		t.Fatalf("InsertMetrics: %v", err)
 	}
 
-	// Verify insertion
-	var count int
-	count = countWhere(t, s, "observer_metrics", "observer_id = 'obs1'")
+	count := countWhere(t, s, "observer_metrics", "observer_id = $1", observerID)
 	if count != 1 {
 		t.Errorf("expected 1 row, got %d", count)
 	}
 
-	// Verify values
 	var gotNF float64
 	var gotTx, gotRx, gotErr, gotBatt int
-	mustScan(t, testRow(t, s, "SELECT noise_floor, tx_air_secs, rx_air_secs, recv_errors, battery_mv FROM observer_metrics WHERE observer_id = 'obs1'"), &gotNF, &gotTx, &gotRx, &gotErr, &gotBatt)
+	mustScan(t, testRow(t, s, "SELECT noise_floor, tx_air_secs, rx_air_secs, recv_errors, battery_mv FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF, &gotTx, &gotRx, &gotErr, &gotBatt)
 	if gotNF != -112.5 {
 		t.Errorf("noise_floor = %v, want -112.5", gotNF)
 	}
@@ -1634,25 +1499,28 @@ func TestInsertMetricsIdempotent(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 	ctx := t.Context()
+	observerID := strings.Repeat("c2", 32)
+	seedObserver(t, store, observerID, 0)
 
 	nf := -110.0
-	data := &MetricsData{ObserverID: "obs1", NoiseFloor: &nf}
+	data := &MetricsData{ObserverID: observerID, NoiseFloor: &nf}
 
-	// Insert twice — should result in 1 row (INSERT OR REPLACE)
-	store.InsertMetrics(ctx, data)
+	if err := store.InsertMetrics(ctx, data); err != nil {
+		t.Fatalf("first InsertMetrics: %v", err)
+	}
 	nf2 := -108.0
 	data.NoiseFloor = &nf2
-	store.InsertMetrics(ctx, data)
+	if err := store.InsertMetrics(ctx, data); err != nil {
+		t.Fatalf("second InsertMetrics: %v", err)
+	}
 
-	var count int
-	count = countWhere(t, store, "observer_metrics", "observer_id = 'obs1'")
+	count := countWhere(t, store, "observer_metrics", "observer_id = $1", observerID)
 	if count != 1 {
 		t.Errorf("expected 1 row (idempotent), got %d", count)
 	}
 
-	// Verify the value was replaced
 	var gotNF float64
-	mustScan(t, testRow(t, store, "SELECT noise_floor FROM observer_metrics WHERE observer_id = 'obs1'"), &gotNF)
+	mustScan(t, testRow(t, store, "SELECT noise_floor FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF)
 	if gotNF != -108.0 {
 		t.Errorf("noise_floor = %v, want -108.0 (replaced)", gotNF)
 	}
@@ -1662,12 +1530,13 @@ func TestInsertMetricsNullFields(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 	ctx := t.Context()
+	observerID := strings.Repeat("c3", 32)
+	seedObserver(t, store, observerID, 0)
 
 	nf := -115.0
 	data := &MetricsData{
-		ObserverID: "obs1",
+		ObserverID: observerID,
 		NoiseFloor: &nf,
-		// All other fields nil
 	}
 
 	if err := store.InsertMetrics(ctx, data); err != nil {
@@ -1676,7 +1545,7 @@ func TestInsertMetricsNullFields(t *testing.T) {
 
 	var gotNF sql.NullFloat64
 	var gotTx sql.NullInt64
-	mustScan(t, testRow(t, store, "SELECT noise_floor, tx_air_secs FROM observer_metrics WHERE observer_id = 'obs1'"), &gotNF, &gotTx)
+	mustScan(t, testRow(t, store, "SELECT noise_floor, tx_air_secs FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF, &gotTx)
 	if !gotNF.Valid || gotNF.Float64 != -115.0 {
 		t.Errorf("noise_floor = %v, want -115.0", gotNF)
 	}
@@ -1689,12 +1558,13 @@ func TestPruneOldMetrics(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close()
 	ctx := t.Context()
+	observerID := strings.Repeat("c4", 32)
+	seedObserver(t, store, observerID, 0)
 
-	// Insert old and new metrics directly
 	oldTs := time.Now().UTC().AddDate(0, 0, -40)
 	newTs := time.Now().UTC()
-	testExec(t, store, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)", "obs1", oldTs, -110.0)
-	testExec(t, store, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)", "obs1", newTs, -112.0)
+	testExec(t, store, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES ($1, $2, $3)", observerID, oldTs, -110.0)
+	testExec(t, store, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES ($1, $2, $3)", observerID, newTs, -112.0)
 
 	n, err := store.PruneOldMetrics(ctx, 30)
 	if err != nil {
@@ -1704,8 +1574,7 @@ func TestPruneOldMetrics(t *testing.T) {
 		t.Errorf("pruned %d rows, want 1", n)
 	}
 
-	var count int
-	count = countRows(t, store, "observer_metrics")
+	count := countRows(t, store, "observer_metrics")
 	if count != 1 {
 		t.Errorf("expected 1 row remaining, got %d", count)
 	}
@@ -1836,16 +1705,14 @@ func TestPerObservationRawHex(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
 
-	// Register two observers
 	s.UpsertObserver(ctx, "obs-A", "Observer A", "", nil)
 	s.UpsertObserver(ctx, "obs-B", "Observer B", "", nil)
 
 	hash := "abc123def456"
-	rawA := "c0ffee01"
-	rawB := "c0ffee0201aa"
+	rawA := "C0FFEE01"
+	rawB := "C0FFEE0201AA"
 	dir := "RX"
 
-	// First observation from observer A
 	pdA := &PacketData{
 		RawHex:     rawA,
 		Hash:       hash,
@@ -1862,7 +1729,6 @@ func TestPerObservationRawHex(t *testing.T) {
 		t.Fatal("expected new transmission")
 	}
 
-	// Second observation from observer B (same hash, different raw bytes)
 	pdB := &PacketData{
 		RawHex:     rawB,
 		Hash:       hash,
@@ -1879,49 +1745,20 @@ func TestPerObservationRawHex(t *testing.T) {
 		t.Fatal("expected duplicate transmission")
 	}
 
-	// Query observations and verify per-observation raw_hex
-	type obsRow struct {
-		RawHex   *string // NULL when the observation stored no raw_hex
-		Observer *string // NULL when the LEFT JOIN finds no observer
+	byObservation, err := s.db.ObservationRawHexForHash(ctx, hash)
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := testCollect(t, s, `
-	SELECT o.raw_hex, obs.pubkey
-	FROM observations o
-	LEFT JOIN observers obs ON obs.id = o.observer_idx
-	ORDER BY o.id ASC`,
-		func(r pgx.CollectableRow) (obsRow, error) {
-			var x obsRow
-			err := r.Scan(&x.RawHex, &x.Observer)
-			return x, err
-		})
-
-	// NULL reads as "" here, as the old sql.NullString.String did.
-	str := func(p *string) string {
-		if p == nil {
-			return ""
+	if len(byObservation) != 1 {
+		t.Fatalf("want only observation B's frame in the map, got %d entries: %v", len(byObservation), byObservation)
+	}
+	for _, got := range byObservation {
+		if got != rawB {
+			t.Errorf("obs B raw_hex: got %q, want %q", got, rawB)
 		}
-		return *p
 	}
-	type obsResult struct {
-		rawHex     string
-		observerID string
-	}
-	results := make([]obsResult, len(got))
-	for i, r := range got {
-		results[i] = obsResult{rawHex: str(r.RawHex), observerID: str(r.Observer)}
-	}
-
-	if len(results) != 2 {
-		t.Fatalf("expected 2 observations, got %d", len(results))
-	}
-	if results[0].rawHex != rawA {
-		t.Errorf("obs A raw_hex: got %q, want %q", results[0].rawHex, rawA)
-	}
-	if results[1].rawHex != rawB {
-		t.Errorf("obs B raw_hex: got %q, want %q", results[1].rawHex, rawB)
-	}
-	if results[0].rawHex == results[1].rawHex {
-		t.Error("both observations have same raw_hex — should differ")
+	if got := countRows(t, s, "observation_frames"); got != 1 {
+		t.Errorf("observation_frames = %d, want 1 (only the observation whose bytes differ from the transmission's gets a frame)", got)
 	}
 }
 
@@ -2090,246 +1927,82 @@ func TestTransportCodesStored(t *testing.T) {
 func TestUpdateNodeDefaultScope(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
+	activePK := strings.Repeat("d1", 32)
+	inactivePK := strings.Repeat("d2", 32)
+	now := time.Now().UTC().Truncate(time.Second)
+	old := now.AddDate(0, 0, -60)
 
-	// Insert a node into nodes and inactive_nodes so both tables can be updated.
-	testExec(t, store, `INSERT INTO nodes (public_key, name, active) VALUES ('pk1', 'Node1', TRUE)`)
-	testExec(t, store, `INSERT INTO nodes (public_key, name) VALUES ('pk2', 'Node2', FALSE)`)
-	// First call: writes scope to both tables.
-	if err := store.UpdateNodeDefaultScope(ctx, "pk1", "#belgium"); err != nil {
+	if err := store.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: activePK,
+		Name:      "Node1",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed active node: %v", err)
+	}
+	if err := store.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: inactivePK,
+		Name:      "Node2",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    old,
+		IngestNow: old,
+	}); err != nil {
+		t.Fatalf("seed inactive node: %v", err)
+	}
+	moved, err := store.db.MarkStaleNodesInactive(ctx, now.AddDate(0, 0, -30))
+	if err != nil {
+		t.Fatalf("MarkStaleNodesInactive: %v", err)
+	}
+	if moved != 1 {
+		t.Fatalf("expected exactly the old node to be marked inactive, got %d", moved)
+	}
+
+	if err := store.UpdateNodeDefaultScope(ctx, activePK, "#belgium"); err != nil {
 		t.Fatalf("UpdateNodeDefaultScope: %v", err)
 	}
 	var got string
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = 'pk1'`), &got)
+	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
 	if got != "#belgium" {
-		t.Errorf("nodes.default_scope = %q, want #belgium", got)
+		t.Errorf("active node default_scope = %q, want #belgium", got)
+	}
+
+	if err := store.UpdateNodeDefaultScope(ctx, inactivePK, "#belgium"); err != nil {
+		t.Fatalf("UpdateNodeDefaultScope (inactive): %v", err)
 	}
 	var gotInactive string
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = 'pk2'`), &gotInactive)
+	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
 	if gotInactive != "#belgium" {
-		t.Errorf("inactive_nodes.default_scope = %q, want #belgium", gotInactive)
+		t.Errorf("inactive node default_scope = %q, want #belgium", gotInactive)
 	}
 
-	// Second call with same value: short-circuit, no redundant UPDATE (verify no error and value stable).
-	if err := store.UpdateNodeDefaultScope(ctx, "pk1", "#belgium"); err != nil {
+	if err := store.UpdateNodeDefaultScope(ctx, activePK, "#belgium"); err != nil {
 		t.Fatalf("UpdateNodeDefaultScope short-circuit: %v", err)
 	}
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = 'pk1'`), &got)
+	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
 	if got != "#belgium" {
-		t.Errorf("after short-circuit nodes.default_scope = %q, want #belgium", got)
+		t.Errorf("after short-circuit default_scope = %q, want #belgium", got)
 	}
 
-	// Third call with different value: updates both tables.
-	if err := store.UpdateNodeDefaultScope(ctx, "pk1", "#eu"); err != nil {
+	if err := store.UpdateNodeDefaultScope(ctx, activePK, "#eu"); err != nil {
 		t.Fatalf("UpdateNodeDefaultScope update: %v", err)
 	}
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = 'pk1'`), &got)
+	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
 	if got != "#eu" {
-		t.Errorf("after update nodes.default_scope = %q, want #eu", got)
+		t.Errorf("after update default_scope = %q, want #eu", got)
 	}
-	if err := store.UpdateNodeDefaultScope(ctx, "pk2", "#eu"); err != nil {
-		t.Fatalf("UpdateNodeDefaultScope update: %v", err)
+	if err := store.UpdateNodeDefaultScope(ctx, inactivePK, "#eu"); err != nil {
+		t.Fatalf("UpdateNodeDefaultScope update (inactive): %v", err)
 	}
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM inactive_nodes WHERE public_key = 'pk1'`), &gotInactive)
+	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
 	if gotInactive != "#eu" {
-		t.Errorf("after update inactive_nodes.default_scope = %q, want #eu", gotInactive)
+		t.Errorf("after update inactive node default_scope = %q, want #eu", gotInactive)
 	}
 }
-
-// // --- Issue #888: Backfill path_json from raw_hex ---
-
-// func TestBackfillPathJsonFromRawHex(t *testing.T) {
-// 	dbPath := testfixtures.TempDBPath(t)
-// 	s, err := OpenStore(dbPath)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-
-// 	// Insert a transmission with payload_type != TRACE (e.g. 0x01)
-// 	// raw_hex: header 0x05 (route FLOOD, payload 0x01), path byte 0x42 (hash_size=2, count=2),
-// 	// hops: AABB, CCDD, then some payload bytes
-// 	rawHex := "0542AABBCCDD0000000000000000000000000000"
-// 	s.db.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type) VALUES (?, 'h1', '2025-01-01T00:00:00Z', 1)`, rawHex)
-
-// 	// Insert observation with raw_hex but empty path_json
-// 	s.db.Exec(`INSERT INTO observations (transmission_id, timestamp, raw_hex, path_json) VALUES (1, 1000, ?, '[]')`, rawHex)
-// 	// Insert observation with raw_hex and NULL path_json
-// 	s.db.Exec(`INSERT INTO observations (transmission_id, timestamp, raw_hex, path_json) VALUES (1, 1001, ?, NULL)`, rawHex)
-// 	// Insert observation with existing path_json (should NOT be overwritten)
-// 	s.db.Exec(`INSERT INTO observations (transmission_id, timestamp, raw_hex, path_json) VALUES (1, 1002, ?, '["XX","YY"]')`, rawHex)
-
-// 	// Insert a TRACE transmission (payload_type = 0x09) — should be skipped
-// 	traceRaw := "2604302D0D2359FEE7B100000000006733D63367"
-// 	s.db.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type) VALUES (?, 'h2', '2025-01-01T00:00:00Z', 9)`, traceRaw)
-// 	s.db.Exec(`INSERT INTO observations (transmission_id, timestamp, raw_hex, path_json) VALUES (2, 1003, ?, '[]')`, traceRaw)
-
-// 	// Remove the migration marker so it runs again on reopen
-// 	s.db.Exec(`DELETE FROM _migrations WHERE name = 'backfill_path_json_from_raw_hex_v1'`)
-// 	s.Close()
-
-// 	// Reopen — backfill is now async, must trigger explicitly
-// 	s2, err := OpenStore(dbPath)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	defer s2.Close()
-
-// 	// Trigger async backfill and wait for completion
-// 	s2.BackfillPathJSONAsync()
-// 	deadline := time.Now().Add(10 * time.Second)
-// 	var migCount int
-// 	for time.Now().Before(deadline) {
-// 		s2.db.QueryRow("SELECT COUNT(*) FROM _migrations WHERE name = 'backfill_path_json_from_raw_hex_v1'").Scan(&migCount)
-// 		if migCount == 1 {
-// 			break
-// 		}
-// 		time.Sleep(50 * time.Millisecond)
-// 	}
-// 	if migCount != 1 {
-// 		t.Fatalf("migration not recorded")
-// 	}
-
-// 	// Row 1 (was '[]') is NOT re-processed by the backfill — '[]' means
-// 	// "already attempted, no hops" and is excluded by the WHERE to avoid the
-// 	// infinite-loop bug fixed in #1119. It must remain '[]'.
-// 	var pj1 string
-// 	s2.db.QueryRow("SELECT path_json FROM observations WHERE id = 1").Scan(&pj1)
-// 	if pj1 != "[]" {
-// 		t.Errorf("row 1 path_json = %q, want %q (must not re-process '[]' rows after #1119)", pj1, "[]")
-// 	}
-
-// 	// Row 2 (was NULL) should now have decoded hops
-// 	var pj2 string
-// 	s2.db.QueryRow("SELECT path_json FROM observations WHERE id = 2").Scan(&pj2)
-// 	if pj2 != `["AABB","CCDD"]` {
-// 		t.Errorf("row 2 path_json = %q, want %q", pj2, `["AABB","CCDD"]`)
-// 	}
-
-// 	// Row 3 (had existing data) should NOT be overwritten
-// 	var pj3 string
-// 	s2.db.QueryRow("SELECT path_json FROM observations WHERE id = 3").Scan(&pj3)
-// 	if pj3 != `["XX","YY"]` {
-// 		t.Errorf("row 3 path_json = %q, want %q (should not be overwritten)", pj3, `["XX","YY"]`)
-// 	}
-
-// 	// Row 4 (TRACE) should NOT be updated
-// 	var pj4 string
-// 	s2.db.QueryRow("SELECT path_json FROM observations WHERE id = 4").Scan(&pj4)
-// 	if pj4 != "[]" {
-// 		t.Errorf("row 4 (TRACE) path_json = %q, want %q (should be skipped)", pj4, "[]")
-// 	}
-// }
-
-// func TestCleanupLegacyNullHashTimestamp(t *testing.T) {
-// 	path := testfixtures.TempDBPath(t)
-
-// 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	db.Exec(`CREATE TABLE IF NOT EXISTS transmissions (
-// 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 		raw_hex TEXT NOT NULL,
-// 		hash TEXT NOT NULL,
-// 		first_seen TEXT NOT NULL,
-// 		route_type INTEGER,
-// 		payload_type INTEGER,
-// 		payload_version INTEGER,
-// 		decoded_json TEXT,
-// 		created_at TEXT DEFAULT (datetime('now'))
-// 	)`)
-// 	db.Exec(`CREATE TABLE IF NOT EXISTS observations (
-// 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 		transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-// 		observer_idx INTEGER,
-// 		direction TEXT,
-// 		snr REAL,
-// 		rssi REAL,
-// 		score INTEGER,
-// 		path_json TEXT,
-// 		timestamp INTEGER NOT NULL
-// 	)`)
-// 	db.Exec(`CREATE TABLE IF NOT EXISTS nodes (
-// 		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-// 		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
-// 	)`)
-// 	db.Exec(`CREATE TABLE IF NOT EXISTS inactive_nodes (
-// 		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-// 		last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0
-// 	)`)
-// 	db.Exec(`CREATE TABLE IF NOT EXISTS observers (
-// 		id TEXT PRIMARY KEY, name TEXT, last_seen TEXT, first_seen TEXT,
-// 		packet_count INTEGER DEFAULT 0, model TEXT, firmware TEXT,
-// 		client_version TEXT, radio TEXT, battery_mv INTEGER, uptime_secs INTEGER,
-// 		noise_floor REAL
-// 	)`)
-
-// 	db.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, 'aabb', 'abc123', '2024-01-01T00:00:00Z')`)
-// 	db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (1, 1, 1704067200)`)
-
-// 	db.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (2, 'ccdd', '', '2024-01-01T00:00:00Z')`)
-// 	db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (2, 1, 1704067200)`)
-
-// 	db.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (3, 'eeff', 'def456', '')`)
-// 	db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (3, 2, 1704067200)`)
-
-// 	db.Close()
-
-// 	// NEW: bring the raw schema under goose's control before OpenStore.
-// 	baselineConn, err := sql.Open("sqlite", path)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
-// 		t.Fatalf("baseline: %v", err)
-// 	}
-// 	baselineConn.Close()
-
-// 	s, err := OpenStore(path)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	defer s.Close()
-
-// 	var count int
-// 	s.db.QueryRow("SELECT COUNT(*) FROM transmissions WHERE id = 1").Scan(&count)
-// 	if count != 1 {
-// 		t.Error("good transmission should not be deleted")
-// 	}
-
-// 	s.db.QueryRow("SELECT COUNT(*) FROM transmissions WHERE id = 2").Scan(&count)
-// 	if count != 0 {
-// 		t.Errorf("transmission with empty hash should be deleted, got count=%d", count)
-// 	}
-// 	s.db.QueryRow("SELECT COUNT(*) FROM transmissions WHERE id = 3").Scan(&count)
-// 	if count != 0 {
-// 		t.Errorf("transmission with empty first_seen should be deleted, got count=%d", count)
-// 	}
-
-// 	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE transmission_id IN (2, 3)").Scan(&count)
-// 	if count != 0 {
-// 		t.Errorf("observations for bad transmissions should be deleted, got count=%d", count)
-// 	}
-
-// 	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE transmission_id = 1").Scan(&count)
-// 	if count != 1 {
-// 		t.Error("observation for good transmission should remain")
-// 	}
-
-// 	applied, err := database.MigrationApplied(s.db, 17)
-// 	if err != nil {
-// 		t.Fatalf("checking goose version 17: %v", err)
-// 	}
-// 	if !applied {
-// 		t.Error("goose migration 00017_cleanup_legacy_null_hash_ts should be applied")
-// 	}
-
-// 	s.Close()
-// 	s2, err := OpenStore(path)
-// 	if err != nil {
-// 		t.Fatal("second open should not fail:", err)
-// 	}
-// 	s2.Close()
-// }
 
 func TestBuildPacketDataRegionFromPayload(t *testing.T) {
 	msg := &MQTTPacketMessage{Raw: "0102030405060708", Region: "PDX"}
@@ -2354,399 +2027,6 @@ func TestBuildPacketDataRegionFallsBackToTopic(t *testing.T) {
 	}
 }
 
-// // TestBackfillPathJSONAsync verifies that the path_json backfill does NOT block
-// // OpenStore from returning. MQTT connect happens immediately after OpenStore;
-// // if the backfill is synchronous, MQTT would be delayed indefinitely on large DBs.
-// // This test creates pending backfill rows, opens the store, and asserts that
-// // OpenStore returns before the migration is recorded — proving async execution.
-// func TestBackfillPathJSONAsync(t *testing.T) {
-// 	dir := t.TempDir()
-// 	dbPath := filepath.Join(dir, "async_test.db")
-
-// 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	_, err = db.Exec(`
-// 		CREATE TABLE _migrations (name TEXT PRIMARY KEY);
-// 		CREATE TABLE transmissions (
-// 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 			raw_hex TEXT NOT NULL,
-// 			hash TEXT NOT NULL UNIQUE,
-// 			first_seen TEXT NOT NULL,
-// 			route_type INTEGER,
-// 			payload_type INTEGER,
-// 			payload_version INTEGER,
-// 			decoded_json TEXT,
-// 			created_at TEXT DEFAULT (datetime('now'))
-// 		);
-// 		CREATE TABLE observers (
-// 			id TEXT PRIMARY KEY,
-// 			name TEXT,
-// 			iata TEXT,
-// 			last_seen TEXT,
-// 			first_seen TEXT,
-// 			packet_count INTEGER DEFAULT 0,
-// 			model TEXT,
-// 			firmware TEXT,
-// 			client_version TEXT,
-// 			radio TEXT,
-// 			battery_mv INTEGER,
-// 			uptime_secs INTEGER,
-// 			noise_floor REAL,
-// 			last_packet_at TEXT
-// 		);
-// 		CREATE TABLE nodes (
-// 			public_key TEXT PRIMARY KEY,
-// 			name TEXT, role TEXT, lat REAL, lon REAL,
-// 			last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0,
-// 			battery_mv INTEGER, temperature_c REAL
-// 		);
-// 		CREATE TABLE inactive_nodes (
-// 			public_key TEXT PRIMARY KEY,
-// 			name TEXT, role TEXT, lat REAL, lon REAL,
-// 			last_seen TEXT, first_seen TEXT, advert_count INTEGER DEFAULT 0,
-// 			battery_mv INTEGER, temperature_c REAL
-// 		);
-// 		CREATE TABLE observations (
-// 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 			transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-// 			observer_idx INTEGER,
-// 			direction TEXT,
-// 			snr REAL, rssi REAL, score INTEGER,
-// 			path_json TEXT,
-// 			timestamp INTEGER NOT NULL,
-// 			raw_hex TEXT
-// 		);
-// 		CREATE UNIQUE INDEX idx_observations_dedup ON observations(transmission_id, observer_idx, COALESCE(path_json, ''));
-// 		CREATE INDEX idx_observations_transmission_id ON observations(transmission_id);
-// 		CREATE INDEX idx_observations_observer_idx ON observations(observer_idx);
-// 		CREATE INDEX idx_observations_timestamp ON observations(timestamp);
-// 		CREATE TABLE observer_metrics (
-// 			observer_id TEXT NOT NULL,
-// 			timestamp TEXT NOT NULL,
-// 			noise_floor REAL, tx_air_secs INTEGER, rx_air_secs INTEGER,
-// 			recv_errors INTEGER, battery_mv INTEGER,
-// 			PRIMARY KEY (observer_id, timestamp)
-// 		);
-// 		CREATE TABLE dropped_packets (
-// 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 			hash TEXT, raw_hex TEXT, reason TEXT NOT NULL,
-// 			observer_id TEXT, observer_name TEXT,
-// 			node_pubkey TEXT, node_name TEXT,
-// 			dropped_at DATETIME DEFAULT CURRENT_TIMESTAMP
-// 		);
-// 	`)
-// 	if err != nil {
-// 		t.Fatal("bootstrap schema:", err)
-// 	}
-
-// 	// Mark all migrations as done EXCEPT the path_json backfill
-// 	for _, m := range []string{
-// 		"advert_count_unique_v1", "noise_floor_real_v1", "node_telemetry_v1",
-// 		"obs_timestamp_index_v1", "observer_metrics_v1", "observer_metrics_ts_idx",
-// 		"observers_inactive_v1", "observer_metrics_packets_v1", "channel_hash_v1",
-// 		"dropped_packets_v1", "observations_raw_hex_v1", "observers_last_packet_at_v1",
-// 		"cleanup_legacy_null_hash_ts",
-// 	} {
-// 		db.Exec(`INSERT INTO _migrations (name) VALUES (?)`, m)
-// 	}
-
-// 	rawHex := "41020304AABBCCDD05060708"
-// 	_, err = db.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type) VALUES (?, 'hash1', '2025-01-01T00:00:00Z', 4)`, rawHex)
-// 	if err != nil {
-// 		t.Fatal("insert tx:", err)
-// 	}
-// 	for i := 0; i < 100; i++ {
-// 		_, err = db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp, raw_hex, path_json) VALUES (1, ?, ?, ?, NULL)`,
-// 			i+1, 1700000000+i, rawHex)
-// 		if err != nil {
-// 			t.Fatalf("insert obs %d: %v", i, err)
-// 		}
-// 	}
-// 	db.Close()
-
-// 	// Bring the pre-existing schema fully under goose's control before
-// 	// opening via the real ingestor path — matches production, where
-// 	// `migrate -baseline-and-stamp` (plus filling any gaps) runs before
-// 	// the ingestor ever starts. OpenStore itself only asserts readiness.
-// 	baselineConn, err := sql.Open("sqlite", dbPath)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
-// 		t.Fatalf("baseline+migrate: %v", err)
-// 	}
-// 	baselineConn.Close()
-
-// 	// Now open store via OpenStore — this must return QUICKLY (non-blocking)
-// 	start := time.Now()
-// 	store, err := OpenStoreWithInterval(dbPath, 300)
-// 	elapsed := time.Since(start)
-// 	if err != nil {
-// 		t.Fatal("OpenStore:", err)
-// 	}
-// 	defer store.Close()
-
-// 	// OpenStore must return in under 2 seconds (backfill is no longer in applySchema)
-// 	if elapsed > 2*time.Second {
-// 		t.Fatalf("OpenStore blocked for %v — backfill must not run in applySchema", elapsed)
-// 	}
-
-// 	// Backfill must NOT be recorded yet — it hasn't been triggered
-// 	var done int
-// 	err = store.db.QueryRow("SELECT 1 FROM _migrations WHERE name = 'backfill_path_json_from_raw_hex_v1'").Scan(&done)
-// 	if err == nil {
-// 		t.Fatal("migration recorded during OpenStore — backfill must be async via BackfillPathJSONAsync()")
-// 	}
-
-// 	// Now trigger the async backfill (simulates what main.go does after OpenStore)
-// 	store.BackfillPathJSONAsync()
-
-// 	// Wait for backfill to complete (should be very fast with 100 rows)
-// 	deadline := time.Now().Add(10 * time.Second)
-// 	for time.Now().Before(deadline) {
-// 		err = store.db.QueryRow("SELECT 1 FROM _migrations WHERE name = 'backfill_path_json_from_raw_hex_v1'").Scan(&done)
-// 		if err == nil {
-// 			break
-// 		}
-// 		time.Sleep(100 * time.Millisecond)
-// 	}
-// 	if err != nil {
-// 		t.Fatal("backfill never completed within 10s")
-// 	}
-
-// 	// Verify backfill actually worked — observations should have non-NULL path_json
-// 	var nullCount int
-// 	store.db.QueryRow("SELECT COUNT(*) FROM observations WHERE path_json IS NULL").Scan(&nullCount)
-// 	if nullCount > 0 {
-// 		t.Errorf("backfill left %d observations with NULL path_json", nullCount)
-// 	}
-// }
-
-// // TestBackfillPathJSONAsyncMethodExists verifies the async backfill API surface
-// // exists — BackfillPathJSONAsync must be callable independently from OpenStore.
-// func TestBackfillPathJSONAsyncMethodExists(t *testing.T) {
-// 	dir := t.TempDir()
-// 	dbPath := filepath.Join(dir, "method_test.db")
-// 	store, err := OpenStoreWithInterval(dbPath, 300)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	defer store.Close()
-
-// 	// BackfillPathJSONAsync must exist as a method on *Store
-// 	// This is a compile-time check — if the method doesn't exist, the test won't compile.
-// 	store.BackfillPathJSONAsync()
-// }
-
-// // TestBackfillPathJSONAsync_BracketRowsTerminate exercises the infinite-loop bug
-// // from issue #1119. Observations whose path_json is already '[]' (meaning a prior
-// // backfill pass attempted to decode them and found no hops) must NOT be re-selected
-// // by the WHERE clause — otherwise the loop rewrites the same '[]' value forever
-// // and never records the migration marker.
-// //
-// // This test seeds N rows with path_json='[]' and a raw_hex that DecodePathFromRawHex
-// // resolves to zero hops. With the bug, the backfill loops infinitely re-UPDATEing
-// // the same rows back to '[]', batch is never empty, migration marker is never
-// // written. With the fix, no rows match → the very first batch is empty → migration
-// // is recorded immediately.
-// func TestBackfillPathJSONAsync_BracketRowsTerminate(t *testing.T) {
-// 	dir := t.TempDir()
-// 	dbPath := filepath.Join(dir, "bracket_terminate.db")
-
-// 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	_, err = db.Exec(`
-// 		CREATE TABLE _migrations (name TEXT PRIMARY KEY);
-// 		CREATE TABLE transmissions (
-// 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 			raw_hex TEXT NOT NULL,
-// 			hash TEXT NOT NULL UNIQUE,
-// 			first_seen TEXT NOT NULL,
-// 			route_type INTEGER,
-// 			payload_type INTEGER,
-// 			payload_version INTEGER,
-// 			decoded_json TEXT,
-// 			created_at TEXT DEFAULT (datetime('now'))
-// 		);
-// 		CREATE TABLE observers (
-// 			id TEXT PRIMARY KEY, name TEXT, iata TEXT,
-// 			last_seen TEXT, first_seen TEXT, packet_count INTEGER DEFAULT 0,
-// 			model TEXT, firmware TEXT, client_version TEXT, radio TEXT,
-// 			battery_mv INTEGER, uptime_secs INTEGER, noise_floor REAL,
-// 			inactive INTEGER DEFAULT 0, last_packet_at TEXT
-// 		);
-// 		CREATE TABLE nodes (
-// 			public_key TEXT PRIMARY KEY, name TEXT, role TEXT,
-// 			lat REAL, lon REAL, last_seen TEXT, first_seen TEXT,
-// 			advert_count INTEGER DEFAULT 0, battery_mv INTEGER, temperature_c REAL
-// 		);
-// 		CREATE TABLE inactive_nodes (
-// 			public_key TEXT PRIMARY KEY, name TEXT, role TEXT,
-// 			lat REAL, lon REAL, last_seen TEXT, first_seen TEXT,
-// 			advert_count INTEGER DEFAULT 0, battery_mv INTEGER, temperature_c REAL
-// 		);
-// 		CREATE TABLE observations (
-// 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 			transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-// 			observer_idx INTEGER, direction TEXT,
-// 			snr REAL, rssi REAL, score INTEGER,
-// 			path_json TEXT,
-// 			timestamp INTEGER NOT NULL,
-// 			raw_hex TEXT
-// 		);
-// 		CREATE UNIQUE INDEX idx_observations_dedup ON observations(transmission_id, observer_idx, COALESCE(path_json, ''));
-// 		CREATE INDEX idx_observations_transmission_id ON observations(transmission_id);
-// 		CREATE INDEX idx_observations_observer_idx ON observations(observer_idx);
-// 		CREATE INDEX idx_observations_timestamp ON observations(timestamp);
-// 		CREATE TABLE observer_metrics (
-// 			observer_id TEXT NOT NULL, timestamp TEXT NOT NULL,
-// 			noise_floor REAL, tx_air_secs INTEGER, rx_air_secs INTEGER,
-// 			recv_errors INTEGER, battery_mv INTEGER,
-// 			packets_sent INTEGER, packets_recv INTEGER,
-// 			PRIMARY KEY (observer_id, timestamp)
-// 		);
-// 		CREATE TABLE dropped_packets (
-// 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-// 			hash TEXT, raw_hex TEXT, reason TEXT NOT NULL,
-// 			observer_id TEXT, observer_name TEXT,
-// 			node_pubkey TEXT, node_name TEXT,
-// 			dropped_at DATETIME DEFAULT CURRENT_TIMESTAMP
-// 		);
-// 	`)
-// 	if err != nil {
-// 		t.Fatal("bootstrap schema:", err)
-// 	}
-
-// 	// Mark all migrations done EXCEPT backfill_path_json_from_raw_hex_v1.
-// 	for _, m := range []string{
-// 		"advert_count_unique_v1", "noise_floor_real_v1", "node_telemetry_v1",
-// 		"obs_timestamp_index_v1", "observer_metrics_v1", "observer_metrics_ts_idx",
-// 		"observers_inactive_v1", "observer_metrics_packets_v1", "channel_hash_v1",
-// 		"dropped_packets_v1", "observations_raw_hex_v1", "observers_last_packet_at_v1",
-// 		"cleanup_legacy_null_hash_ts",
-// 	} {
-// 		db.Exec(`INSERT INTO _migrations (name) VALUES (?)`, m)
-// 	}
-
-// 	rawHex := "0A00DEADBEEF"
-// 	_, err = db.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type) VALUES (?, 'h_brackets', '2025-01-01T00:00:00Z', 2)`, rawHex)
-// 	if err != nil {
-// 		t.Fatal("insert tx:", err)
-// 	}
-// 	const seedCount = 100
-// 	for i := 0; i < seedCount; i++ {
-// 		_, err = db.Exec(`INSERT INTO observations (transmission_id, observer_idx, timestamp, raw_hex, path_json) VALUES (1, ?, ?, ?, '[]')`,
-// 			i+1, 1700000000+i, rawHex)
-// 		if err != nil {
-// 			t.Fatalf("insert obs %d: %v", i, err)
-// 		}
-// 	}
-// 	db.Close()
-
-// 	// Bring the pre-existing schema fully under goose's control before
-// 	// opening via the real ingestor path.
-// 	baselineConn, err := sql.Open("sqlite", dbPath)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
-// 		t.Fatalf("baseline+migrate: %v", err)
-// 	}
-// 	baselineConn.Close()
-
-// 	store, err := OpenStoreWithInterval(dbPath, 300)
-// 	if err != nil {
-// 		t.Fatal("OpenStore:", err)
-// 	}
-// 	defer store.Close()
-
-// 	// Trigger backfill. With the bug, every iteration re-fetches all 100 rows
-// 	// (because '[]' matches the WHERE), rewrites them to '[]', sleeps 50ms, repeats.
-// 	// The loop never terminates and the migration marker is never written.
-// 	store.BackfillPathJSONAsync()
-
-// 	// Generous deadline: with the fix the marker is written essentially immediately.
-// 	// With the bug the marker is never written within any bounded time.
-// 	deadline := time.Now().Add(5 * time.Second)
-// 	var done int
-// 	for time.Now().Before(deadline) {
-// 		err = store.db.QueryRow("SELECT 1 FROM _migrations WHERE name = 'backfill_path_json_from_raw_hex_v1'").Scan(&done)
-// 		if err == nil {
-// 			break
-// 		}
-// 		time.Sleep(50 * time.Millisecond)
-// 	}
-// 	if err != nil {
-// 		t.Fatalf("issue #1119: backfill never recorded migration marker within 5s — infinite loop on path_json='[]' rows")
-// 	}
-
-// 	// Verify the seeded '[]' rows still have '[]' (sanity — neither bug nor fix
-// 	// should change their value), and that there are no NULL/empty path_json rows
-// 	// the backfill should have processed.
-// 	var bracketCount int
-// 	store.db.QueryRow("SELECT COUNT(*) FROM observations WHERE path_json = '[]'").Scan(&bracketCount)
-// 	if bracketCount != seedCount {
-// 		t.Errorf("expected %d rows with path_json='[]', got %d", seedCount, bracketCount)
-// 	}
-// }
-
-// // TestSchemaMultibyteSupColumns verifies that the multibyte_sup_v1 migration adds
-// // the expected columns and is idempotent across multiple OpenStore calls.
-// func TestSchemaMultibyteSupColumns(t *testing.T) {
-// 	dir := t.TempDir()
-// 	dbPath := filepath.Join(dir, "test.db")
-
-// 	store, err := OpenStore(dbPath)
-// 	if err != nil {
-// 		t.Fatalf("OpenStore: %v", err)
-// 	}
-// 	defer store.Close()
-
-// 	for _, table := range []string{"nodes", "inactive_nodes"} {
-// 		rows, err := store.db.Query("PRAGMA table_info(" + table + ")")
-// 		if err != nil {
-// 			t.Fatalf("PRAGMA table_info(%s): %v", table, err)
-// 		}
-// 		var foundSup, foundEvid bool
-// 		for rows.Next() {
-// 			var cid int
-// 			var name, colType string
-// 			var notNull, pk int
-// 			var dflt interface{}
-// 			if rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk) == nil {
-// 				if name == "multibyte_sup" {
-// 					foundSup = true
-// 				}
-// 				if name == "multibyte_evidence" {
-// 					foundEvid = true
-// 				}
-// 			}
-// 		}
-// 		rows.Close()
-// 		if !foundSup {
-// 			t.Errorf("table %s: multibyte_sup column missing", table)
-// 		}
-// 		if !foundEvid {
-// 			t.Errorf("table %s: multibyte_evidence column missing", table)
-// 		}
-// 	}
-
-// 	// Verify migration is present. As of #1324 follow-up the migration
-// 	// lives in internal/dbschema (column-probe + idempotent ALTER), not
-// 	// in the legacy _migrations marker table — so we just re-assert the
-// 	// columns exist and the second OpenStore is a no-op.
-// 	store.Close()
-// 	store2, err := OpenStore(dbPath)
-// 	if err != nil {
-// 		t.Fatalf("OpenStore (second open): %v", err)
-// 	}
-// 	store2.Close()
-// }
-
 // TestUpdateNodeDefaultScope_EmptyScopeIsNoop is the DB-layer defense-in-depth
 // regression test for #1534. Even if the call-site guard at main.go:720 is
 // later removed or refactored, the DB function MUST refuse to overwrite a
@@ -2766,7 +2046,7 @@ func TestUpdateNodeDefaultScope_EmptyScopeIsNoop(t *testing.T) {
 	// One active node and one inactive node (the old inactive_nodes mirror is the
 	// same table now). The guard must hold for both.
 	for _, pk := range []string{"pk1", "pk2"} {
-		if err := s.UpsertNode(ctx, pk, "Node-"+pk, "repeater", nil, nil, time.Now().UTC()); err != nil {
+		if err := upsertNode(ctx, s, pk, "Node-"+pk, "repeater", nil, nil, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.UpdateNodeDefaultScope(ctx, pk, "#belgium"); err != nil {
@@ -2799,7 +2079,7 @@ func TestUpdateNodeDefaultScope_EmptyScopeIsNoop(t *testing.T) {
 func TestUpdateNodeDefaultScope_WritesOnlyWhenChanged(t *testing.T) {
 	s := newTestStore(t)
 	ctx := testCtx(t)
-	if err := s.UpsertNode(ctx, "pk1", "Node1", "repeater", nil, nil, time.Now().UTC()); err != nil {
+	if err := upsertNode(ctx, s, "pk1", "Node1", "repeater", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	scope := func() *string {
@@ -2843,69 +2123,6 @@ func TestUpdateNodeDefaultScope_WritesOnlyWhenChanged(t *testing.T) {
 	}
 }
 
-// --- Startup failure behavior (goose adoption, #????) ---
-
-// TestOpenStore_RefusesUnbaselinedPreexistingSchema verifies that a
-// database with real, pre-existing raw-SQL schema — but never run
-// through `migrate -baseline-and-stamp` — is refused at startup with a
-// clear, actionable error, rather than silently auto-detected and
-// fixed (that auto-fix behavior moved out of the ingestor entirely).
-// func TestOpenStore_RefusesUnbaselinedPreexistingSchema(t *testing.T) {
-// 	path := testfixtures.TempDBPath(t)
-
-// 	db, err := sql.Open("sqlite", path)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	database.SeedUnstampedSchema(db, 1)
-
-// 	db.Close()
-
-// 	s, err := OpenStore(path)
-// 	if err == nil {
-// 		s.Close()
-// 		t.Fatal("expected OpenStore to fail against a pre-existing, unbaselined schema")
-// 	}
-// 	if !strings.Contains(err.Error(), "baseline") {
-// 		t.Errorf("expected error to mention baselining as the fix, got: %v", err)
-// 	}
-// }
-
-// TestOpenStore_SucceedsAfterBaselineAndStamp is the positive-path
-// companion to the refusal tests above — confirms the documented fix
-// (running migrate -baseline-and-stamp first) actually resolves the
-// // failure.
-// func TestOpenStore_SucceedsAfterBaselineAndStamp(t *testing.T) {
-// 	path := testfixtures.TempDBPath(t)
-
-// 	db, err := sql.Open("sqlite", path)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	database.SeedUnstampedSchema(db, 1)
-// 	db.Close()
-
-// 	if s, err := OpenStore(path); err == nil {
-// 		s.Close()
-// 		t.Fatal("precondition failed: expected OpenStore to fail before baselining")
-// 	}
-
-// 	baselineConn, err := sql.Open("sqlite", path)
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-// 	if _, err := database.BaselineStampMigrate(baselineConn, nil); err != nil {
-// 		t.Fatalf("baseline+migrate: %v", err)
-// 	}
-// 	baselineConn.Close()
-
-// 	s, err := OpenStore(path)
-// 	if err != nil {
-// 		t.Fatalf("expected OpenStore to succeed after baselining, got: %v", err)
-// 	}
-// 	defer s.Close()
-
-// }
 func TestInsertClientRxObservation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := testCtx(t)
@@ -3009,7 +2226,7 @@ func TestPruneDeletesCanUseTheirIndex(t *testing.T) {
 	cases := []struct{ table, col, index string }{
 		{"client_receptions", "rx_at", "idx_client_recept_rxat"},
 		{"client_rx_observations", "rx_at", "idx_cro_prune"},
-		{"client_rf_samples", "sampled_at", "idx_crf_prune"}, // your existing name
+		{"client_rf_samples", "sampled_at", "idx_crf_sampled_at"}, // your existing name
 		{"node_declared_regions", "observed_at", "idx_ndr_prune"},
 	}
 	s := newTestStore(t)
@@ -3159,4 +2376,39 @@ func tableColumns(t *testing.T, s *Store, table string) map[string]string {
 // what it was written to test.
 func recentTS(ago time.Duration) string {
 	return time.Now().UTC().Add(-ago).Format(time.RFC3339Nano)
+}
+
+func TestIngestEncryptedChannelStoresEncryptedFlagAndBareHash(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	defer s.Close()
+
+	rawHex := "1500" + "1F" + "7804" + strings.Repeat("AB", 16)
+
+	decoded, err := decoder.DecodePacket(rawHex, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Payload.Type != "GRP_TXT" || decoded.Payload.ChannelHashHex != "1F" {
+		t.Fatalf("fixture must decode as an undecryptable GRP_TXT on channel 1F, got type=%q channelHashHex=%q",
+			decoded.Payload.Type, decoded.Payload.ChannelHashHex)
+	}
+
+	pktData := BuildPacketData(&MQTTPacketMessage{Raw: rawHex}, decoded, "obs1", "SJC", nil)
+	if !pktData.ChannelEncrypted {
+		t.Fatal("BuildPacketData must flag an undecryptable GRP_TXT as encrypted")
+	}
+	if _, err := s.InsertTransmission(ctx, pktData); err != nil {
+		t.Fatal(err)
+	}
+
+	var encrypted bool
+	var channelHash string
+	mustScan(t, testRow(t, s, `SELECT channel_encrypted, channel_hash FROM transmissions WHERE hash = $1`, pktData.Hash), &encrypted, &channelHash)
+	if !encrypted {
+		t.Error("channel_encrypted must be true for an encrypted channel message")
+	}
+	if channelHash != "1F" {
+		t.Errorf("channel_hash = %q, want the bare uppercase hex 1F", channelHash)
+	}
 }

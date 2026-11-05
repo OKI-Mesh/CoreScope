@@ -47,7 +47,7 @@ type MQTTLegacy struct {
 
 // Config holds the ingestor configuration, compatible with the Node.js config.json format.
 type Config struct {
-	DBPath               string                      `json:"dbPath"`
+	PruneQueuePath       string                      `json:"pruneQueuePath"`
 	MQTT                 *MQTTLegacy                 `json:"mqtt,omitempty"`
 	MQTTSources          []MQTTSource                `json:"mqttSources,omitempty"`
 	LogLevel             string                      `json:"logLevel,omitempty"`
@@ -299,33 +299,8 @@ type RuntimeConfig struct {
 	MaxMemoryMB int `json:"maxMemoryMB"`
 }
 
-// DBConfig is the shared SQLite vacuum/maintenance config (#919, #921).
+// DBConfig is the shared database config.
 type DBConfig = dbconfig.DBConfig
-
-// IncrementalVacuumPages returns the configured pages per vacuum or 1024 default.
-func (c *Config) IncrementalVacuumPages() int {
-	if c.DB != nil && c.DB.IncrementalVacuumPages > 0 {
-		return c.DB.IncrementalVacuumPages
-	}
-	return 1024
-}
-
-// AnalysisLimit returns the per-index row cap for the planner stats refresh
-// (#2058). A negative setting disables the refresh; zero means unset, matching
-// IncrementalVacuumPages above.
-//
-// 10000 rather than the 400 SQLite's documentation offers: measured on the
-// 9.4 GB staging database, 400 and 1000 leave the channel-query plan exactly as
-// it was, 10000 produces the same plan as an unbounded ANALYZE, and it costs 2.0s
-// against that ANALYZE's 242.9s, both timed warm. The full ladder, and the cold
-// figure that matters at startup, are in Store.RefreshPlannerStats and
-// Store.EnsurePlannerStats.
-func (c *Config) AnalysisLimit() int {
-	if c.DB != nil && c.DB.AnalysisLimit != 0 {
-		return c.DB.AnalysisLimit
-	}
-	return 10000
-}
 
 // ShouldValidateSignatures returns true (default) unless explicitly disabled.
 func (c *Config) ShouldValidateSignatures() bool {
@@ -519,9 +494,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	// Env var overrides
-	if v := os.Getenv("DB_PATH"); v != "" {
-		cfg.DBPath = v
-	}
 	if v := os.Getenv("MQTT_BROKER"); v != "" {
 		// Single broker from env â€” create a source
 		topic := os.Getenv("MQTT_TOPIC")
@@ -533,11 +505,6 @@ func LoadConfig(path string) (*Config, error) {
 			Broker: v,
 			Topics: []string{topic},
 		}}
-	}
-
-	// Default DB path
-	if cfg.DBPath == "" {
-		cfg.DBPath = "data/meshcore.db"
 	}
 
 	// Normalize: convert legacy single mqtt config to mqttSources

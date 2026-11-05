@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // ─── Phase 1.5: resolveAmbiguousEdges tests ───────────────────────────────────
@@ -218,8 +220,8 @@ func TestPhase1EdgeCollection_Unchanged(t *testing.T) {
 	nodeA := nodeInfo{Role: "repeater", PublicKey: "aaaa1111", Name: "NodeA", HasGPS: true, Lat: 45.0, Lon: -122.0}
 	nodeB := nodeInfo{Role: "repeater", PublicKey: "bbbb2222", Name: "NodeB", HasGPS: true, Lat: 45.1, Lon: -122.1}
 
-	ts := time.Now().UTC().Format(time.RFC3339)
-	payloadType := 4
+	ts := time.Now().UTC()
+	payloadType := types.PayloadType(4)
 	obs := []*StoreObs{{
 		ObserverID: "cccc3333",
 		PathJSON:   `["bbbb2222"]`,
@@ -232,7 +234,7 @@ func TestPhase1EdgeCollection_Unchanged(t *testing.T) {
 		Observations: obs,
 	}
 
-	store := ngTestStore([]nodeInfo{nodeA, nodeB, {Role: "repeater", PublicKey: "cccc3333", Name: "Observer"}}, []*StoreTx{tx})
+	store := ngTestStore(t, []nodeInfo{nodeA, nodeB, {Role: "repeater", PublicKey: "cccc3333", Name: "Observer"}}, []*StoreTx{tx})
 	graph := BuildFromStore(store)
 
 	edges := graph.Neighbors("aaaa1111")
@@ -312,8 +314,8 @@ func TestIntegration_DualPrefixSingleNeighbor(t *testing.T) {
 	nodeB2 := nodeInfo{Role: "repeater", PublicKey: "b0c2ffffb0c2ffff", Name: "NodeB2", HasGPS: true, Lat: 10.0, Lon: 10.0}
 	observer := nodeInfo{Role: "repeater", PublicKey: "cccc3333cccc3333", Name: "Observer"}
 
-	ts := time.Now().UTC().Format(time.RFC3339)
-	pt := 4
+	ts := time.Now().UTC()
+	pt := types.PayloadType(4)
 
 	// Observation 1: 1-byte prefix "b0" (ambiguous — matches both B and B2).
 	obs1 := []*StoreObs{{ObserverID: "cccc3333cccc3333", PathJSON: `["b0"]`, Timestamp: ts}}
@@ -323,7 +325,7 @@ func TestIntegration_DualPrefixSingleNeighbor(t *testing.T) {
 	obs2 := []*StoreObs{{ObserverID: "cccc3333cccc3333", PathJSON: `["b0b1"]`, Timestamp: ts}}
 	tx2 := &StoreTx{ID: 2, PayloadType: &pt, DecodedJSON: `{"pubKey":"aaaa1111aaaa1111"}`, Observations: obs2}
 
-	store := ngTestStore([]nodeInfo{nodeA, nodeB, nodeB2, observer}, []*StoreTx{tx1, tx2})
+	store := ngTestStore(t, []nodeInfo{nodeA, nodeB, nodeB2, observer}, []*StoreTx{tx1, tx2})
 	graph := BuildFromStore(store)
 
 	edges := graph.Neighbors("aaaa1111aaaa1111")

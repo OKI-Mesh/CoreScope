@@ -2,18 +2,20 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func f64(v float64) *float64 { return &v }
 
 func TestDedupeTopHopsByPair(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	hops := []distHopRecord{
-		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 100, Type: "R↔R", SNR: f64(5.0), Hash: "h1", Timestamp: "t1"},
-		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 90, Type: "R↔R", SNR: f64(8.0), Hash: "h2", Timestamp: "t2"},
-		{FromPk: "BBB", ToPk: "AAA", FromName: "B", ToName: "A", Dist: 80, Type: "R↔R", SNR: f64(3.0), Hash: "h3", Timestamp: "t3"},
-		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 70, Type: "R↔R", SNR: f64(6.0), Hash: "h4", Timestamp: "t4"},
-		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 60, Type: "R↔R", SNR: f64(4.0), Hash: "h5", Timestamp: "t5"},
-		{FromPk: "CCC", ToPk: "DDD", FromName: "C", ToName: "D", Dist: 50, Type: "C↔R", SNR: f64(7.0), Hash: "h6", Timestamp: "t6"},
+		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 100, Type: "R↔R", SNR: f64(5.0), Hash: "h1", Timestamp: base.Add(1 * time.Second)},
+		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 90, Type: "R↔R", SNR: f64(8.0), Hash: "h2", Timestamp: base.Add(2 * time.Second)},
+		{FromPk: "BBB", ToPk: "AAA", FromName: "B", ToName: "A", Dist: 80, Type: "R↔R", SNR: f64(3.0), Hash: "h3", Timestamp: base.Add(3 * time.Second)},
+		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 70, Type: "R↔R", SNR: f64(6.0), Hash: "h4", Timestamp: base.Add(4 * time.Second)},
+		{FromPk: "AAA", ToPk: "BBB", FromName: "A", ToName: "B", Dist: 60, Type: "R↔R", SNR: f64(4.0), Hash: "h5", Timestamp: base.Add(5 * time.Second)},
+		{FromPk: "CCC", ToPk: "DDD", FromName: "C", ToName: "D", Dist: 50, Type: "C↔R", SNR: f64(7.0), Hash: "h6", Timestamp: base.Add(6 * time.Second)},
 	}
 
 	result := dedupeHopsByPair(hops, 20)

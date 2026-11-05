@@ -14,11 +14,8 @@ func fromPgText(v pgtype.Text) *string {
 	return &v.String
 }
 
-func toPgText(v interface{}) pgtype.Text {
-	if v == nil {
-		return pgtype.Text{}
-	}
-	return pgtype.Text{String: v.(string), Valid: true}
+func toPgText(v string) pgtype.Text {
+	return pgtype.Text{String: v, Valid: true}
 }
 
 func toPgFloat8Ptr(v *float64) pgtype.Float8 {
@@ -41,39 +38,12 @@ func toPgInt8Ptr(v *int64) pgtype.Int8 {
 	}
 	return pgtype.Int8{Int64: *v, Valid: true}
 }
-func toPgInt4(v interface{}) pgtype.Int4 {
-	if v == nil {
-		return pgtype.Int4{}
-	}
-	return pgtype.Int4{Int32: int32(v.(int)), Valid: true} // adjust int type to match meta.BatteryMv's actual type
-}
 
-func toPgInt8(v interface{}) pgtype.Int8 {
+func toPgTextPtr(v *string) pgtype.Text {
 	if v == nil {
-		return pgtype.Int8{}
-	}
-	return pgtype.Int8{Int64: int64(v.(int)), Valid: true}
-}
-
-func toPgFloat8(v interface{}) pgtype.Float8 {
-	if v == nil {
-		return pgtype.Float8{}
-	}
-	return pgtype.Float8{Float64: v.(float64), Valid: true}
-}
-
-func toPgTextPtr(s *string) pgtype.Text {
-	if s == nil {
 		return pgtype.Text{}
 	}
-	return pgtype.Text{String: *s, Valid: true}
-}
-
-func toPgBool(v interface{}) pgtype.Bool {
-	if v == nil {
-		return pgtype.Bool{}
-	}
-	return pgtype.Bool{Bool: v.(int) == 1, Valid: true} // canRelay comes through as 1/0 per observerMetaColumns
+	return pgtype.Text{String: *v, Valid: true}
 }
 
 func toPgTextIfNotEmpty(s string) pgtype.Text {
@@ -126,7 +96,50 @@ func fromAnyInt64(v interface{}) *int64 {
 	}
 }
 
-func metaToParams(meta *types.ObserverMeta) (model, firmware, clientVersion, radio pgtype.Text, batteryMv, uptimeSecs pgtype.Int4, noiseFloor pgtype.Float8, canRelay pgtype.Bool) {
+func fromPgInt4To32(v pgtype.Int4) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int32)
+	return &n
+}
+
+func fromPgInt4(v pgtype.Int4) *int {
+	return fromPgInt4To32(v)
+}
+
+func fromPgInt4To64(v pgtype.Int4) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	x := int64(v.Int32)
+	return &x
+}
+
+func utcPtr(v *time.Time) *time.Time {
+	if v == nil {
+		return nil
+	}
+	u := v.UTC()
+	return &u
+}
+
+func int4Ptr(i pgtype.Int4) *int {
+	if !i.Valid {
+		return nil
+	}
+	v := int(i.Int32)
+	return &v
+}
+
+func toPgTimestamptzPtr(p *time.Time) pgtype.Timestamptz {
+	if p == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *p, Valid: true}
+}
+
+func metaToParams(meta *types.ObserverMeta) (model, firmware, clientVersion, radio pgtype.Text, batteryMv pgtype.Int4, uptimeSecs pgtype.Int8, noiseFloor pgtype.Float8, canRelay pgtype.Bool) {
 	if meta == nil {
 		return
 	}
@@ -146,7 +159,7 @@ func metaToParams(meta *types.ObserverMeta) (model, firmware, clientVersion, rad
 		batteryMv = pgtype.Int4{Int32: int32(*meta.BatteryMv), Valid: true}
 	}
 	if meta.UptimeSecs != nil {
-		uptimeSecs = pgtype.Int4{Int32: int32(*meta.UptimeSecs), Valid: true}
+		uptimeSecs = pgtype.Int8{Int64: int64(*meta.UptimeSecs), Valid: true}
 	}
 	if meta.NoiseFloor != nil {
 		noiseFloor = pgtype.Float8{Float64: *meta.NoiseFloor, Valid: true}

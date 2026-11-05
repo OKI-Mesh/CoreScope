@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestGetRepeaterRelayInfoMap_ServesStaleOnTTLExpiry is a regression guard
@@ -44,7 +46,7 @@ func TestGetRepeaterRelayInfoMap_ServesStaleOnTTLExpiry(t *testing.T) {
 func TestGetRepeaterUsefulnessScoreMap_ServesStaleOnTTLExpiry(t *testing.T) {
 	store := &PacketStore{
 		byPathHop:     make(map[string][]*StoreTx),
-		byPayloadType: make(map[int][]*StoreTx),
+		byPayloadType: make(map[types.PayloadType][]*StoreTx),
 	}
 
 	stale := map[string]float64{"sentinel": 0.42}
@@ -62,17 +64,17 @@ func TestGetRepeaterUsefulnessScoreMap_ServesStaleOnTTLExpiry(t *testing.T) {
 // is nil (before the recomputer's first prewarm), GetRepeaterRelayInfoMap
 // computes inline and caches the result for subsequent callers.
 func TestGetRepeaterRelayInfoMap_BuildsWhenNil(t *testing.T) {
-	pt2 := 2
+	pt2 := types.PayloadType(2)
 	now := time.Now().UTC()
 	tx := &StoreTx{
 		ID:          1,
 		Hash:        "abc",
-		FirstSeen:   now.Add(-10 * time.Minute).Format(time.RFC3339Nano),
+		FirstSeen:   now.Add(-10 * time.Minute),
 		PayloadType: &pt2,
 	}
 	store := &PacketStore{
 		byPathHop:     map[string][]*StoreTx{"aabbcc": {tx}},
-		byPayloadType: map[int][]*StoreTx{pt2: {tx}},
+		byPayloadType: map[types.PayloadType][]*StoreTx{pt2: {tx}},
 		mu:            sync.RWMutex{},
 	}
 

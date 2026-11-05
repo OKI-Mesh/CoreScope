@@ -1,5 +1,11 @@
 package main
 
+import (
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+)
+
 // Types generated from proto/ definitions for compile-time type safety.
 // Every API response is a typed struct — no map[string]interface{}.
 
@@ -17,13 +23,6 @@ type ErrorResp struct {
 
 type OkResp struct {
 	Ok bool `json:"ok"`
-}
-
-type RoleCounts struct {
-	Repeaters  int `json:"repeaters"`
-	Rooms      int `json:"rooms"`
-	Companions int `json:"companions"`
-	Sensors    int `json:"sensors"`
 }
 
 type HistogramBin struct {
@@ -55,21 +54,21 @@ type TimeBucket struct {
 // ─── Stats ─────────────────────────────────────────────────────────────────────
 
 type StatsResponse struct {
-	TotalPackets          int        `json:"totalPackets"`
-	TotalTransmissions    *int       `json:"totalTransmissions"`
-	TotalObservations     int        `json:"totalObservations"`
-	TotalNodes            int        `json:"totalNodes"`
-	TotalNodesAllTime     int        `json:"totalNodesAllTime"`
-	TotalObservers        int        `json:"totalObservers"`
-	PacketsLastHour       int        `json:"packetsLastHour"`
-	PacketsLast24h        int        `json:"packetsLast24h"`
-	Engine                string     `json:"engine"`
-	Version               string     `json:"version"`
-	Commit                string     `json:"commit"`
-	BuildTime             string     `json:"buildTime"`
-	Counts                RoleCounts `json:"counts"`
-	SignatureDrops        int64      `json:"signatureDrops,omitempty"`
-	HashMigrationComplete bool       `json:"hashMigrationComplete"`
+	TotalPackets          int                `json:"totalPackets"`
+	TotalTransmissions    *int               `json:"totalTransmissions"`
+	TotalObservations     int                `json:"totalObservations"`
+	TotalNodes            int                `json:"totalNodes"`
+	TotalNodesAllTime     int                `json:"totalNodesAllTime"`
+	TotalObservers        int                `json:"totalObservers"`
+	PacketsLastHour       int                `json:"packetsLastHour"`
+	PacketsLast24h        int                `json:"packetsLast24h"`
+	Engine                string             `json:"engine"`
+	Version               string             `json:"version"`
+	Commit                string             `json:"commit"`
+	BuildTime             string             `json:"buildTime"`
+	Counts                RoleCountsResponse `json:"counts"`
+	SignatureDrops        int64              `json:"signatureDrops,omitempty"`
+	HashMigrationComplete bool               `json:"hashMigrationComplete"`
 
 	// Memory accounting (issue #832). All values in MB.
 	//
@@ -256,30 +255,30 @@ type PerfPacketStoreStats struct {
 	BackgroundLoadError    string             `json:"backgroundLoadError,omitempty"`
 	// #1690: surface retention + coverage so operators can see how much
 	// of the on-disk DB the in-memory store currently reflects.
-	RetentionHours    float64 `json:"retentionHours"`
-	OldestLoaded      string  `json:"oldestLoaded"`
-	LoadCoverageRatio float64 `json:"loadCoverageRatio"`
+	RetentionHours    float64   `json:"retentionHours"`
+	OldestLoaded      time.Time `json:"oldestLoaded"`
+	LoadCoverageRatio float64   `json:"loadCoverageRatio"`
 }
 
-type WalPages struct {
-	Total        int `json:"total"`
-	Checkpointed int `json:"checkpointed"`
-	Busy         int `json:"busy"`
+type CheckpointStats struct {
+	Timed          int64 `json:"timed"`
+	Requested      int64 `json:"requested"`
+	BuffersWritten int64 `json:"buffersWritten"`
 }
 
-type SqliteRowCounts struct {
-	Transmissions int `json:"transmissions"`
-	Observations  int `json:"observations"`
-	Nodes         int `json:"nodes"`
-	Observers     int `json:"observers"`
+type TableRowCounts struct {
+	Transmissions int64 `json:"transmissions"`
+	Observations  int64 `json:"observations"`
+	Nodes         int64 `json:"nodes"`
+	Observers     int64 `json:"observers"`
 }
 
-type SqliteStats struct {
-	DbSizeMB   float64          `json:"dbSizeMB"`
-	WalSizeMB  float64          `json:"walSizeMB"`
-	FreelistMB float64          `json:"freelistMB"`
-	WalPages   *WalPages        `json:"walPages"`
-	Rows       *SqliteRowCounts `json:"rows"`
+type DbStats struct {
+	DbSizeMB    float64          `json:"dbSizeMB"`
+	WalSizeMB   float64          `json:"walSizeMB"`
+	DeadTuples  int64            `json:"deadTuples"`
+	Checkpoints *CheckpointStats `json:"checkpoints,omitempty"`
+	Rows        TableRowCounts   `json:"rows"`
 }
 
 type PerfResponse struct {
@@ -290,7 +289,7 @@ type PerfResponse struct {
 	SlowQueries   []SlowQuery                   `json:"slowQueries"`
 	Cache         PerfCacheStats                `json:"cache"`
 	PacketStore   *PerfPacketStoreStats         `json:"packetStore"`
-	Sqlite        *SqliteStats                  `json:"sqlite"`
+	DatabaseStats *DbStats                      `json:"dbStats"`
 	GoRuntime     *GoRuntimeStats               `json:"goRuntime,omitempty"`
 	// MemoryBreakdown is populated only for /api/perf?mem=1 (an O(tx+obs)
 	// walk, opt-in so the normal hot endpoint stays cheap). It sizes the
@@ -431,25 +430,13 @@ type NodeResp struct {
 	LastHeard            interface{} `json:"last_heard,omitempty"`
 }
 
-type NodeListResponse struct {
-	Nodes  []map[string]interface{} `json:"nodes"`
-	Total  int                      `json:"total"`
-	Counts map[string]int           `json:"counts"`
-	// HasMore reports whether rows exist past this page. Computed from the raw
-	// SQL page before the post-LIMIT filters in handleNodes, which shorten the
-	// page and rewrite Total — so it is the only field a paginating client can
-	// trust to decide whether to ask for another page. Always emitted (no
-	// omitempty): a client must be able to tell "false" from "old server".
-	HasMore bool `json:"has_more"`
-}
-
 type NodeSearchResponse struct {
-	Nodes []map[string]interface{} `json:"nodes"`
+	Nodes []NodeResponse `json:"nodes"`
 }
 
 type NodeDetailResponse struct {
-	Node          map[string]interface{}   `json:"node"`
-	RecentAdverts []map[string]interface{} `json:"recentAdverts"`
+	Node          NodeResponse         `json:"node"`
+	RecentAdverts []NodeAdvertResponse `json:"recentAdverts"`
 }
 
 type NodeStatsResp struct {
@@ -518,13 +505,13 @@ type NodePathsResponse struct {
 // ─── Node Analytics ────────────────────────────────────────────────────────────
 
 type TimeRangeResp struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	Days int    `json:"days"`
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+	Days int       `json:"days"`
 }
 
 type SnrTrendEntry struct {
-	Timestamp    string      `json:"timestamp"`
+	Timestamp    time.Time   `json:"timestamp"`
 	SNR          interface{} `json:"snr"`
 	RSSI         interface{} `json:"rssi"`
 	ObserverID   interface{} `json:"observer_id"`
@@ -532,8 +519,8 @@ type SnrTrendEntry struct {
 }
 
 type PayloadTypeCount struct {
-	PayloadType int `json:"payload_type"`
-	Count       int `json:"count"`
+	PayloadType types.PayloadType `json:"payload_type"`
+	Count       int               `json:"count"`
 }
 
 type HopDistEntry struct {
@@ -542,10 +529,10 @@ type HopDistEntry struct {
 }
 
 type PeerInteraction struct {
-	PeerKey      string `json:"peer_key"`
-	PeerName     string `json:"peer_name"`
-	MessageCount int    `json:"messageCount"`
-	LastContact  string `json:"lastContact"`
+	PeerKey      string    `json:"peer_key"`
+	PeerName     string    `json:"peer_name"`
+	MessageCount int       `json:"messageCount"`
+	LastContact  time.Time `json:"lastContact"`
 }
 
 type HeatmapCell struct {
@@ -569,7 +556,7 @@ type ComputedNodeStats struct {
 }
 
 type NodeAnalyticsResponse struct {
-	Node                map[string]interface{}  `json:"node"`
+	Node                NodeResponse            `json:"node"`
 	TimeRange           TimeRangeResp           `json:"timeRange"`
 	ActivityTimeline    []TimeBucket            `json:"activityTimeline"`
 	SnrTrend            []SnrTrendEntry         `json:"snrTrend"`
@@ -586,7 +573,7 @@ type NodeAnalyticsResponse struct {
 // the node's flood.max check saw for it (issue #1812).
 type NodeHopPacket struct {
 	Hash      string   `json:"hash"`
-	Timestamp string   `json:"timestamp"`
+	Timestamp UTCTime  `json:"timestamp"`
 	Hops      int      `json:"hops"`
 	Tags      []string `json:"tags"`
 }
@@ -917,78 +904,11 @@ type SubpathDetailResponse struct {
 	Observers        []SubpathObserver `json:"observers"`
 }
 
-// ─── Channels ──────────────────────────────────────────────────────────────────
-
-type ChannelResp struct {
-	Hash         string      `json:"hash"`
-	Name         string      `json:"name"`
-	LastMessage  interface{} `json:"lastMessage"`
-	LastSender   interface{} `json:"lastSender"`
-	MessageCount int         `json:"messageCount"`
-	LastActivity string      `json:"lastActivity"`
-}
-
-type ChannelListResponse struct {
-	Channels []map[string]interface{} `json:"channels"`
-}
-
-type ChannelMessageResp struct {
-	Sender          string      `json:"sender"`
-	Text            string      `json:"text"`
-	Timestamp       string      `json:"timestamp"`
-	SenderTimestamp interface{} `json:"sender_timestamp"`
-	PacketID        int64       `json:"packetId"`
-	PacketHash      string      `json:"packetHash"`
-	Repeats         int         `json:"repeats"`
-	Observers       []string    `json:"observers"`
-	Hops            int         `json:"hops"`
-	SNR             interface{} `json:"snr"`
-}
-
-type ChannelMessagesResponse struct {
-	Messages []map[string]interface{} `json:"messages"`
-	Total    int                      `json:"total"`
-}
-
 // ─── Observers ─────────────────────────────────────────────────────────────────
 
-type ObserverResp struct {
-	ID              string      `json:"id"`
-	Name            interface{} `json:"name"`
-	IATA            interface{} `json:"iata"`
-	LastSeen        interface{} `json:"last_seen"`
-	FirstSeen       interface{} `json:"first_seen"`
-	PacketCount     int         `json:"packet_count"`
-	Model           interface{} `json:"model"`
-	Firmware        interface{} `json:"firmware"`
-	ClientVersion   interface{} `json:"client_version"`
-	Radio           interface{} `json:"radio"`
-	BatteryMv       interface{} `json:"battery_mv"`
-	UptimeSecs      interface{} `json:"uptime_secs"`
-	NoiseFloor      interface{} `json:"noise_floor"`
-	LastPacketAt    interface{} `json:"last_packet_at"`
-	PacketsLastHour int         `json:"packetsLastHour"`
-	Lat             interface{} `json:"lat"`
-	Lon             interface{} `json:"lon"`
-	NodeRole        interface{} `json:"nodeRole"`
-	// Issue #1478: surface naive-clock observers to the UI.
-	// `clock_naive` is derived from clock_last_naive_at being within the
-	// last 24h; once decayed, all three skew fields read as zero/null so the
-	// chip and banner clear automatically.
-	ClockNaive        bool        `json:"clock_naive"`
-	ClockSkewSeconds  interface{} `json:"clock_skew_seconds"`
-	ClockSkewCount24h int         `json:"clock_skew_count_24h"`
-	ClockLastNaiveAt  interface{} `json:"clock_last_naive_at"`
-	// Issue #1290: firmware 1.16 `repeat` flag — true=repeater,
-	// false=listener-only, nil=unknown (legacy observer never sent the
-	// field). UI tri-state badge renders nothing when nil so legacy
-	// rows don't masquerade as confirmed repeaters (PR #1624 MAJOR-2).
-	CanRelay *bool `json:"can_relay,omitempty"`
-}
-
 type ObserverListResponse struct {
-	Observers  []ObserverResp `json:"observers"`
-	ServerTime string         `json:"server_time"`
+	Observers  []ObserverResponse `json:"observers"`
+	ServerTime string             `json:"server_time"`
 }
 
 type SnrDistributionEntry struct {
@@ -997,26 +917,11 @@ type SnrDistributionEntry struct {
 }
 
 type ObserverAnalyticsResponse struct {
-	Timeline        []TimeBucket             `json:"timeline"`
-	PacketTypes     map[string]int           `json:"packetTypes"`
-	NodesTimeline   []TimeBucket             `json:"nodesTimeline"`
-	SnrDistribution []SnrDistributionEntry   `json:"snrDistribution"`
-	RecentPackets   []map[string]interface{} `json:"recentPackets"`
-}
-
-// ─── Traces ────────────────────────────────────────────────────────────────────
-
-type TraceEntry struct {
-	Observer     interface{} `json:"observer"`
-	ObserverName interface{} `json:"observer_name"`
-	Time         string      `json:"time"`
-	SNR          interface{} `json:"snr"`
-	RSSI         interface{} `json:"rssi"`
-	PathJSON     interface{} `json:"path_json"`
-}
-
-type TraceResponse struct {
-	Traces []map[string]interface{} `json:"traces"`
+	Timeline        []TimeBucket              `json:"timeline"`
+	PacketTypes     map[types.PayloadType]int `json:"packetTypes"`
+	NodesTimeline   []TimeBucket              `json:"nodesTimeline"`
+	SnrDistribution []SnrDistributionEntry    `json:"snrDistribution"`
+	RecentPackets   []map[string]interface{}  `json:"recentPackets"`
 }
 
 // ─── Resolve Hops ──────────────────────────────────────────────────────────────
@@ -1107,14 +1012,14 @@ type IataCoordsResponse struct {
 // ─── Audio Lab ─────────────────────────────────────────────────────────────────
 
 type AudioLabPacket struct {
-	Hash             interface{} `json:"hash"`
-	RawHex           interface{} `json:"raw_hex"`
-	DecodedJSON      interface{} `json:"decoded_json"`
-	ObservationCount int         `json:"observation_count"`
-	PayloadType      int         `json:"payload_type"`
-	PathJSON         interface{} `json:"path_json"`
-	ObserverID       interface{} `json:"observer_id"`
-	Timestamp        interface{} `json:"timestamp"`
+	Hash             string            `json:"hash"`
+	RawHex           string            `json:"raw_hex"`
+	DecodedJSON      string            `json:"decoded_json"`
+	ObservationCount int               `json:"observation_count"`
+	PayloadType      types.PayloadType `json:"payload_type"`
+	PathJSON         string            `json:"path_json"`
+	ObserverID       string            `json:"observer_id"`
+	Timestamp        time.Time         `json:"timestamp"`
 }
 
 type AudioLabBucketsResponse struct {

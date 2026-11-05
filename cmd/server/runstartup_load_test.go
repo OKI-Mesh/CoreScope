@@ -19,36 +19,58 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
+
+func seedPacketsAged(t *testing.T, db *database.DB, ages []time.Duration) {
+	t.Helper()
+	now := time.Now().UTC()
+	obsIdx := seedObserver(t, db, scopeKey(141), "SFO", now)
+	for i, age := range ages {
+		insertRelayPacket(t, db, obsIdx, relayPacket{
+			Hash:        fmt.Sprintf("5d01%012x", i),
+			RouteType:   1,
+			PayloadType: types.PayloadType(2),
+			At:          now.Add(-age),
+			Hops:        nil,
+			Resolved:    nil,
+		})
+	}
+}
 
 // TestRunStartupLoad_HotStartupHoursZero_SetsDoneImmediately covers B3:
 // when hotStartupHours == 0 the bg loader has no work to do; healthz
 // must NOT be stuck on backgroundLoadComplete=false.
 func TestRunStartupLoad_HotStartupHoursZero_SetsDoneImmediately(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	nowSec := time.Now().UTC().Unix()
-	createTestDBWithLastSeen(t, dbPath, 10, 1, nowSec,
-		30*time.Minute, 30*time.Minute)
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
+	now := time.Now().UTC()
+	obsIdx := seedObserver(t, db, scopeKey(140), "SFO", now)
+	for i := 0; i < 10; i++ {
+		insertRelayPacket(t, db, obsIdx, relayPacket{
+			Hash:        fmt.Sprintf("5d00%012x", i),
+			RouteType:   1,
+			PayloadType: types.PayloadType(2),
+			At:          now.Add(-time.Duration(i) * 3 * time.Minute),
+			Hops:        nil,
+			Resolved:    nil,
+		})
 	}
-	defer db.conn.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
-		HotStartupHours: 0, // disable hot window → bg loader must not run
+		HotStartupHours: 0,
 	})
 
-	if err := store.RunStartupLoad(500); err != nil {
+	if err := store.RunStartupLoad(ctx, 500); err != nil {
 		t.Fatalf("RunStartupLoad: %v", err)
 	}
 	if !store.backgroundLoadDone.Load() {
@@ -67,27 +89,20 @@ func TestRunStartupLoad_HotStartupHoursZero_SetsDoneImmediately(t *testing.T) {
 // implementation left done=false, leaving healthz wedged on the
 // failure path (dij #1 / adv #7).
 func TestRunStartupLoad_LoadChunkedError_SetsFailedTerminal(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	nowSec := time.Now().UTC().Unix()
-	createTestDBWithLastSeen(t, dbPath, 5, 1, nowSec,
-		30*time.Minute, 30*time.Minute)
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	// Close the underlying connection to force LoadChunked to fail on
-	// its very first query. We're explicitly verifying the failure path
-	// terminal state, not the success path.
-	_ = db.conn.Close()
+	seedPacketsAged(t, db, []time.Duration{
+		5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 20 * time.Minute, 25 * time.Minute,
+	})
+	db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 	})
 
-	loadErr := store.RunStartupLoad(500)
+	loadErr := store.RunStartupLoad(ctx, 500)
 	if loadErr == nil {
 		t.Fatalf("RunStartupLoad must return an error when LoadChunked fails")
 	}
@@ -107,23 +122,15 @@ func TestRunStartupLoad_LoadChunkedError_SetsFailedTerminal(t *testing.T) {
 // loadBackgroundChunks must reach its coverage block (totalInDB==0 →
 // ratio=1.0) and set done=true rather than leaving the store stuck.
 func TestRunStartupLoad_EmptyDB_SetsDoneTerminal(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	createTestDBWithLastSeen(t, dbPath, 0, 0, time.Now().UTC().Unix(),
-		30*time.Minute, 30*time.Minute)
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 	})
 
-	if err := store.RunStartupLoad(500); err != nil {
+	if err := store.RunStartupLoad(ctx, 500); err != nil {
 		t.Fatalf("RunStartupLoad on empty DB: %v", err)
 	}
 	if !store.backgroundLoadDone.Load() {
@@ -152,17 +159,14 @@ func TestRunStartupLoad_EmptyDB_SetsDoneTerminal(t *testing.T) {
 // tBgEntry >= tLastChunk monotonically. The runtime invariant in
 // loadBackgroundChunks remains as the deterministic backstop.
 func TestRunStartupLoad_BgLoaderRunsAfterLoadChunkedSets_OldestLoaded(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	nowSec := time.Now().UTC().Unix()
-	createTestDBWithLastSeen(t, dbPath, 50, 1, nowSec,
-		30*time.Minute, 30*time.Minute)
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
+	ages := make([]time.Duration, 50)
+	for i := range ages {
+		ages[i] = time.Duration(i+1) * 30 * time.Second
 	}
-	defer db.conn.Close()
+	seedPacketsAged(t, db, ages)
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
@@ -173,14 +177,11 @@ func TestRunStartupLoad_BgLoaderRunsAfterLoadChunkedSets_OldestLoaded(t *testing
 		mu             sync.Mutex
 		lastChunkAt    time.Time
 		bgEntryAt      time.Time
-		chunkSawOldest string
+		chunkSawOldest time.Time
 	)
 	store.OnChunkLoaded(func(rowsThisChunk, totalRows int) {
 		mu.Lock()
 		lastChunkAt = time.Now()
-		// LoadChunked sets oldestLoaded under s.mu AFTER the last
-		// fireChunkCallbacks call returns, so this read may be empty
-		// on the last chunk — record whatever is visible.
 		store.mu.RLock()
 		chunkSawOldest = store.oldestLoaded
 		store.mu.RUnlock()
@@ -192,7 +193,7 @@ func TestRunStartupLoad_BgLoaderRunsAfterLoadChunkedSets_OldestLoaded(t *testing
 		mu.Unlock()
 	}
 
-	if err := store.RunStartupLoad(500); err != nil {
+	if err := store.RunStartupLoad(ctx, 500); err != nil {
 		t.Fatalf("RunStartupLoad: %v", err)
 	}
 
@@ -208,10 +209,10 @@ func TestRunStartupLoad_BgLoaderRunsAfterLoadChunkedSets_OldestLoaded(t *testing
 		t.Fatalf("ordering violation: bg loader entered at %s BEFORE last chunk callback at %s — #1809 race re-introduced",
 			bgEntryAt.Format(time.RFC3339Nano), lastChunkAt.Format(time.RFC3339Nano))
 	}
-	if store.oldestLoaded == "" {
-		t.Fatalf("oldestLoaded is empty after RunStartupLoad — bg loader would have read \"\" and bailed")
+	if store.oldestLoaded.IsZero() {
+		t.Fatal("oldestLoaded is zero after RunStartupLoad — background loader would not have a time bound")
 	}
-	_ = chunkSawOldest // diagnostic only; kept to make race future-debug easier
+	_ = chunkSawOldest
 }
 
 // TestRunStartupLoad_LoadChunkedError_MidLoad covers dij #6 / adv #5:
@@ -223,33 +224,28 @@ func TestRunStartupLoad_BgLoaderRunsAfterLoadChunkedSets_OldestLoaded(t *testing
 // fails and the terminal state is still failed=true,done=true with a
 // non-empty error.
 func TestRunStartupLoad_LoadChunkedError_MidLoad(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	nowSec := time.Now().UTC().Unix()
-	// Seed enough rows so a small chunk size yields >1 chunk.
-	createTestDBWithLastSeen(t, dbPath, 200, 1, nowSec,
-		30*time.Minute, 30*time.Minute)
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
+	ages := make([]time.Duration, 200)
+	for i := range ages {
+		ages[i] = time.Duration(i+1) * 5 * time.Second
 	}
+	seedPacketsAged(t, db, ages)
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 	})
 
-	// Close the underlying conn from inside the chunk callback so the
-	// NEXT chunk's query fails mid-load instead of on the first query.
 	var closed atomic.Bool
 	store.OnChunkLoaded(func(rowsThisChunk, totalRows int) {
 		if closed.CompareAndSwap(false, true) {
-			_ = db.conn.Close()
+			db.Close()
 		}
 	})
 
-	loadErr := store.RunStartupLoad(50)
+	loadErr := store.RunStartupLoad(ctx, 50)
 	if loadErr == nil {
 		t.Fatalf("RunStartupLoad must error when conn closes mid-load")
 	}
@@ -270,35 +266,20 @@ func TestRunStartupLoad_LoadChunkedError_MidLoad(t *testing.T) {
 // must fire so future refactors cannot silently re-introduce the
 // #1809 race.
 func TestLoadBackgroundChunks_PanicsOnOldestLoadedEmpty_Invariant(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	// Reuse the existing schema-only fixture helper (0 rows) so this
-	// test does not introduce a new inline CREATE TABLE block (pr-preflight
-	// async-migration gate). The fixture provides exactly the bare schema
-	// loadBackgroundChunks needs to reach its panic guard.
-	createTestDBWithLastSeen(t, dbPath, 0, 0, time.Now().UTC().Unix(),
-		30*time.Minute, 30*time.Minute)
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 	})
-	// Simulate the #1809 race: packets present, oldestLoaded never set.
 	store.mu.Lock()
-	store.packets = append(store.packets, &StoreTx{ID: 1, Hash: "deadbeef", FirstSeen: "2025-01-01T00:00:00Z"})
-	store.oldestLoaded = ""
+	store.packets = append(store.packets, &StoreTx{
+		ID: 1, Hash: "deadbeef", FirstSeen: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	store.oldestLoaded = time.Time{}
 	store.mu.Unlock()
 
-	// Override invariantViolation so the test can recover() and
-	// assert the message without log.Fatalf killing the runner
-	// (adv #6: prod uses log.Fatalf for a clean shutdown). Restore on
-	// exit so other tests are unaffected.
 	prev := invariantViolation
 	defer func() { invariantViolation = prev }()
 	invariantViolation = func(msg string) { panic(msg) }
@@ -306,13 +287,9 @@ func TestLoadBackgroundChunks_PanicsOnOldestLoadedEmpty_Invariant(t *testing.T) 
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatalf("loadBackgroundChunks must trip invariantViolation when oldestLoaded=\"\" with packets in store (#1809 invariant)")
+			t.Fatalf("loadBackgroundChunks must trip invariantViolation when oldestLoaded is zero with packets in store (#1809 invariant)")
 		}
 		msg := fmt.Sprintf("%v", r)
-		// adv #4: tighten the tripwire — assert the specific invariant
-		// message contains the issue tag so a future refactor that
-		// reuses the panic path for a different bug doesn't silently
-		// satisfy this test.
 		if !strings.Contains(msg, "#1809") {
 			t.Fatalf("invariant message must reference #1809 to gate future regressions; got %q", msg)
 		}
@@ -320,5 +297,5 @@ func TestLoadBackgroundChunks_PanicsOnOldestLoadedEmpty_Invariant(t *testing.T) 
 			t.Fatalf("invariant message must mention oldestLoaded; got %q", msg)
 		}
 	}()
-	store.loadBackgroundChunks()
+	store.loadBackgroundChunks(ctx)
 }

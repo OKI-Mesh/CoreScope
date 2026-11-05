@@ -30,27 +30,27 @@ ORDER BY sampled_at
 `
 
 type ListClientRfSamplesWithPrevParams struct {
-	RxPubkey string    `json:"rx_pubkey"`
-	StartAt  time.Time `json:"start_at"`
-	EndAt    time.Time `json:"end_at"`
+	RxPubkey string
+	StartAt  time.Time
+	EndAt    time.Time
 }
 
 type ListClientRfSamplesWithPrevRow struct {
-	SampledAt  time.Time   `json:"sampled_at"`
-	Lat        float64     `json:"lat"`
-	Lon        float64     `json:"lon"`
-	Stationary bool        `json:"stationary"`
-	UptimeSecs int64       `json:"uptime_secs"`
-	RxAirSecs  pgtype.Int8 `json:"rx_air_secs"`
-	TxAirSecs  pgtype.Int8 `json:"tx_air_secs"`
-	Recv       pgtype.Int8 `json:"recv"`
-	RecvErrors pgtype.Int8 `json:"recv_errors"`
-	PrevAt     interface{} `json:"prev_at"`
-	PrevUptime interface{} `json:"prev_uptime"`
-	PrevRx     interface{} `json:"prev_rx"`
-	PrevTx     interface{} `json:"prev_tx"`
-	PrevRecv   interface{} `json:"prev_recv"`
-	PrevErrs   interface{} `json:"prev_errs"`
+	SampledAt  time.Time
+	Lat        float64
+	Lon        float64
+	Stationary bool
+	UptimeSecs int64
+	RxAirSecs  pgtype.Int8
+	TxAirSecs  pgtype.Int8
+	Recv       pgtype.Int8
+	RecvErrors pgtype.Int8
+	PrevAt     interface{}
+	PrevUptime interface{}
+	PrevRx     interface{}
+	PrevTx     interface{}
+	PrevRecv   interface{}
+	PrevErrs   interface{}
 }
 
 func (q *Queries) ListClientRfSamplesWithPrev(ctx context.Context, arg ListClientRfSamplesWithPrevParams) ([]ListClientRfSamplesWithPrevRow, error) {

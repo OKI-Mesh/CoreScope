@@ -5,35 +5,66 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // seedEncryptedChannelData adds undecryptable GRP_TXT packets to the test DB.
-func seedEncryptedChannelData(t *testing.T, db *DB) {
+func seedEncryptedChannelData(t *testing.T, db *database.DB) {
 	t.Helper()
-	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
+	ctx := t.Context()
+	recent := time.Now().UTC().Add(-1 * time.Hour)
 
-	// Two encrypted GRP_TXT packets on channel hash "A1B2"
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('EE01', 'enc_hash_001', ?, 1, 5, '{"type":"GRP_TXT","channelHashHex":"A1B2","decryptionStatus":"no_key"}', 'enc_A1B2')`, recent)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('EE02', 'enc_hash_002', ?, 1, 5, '{"type":"GRP_TXT","channelHashHex":"A1B2","decryptionStatus":"no_key"}', 'enc_A1B2')`, recent)
+	observerID := ensureObserver(t, db, "obs1")
 
-	// Observations for both
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES ((SELECT id FROM transmissions WHERE hash='enc_hash_001'), 1, 10.0, -90, '[]', ?)`, recentEpoch)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES ((SELECT id FROM transmissions WHERE hash='enc_hash_002'), 1, 10.0, -90, '[]', ?)`, recentEpoch)
+	// Two encrypted GRP_TXT packets on channel hash "A1B2".
+	for _, hash := range []string{"enc_hash_001", "enc_hash_002"} {
+		raw := "EE01"
+		if hash == "enc_hash_002" {
+			raw = "EE02"
+		}
+		txID, isNew, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			RawHex:           raw,
+			Hash:             hash,
+			RouteType:        types.RouteType(1),
+			PayloadType:      types.PayloadType(5),
+			DecodedJSON:      `{"type":"GRP_TXT","channelHashHex":"A1B2","decryptionStatus":"no_key"}`,
+			ChannelHash:      "A1B2",
+			ChannelEncrypted: true,
+		}, recent)
+		if err != nil {
+			t.Fatalf("insert tx %s: %v", hash, err)
+		}
+		if !isNew {
+			t.Fatalf("tx %s already existed", hash)
+		}
+
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    ptr(observerID),
+			Direction:      ptr("RX"),
+			SNR:            ptr(10.0),
+			RSSI:           ptr(-90.0),
+			Timestamp:      recent,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("insert obs %s: %v", hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+	}
 }
 
 func TestGetEncryptedChannels(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 	seedEncryptedChannelData(t, db)
 
-	channels, err := db.GetEncryptedChannels()
+	srv := &Server{db: db}
+	channels, err := srv.getEncryptedChannels(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,14 +72,14 @@ func TestGetEncryptedChannels(t *testing.T) {
 		t.Fatalf("expected 1 encrypted channel, got %d", len(channels))
 	}
 	ch := channels[0]
-	if ch["hash"] != "enc_A1B2" {
-		t.Errorf("expected hash enc_A1B2, got %v", ch["hash"])
+	if ch.Hash != "A1B2" {
+		t.Errorf("expected hash A1B2, got %v", ch.Hash)
 	}
-	if ch["encrypted"] != true {
-		t.Errorf("expected encrypted=true, got %v", ch["encrypted"])
+	if !ch.Encrypted {
+		t.Errorf("expected encrypted=true, got %v", ch.Encrypted)
 	}
-	if ch["messageCount"] != 2 {
-		t.Errorf("expected messageCount=2, got %v", ch["messageCount"])
+	if ch.MessageCount != 2 {
+		t.Errorf("expected messageCount=2, got %v", ch.MessageCount)
 	}
 }
 
@@ -77,13 +108,15 @@ func TestChannelsAPIExcludesEncrypted(t *testing.T) {
 }
 
 func TestChannelsAPIIncludesEncryptedWithParam(t *testing.T) {
+	ctx := t.Context()
+
 	srv, router := setupTestServer(t)
 	// Add encrypted data to the server's DB
 	seedEncryptedChannelData(t, srv.db)
 	// Reload store so in-memory also has the data
 	store := NewPacketStore(srv.db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 
@@ -112,11 +145,13 @@ func TestChannelsAPIIncludesEncryptedWithParam(t *testing.T) {
 }
 
 func TestChannelMessagesExcludesEncrypted(t *testing.T) {
+	ctx := t.Context()
+
 	srv, router := setupTestServer(t)
 	seedEncryptedChannelData(t, srv.db)
 	store := NewPacketStore(srv.db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 

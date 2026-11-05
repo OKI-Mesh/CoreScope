@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // RepeaterRelayInfo describes whether a repeater has been observed
@@ -15,7 +17,7 @@ import (
 type RepeaterRelayInfo struct {
 	// LastRelayed is the ISO-8601 timestamp of the most recent non-advert
 	// packet where this pubkey appeared as a relay hop. Empty if never.
-	LastRelayed string `json:"lastRelayed,omitempty"`
+	LastRelayed time.Time `json:"lastRelayed,omitempty"`
 	// RelayActive is true if LastRelayed falls within the configured
 	// activity window (default 24h).
 	RelayActive bool `json:"relayActive"`
@@ -80,37 +82,15 @@ const payloadTypeAdvert = 4
 // route-type-FLOOD packet — the traffic `flood.max.unscoped` governs.
 const routeTypeFlood = 1
 
-// parseRelayTS attempts to parse a packet first-seen timestamp using the
-// formats CoreScope writes in practice. Returns zero time and false on
-// failure. Accepted (in order):
-//   - RFC3339Nano  — Go's default UTC marshal output
-//   - RFC3339      — second-precision ISO-8601 with offset
-//   - "2006-01-02T15:04:05.000Z" — millisecond-precision Z form used by ingest
-func parseRelayTS(ts string) (time.Time, bool) {
-	if ts == "" {
-		return time.Time{}, false
-	}
-	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse(time.RFC3339, ts); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse("2006-01-02T15:04:05.000Z", ts); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
-}
-
 // relayEntry is a minimal snapshot of a StoreTx taken while the store
 // read-lock is held. Copying only the fields we need lets us release the
 // lock before doing timestamp parsing and comparison work.
 type relayEntry struct {
-	ts string
-	pt int
+	ts time.Time
+	pt types.PayloadType
 	// rt is the tx route type (transmissions.route_type), or -1 when absent.
 	// rt == routeTypeFlood marks an unscoped flood (UnscopedRelayCount24h).
-	rt int
+	rt types.RouteType
 	// scope is the tx's region scope name (transmissions.scope_name).
 	// Empty when absent / on older schemas. Used for TransportedScopes (#1751).
 	scope string
@@ -160,11 +140,11 @@ func (s *PacketStore) collectRelayEntriesLocked(key string) []relayEntry {
 				continue
 			}
 			seen[tx.ID] = true
-			pt := -1
+			pt := types.PayloadType(-1)
 			if tx.PayloadType != nil {
 				pt = *tx.PayloadType
 			}
-			rt := -1
+			rt := types.RouteType(-1)
 			if tx.RouteType != nil {
 				rt = *tx.RouteType
 			}
@@ -190,7 +170,6 @@ func computeRelayInfoFromEntries(entries []relayEntry, windowHours float64) Repe
 	cutoff24h := now.Add(-24 * time.Hour)
 
 	var latest time.Time
-	var latestRaw string
 	var scopeSet map[string]struct{}
 	for _, e := range entries {
 		// Self-originated adverts are not relay activity.
@@ -211,20 +190,15 @@ func computeRelayInfoFromEntries(entries []relayEntry, windowHours float64) Repe
 			}
 			scopeSet[e.scope] = struct{}{}
 		}
-		t, ok := parseRelayTS(e.ts)
-		if !ok {
-			continue
+		if e.ts.After(latest) {
+			latest = e.ts
 		}
-		if t.After(latest) {
-			latest = t
-			latestRaw = e.ts
-		}
-		if t.After(cutoff24h) {
+		if e.ts.After(cutoff24h) {
 			info.RelayCount24h++
 			if e.rt == routeTypeFlood {
 				info.UnscopedRelayCount24h++
 			}
-			if t.After(cutoff1h) {
+			if e.ts.After(cutoff1h) {
 				info.RelayCount1h++
 			}
 		}
@@ -232,10 +206,10 @@ func computeRelayInfoFromEntries(entries []relayEntry, windowHours float64) Repe
 	// #1751: emit transported scopes regardless of whether any timestamp
 	// parsed, and before the latestRaw early-return below.
 	info.TransportedScopes = sortedCappedScopes(scopeSet)
-	if latestRaw == "" {
+	if latest.IsZero() {
 		return info
 	}
-	info.LastRelayed = latestRaw
+	info.LastRelayed = latest
 
 	if windowHours > 0 {
 		cutoff := now.Add(-time.Duration(windowHours * float64(time.Hour)))

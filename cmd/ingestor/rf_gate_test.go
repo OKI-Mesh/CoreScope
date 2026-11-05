@@ -75,7 +75,7 @@ func TestClientRfSamplesGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 		t.Fatalf("feature OFF: expected 0 client_rf_samples rows, got %d", n)
 	}
 	var observerRows int
-	observerRows = countWhere(t, store, "observers", "id = $1", testCompanionPK)
+	observerRows = countWhere(t, store, "observers", "pubkey = $1", testCompanionPK)
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}

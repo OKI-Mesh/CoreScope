@@ -3,6 +3,10 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestMultiByteCapability_RegionFiltered_PreservesConfirmedStatus verifies
@@ -21,18 +25,16 @@ import (
 // This test fails because result["multiByteCapability"] is absent under
 // region="JKG", so the lookup returns nil/false.
 func TestMultiByteCapability_RegionFiltered_PreservesConfirmedStatus(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
+	recentTime := now.Add(-1 * time.Hour)
 
 	// Two observers in different regions.
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs-sjc', 'Obs SJC', 'SJC', ?, '2026-01-01T00:00:00Z', 100)`, recent)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs-jkg', 'Obs JKG', 'JKG', ?, '2026-01-01T00:00:00Z', 100)`, recent)
+	observerSJC := mustCreateTestObserver(t, ctx, db, "obs-sjc", "Obs SJC", "SJC", recentTime)
+	observerJKG := mustCreateTestObserver(t, ctx, db, "obs-jkg", "Obs JKG", "JKG", recentTime)
 
 	// Node A: a JKG-region repeater that advertises multi-byte (hash_size=2).
 	// Its zero-hop direct advert is only heard by obs-SJC (e.g. an out-of-region
@@ -41,39 +43,55 @@ func TestMultiByteCapability_RegionFiltered_PreservesConfirmedStatus(t *testing.
 	// the node's multi-byte capability is intrinsic and should still resolve
 	// to "confirmed" via the global advert evidence.
 	pkA := "aaa0000000000001"
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role)
-		VALUES (?, 'Node-A', 'repeater')`, pkA)
-
 	decodedA := `{"pubKey":"` + pkA + `","name":"Node-A","type":"ADVERT","flags":{"isRepeater":true}}`
+	nodeA := &database.NodeInput{PublicKey: pkA, Name: "Node-A", Role: "repeater"}
 
 	// Zero-hop direct advert (route_type=2, payload_type=4),
 	// pathByte 0x40 → hash_size bits 01 → 2 bytes.
 	// Heard by obs-SJC ONLY.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('1240aabbccdd', 'a_zh_direct', ?, 2, 4, ?)`, recent, decodedA)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 12.0, -85, '[]', ?)`, recentEpoch)
+	directID := mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+		RawHex:      "1240aabbccdd",
+		Hash:        "a_zh_direct",
+		RouteType:   types.RouteDirect,
+		PayloadType: types.PayloadADVERT,
+		DecodedJSON: decodedA,
+		Advert:      nodeA,
+	}, recentTime)
+	dbtest.Observation(t, db, directID, observerSJC, recentTime, 12, -85, nil...)
 
 	// Node A also appears as a path hop in a JKG-observed packet, so it
 	// shows up in the JKG region's node list.
 	// route_type=1 (flood), payload_type=4, pathByte 0x41 (hs=2, hops=1)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('1141aabbccdd', 'a_jkg_relay', ?, 1, 4, ?)`, recent, decodedA)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 2, 8.0, -95, '["aa"]', ?)`, recentEpoch)
-
-	store := NewPacketStore(db, nil)
-	store.Load()
+	relayID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"1141aabbccdd", "a_jkg_relay", decodedA, types.RouteFlood, types.PayloadADVERT, "",
+	), recentTime)
+	resolvedA := pkA
+	dbtest.Observation(t, db, relayID, observerJKG, recentTime, 8, -95, "aa:"+resolvedA)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
 
 	// Sanity: unfiltered view exposes the field.
-	unfiltered := store.GetAnalyticsHashSizes("", "")
+	unfiltered := store.GetAnalyticsHashSizes(ctx, "", "")
+	info := store.GetNodeHashSizeInfo()
+	t.Logf("hashInfo[A] = %+v (present=%v)", info[pkA], info[pkA] != nil)
+	store.mu.RLock()
+	t.Logf("byPayloadType[4] len=%d", len(store.byPayloadType[4]))
+	for _, tx := range store.byPayloadType[4] {
+		t.Logf("advert %s raw=%q first_seen=%q route=%v decoded_empty=%v", tx.Hash, tx.RawHex, tx.FirstSeen, tx.RouteType, tx.DecodedJSON == "")
+	}
+	store.mu.RUnlock()
 	if _, ok := unfiltered["multiByteCapability"]; !ok {
 		t.Fatal("unfiltered result missing multiByteCapability — test setup is wrong")
 	}
 
 	// The actual assertion: region-filtered view MUST also expose the field
 	// AND must report Node A as "confirmed", not "unknown".
-	result := store.GetAnalyticsHashSizes("JKG", "")
+	result := store.GetAnalyticsHashSizes(ctx, "JKG", "")
 	capsRaw, ok := result["multiByteCapability"]
 	if !ok {
 		t.Fatalf("expected multiByteCapability in region=JKG result, got keys: %v", keysOf(result))

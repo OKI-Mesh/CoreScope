@@ -4,14 +4,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // #1483 follow-up: assert the recompute interval is actually honored.
 // Without this, changing 5min → 5hr in code would silently still tick
 // every 5min and no test would catch it.
 func TestNeighborGraphCacheRecomputerHonorsInterval(t *testing.T) {
+	ctx := t.Context()
 	s := &Server{
-		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region, role string) NeighborGraphResponse {
+		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region string, role types.NodeRole) NeighborGraphResponse {
 			return NeighborGraphResponse{}
 		},
 	}
@@ -38,7 +41,7 @@ func TestNeighborGraphCacheRecomputerHonorsInterval(t *testing.T) {
 	}()
 	// 10ms interval, run for ~120ms → expect ~12 rebuilds. Assert ≥ 3
 	// to keep the test robust against scheduling jitter.
-	s.startNeighborGraphRecomputer(10*time.Millisecond, stop)
+	s.startNeighborGraphRecomputer(ctx, 10*time.Millisecond, stop)
 	time.Sleep(120 * time.Millisecond)
 	close(stop)
 	got := rebuilds.Load()

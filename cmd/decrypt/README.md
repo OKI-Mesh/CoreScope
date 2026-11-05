@@ -1,6 +1,6 @@
 # corescope-decrypt
 
-Standalone CLI tool to decrypt and export MeshCore hashtag channel messages from a CoreScope SQLite database.
+Standalone CLI tool to decrypt and export MeshCore hashtag channel messages from a CoreScope Postgres database.
 
 ## Why
 
@@ -16,10 +16,10 @@ This tool enables:
 
 ### From Docker image
 
-The binary is included in the CoreScope Docker image at `/app/corescope-decrypt`:
+The binary is included in the CoreScope Docker image at `/app/corescope-decrypt`. It reads the database connection string from `$DATABASE_URL`, so inside the CoreScope container no extra flag is needed:
 
 ```bash
-docker exec corescope-prod /app/corescope-decrypt --channel "#wardriving" --db /app/data/meshcore.db
+docker exec corescope-prod /app/corescope-decrypt --channel "#wardriving"
 ```
 
 ### From GitHub release
@@ -37,15 +37,28 @@ chmod +x corescope-decrypt-linux-amd64
 
 ```bash
 cd cmd/decrypt
-go build -ldflags="-s -w" -o corescope-decrypt .   # cgo: the SQLite driver needs it
+CGO_ENABLED=0 go build -ldflags="-s -w" -o corescope-decrypt .
 ```
 
 The binary is statically linked — no dependencies, runs on any Linux.
 
+## Connecting to the database
+
+The tool needs a Postgres connection string. It reads `$DATABASE_URL` by default, or you can pass `--dsn`:
+
+```bash
+export DATABASE_URL='postgres://corescope:secret@db.example.com:5432/corescope'
+corescope-decrypt --channel "#wardriving"
+```
+
+Prefer the environment variable: the connection string contains a password, and a command-line flag shows up in the process list.
+
+The connection is read-only. The tool never modifies the database.
+
 ## Usage
 
 ```
-corescope-decrypt --channel NAME --db PATH [--format FORMAT] [--output FILE]
+corescope-decrypt --channel NAME [--dsn URL] [--format FORMAT] [--output FILE]
 ```
 
 Run `corescope-decrypt --help` for full flag documentation.
@@ -55,7 +68,7 @@ Run `corescope-decrypt --help` for full flag documentation.
 Machine-readable, includes all metadata (observers, path hops, raw hex):
 
 ```bash
-corescope-decrypt --channel "#wardriving" --db meshcore.db
+corescope-decrypt --channel "#wardriving"
 ```
 
 ```json
@@ -75,12 +88,14 @@ corescope-decrypt --channel "#wardriving" --db meshcore.db
 ]
 ```
 
+`path` is read from the stored frame: the hop hashes the packet carried, as uppercase hex. `observers` lists every observer that heard the transmission, oldest first. An observer with no name, or a reception with no SNR or RSSI, shows an empty name or `0`.
+
 ### HTML output
 
 Self-contained interactive viewer — search, sortable columns, expandable detail rows:
 
 ```bash
-corescope-decrypt --channel "#wardriving" --db meshcore.db --format html --output wardriving.html
+corescope-decrypt --channel "#wardriving" --format html --output wardriving.html
 open wardriving.html
 ```
 
@@ -91,7 +106,7 @@ No external dependencies. The JSON data is embedded directly in the HTML file.
 Plain-text, one line per message — ideal for `grep`, `awk`, and piping:
 
 ```bash
-corescope-decrypt --channel "#wardriving" --db meshcore.db --format irc
+corescope-decrypt --channel "#wardriving" --format irc
 ```
 
 ```
@@ -102,7 +117,7 @@ corescope-decrypt --channel "#wardriving" --db meshcore.db --format irc
 
 ```bash
 # Find all messages from a specific sender
-corescope-decrypt --channel "#wardriving" --db meshcore.db --format irc | grep "KE6QR"
+corescope-decrypt --channel "#wardriving" --format irc | grep "KE6QR"
 ```
 
 ## How channel encryption works
@@ -117,15 +132,16 @@ MeshCore hashtag channels derive their encryption key from the channel name:
 
 See the firmware source at `firmware/src/helpers/BaseChatMesh.cpp` for the canonical implementation.
 
-## Testing against the fixture DB
+## Testing
+
+The tests start a throwaway Postgres container, so Docker must be running:
 
 ```bash
 cd cmd/decrypt
 go test ./...
-
-# Manual test with the real fixture:
-go run . --channel "#wardriving" --db ../../test-fixtures/e2e-fixture.db --format irc
 ```
+
+The export test encrypts real `GRP_TXT` frames, stores them through the database layer, and checks that the tool recovers them with the right sender, path and observers.
 
 The shared crypto library also has independent tests:
 
@@ -138,5 +154,6 @@ go test -v ./...
 
 - **Hashtag channels only.** Only channels where the key is derived from `SHA-256("#name")` are supported. Custom PSK channels require the raw key (not implemented).
 - **No DM decryption.** Direct messages (`TXT_MSG`) use per-peer asymmetric encryption and cannot be decrypted by this tool.
-- **Read-only.** The tool opens the database in read-only mode and never modifies it.
+- **Retention.** Retroactive decryption works only while the encrypted payload is still stored. Once a message has aged out of the retention window and its payload has been scrubbed, it cannot be recovered. Database backups made earlier still contain it.
+- **Read-only.** The tool opens a read-only connection and never modifies the database.
 - **Timestamps are UTC.** The sender's embedded timestamp is used when available, displayed in UTC.

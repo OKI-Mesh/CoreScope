@@ -15,6 +15,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Synthesizes the repro from issue #1285:
@@ -26,26 +28,26 @@ import (
 func seedIssue1285Repro(t *testing.T) *PacketStore {
 	t.Helper()
 	ps := NewPacketStore(nil, nil)
-	pt := 4 // ADVERT
+	pt := types.PayloadADVERT
 
 	const pubkey = "RTCRESET"
-	const skewSec = int64(-20) // node clock is 20s BEHIND wall-clock
+	const skew = -20 * time.Second // node clock is 20s BEHIND wall-clock
 
-	baseObs := int64(1779000000)     // ~mid-2026
-	rtcResetAdv := int64(1718281640) // 2024-06-13 (from the issue repro)
+	baseObs := time.Unix(1779000000, 0).UTC() // ~mid-2026
+	rtcResetAdv := int64(1718281640)          // 2024-06-13 (from the issue repro); payload value, stays unix seconds
 
 	var txs []*StoreTx
 
 	// 30 healthy adverts spanning the older end of the recent window.
 	for i := 0; i < 30; i++ {
-		obsTS := baseObs + int64(i)*60
-		advTS := obsTS + skewSec
+		obsTime := baseObs.Add(time.Duration(i) * time.Minute)
+		advTS := obsTime.Add(skew).Unix()
 		tx := &StoreTx{
 			Hash:        "healthy-" + formatInt64(int64(i)),
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"RTCRESET"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTime},
 			},
 		}
 		txs = append(txs, tx)
@@ -54,13 +56,13 @@ func seedIssue1285Repro(t *testing.T) *PacketStore {
 	// One RTC-reset packet observed MOST RECENTLY (so it sits in the
 	// per-hash evidence list AND is included in the recent-window count
 	// on master). Its advertTS is from 2024 → corrected skew ≈ -60M sec.
-	rtcResetObs := baseObs + int64(30*60) + 60
+	rtcResetObs := baseObs.Add(31 * time.Minute) // 30*60 + 60 seconds after base
 	rtcTx := &StoreTx{
 		Hash:        "rtc-reset-0001",
 		PayloadType: &pt,
 		DecodedJSON: `{"payload":{"timestamp":` + formatInt64(rtcResetAdv) + `},"pubKey":"RTCRESET"}`,
 		Observations: []*StoreObs{
-			{ObserverID: "obs1", Timestamp: time.Unix(rtcResetObs, 0).UTC().Format(time.RFC3339)},
+			{ObserverID: "obs1", Timestamp: rtcResetObs},
 		},
 	}
 	txs = append(txs, rtcTx)

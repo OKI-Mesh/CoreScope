@@ -1,14 +1,12 @@
 package main
 
 import (
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 )
 
 // TestNeighborGraphRecomputerLoadsSnapshot enforces #1287 Option 4:
@@ -16,47 +14,40 @@ import (
 // snapshot the ingestor writes. After a write to neighbor_edges (here
 // done synthetically), the recomputer's atomic-swap must reflect it.
 func TestNeighborGraphRecomputerLoadsSnapshot(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "neighbor_recomp.db")
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	// neighbor_edges already exists via migration 26 — no manual
-	// CREATE TABLE needed.
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
+	nodeA := "aaaa000000000001"
+	nodeB := "bbbb000000000002"
+	nodeC := "cccc000000000003"
+	nodeD := "dddd000000000004"
 
-	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
+	now := time.Now().UTC()
+	for _, n := range []database.NodeInput{
+		{PublicKey: nodeA, Name: "A", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: nodeB, Name: "B", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: nodeC, Name: "C", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: nodeD, Name: "D", Role: "repeater", RxTime: now, IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
 	}
-	defer rw.Close()
+
+	ts := now.Truncate(time.Millisecond)
 
 	// Stage one edge.
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := rw.Exec(
-		`INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, ?, ?)`,
-		"aaa", "bbb", 5, now,
-	); err != nil {
-		t.Fatal(err)
+	if _, err := db.UpsertNeighborEdges(ctx, []database.NeighborEdgeInput{
+		{NodeA: nodeA, NodeB: nodeB, Hits: 5, LastSeen: ts},
+	}); err != nil {
+		t.Fatalf("seed first edge: %v", err)
 	}
 
-	// Server opens read-only and refreshes via the recomputer.
-	d, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer d.conn.Close()
-	store := &PacketStore{db: d}
+	// The server refreshes via the recomputer.
+	store := &PacketStore{db: db}
 	store.graph.Store(NewNeighborGraph())
 
-	store.refreshNeighborGraphFromSnapshot()
+	store.refreshNeighborGraphFromSnapshot(ctx)
 	g := store.graph.Load()
 	if g == nil {
 		t.Fatal("graph nil after refresh")
@@ -66,13 +57,12 @@ func TestNeighborGraphRecomputerLoadsSnapshot(t *testing.T) {
 	}
 
 	// Add another row, refresh, assert the new total.
-	if _, err := rw.Exec(
-		`INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, ?, ?)`,
-		"ccc", "ddd", 2, now,
-	); err != nil {
-		t.Fatal(err)
+	if _, err := db.UpsertNeighborEdges(ctx, []database.NeighborEdgeInput{
+		{NodeA: nodeC, NodeB: nodeD, Hits: 2, LastSeen: ts},
+	}); err != nil {
+		t.Fatalf("seed second edge: %v", err)
 	}
-	store.refreshNeighborGraphFromSnapshot()
+	store.refreshNeighborGraphFromSnapshot(ctx)
 	g = store.graph.Load()
 	if got := len(g.AllEdges()); got != 2 {
 		t.Fatalf("expected 2 edges after second refresh, got %d", got)
@@ -84,37 +74,10 @@ func TestNeighborGraphRecomputerLoadsSnapshot(t *testing.T) {
 // AssertReady on a DB missing the required columns returns an error
 // listing every missing surface; main.go then calls log.Fatalf.
 func TestServerStartupRequiresMigratedSchema(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "unmigrated.db")
+	ctx := t.Context()
+	dsn := pgtest.NewEmptyDatabase(t)
 
-	// Bootstrap with ONLY transmissions/observations (the things
-	// server tries to read) but WITHOUT the full goose migration
-	// chain applied — simulating a database that was never brought
-	// under goose's control.
-	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range []string{
-		`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, hash TEXT, payload_type INTEGER)`,
-		`CREATE TABLE observations (id INTEGER PRIMARY KEY, transmission_id INTEGER)`,
-		`CREATE TABLE observers (id TEXT PRIMARY KEY, name TEXT, inactive INTEGER)`,
-		`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`,
-		`CREATE TABLE inactive_nodes (public_key TEXT PRIMARY KEY)`,
-	} {
-		if _, err := rw.Exec(s); err != nil {
-			rw.Close()
-			t.Fatal(err)
-		}
-	}
-	rw.Close()
-
-	// OpenDB itself must refuse — it now asserts readiness internally
-	// (via database.AssertBaselined/AssertReady) before ever returning
-	// a usable handle. This is the actual startup-safety guarantee:
-	// the server never gets far enough to read from an unmigrated or
-	// partially-migrated database.
-	_, err = OpenDB(dbPath)
+	_, err := OpenDB(ctx, dsn)
 	if err == nil {
 		t.Fatal("expected OpenDB to fail against an unmigrated DB; server would have started against an incomplete schema")
 	}
@@ -122,14 +85,3 @@ func TestServerStartupRequiresMigratedSchema(t *testing.T) {
 		t.Errorf("expected error to indicate schema/readiness problem, got: %v", err)
 	}
 }
-
-// assertReadyForTest is the same call main.go makes — declared here so
-// the test stays decoupled from any future inlining or rename.
-func assertReadyForTest(d *DB) error {
-	return dbschemaAssertReadyShim(d)
-}
-
-// dbschemaAssertReadyShim wraps the package import so tests don't
-// directly depend on the import being present (production wires it
-// via main.go).
-func dbschemaAssertReadyShim(d *DB) error { return database.AssertReady(d.conn) }

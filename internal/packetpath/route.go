@@ -1,6 +1,10 @@
 package packetpath
 
-import "github.com/OKI-Mesh/CoreScope/internal/types"
+import (
+	"strings"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+)
 
 // IsTransportRoute returns true for TRANSPORT_FLOOD (0) and TRANSPORT_DIRECT (3).
 func IsTransportRoute(routeType types.RouteType) bool {
@@ -12,4 +16,12 @@ func IsTransportRoute(routeType types.RouteType) bool {
 // header path bytes are repurposed (e.g. TRACE uses them for SNR values).
 func PathBytesAreHops(payloadType types.PayloadType) bool {
 	return payloadType != types.PayloadTRACE
+}
+
+func LowerHops(hops []string) []string {
+	out := make([]string, len(hops))
+	for i, h := range hops {
+		out[i] = strings.ToLower(h)
+	}
+	return out
 }

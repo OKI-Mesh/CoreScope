@@ -282,10 +282,7 @@ func buildClientRxObservation(
 		// joinable against them — otherwise a case-sensitive comparison (e.g.
 		// json_extract(path_json,'$[n]') = forwarder) silently matches zero
 		// rows instead of erroring.
-		lowerHops := make([]string, len(decoded.Path.Hops))
-		for i, h := range decoded.Path.Hops {
-			lowerHops[i] = strings.ToLower(h)
-		}
+		lowerHops := packetpath.LowerHops(decoded.Path.Hops)
 		if b, err := json.Marshal(lowerHops); err == nil {
 			j := string(b)
 			obs.PathJSON = &j

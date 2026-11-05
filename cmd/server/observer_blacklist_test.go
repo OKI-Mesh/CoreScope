@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 func TestConfigIsObserverBlacklisted(t *testing.T) {
@@ -47,9 +50,18 @@ func TestConfigIsObserverBlacklistedNil(t *testing.T) {
 }
 
 func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('goodobs', 'GoodObs', 'SFO', datetime('now'))")
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('badobs', 'BadObs', 'LAX', datetime('now'))")
+	now := time.Now().UTC()
+
+	for _, o := range []database.ObserverInput{
+		{ID: "goodobs", Name: "GoodObs", IATA: "SFO", LastSeen: now, IngestNow: now},
+		{ID: "badobs", Name: "BadObs", IATA: "LAX", LastSeen: now, IngestNow: now},
+	} {
+		if _, err := db.CreateOrUpdateObserver(ctx, o); err != nil {
+			t.Fatalf("seed observer %s: %v", o.ID, err)
+		}
+	}
 
 	cfg := &Config{
 		ObserverBlacklist: []string{"badobs"},
@@ -88,8 +100,15 @@ func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
 }
 
 func TestObserverBlacklistFiltersObserverDetail(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('badobs', 'BadObs', 'LAX', datetime('now'))")
+	now := time.Now().UTC()
+
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "badobs", Name: "BadObs", IATA: "LAX", LastSeen: now, IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
 	cfg := &Config{
 		ObserverBlacklist: []string{"badobs"},
@@ -107,8 +126,15 @@ func TestObserverBlacklistFiltersObserverDetail(t *testing.T) {
 }
 
 func TestNoObserverBlacklistPassesAll(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('someobs', 'SomeObs', 'SFO', datetime('now'))")
+	now := time.Now().UTC()
+
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "someobs", Name: "SomeObs", IATA: "SFO", LastSeen: now, IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
 	cfg := &Config{}
 	srv := NewServer(db, cfg, NewHub())

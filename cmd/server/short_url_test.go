@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // Issue #772 — shortened URL for easier sending over the mesh.
@@ -15,12 +17,12 @@ import (
 // prefix back to the full pubkey when (and only when) it is unambiguous.
 
 func TestResolveNodePrefix_Unique(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	// "aabbccdd" uniquely identifies the seeded TestRepeater (pubkey aabbccdd11223344).
-	node, ambiguous, err := db.GetNodeByPrefix("aabbccdd")
+	node, ambiguous, err := db.GetNodeByPrefix(ctx, "aabbccdd", 8)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -30,23 +32,24 @@ func TestResolveNodePrefix_Unique(t *testing.T) {
 	if node == nil {
 		t.Fatalf("expected node, got nil")
 	}
-	if got, _ := node["public_key"].(string); got != "aabbccdd11223344" {
+	if got := node.PublicKey; got != "aabbccdd11223344" {
 		t.Errorf("expected public_key aabbccdd11223344, got %q", got)
 	}
 }
 
 func TestResolveNodePrefix_Ambiguous(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	// Insert a second node sharing the 8-char prefix "aabbccdd".
-	if _, err := db.conn.Exec(`INSERT INTO nodes (public_key, name, role, advert_count)
-		VALUES ('aabbccdd99887766', 'OtherNode', 'companion', 1)`); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "aabbccdd99887766",
+		Name:      "OtherNode",
+		Role:      "companion",
+	})
 
-	node, ambiguous, err := db.GetNodeByPrefix("aabbccdd")
+	node, ambiguous, err := db.GetNodeByPrefix(ctx, "aabbccdd", 8)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -54,19 +57,19 @@ func TestResolveNodePrefix_Ambiguous(t *testing.T) {
 		t.Fatalf("expected ambiguous=true for shared prefix, got false (node=%v)", node)
 	}
 	if node != nil {
-		t.Errorf("expected nil node when ambiguous, got %v", node["public_key"])
+		t.Errorf("expected nil node when ambiguous, got %v", node.PublicKey)
 	}
 }
 
 func TestResolveNodePrefix_TooShort(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	// <8 hex chars must NOT resolve, even if it would be unique.
-	node, _, err := db.GetNodeByPrefix("aabbccd")
+	node, _, err := db.GetNodeByPrefix(ctx, "aabbccd", 8)
 	if err == nil && node != nil {
-		t.Errorf("expected nil/error for 7-char prefix, got node %v", node["public_key"])
+		t.Errorf("expected nil/error for 7-char prefix, got node %v", node.PublicKey)
 	}
 }
 
@@ -85,7 +88,7 @@ func TestNodeDetailRoute_PrefixResolves(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	pk, _ := body.Node["public_key"].(string)
+	pk := body.Node.PublicKey
 	if pk != "aabbccdd11223344" {
 		t.Errorf("expected resolved pubkey aabbccdd11223344, got %q", pk)
 	}
@@ -94,10 +97,11 @@ func TestNodeDetailRoute_PrefixResolves(t *testing.T) {
 // Route-level: GET /api/nodes/<ambiguous-prefix> returns 409 with a hint.
 func TestNodeDetailRoute_PrefixAmbiguous(t *testing.T) {
 	srv, router := setupTestServer(t)
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes (public_key, name, role, advert_count)
-		VALUES ('aabbccdd99887766', 'OtherNode', 'companion', 1)`); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: "aabbccdd99887766",
+		Name:      "OtherNode",
+		Role:      "companion",
+	})
 
 	req := httptest.NewRequest("GET", "/api/nodes/aabbccdd", nil)
 	w := httptest.NewRecorder()

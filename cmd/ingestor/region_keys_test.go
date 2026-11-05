@@ -318,32 +318,15 @@ func TestScopeMatchTwoDerivedKeysStayAmbiguous(t *testing.T) {
 	}
 }
 
-// regionSetFromKeys wraps a raw key map as a *regionKeySet with every key
-// treated as explicit. Tests written before M2's two-tier type keep working
-// unchanged this way, and "all keys explicit" is precisely what a hashRegions
-// map meant back then - so the #1609 ambiguity semantics they assert are
-// preserved exactly: two explicit candidates still abstain.
-func regionSetFromKeys(keys map[string][]byte) *regionKeySet {
-	names := make(map[string]bool, len(keys))
-	all := make(map[string][]byte, len(keys))
-	for n, k := range keys {
-		names[n] = true
-		all[n] = k
-	}
-	s := &regionKeySet{}
-	s.cur.Store(&regionKeySnapshot{all: all, explicit: names})
-	return s
-}
-
 func TestDeclaredRegionSourcesAggregatesLatestAnswerPerTarget(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 	// Two answers from the same target: only the newer one counts, exactly as
 	// CurrentDeclaredRegions orders (by observed_at, never ingested_at - a
 	// drive buffered offline can arrive days late).
-	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-01T00:00:00Z", "be,old")
-	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "be,new")
-	insertDeclaredRegionsRow(t, store, "bb"+strings.Repeat("22", 31), "2026-09-05T00:00:00Z", "be")
+	insertDeclaredRegions(t, store, "aa"+strings.Repeat("11", 31), "2026-09-01T00:00:00Z", "be,old")
+	insertDeclaredRegions(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "be,new")
+	insertDeclaredRegions(t, store, "bb"+strings.Repeat("22", 31), "2026-09-05T00:00:00Z", "be")
 
 	stats, err := store.declaredRegionSources(ctx)
 	if err != nil {
@@ -372,7 +355,7 @@ func TestDeclaredRegionSourcesIgnoresWildcard(t *testing.T) {
 	// a permanent no-op entry to the cap on nearly every deployment.
 	store := newTestStore(t)
 	ctx := t.Context()
-	insertDeclaredRegionsRow(t, store, "cc"+strings.Repeat("33", 31), "2026-09-07T00:00:00Z", "*,be")
+	insertDeclaredRegions(t, store, "cc"+strings.Repeat("33", 31), "2026-09-07T00:00:00Z", "*,be")
 	stats, err := store.declaredRegionSources(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -387,11 +370,11 @@ func TestDeclaredRegionSourcesIgnoresWildcard(t *testing.T) {
 	}
 }
 
-// insertDeclaredRegionsRow seeds one node_declared_regions answer, creating
+// insertDeclaredRegions seeds one node_declared_regions answer, creating
 // the table first. That table is optional: this ingestor never creates it, and
 // declaredRegionSources probes sqlite_master before reading it. A test that
 // wants the optional source has to bring it.
-func insertDeclaredRegionsRow(t *testing.T, s *Store, target, observedAt, regionsCSV string) {
+func insertDeclaredRegions(t *testing.T, s *Store, target, observedAt, regionsCSV string) {
 	t.Helper()
 	count := testExec(t, s, `INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)
 	 VALUES ($1, 'rx', $2, $3, $4, FALSE)`, target, observedAt, observedAt, regionsCSV)
@@ -402,7 +385,7 @@ func insertDeclaredRegionsRow(t *testing.T, s *Store, target, observedAt, region
 
 func TestRefreshFromStoreIsNoOpWhenDisabled(t *testing.T) {
 	store := newTestStore(t)
-	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "behss")
+	insertDeclaredRegions(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "behss")
 	ctx := t.Context()
 
 	cfg := &Config{HashRegions: []string{"#be"}} // autoRegionKeys absent
@@ -420,7 +403,7 @@ func TestRefreshFromStoreIsNoOpWhenDisabled(t *testing.T) {
 
 func TestRefreshFromStoreDerivesWhenEnabled(t *testing.T) {
 	store := newTestStore(t)
-	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "behss,fm-112")
+	insertDeclaredRegions(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "behss,fm-112")
 
 	cfg := &Config{HashRegions: []string{"#be"}, AutoRegionKeys: &AutoRegionKeysConfig{Enabled: true}}
 	set := newRegionKeySet(cfg)
@@ -441,8 +424,8 @@ func TestRefreshFromStoreDerivesWhenEnabled(t *testing.T) {
 func TestRefreshFromStoreHonoursTheCap(t *testing.T) {
 	store := newTestStore(t)
 	// Three names, one declared twice so the ranking is not a coin flip.
-	insertDeclaredRegionsRow(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "wide,narrow1")
-	insertDeclaredRegionsRow(t, store, "bb"+strings.Repeat("22", 31), "2026-09-07T00:00:00Z", "wide,narrow2")
+	insertDeclaredRegions(t, store, "aa"+strings.Repeat("11", 31), "2026-09-07T00:00:00Z", "wide,narrow1")
+	insertDeclaredRegions(t, store, "bb"+strings.Repeat("22", 31), "2026-09-07T00:00:00Z", "wide,narrow2")
 
 	cfg := &Config{AutoRegionKeys: &AutoRegionKeysConfig{Enabled: true, MaxDerived: 1}}
 	set := newRegionKeySet(cfg)
@@ -599,7 +582,7 @@ func TestDeclaredRegionSourcesMergesBothSources(t *testing.T) {
 	store := newTestStore(t)
 	pk := "cc" + strings.Repeat("33", 31)
 	seedNodeWithConfiguredScope(t, store, pk, "#be", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC))
-	insertDeclaredRegionsRow(t, store, pk, "2026-09-08T00:00:00Z", "fm-112")
+	insertDeclaredRegions(t, store, pk, "2026-09-08T00:00:00Z", "fm-112")
 
 	stats, err := store.declaredRegionSources(t.Context())
 	if err != nil {

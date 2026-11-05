@@ -154,3 +154,18 @@ func enrichNodeUsefulness(node map[string]interface{}, trafficRaw float64, ax us
 		node["usefulness_grade"] = grade
 	}
 }
+
+// computeNodeUsefulness is the logic enrichNodeUsefulness had, returning a value
+// instead of writing into a map. trafficRaw is exposed verbatim as traffic_share_score;
+// ax carries the composite inputs (see compositeUsefulness for the cold-start rule).
+func computeNodeUsefulness(trafficRaw float64, ax usefulnessAxes, axesComputed bool) NodeUsefulness {
+	composite, grade := compositeUsefulness(ax, axesComputed)
+	return NodeUsefulness{
+		TrafficShareScore: trafficRaw,
+		BridgeScore:       ax.Bridge,
+		CoverageScore:     ax.Coverage,
+		RedundancyScore:   ax.Redundancy,
+		UsefulnessScore:   composite,
+		UsefulnessGrade:   grade,
+	}
+}

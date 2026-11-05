@@ -75,12 +75,13 @@ type DebugStats struct {
 // ─── Debug API Handler ─────────────────────────────────────────────────────────
 
 func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	prefixFilter := strings.ToLower(r.URL.Query().Get("prefix"))
 	nodeFilter := strings.ToLower(r.URL.Query().Get("node"))
 
 	graph := s.getNeighborGraph()
 	now := time.Now()
-	nodeMap := s.buildNodeInfoMap()
+	nodeMap := s.buildNodeInfoMap(ctx)
 
 	allEdges := graph.AllEdges()
 

@@ -10,7 +10,7 @@ UPDATE observers SET
     last_packet_at = $1
 WHERE id = $2;
 
--- name: CreateOrUpdateObserver :exec
+-- name: CreateOrUpdateObserver :one
 INSERT INTO observers (
     pubkey, name, iata, last_seen, first_seen, packet_count,
     model, firmware, client_version, radio, battery_mv, uptime_secs,
@@ -50,22 +50,22 @@ ON CONFLICT (pubkey) DO UPDATE SET
     noise_floor    = COALESCE(sqlc.narg(noise_floor), observers.noise_floor),
     can_relay      = COALESCE(sqlc.narg(can_relay)::boolean, observers.can_relay),
     can_relay_seen = CASE WHEN sqlc.narg(can_relay)::boolean IS NULL
-                          THEN observers.can_relay_seen ELSE true END;
+                          THEN observers.can_relay_seen ELSE true END
+    RETURNING id;
 
 -- name: ReactivateObserver :exec
 UPDATE observers SET inactive = false WHERE pubkey = $1 AND inactive = true;
 
 -- name: RecordNaiveSkew :exec
-INSERT INTO observers (pubkey, clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at)
-VALUES ($1, $2, 1, $3)
-ON CONFLICT (pubkey) DO UPDATE SET
-    clock_skew_seconds   = EXCLUDED.clock_skew_seconds,
-    clock_last_naive_at  = EXCLUDED.clock_last_naive_at,
+UPDATE observers SET
+    clock_skew_seconds   = sqlc.arg(clock_skew_seconds),
+    clock_last_naive_at  = sqlc.arg(clock_last_naive_at),
     clock_skew_count_24h = CASE
-        WHEN observers.clock_last_naive_at IS NULL OR observers.clock_last_naive_at < sqlc.arg(cutoff)
+        WHEN clock_last_naive_at IS NULL OR clock_last_naive_at < sqlc.arg(cutoff)
             THEN 1
-        ELSE COALESCE(observers.clock_skew_count_24h, 0) + 1
-    END;
+        ELSE COALESCE(clock_skew_count_24h, 0) + 1
+    END
+WHERE pubkey = sqlc.arg(pubkey);
 
 -- name: UpdateObserverMetadataIfRetained :exec
 UPDATE observers SET
@@ -102,3 +102,62 @@ UPDATE observers
 SET inactive = true
 WHERE lower(pubkey) = ANY(sqlc.arg(pubkeys)::text[])
   AND inactive = false;
+
+-- name: CountActiveObservers :one
+SELECT COUNT(*)::bigint
+FROM observers
+WHERE NOT COALESCE(inactive, false);
+
+-- name: ListActiveObservers :many
+-- Active (not soft-deleted) observers, most recently seen first.
+-- can_relay is tri-state: NULL unless the observer ever reported the firmware
+-- 1.16 `repeat` flag (can_relay_seen), so legacy rows don't masquerade as
+-- confirmed repeaters (#1290).
+-- name: ListActiveObservers :many
+SELECT * FROM observers WHERE NOT inactive ORDER BY last_seen DESC, id ASC;
+
+-- name: ListReportedRelayObservers :many
+SELECT lower(pubkey)::text AS pubkey, can_relay
+FROM observers
+WHERE can_relay_seen AND NOT inactive
+ORDER BY pubkey;
+
+-- name: ListObserverPubkeysByIATA :many
+SELECT pubkey
+FROM observers
+WHERE upper(btrim(iata)) = ANY(sqlc.arg(codes)::text[])
+ORDER BY pubkey;
+
+-- name: ListDistinctObserverIATAs :many
+SELECT DISTINCT iata::text AS iata
+FROM observers
+WHERE iata IS NOT NULL
+ORDER BY iata;
+
+-- name: ListObserverNames :many
+-- Every observer, active or not: the node-info map enriches names for any observer key.
+SELECT pubkey, COALESCE(name, '')::text AS name
+FROM observers
+ORDER BY pubkey;
+
+-- name: ListNodeBatteryHistory :many
+-- battery_mv is cast because the IS NOT NULL filter does not narrow the column type for sqlc.
+SELECT timestamp, battery_mv::int AS battery_mv
+FROM observer_metrics
+WHERE observer_id = sqlc.arg(pubkey)::text
+  AND battery_mv IS NOT NULL
+  AND timestamp >= sqlc.arg(since)::timestamptz
+ORDER BY timestamp ASC;
+
+-- name: ListNonRelayObserverPubkeys :many
+SELECT pubkey
+FROM observers
+WHERE NOT can_relay AND NOT inactive
+ORDER BY pubkey;
+
+-- name: MarkObserverInactive :exec
+UPDATE observers SET inactive = true
+WHERE pubkey = sqlc.arg(pubkey);
+
+-- name: GetObserverLastSeen :one
+SELECT last_seen FROM observers WHERE pubkey = $1;

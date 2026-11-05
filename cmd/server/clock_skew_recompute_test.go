@@ -14,11 +14,11 @@ import (
 // from an atomic-pointer snapshot in <100ms p99 under concurrent load.
 
 func TestClockSkewRecomputersRegistered(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 
-	stop := store.StartAnalyticsRecomputers(50 * time.Millisecond)
+	stop := store.StartAnalyticsRecomputers(ctx, 50*time.Millisecond)
 	defer stop()
 	time.Sleep(100 * time.Millisecond)
 
@@ -43,9 +43,9 @@ func TestClockSkewRecomputersRegistered(t *testing.T) {
 
 func TestClockSkewHandlersSteadyStateLatency(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
-	stop := store.StartAnalyticsRecomputers(50 * time.Millisecond)
+	ctx := t.Context()
+	store := newPacketStoreForTest(t, db)
+	stop := store.StartAnalyticsRecomputers(ctx, 50*time.Millisecond)
 	defer stop()
 	time.Sleep(100 * time.Millisecond)
 

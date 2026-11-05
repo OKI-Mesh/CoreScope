@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -28,85 +31,105 @@ import (
 // stored frames differ in their path bytes, plus one with no stored frame at
 // all so the canonical fallback stays covered. Returns the hash and the
 // observation ids in insertion order.
-func seedDistinctFrames(t *testing.T, db *DB, hash string) (string, []int) {
+func seedDistinctFrames(t *testing.T, db *database.DB, hash string) (string, []int64) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.conn.Exec(`INSERT INTO transmissions
-		(raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('CANON0000', ?, ?, 1, 5, '{"type":"CHAN"}')`, hash, now); err != nil {
-		t.Fatalf("insert transmission: %v", err)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "frames-observer",
+		Name:      "frames-observer",
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
-	var txID int
-	if err := db.conn.QueryRow("SELECT id FROM transmissions WHERE hash = ?", hash).Scan(&txID); err != nil {
-		t.Fatalf("lookup tx id: %v", err)
+
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		RawHex:      "CA000000",
+		Hash:        hash,
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: `{"type":"CHAN"}`,
+	}, now)
+	if err != nil {
+		t.Fatalf("insert transmission: %v", err)
 	}
 
 	frames := []struct {
-		pathJSON string
-		rawHex   interface{} // nil means SQL NULL: no stored frame
+		hops   []string
+		rawHex string
 	}{
-		{`["AA","BB"]`, "FRAME2HOPS"},
-		{`["AA","BB","CC"]`, "FRAME3HOPS"},
-		{`["AA"]`, "FRAME1HOP"},
-		{`["DD"]`, nil},
+		{[]string{"aa", "bb"}, "AA0201"},
+		{[]string{"aa", "bb", "cc"}, "AA030102"},
+		{[]string{"aa"}, "AA01"},
+		{[]string{"dd"}, ""},
 	}
-	var ids []int
 	for i, f := range frames {
-		res, err := db.conn.Exec(`INSERT INTO observations
-			(transmission_id, observer_idx, snr, rssi, path_json, timestamp, raw_hex)
-			VALUES (?, 1, 5.0, -90, ?, ?, ?)`,
-			txID, f.pathJSON, time.Now().Unix()-int64(i), f.rawHex)
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    ptr(observerIdx),
+			Direction:      ptr("RX"),
+			SNR:            ptr(5.0),
+			RSSI:           ptr(-90.0),
+			PathHash:       strings.Join(f.hops, ","),
+			Timestamp:      now.Add(-time.Duration(i) * time.Second),
+			RawHex:         f.rawHex,
+		}, f.hops, nil)
 		if err != nil {
 			t.Fatalf("insert observation %d: %v", i, err)
 		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			t.Fatalf("last insert id: %v", err)
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
 		}
-		ids = append(ids, int(id))
+	}
+
+	stored, err := db.ListObservationsAfterID(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("read back observations: %v", err)
+	}
+	var ids []int64
+	for _, o := range stored {
+		if o.TransmissionID == txID {
+			ids = append(ids, o.ID)
+		}
+	}
+	if len(ids) != len(frames) {
+		t.Fatalf("read back %d observations for tx %d, want %d", len(ids), txID, len(frames))
 	}
 	return hash, ids
 }
 
 func TestObservationRawHexForHash(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	// Production sets this in detectSchema (db.go) when the column exists; the
-	// test schema has the column but the helper does not run detection.
-	db.hasObsRawHex = true
 
 	hash, ids := seedDistinctFrames(t, db, "1999aaaabbbbcccc")
 
-	got := db.ObservationRawHexForHash(hash)
+	got, err := db.ObservationRawHexForHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("ObservationRawHexForHash: %v", err)
+	}
 	if len(got) != 3 {
 		t.Fatalf("got %d frames, want 3 (the fourth observation stores none): %v", len(got), got)
 	}
-	want := map[int]string{ids[0]: "FRAME2HOPS", ids[1]: "FRAME3HOPS", ids[2]: "FRAME1HOP"}
+	want := map[int64]string{ids[0]: "AA0201", ids[1]: "AA030102", ids[2]: "AA01"}
 	for id, wantHex := range want {
 		if got[id] != wantHex {
 			t.Errorf("observation %d: got %q, want %q", id, got[id], wantHex)
 		}
 	}
-	// The observation with a NULL frame must be absent rather than empty, so
-	// the caller falls back to the transmission's canonical bytes.
 	if _, present := got[ids[3]]; present {
 		t.Errorf("observation %d has no stored frame and must not appear in the map", ids[3])
 	}
 
-	// Unknown hash: no rows, no error, no panic.
-	if got := db.ObservationRawHexForHash("0000000000000000"); len(got) != 0 {
-		t.Errorf("unknown hash returned %d frames, want 0", len(got))
+	none, err := db.ObservationRawHexForHash(ctx, "0000000000000000")
+	if err != nil {
+		t.Fatalf("unknown hash must not error: %v", err)
 	}
-}
-
-// TestObservationRawHexForHashRespectsSchemaFlag pins the guard: on a schema
-// without observations.raw_hex the query must not be attempted at all, because
-// it would be a SQL error rather than an empty result.
-func TestObservationRawHexForHashRespectsSchemaFlag(t *testing.T) {
-	db := setupTestDB(t)
-	db.hasObsRawHex = false
-	hash, _ := seedDistinctFrames(t, db, "1999ddddeeeeffff")
-	if got := db.ObservationRawHexForHash(hash); got != nil {
-		t.Errorf("hasObsRawHex=false must return nil, got %v", got)
+	if len(none) != 0 {
+		t.Errorf("unknown hash returned %d frames, want 0", len(none))
 	}
 }
 
@@ -115,9 +138,8 @@ func TestObservationRawHexForHashRespectsSchemaFlag(t *testing.T) {
 // back to the transmission's only where none are stored.
 func TestPacketDetailExposesPerObservationFrames(t *testing.T) {
 	srv, router := setupTestServer(t)
-	srv.db.hasObsRawHex = true
 
-	// Inserted after store.Load(), so this transmission is DB-only and the
+	// Inserted after the store load, so this transmission is DB-only and the
 	// handler takes its DB-fallback path. Both paths converge on the same
 	// backfill, and the DB path is the one that can be set up deterministically.
 	hash, ids := seedDistinctFrames(t, srv.db, "1999112233445566")
@@ -138,7 +160,7 @@ func TestPacketDetailExposesPerObservationFrames(t *testing.T) {
 		t.Fatalf("got %d observations, want 4", len(obsList))
 	}
 
-	byID := map[int]string{}
+	byID := map[int64]string{}
 	for _, raw := range obsList {
 		m, ok := raw.(map[string]interface{})
 		if !ok {
@@ -149,10 +171,10 @@ func TestPacketDetailExposesPerObservationFrames(t *testing.T) {
 			t.Fatalf("observation has no numeric id: %v", m["id"])
 		}
 		hx, _ := m["raw_hex"].(string)
-		byID[int(idF)] = hx
+		byID[int64(idF)] = hx
 	}
 
-	for i, wantHex := range []string{"FRAME2HOPS", "FRAME3HOPS", "FRAME1HOP"} {
+	for i, wantHex := range []string{"AA0201", "AA030102", "AA01"} {
 		if got := byID[ids[i]]; got != wantHex {
 			t.Errorf("observation %d: raw_hex = %q, want its own frame %q", ids[i], got, wantHex)
 		}
@@ -160,7 +182,7 @@ func TestPacketDetailExposesPerObservationFrames(t *testing.T) {
 	// The one without stored bytes gets the transmission's canonical frame. On
 	// this path that is new: the DB observation query selects no raw_hex, so
 	// before the fix the field was missing from those observations entirely.
-	if got := byID[ids[3]]; got != "CANON0000" {
+	if got := byID[ids[3]]; got != "CA000000" {
 		t.Errorf("observation %d: raw_hex = %q, want the canonical fallback %q", ids[3], got, "CANON0000")
 	}
 
@@ -183,9 +205,10 @@ func TestPacketDetailExposesPerObservationFrames(t *testing.T) {
 // and leave the defect untouched on the main path. A stored frame has to win
 // over that placeholder.
 func TestPacketDetailExposesPerObservationFramesFromStore(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
-	db.hasObsRawHex = true
 
 	// Seed BEFORE the store loads, so the store holds this transmission and the
 	// handler never reaches its DB fallback.
@@ -193,9 +216,9 @@ func TestPacketDetailExposesPerObservationFramesFromStore(t *testing.T) {
 
 	cfg := &Config{Port: 3000}
 	srv := NewServer(db, cfg, NewHub())
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatal("background indexes never became ready")
@@ -204,7 +227,11 @@ func TestPacketDetailExposesPerObservationFramesFromStore(t *testing.T) {
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 
-	if got := srv.store.GetPacketByHash(hash); got == nil {
+	got, err := srv.store.GetPacketByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetPacketByHash: %v", err)
+	}
+	if got == nil {
 		t.Fatal("precondition failed: the store does not hold the seeded transmission")
 	}
 
@@ -223,7 +250,7 @@ func TestPacketDetailExposesPerObservationFramesFromStore(t *testing.T) {
 		t.Fatalf("got %d observations, want 4", len(obsList))
 	}
 
-	byID := map[int]string{}
+	byID := map[int64]string{}
 	for _, raw := range obsList {
 		m, _ := raw.(map[string]interface{})
 		idF, ok := m["id"].(float64)
@@ -231,15 +258,15 @@ func TestPacketDetailExposesPerObservationFramesFromStore(t *testing.T) {
 			t.Fatalf("observation has no numeric id: %v", m["id"])
 		}
 		hx, _ := m["raw_hex"].(string)
-		byID[int(idF)] = hx
+		byID[int64(idF)] = hx
 	}
 
-	for i, wantHex := range []string{"FRAME2HOPS", "FRAME3HOPS", "FRAME1HOP"} {
+	for i, wantHex := range []string{"AA0201", "AA030102", "AA01"} {
 		if got := byID[ids[i]]; got != wantHex {
 			t.Errorf("store path, observation %d: raw_hex = %q, want its own frame %q (a canonical value here means the backfill was skipped)", ids[i], got, wantHex)
 		}
 	}
-	if got := byID[ids[3]]; got != "CANON0000" {
+	if got := byID[ids[3]]; got != "CA000000" {
 		t.Errorf("store path, observation %d: raw_hex = %q, want the canonical fallback %q", ids[3], got, "CANON0000")
 	}
 }

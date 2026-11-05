@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // #1481 P0-1: handler must serve from pre-marshaled cache when set.
@@ -88,7 +90,7 @@ func TestNeighborGraphCacheBypassOnRegionFilter(t *testing.T) {
 		Stats: GraphStats{TotalNodes: 1},
 	}
 	s := &Server{
-		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region, role string) NeighborGraphResponse {
+		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region string, role types.NodeRole) NeighborGraphResponse {
 			computeCalls.Add(1)
 			return bypassResp
 		},

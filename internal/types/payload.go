@@ -21,42 +21,50 @@ const (
 	PayloadRAW_CUSTOM PayloadType = 0x0F
 )
 
+var payloadTypeNames = map[PayloadType]string{
+	PayloadREQ:        "REQ",
+	PayloadRESPONSE:   "RESPONSE",
+	PayloadTXT_MSG:    "TXT_MSG",
+	PayloadACK:        "ACK",
+	PayloadADVERT:     "ADVERT",
+	PayloadGRP_TXT:    "GRP_TXT",
+	PayloadGRP_DATA:   "GRP_DATA",
+	PayloadANON_REQ:   "ANON_REQ",
+	PayloadPATH:       "PATH",
+	PayloadTRACE:      "TRACE",
+	PayloadMULTIPART:  "MULTIPART",
+	PayloadCONTROL:    "CONTROL",
+	PayloadRAW_CUSTOM: "RAW_CUSTOM",
+}
+
 func (p PayloadType) String() string {
-	switch p {
-	case PayloadREQ:
-		return "REQ"
-	case PayloadRESPONSE:
-		return "RESPONSE"
-	case PayloadTXT_MSG:
-		return "TXT_MSG"
-	case PayloadACK:
-		return "ACK"
-	case PayloadADVERT:
-		return "ADVERT"
-	case PayloadGRP_TXT:
-		return "GRP_TXT"
-	case PayloadGRP_DATA:
-		return "GRP_DATA"
-	case PayloadANON_REQ:
-		return "ANON_REQ"
-	case PayloadPATH:
-		return "PATH"
-	case PayloadTRACE:
-		return "TRACE"
-	case PayloadMULTIPART:
-		return "MULTIPART"
-	case PayloadCONTROL:
-		return "CONTROL"
-	case PayloadRAW_CUSTOM:
-		return "RAW_CUSTOM"
-	case PayloadUnknown:
-		return "UNKNOWN"
-	default:
-		return fmt.Sprintf("PayloadType(%d)", int32(p)) // reserved or not-yet-defined values
+	if name, ok := payloadTypeNames[p]; ok {
+		return name
 	}
+	if p == PayloadUnknown {
+		return "UNKNOWN"
+	}
+	return fmt.Sprintf("PayloadType(%d)", int32(p)) // reserved or not-yet-defined values
+}
+
+// Name returns the wire and API name for p: the firmware name for a defined
+// type and "UNKNOWN" for anything else, so clients never see Go's
+// PayloadType(n) form.
+func (p PayloadType) Name() string {
+	if name, ok := payloadTypeNames[p]; ok {
+		return name
+	}
+	return "UNKNOWN"
 }
 
 // PathBytesAreHops reports whether the header path bytes of a packet of this
 // type are route hop hashes (the normal case). TRACE repurposes them as
 // per-hop SNR values.
 func (p PayloadType) PathBytesAreHops() bool { return p != PayloadTRACE }
+
+// Valid reports whether p is a payload type defined by the firmware.
+// PayloadUnknown (the DB sentinel for legacy NULL rows) is not valid.
+func (p PayloadType) Valid() bool {
+	_, ok := payloadTypeNames[p]
+	return ok
+}

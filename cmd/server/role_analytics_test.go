@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestComputeRoleAnalytics_Distribution verifies that computeRoleAnalytics
@@ -9,12 +11,12 @@ import (
 // output largest-population first. Asserts on the public RoleAnalyticsResponse
 // shape so the bar is "behaviour", not "compiles".
 func TestComputeRoleAnalytics_Distribution(t *testing.T) {
-	nodes := map[string]string{
-		"pk_a": "Repeater",
-		"pk_b": "repeater",
-		"pk_c": "companion",
+	nodes := map[string]types.NodeRole{
+		"pk_a": types.RoleRepeater,
+		"pk_b": types.RoleRepeater,
+		"pk_c": types.RoleCompanion,
 		"pk_d": "",
-		"pk_e": "ROOM_SERVER",
+		"pk_e": types.RoleRoom,
 	}
 	got := computeRoleAnalytics(nodes, nil)
 
@@ -22,30 +24,33 @@ func TestComputeRoleAnalytics_Distribution(t *testing.T) {
 		t.Fatalf("TotalNodes = %d, want 5", got.TotalNodes)
 	}
 	if len(got.Roles) != 4 {
-		t.Fatalf("len(Roles) = %d, want 4 (repeater, companion, room_server, unknown), got %+v", len(got.Roles), got.Roles)
+		t.Fatalf("len(Roles) = %d, want 4 (repeater, companion, room, unknown), got %+v", len(got.Roles), got.Roles)
 	}
-	if got.Roles[0].Role != "repeater" || got.Roles[0].NodeCount != 2 {
+	if got.Roles[0].Role != types.RoleRepeater || got.Roles[0].NodeCount != 2 {
 		t.Errorf("Roles[0] = %+v, want {repeater,2}", got.Roles[0])
 	}
-	// Empty roles should bucket as "unknown".
-	foundUnknown := false
+
+	counts := map[types.NodeRole]int{}
 	for _, r := range got.Roles {
-		if r.Role == "unknown" {
-			foundUnknown = true
-			if r.NodeCount != 1 {
-				t.Errorf("unknown bucket NodeCount = %d, want 1", r.NodeCount)
-			}
-		}
+		counts[r.Role] = r.NodeCount
 	}
-	if !foundUnknown {
-		t.Errorf("no 'unknown' bucket for empty roles in %+v", got.Roles)
+	want := map[types.NodeRole]int{
+		types.RoleRepeater:  2,
+		types.RoleCompanion: 1,
+		types.RoleRoom:      1,
+		types.RoleUnknown:   1,
+	}
+	for role, n := range want {
+		if counts[role] != n {
+			t.Errorf("bucket %q = %d, want %d (all buckets: %+v)", role, counts[role], n, got.Roles)
+		}
 	}
 }
 
 // TestComputeRoleAnalytics_SkewAggregation verifies per-role clock-skew
 // aggregation: counts by severity, mean and median absolute skew.
 func TestComputeRoleAnalytics_SkewAggregation(t *testing.T) {
-	nodes := map[string]string{
+	nodes := map[string]types.NodeRole{
 		"pk_1": "repeater",
 		"pk_2": "repeater",
 		"pk_3": "repeater",

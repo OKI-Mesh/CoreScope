@@ -13,6 +13,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countMobileReceptions = `-- name: CountMobileReceptions :one
+SELECT COUNT(*)::bigint AS receptions,
+       COUNT(DISTINCT rx_pubkey)::bigint AS clients
+FROM client_receptions
+WHERE heard_key = ANY($1::text[])
+`
+
+type CountMobileReceptionsRow struct {
+	Receptions int64
+	Clients    int64
+}
+
+func (q *Queries) CountMobileReceptions(ctx context.Context, heardKeys []string) (CountMobileReceptionsRow, error) {
+	row := q.db.QueryRow(ctx, countMobileReceptions, heardKeys)
+	var i CountMobileReceptionsRow
+	err := row.Scan(&i.Receptions, &i.Clients)
+	return i, err
+}
+
 const createOrUpdateClientObserver = `-- name: CreateOrUpdateClientObserver :exec
 INSERT INTO client_observers (pubkey, name, last_seen)
 VALUES ($1, $2, $3)
@@ -20,9 +39,9 @@ ON CONFLICT (pubkey) DO UPDATE SET name = EXCLUDED.name, last_seen = EXCLUDED.la
 `
 
 type CreateOrUpdateClientObserverParams struct {
-	Pubkey   string      `json:"pubkey"`
-	Name     pgtype.Text `json:"name"`
-	LastSeen time.Time   `json:"last_seen"`
+	Pubkey   string
+	Name     pgtype.Text
+	LastSeen time.Time
 }
 
 func (q *Queries) CreateOrUpdateClientObserver(ctx context.Context, arg CreateOrUpdateClientObserverParams) error {
@@ -51,16 +70,16 @@ LIMIT 1
 `
 
 type GetCurrentDeclaredRegionsRow struct {
-	Target        string        `json:"target"`
-	RxPubkey      string        `json:"rx_pubkey"`
-	ObservedAt    time.Time     `json:"observed_at"`
-	IngestedAt    time.Time     `json:"ingested_at"`
-	RegionsCsv    string        `json:"regions_csv"`
-	Truncated     bool          `json:"truncated"`
-	Lat           pgtype.Float8 `json:"lat"`
-	Lon           pgtype.Float8 `json:"lon"`
-	PosAccM       pgtype.Float8 `json:"pos_acc_m"`
-	RepeaterClock pgtype.Int8   `json:"repeater_clock"`
+	Target        string
+	RxPubkey      string
+	ObservedAt    time.Time
+	IngestedAt    time.Time
+	RegionsCsv    string
+	Truncated     bool
+	Lat           pgtype.Float8
+	Lon           pgtype.Float8
+	PosAccM       pgtype.Float8
+	RepeaterClock pgtype.Int8
 }
 
 func (q *Queries) GetCurrentDeclaredRegions(ctx context.Context, target string) (GetCurrentDeclaredRegionsRow, error) {
@@ -90,16 +109,16 @@ ON CONFLICT (target, rx_pubkey, observed_at) DO NOTHING
 `
 
 type InsertClientDeclaredRegionsParams struct {
-	Target        string        `json:"target"`
-	RxPubkey      string        `json:"rx_pubkey"`
-	ObservedAt    time.Time     `json:"observed_at"`
-	IngestedAt    time.Time     `json:"ingested_at"`
-	RegionsCsv    string        `json:"regions_csv"`
-	Truncated     bool          `json:"truncated"`
-	Lat           pgtype.Float8 `json:"lat"`
-	Lon           pgtype.Float8 `json:"lon"`
-	PosAccM       pgtype.Float8 `json:"pos_acc_m"`
-	RepeaterClock pgtype.Int8   `json:"repeater_clock"`
+	Target        string
+	RxPubkey      string
+	ObservedAt    time.Time
+	IngestedAt    time.Time
+	RegionsCsv    string
+	Truncated     bool
+	Lat           pgtype.Float8
+	Lon           pgtype.Float8
+	PosAccM       pgtype.Float8
+	RepeaterClock pgtype.Int8
 }
 
 func (q *Queries) InsertClientDeclaredRegions(ctx context.Context, arg InsertClientDeclaredRegionsParams) (int64, error) {
@@ -130,17 +149,17 @@ ON CONFLICT (rx_pubkey, heard_key, rx_at) DO NOTHING
 `
 
 type InsertClientReceptionParams struct {
-	RxPubkey    string        `json:"rx_pubkey"`
-	HeardKey    string        `json:"heard_key"`
-	HeardKeylen int32         `json:"heard_keylen"`
-	Rssi        pgtype.Int4   `json:"rssi"`
-	Snr         pgtype.Float8 `json:"snr"`
-	Lat         float64       `json:"lat"`
-	Lon         float64       `json:"lon"`
-	PosAccM     pgtype.Float8 `json:"pos_acc_m"`
-	RxAt        time.Time     `json:"rx_at"`
-	IngestedAt  time.Time     `json:"ingested_at"`
-	Src         string        `json:"src"`
+	RxPubkey    string
+	HeardKey    string
+	HeardKeylen int32
+	Rssi        pgtype.Int4
+	Snr         pgtype.Float8
+	Lat         float64
+	Lon         float64
+	PosAccM     pgtype.Float8
+	RxAt        time.Time
+	IngestedAt  time.Time
+	Src         string
 }
 
 func (q *Queries) InsertClientReception(ctx context.Context, arg InsertClientReceptionParams) (int64, error) {
@@ -175,29 +194,29 @@ ON CONFLICT (rx_pubkey, sampled_at) DO NOTHING
 `
 
 type InsertClientRfSampleParams struct {
-	RxPubkey   string        `json:"rx_pubkey"`
-	SampledAt  time.Time     `json:"sampled_at"`
-	IngestedAt time.Time     `json:"ingested_at"`
-	Lat        float64       `json:"lat"`
-	Lon        float64       `json:"lon"`
-	PosAccM    pgtype.Float8 `json:"pos_acc_m"`
-	Stationary bool          `json:"stationary"`
-	UptimeSecs int64         `json:"uptime_secs"`
-	BatteryMv  pgtype.Int4   `json:"battery_mv"`
-	QueueLen   pgtype.Int4   `json:"queue_len"`
-	Errors     pgtype.Int4   `json:"errors"`
-	NoiseFloor pgtype.Int4   `json:"noise_floor"`
-	LastRssi   pgtype.Int4   `json:"last_rssi"`
-	LastSnr    pgtype.Float8 `json:"last_snr"`
-	TxAirSecs  pgtype.Int8   `json:"tx_air_secs"`
-	RxAirSecs  pgtype.Int8   `json:"rx_air_secs"`
-	Recv       pgtype.Int8   `json:"recv"`
-	Sent       pgtype.Int8   `json:"sent"`
-	FloodRx    pgtype.Int8   `json:"flood_rx"`
-	DirectRx   pgtype.Int8   `json:"direct_rx"`
-	FloodTx    pgtype.Int8   `json:"flood_tx"`
-	DirectTx   pgtype.Int8   `json:"direct_tx"`
-	RecvErrors pgtype.Int8   `json:"recv_errors"`
+	RxPubkey   string
+	SampledAt  time.Time
+	IngestedAt time.Time
+	Lat        float64
+	Lon        float64
+	PosAccM    pgtype.Float8
+	Stationary bool
+	UptimeSecs int64
+	BatteryMv  pgtype.Int4
+	QueueLen   pgtype.Int4
+	Errors     pgtype.Int4
+	NoiseFloor pgtype.Int4
+	LastRssi   pgtype.Int4
+	LastSnr    pgtype.Float8
+	TxAirSecs  pgtype.Int8
+	RxAirSecs  pgtype.Int8
+	Recv       pgtype.Int8
+	Sent       pgtype.Int8
+	FloodRx    pgtype.Int8
+	DirectRx   pgtype.Int8
+	FloodTx    pgtype.Int8
+	DirectTx   pgtype.Int8
+	RecvErrors pgtype.Int8
 }
 
 func (q *Queries) InsertClientRfSample(ctx context.Context, arg InsertClientRfSampleParams) (int64, error) {
@@ -242,24 +261,24 @@ ON CONFLICT (rx_pubkey, pkt_hash, rx_at) DO NOTHING
 `
 
 type InsertClientRxObservationParams struct {
-	RxPubkey    string            `json:"rx_pubkey"`
-	RxAt        time.Time         `json:"rx_at"`
-	IngestedAt  time.Time         `json:"ingested_at"`
-	PktHash     string            `json:"pkt_hash"`
-	RouteType   types.RouteType   `json:"route_type"`
-	PayloadType types.PayloadType `json:"payload_type"`
-	Code1       pgtype.Text       `json:"code1"`
-	Code2       pgtype.Text       `json:"code2"`
-	ScopeName   pgtype.Text       `json:"scope_name"`
-	HashSize    int32             `json:"hash_size"`
-	HopCount    int32             `json:"hop_count"`
-	PathJson    pgtype.Text       `json:"path_json"`
-	Forwarder   pgtype.Text       `json:"forwarder"`
-	Snr         pgtype.Float8     `json:"snr"`
-	Rssi        pgtype.Int4       `json:"rssi"`
-	Lat         float64           `json:"lat"`
-	Lon         float64           `json:"lon"`
-	PosAccM     pgtype.Float8     `json:"pos_acc_m"`
+	RxPubkey    string
+	RxAt        time.Time
+	IngestedAt  time.Time
+	PktHash     string
+	RouteType   types.RouteType
+	PayloadType types.PayloadType
+	Code1       pgtype.Text
+	Code2       pgtype.Text
+	ScopeName   pgtype.Text
+	HashSize    int32
+	HopCount    int32
+	PathJson    pgtype.Text
+	Forwarder   pgtype.Text
+	Snr         pgtype.Float8
+	Rssi        pgtype.Int4
+	Lat         float64
+	Lon         float64
+	PosAccM     pgtype.Float8
 }
 
 func (q *Queries) InsertClientRxObservation(ctx context.Context, arg InsertClientRxObservationParams) (int64, error) {
@@ -287,6 +306,131 @@ func (q *Queries) InsertClientRxObservation(ctx context.Context, arg InsertClien
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listCoverageRows = `-- name: ListCoverageRows :many
+SELECT lat, lon, snr, rssi, heard_key, rx_at
+FROM client_receptions
+WHERE heard_key = ANY($1::text[])
+  AND lat BETWEEN $2 AND $3
+  AND lon BETWEEN $4 AND $5
+  AND ($6::text IS NULL OR rx_pubkey = $6::text)
+  AND ($7::timestamptz IS NULL OR rx_at >= $7::timestamptz)
+`
+
+type ListCoverageRowsParams struct {
+	HeardKeys []string
+	MinLat    float64
+	MaxLat    float64
+	MinLon    float64
+	MaxLon    float64
+	RxPubkey  pgtype.Text
+	Since     pgtype.Timestamptz
+}
+
+type ListCoverageRowsRow struct {
+	Lat      float64
+	Lon      float64
+	Snr      pgtype.Float8
+	Rssi     pgtype.Int4
+	HeardKey string
+	RxAt     time.Time
+}
+
+func (q *Queries) ListCoverageRows(ctx context.Context, arg ListCoverageRowsParams) ([]ListCoverageRowsRow, error) {
+	rows, err := q.db.Query(ctx, listCoverageRows,
+		arg.HeardKeys,
+		arg.MinLat,
+		arg.MaxLat,
+		arg.MinLon,
+		arg.MaxLon,
+		arg.RxPubkey,
+		arg.Since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCoverageRowsRow{}
+	for rows.Next() {
+		var i ListCoverageRowsRow
+		if err := rows.Scan(
+			&i.Lat,
+			&i.Lon,
+			&i.Snr,
+			&i.Rssi,
+			&i.HeardKey,
+			&i.RxAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCoverageRowsAnyNode = `-- name: ListCoverageRowsAnyNode :many
+SELECT lat, lon, snr, rssi, heard_key, rx_at
+FROM client_receptions
+WHERE lat BETWEEN $1 AND $2
+  AND lon BETWEEN $3 AND $4
+  AND ($5::text IS NULL OR rx_pubkey = $5::text)
+  AND ($6::timestamptz IS NULL OR rx_at >= $6::timestamptz)
+`
+
+type ListCoverageRowsAnyNodeParams struct {
+	MinLat   float64
+	MaxLat   float64
+	MinLon   float64
+	MaxLon   float64
+	RxPubkey pgtype.Text
+	Since    pgtype.Timestamptz
+}
+
+type ListCoverageRowsAnyNodeRow struct {
+	Lat      float64
+	Lon      float64
+	Snr      pgtype.Float8
+	Rssi     pgtype.Int4
+	HeardKey string
+	RxAt     time.Time
+}
+
+func (q *Queries) ListCoverageRowsAnyNode(ctx context.Context, arg ListCoverageRowsAnyNodeParams) ([]ListCoverageRowsAnyNodeRow, error) {
+	rows, err := q.db.Query(ctx, listCoverageRowsAnyNode,
+		arg.MinLat,
+		arg.MaxLat,
+		arg.MinLon,
+		arg.MaxLon,
+		arg.RxPubkey,
+		arg.Since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCoverageRowsAnyNodeRow{}
+	for rows.Next() {
+		var i ListCoverageRowsAnyNodeRow
+		if err := rows.Scan(
+			&i.Lat,
+			&i.Lon,
+			&i.Snr,
+			&i.Rssi,
+			&i.HeardKey,
+			&i.RxAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneClientObservers = `-- name: PruneClientObservers :execrows

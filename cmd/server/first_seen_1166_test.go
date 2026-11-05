@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -13,23 +15,30 @@ import (
 // response carries a `first_seen` ISO timestamp per node so the frontend
 // can show a sortable "First Seen" column.
 func TestFirstSeen_1166_HandleNodesSurface(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
-	if _, err := db.conn.Exec(`ALTER TABLE nodes ADD COLUMN foreign_advert INTEGER DEFAULT 0`); err != nil {
-		t.Fatal(err)
-	}
+	ctx := t.Context()
+	db := setupTestDB(t)
 
 	pk := "cccc000000000000000000000000000000000000000000000000000000000000"
-	first := time.Now().Add(-72 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
-	last := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'rpt', 'repeater', 37.5, -122.0, ?, ?, 5)`,
-		pk, last, first); err != nil {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	firstSeen := now.Add(-72 * time.Hour)
+	first := firstSeen.Format("2006-01-02T15:04:05.000Z")
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pk,
+		Name:      "rpt",
+		Role:      types.RoleRepeater,
+		RxTime:    firstSeen,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.TouchNodeLastSeen(ctx, pk, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.IncrementNodeAdvertCount(ctx, pk); err != nil {
 		t.Fatal(err)
 	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)

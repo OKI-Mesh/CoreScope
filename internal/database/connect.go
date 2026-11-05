@@ -7,6 +7,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Pool sizes. Each process opens one pool. The ingestor runs one ingest worker
+// plus prune, neighbor-builder, metrics and stats writers; the server fans out
+// about five requests per page. Both stay well under Postgres max_connections
+// (default 100). Revisit after the cutover rehearsal.
+const (
+	maxConnsReadWrite = 10
+	maxConnsReadOnly  = 10
+)
+
 // OpenReadWrite opens a connection pool to the Postgres database at connStr
 // with CoreScope's standard read-write configuration. Does not touch schema
 // state in any way — callers that need the database migrated or
@@ -16,8 +25,7 @@ func OpenReadWrite(ctx context.Context, connStr string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
 	}
-	// adjust to a real figure once worker-pool sizing is settled
-	cfg.MaxConns = 10
+	cfg.MaxConns = maxConnsReadWrite
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -39,6 +47,7 @@ func OpenReadOnly(ctx context.Context, connStr string) (*DB, error) {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
 	}
 	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+	cfg.MaxConns = maxConnsReadOnly
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

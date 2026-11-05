@@ -1,13 +1,28 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func upsertNode(ctx context.Context, s *Store, pubKey, name string, role types.NodeRole, lat, lon *float64, lastSeen time.Time) error {
+	return s.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubKey,
+		Name:      name,
+		Role:      role,
+		Lat:       lat,
+		Lon:       lon,
+		RxTime:    lastSeen,
+		IngestNow: time.Now().UTC(),
+	})
+}
 
 func TestDeleteNodesByPubkeysRemovesNodesAndTheirEdges(t *testing.T) {
 	s := newTestStore(t)
@@ -49,7 +64,7 @@ func TestUpsertNodeStoresLowercaseKey(t *testing.T) {
 	const upper = "AABBCCDDEEFF11223344"
 	lower := strings.ToLower(upper)
 
-	if err := s.UpsertNode(ctx, upper, "mixed-case-node", "companion", nil, nil, time.Now().UTC()); err != nil {
+	if err := upsertNode(ctx, s, upper, "mixed-case-node", "companion", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if n := countWhere(t, s, "nodes", "public_key = $1", lower); n != 1 {
@@ -59,7 +74,7 @@ func TestUpsertNodeStoresLowercaseKey(t *testing.T) {
 		t.Fatalf("uppercase rows = %d, want 0", n)
 	}
 	// The same key in the other case is the same node, not a duplicate.
-	if err := s.UpsertNode(ctx, lower, "renamed", "companion", nil, nil, time.Now().UTC()); err != nil {
+	if err := upsertNode(ctx, s, lower, "renamed", "companion", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if n := countRows(t, s, "nodes"); n != 1 {

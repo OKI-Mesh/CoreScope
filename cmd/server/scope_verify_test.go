@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // realTransportFloodPacket is transmission 0a065d41d51f1f77 from the live
@@ -100,16 +103,17 @@ func TestRegionCodeIsCaseSensitive(t *testing.T) {
 }
 
 func TestUnmatchedTransmissionsInWindow(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	old := "2020-01-01T00:00:00Z"
-	seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), RouteFlood, recent)
-	seedTransmissionRouteAt(t, s, "E3D3", scopeMatched("#be"), RouteFlood, recent)
-	seedTransmissionRouteAt(t, s, "E3D3", scopeUnscoped(), RouteFlood, recent)
-	seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), RouteFlood, old)
+	recent := time.Now().UTC().Add(-time.Minute)
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), types.RouteTransportFlood, recent)
+	seedTransmissionRouteAt(t, s, "E3D3", scopeMatched("#be"), types.RouteTransportFlood, recent)
+	seedTransmissionRouteAt(t, s, "E3D3", scopeUnscoped(), types.RouteFlood, recent)
+	seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), types.RouteTransportFlood, old)
 
-	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-	got, _, err := s.unmatchedTransmissionsInWindow(since)
+	since := time.Now().UTC().Add(-time.Hour)
+	got, _, err := s.unmatchedTransmissionsInWindow(ctx, since)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +123,8 @@ func TestUnmatchedTransmissionsInWindow(t *testing.T) {
 	// scopeUnmatched() seeds raw_hex 'AA', which scopeHMACInputs rejects. The
 	// query's job is selection; unparseable rows are dropped by the caller, so
 	// they must still be returned here rather than filtered in SQL.
-	if got[0].txID == 0 {
-		t.Error("txID = 0, want the transmission's real id")
+	if got[0].ID == 0 {
+		t.Error("ID = 0, want the transmission's real id")
 	}
 }
 
@@ -128,9 +132,9 @@ func TestUnmatchedTransmissionsInWindow(t *testing.T) {
 // verifier consumes, with ids 1..N in order.
 func buildVerifierFromPackets(t *testing.T, hexes ...string) *scopeVerifier {
 	t.Helper()
-	rows := make([]unmatchedTransmissionRow, 0, len(hexes))
+	rows := make([]database.UnmatchedTransmission, 0, len(hexes))
 	for i, h := range hexes {
-		rows = append(rows, unmatchedTransmissionRow{txID: int64(i + 1), rawHex: h})
+		rows = append(rows, database.UnmatchedTransmission{ID: int64(i + 1), RawHex: h})
 	}
 	return newScopeVerifier(rows)
 }
@@ -209,10 +213,10 @@ func TestScopeVerifierUnknownTxIDIsHarmless(t *testing.T) {
 // packets, which is what makes the feature affordable (AGENTS.md rule 0).
 func BenchmarkScopeVerifierAudit(b *testing.B) {
 	const packets, names, targets = 400, 124, 205
-	rows := make([]unmatchedTransmissionRow, 0, packets)
+	rows := make([]database.UnmatchedTransmission, 0, packets)
 	txIDs := make([]int64, 0, packets)
 	for i := 0; i < packets; i++ {
-		rows = append(rows, unmatchedTransmissionRow{txID: int64(i + 1), rawHex: realTransportFloodPacket})
+		rows = append(rows, database.UnmatchedTransmission{ID: int64(i + 1), RawHex: realTransportFloodPacket})
 		txIDs = append(txIDs, int64(i+1))
 	}
 	declared := make([]string, 0, names)
@@ -242,16 +246,17 @@ func BenchmarkScopeVerifierAudit(b *testing.B) {
 // traffic matches what the window claims to describe, and a repeater still
 // forwarding a region is far likelier to have done so recently.
 func TestUnmatchedTransmissionsInWindowIsBounded(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
 	base := time.Now().UTC().Add(-2 * time.Hour)
 	total := scopeVerifyMaxWindowPackets + 25
 	for i := 0; i < total; i++ {
-		at := base.Add(time.Duration(i) * time.Second).Format(time.RFC3339)
-		seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), RouteFlood, at)
+		at := base.Add(time.Duration(i) * time.Second)
+		seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), types.RouteTransportFlood, at)
 	}
 
-	since := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
-	got, truncated, err := s.unmatchedTransmissionsInWindow(since)
+	since := time.Now().UTC().Add(-3 * time.Hour)
+	got, truncated, err := s.unmatchedTransmissionsInWindow(ctx, since)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,11 +267,9 @@ func TestUnmatchedTransmissionsInWindowIsBounded(t *testing.T) {
 		t.Error("truncated = false, want true — the caller has to be able to say the evidence is partial")
 	}
 
-	// The 25 oldest rows are the ones that must have been dropped: seeded ids
-	// ascend with first_seen, so every kept id must be above that boundary.
 	for _, r := range got {
-		if r.txID <= 25 {
-			t.Fatalf("kept txID %d, want only the %d newest rows", r.txID, scopeVerifyMaxWindowPackets)
+		if r.ID <= 25 {
+			t.Fatalf("kept ID %d, want only the %d newest rows", r.ID, scopeVerifyMaxWindowPackets)
 		}
 	}
 }
@@ -275,12 +278,13 @@ func TestUnmatchedTransmissionsInWindowIsBounded(t *testing.T) {
 // distinguish "this is everything" from "this is a sample", or the caller
 // cannot tell an exact answer from a partial one.
 func TestUnmatchedTransmissionsInWindowReportsNoTruncationUnderCap(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, s, "E3D3", scopeUnmatched(), types.RouteTransportFlood, recent)
 
-	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-	got, truncated, err := s.unmatchedTransmissionsInWindow(since)
+	since := time.Now().UTC().Add(-time.Hour)
+	got, truncated, err := s.unmatchedTransmissionsInWindow(ctx, since)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,10 +323,10 @@ func TestCapVerifyRegions(t *testing.T) {
 func BenchmarkScopeVerifierStress(b *testing.B) {
 	const names, targets = 124, 205
 	packets := scopeVerifyMaxWindowPackets
-	rows := make([]unmatchedTransmissionRow, 0, packets)
+	rows := make([]database.UnmatchedTransmission, 0, packets)
 	txIDs := make([]int64, 0, packets)
 	for i := 0; i < packets; i++ {
-		rows = append(rows, unmatchedTransmissionRow{txID: int64(i + 1), rawHex: realTransportFloodPacket})
+		rows = append(rows, database.UnmatchedTransmission{ID: int64(i + 1), RawHex: realTransportFloodPacket})
 		txIDs = append(txIDs, int64(i+1))
 	}
 	declared := make([]string, 0, names)

@@ -7,26 +7,8 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 )
-
-// UpsertNode inserts or updates a node.
-func (s *Store) UpsertNode(ctx context.Context, pubKey, name, role string, lat, lon *float64, lastSeen time.Time) error {
-	err := s.db.CreateOrUpdateNode(ctx, database.NodeInput{
-		PublicKey: pubKey,
-		Name:      name,
-		Role:      role,
-		Lat:       lat,
-		Lon:       lon,
-		RxTime:    lastSeen,
-		IngestNow: time.Now().UTC(),
-	})
-	if err != nil {
-		s.Stats.WriteErrors.Add(1)
-	} else {
-		s.Stats.NodeUpserts.Add(1)
-	}
-	return err
-}
 
 // IncrementAdvertCount increments advert_count for a node by public key.
 func (s *Store) IncrementAdvertCount(ctx context.Context, pubKey string) error {
@@ -59,32 +41,27 @@ func (s *Store) UpdateNodeTelemetry(ctx context.Context, pubKey string, batteryM
 
 }
 
-// touchRelayNodesLocked refreshes nodes.last_seen for nodes observed as
+// touchRelayNodes refreshes nodes.last_seen for nodes observed as
 // relay hops, so a node that forwards traffic stays fresh even when it
 // adverts rarely or not at all.
 //
-// MUST be called with writerMu held. InsertTransmission holds it for its
-// entire body, so the debounce map needs no lock of its own; the name
-// carries the requirement for future callers.
+// Callers must not run it concurrently: relayTouched has no lock of its own.
+// Its only caller is InsertTransmission, which runs on the ingest buffer's
+// single worker goroutine.
 //
-// Ownership (#1283/#1287/#1289): nodes is written by the ingestor only.
-// The server opens SQLite mode=ro; its former touchRelayLastSeen has been
-// failing on every call since that refactor and is removed in this change.
-// cmd/server/readonly_invariant_test.go now guards against reintroduction.
+// Ownership (#1283/#1287/#1289): nodes is written by the ingestor only; the
+// server connection is read-only.
 //
 // Callers pass the resolved pubkeys already computed for
-// observations.resolved_path (#1547/#1560) — only unambiguously resolved
-// hops reach this function, so a 1-byte prefix collision cannot keep a
-// silent node alive. resolvedPubkeys already dedups, so no second pass here.
+// observations.hop_nodes (#1547/#1560). Only unambiguously resolved hops
+// reach this function, so a 1-byte prefix collision cannot keep a silent node
+// alive. resolvedPubkeys already dedups, so no second pass here.
 //
 // Never inserts: the UPDATE matches an existing row or does nothing.
 // Never rewinds: the last_seen guard makes out-of-order ingest a no-op.
-// UpsertNode's ON CONFLICT clause is monotonic in the same direction
-// (MAX(MIN(last_seen, ingestNow), rxTime) reduces to MAX(last_seen, rxTime)
-// for any non-future stored value), so an ADVERT cannot undo a touch.
-
-// TODO: Add back a lock since we got rid of writerMu
-func (s *Store) touchRelayNodesLocked(ctx context.Context, pubkeys []string, rxTime time.Time) {
+// CreateOrUpdateNode is monotonic in the same direction, so an ADVERT cannot
+// undo a touch.
+func (s *Store) touchRelayNodes(ctx context.Context, pubkeys []string, rxTime time.Time) {
 	if len(pubkeys) == 0 {
 		return
 	}
@@ -167,4 +144,19 @@ func (s *Store) UpdateNodeConfiguredScope(ctx context.Context, pubkey, scope str
 		at = &reportedAt
 	}
 	return s.db.UpdateNodeConfiguredScope(ctx, pubkey, scope, at)
+}
+
+func advertNode(payload *decoder.Payload, at time.Time) *database.NodeInput {
+	role, ok := decoder.AdvertRole(payload.Flags)
+	if !ok {
+		return nil
+	}
+	return &database.NodeInput{
+		PublicKey: payload.PubKey,
+		Name:      payload.Name,
+		Role:      role,
+		Lat:       payload.Lat,
+		Lon:       payload.Lon,
+		RxTime:    at,
+	}
 }

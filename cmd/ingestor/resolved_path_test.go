@@ -1,24 +1,13 @@
 package main
 
 import (
-	"database/sql"
-	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
-
-func unmarshalResolvedPathLocal(s string) []*string {
-	if s == "" {
-		return nil
-	}
-	var out []*string
-	if json.Unmarshal([]byte(s), &out) != nil {
-		return nil
-	}
-	return out
-}
 
 // TestResolvePathPureFunction is a unit test for the pure resolvePath
 // helper. Asserts:
@@ -98,51 +87,72 @@ func TestInsertTransmissionWritesResolvedPath(t *testing.T) {
 	defer store.Close()
 	ctx := t.Context()
 
-	// Seed nodes with unique 1-byte prefixes.
+	fromPK := strings.Repeat("aa", 32)
+	hopPK := strings.Repeat("bb", 32)
+	observerID := strings.Repeat("0b", 32)
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	testExec(t, store, `INSERT INTO nodes (public_key, name) VALUES ($1, $2), ($3, $4)`,
-		"aaaaaaaaaa", "from-node",
-		"bbbbbbbbbb", "first-hop",
-	)
+	if err := store.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: fromPK,
+		Name:      "from-node",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed from-node: %v", err)
+	}
+	if err := store.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: hopPK,
+		Name:      "first-hop",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed first-hop: %v", err)
+	}
 
-	// Seed one observer (needed so InsertTransmission resolves observer_idx).
-	if err := store.UpsertObserver(ctx, "obs-1", "observer-1", "", nil); err != nil {
+	if err := store.UpsertObserver(ctx, observerID, "observer-1", "", nil); err != nil {
 		t.Fatalf("UpsertObserver: %v", err)
 	}
 
-	// Force the prefix index to be (re)built from the seeded nodes so
-	// the InsertTransmission path has something to resolve against.
 	if err := store.RefreshPrefixIndex(ctx); err != nil {
 		t.Fatalf("RefreshPrefixIndex: %v", err)
 	}
 
 	pkt := &PacketData{
 		RawHex:      "deadbeef",
-		Timestamp:   time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-		ObserverID:  "obs-1",
-		Hash:        "h-1547",
+		Timestamp:   now,
+		ObserverID:  observerID,
+		Hash:        "1547000000000001",
 		RouteType:   0,
 		PayloadType: types.PayloadADVERT,
 		PathJSON:    `["bb"]`,
 		DecodedJSON: "{}",
-		FromPubkey:  "aaaaaaaaaa",
+		FromPubkey:  fromPK,
 	}
 	if _, err := store.InsertTransmission(ctx, pkt); err != nil {
 		t.Fatalf("InsertTransmission: %v", err)
 	}
 
-	var rp sql.NullString
-	mustScan(t, testRow(t, store, `SELECT resolved_path FROM observations WHERE transmission_id = (SELECT id FROM transmissions WHERE hash = $1)`,
-		"h-1547", &rp))
-	if !rp.Valid || rp.String == "" {
-		t.Fatalf("expected non-nil resolved_path, got NULL/empty (regression: #1547)")
+	obs, err := store.db.GetObservationsForHash(ctx, pkt.Hash)
+	if err != nil {
+		t.Fatalf("GetObservationsForHash: %v", err)
 	}
-	got := unmarshalResolvedPathLocal(rp.String)
-	if len(got) != 1 {
-		t.Fatalf("resolved_path length: want 1, got %d (value=%s)", len(got), rp.String)
+	if len(obs) != 1 {
+		t.Fatalf("observations: want 1, got %d", len(obs))
 	}
-	if got[0] == nil || *got[0] != "bbbbbbbbbb" {
-		t.Errorf("resolved_path[0]: want bbbbbbbbbb, got %v (raw=%s)", deref(got[0]), rp.String)
+	if len(obs[0].HopResolved) != 1 {
+		t.Fatalf("resolved path length: want 1, got %d (prefixes=%v resolved=%v)", len(obs[0].HopResolved), obs[0].HopPrefixes, obs[0].HopResolved)
+	}
+	if obs[0].HopResolved[0] == "" {
+		t.Fatalf("expected a resolved pubkey for hop 0, got unresolved (regression: #1547)")
+	}
+	if obs[0].HopResolved[0] != hopPK {
+		t.Errorf("resolved path[0]: want %s, got %s", hopPK, obs[0].HopResolved[0])
 	}
 }
 
@@ -366,11 +376,34 @@ func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 	ctx := t.Context()
 	defer store.Close()
 
-	testExec(t, store, `INSERT INTO nodes (public_key, name) VALUES ($1, $2), ($3, $4)`,
-		"aaaaaaaaaa", "from-node",
-		"bbbbbbbbbb", "first-hop",
-	)
-	if err := store.UpsertObserver(ctx, "obs-1", "observer-1", "", nil); err != nil {
+	fromPK := strings.Repeat("aa", 32)
+	hopPK := strings.Repeat("bb", 32)
+	observerID := strings.Repeat("0b", 32)
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	if err := store.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: fromPK,
+		Name:      "from-node",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed from-node: %v", err)
+	}
+	if err := store.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: hopPK,
+		Name:      "first-hop",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed first-hop: %v", err)
+	}
+	if err := store.UpsertObserver(ctx, observerID, "observer-1", "", nil); err != nil {
 		t.Fatalf("UpsertObserver: %v", err)
 	}
 	if err := store.RefreshPrefixIndex(ctx); err != nil {
@@ -379,41 +412,45 @@ func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 
 	pkt := &PacketData{
 		RawHex:      "deadbeef",
-		Timestamp:   time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-		ObserverID:  "obs-1",
-		Hash:        "h-clobber",
+		Timestamp:   now,
+		ObserverID:  observerID,
+		Hash:        "c10bbe2000000001",
 		RouteType:   0,
 		PayloadType: types.PayloadADVERT,
 		PathJSON:    `["bb"]`,
 		DecodedJSON: "{}",
-		FromPubkey:  "aaaaaaaaaa",
+		FromPubkey:  fromPK,
 	}
 	if _, err := store.InsertTransmission(ctx, pkt); err != nil {
 		t.Fatalf("first InsertTransmission: %v", err)
 	}
 
-	// Sanity: first write populated resolved_path.
-	var first sql.NullString
-	mustScan(t, testRow(t, store, `SELECT resolved_path FROM observations WHERE transmission_id = (SELECT id FROM transmissions WHERE hash = $1)`, "h-clobber"), &first)
-	if !first.Valid || first.String == "" {
-		t.Fatalf("precondition failed: first ingest left resolved_path NULL/empty; cannot test clobber")
+	first, err := store.db.GetObservationsForHash(ctx, pkt.Hash)
+	if err != nil {
+		t.Fatalf("GetObservationsForHash (first): %v", err)
 	}
-	wantPreserved := first.String
+	if len(first) != 1 || len(first[0].HopResolved) != 1 || first[0].HopResolved[0] == "" {
+		t.Fatalf("precondition failed: first ingest left the resolved path empty; cannot test clobber (got %+v)", first)
+	}
+	wantPreserved := first[0].HopResolved[0]
 
-	// Now wipe the prefix index so re-ingest produces an all-nil
-	// resolution — exactly the scenario where the bug clobbers data.
 	store.prefixIdx.store(prefixIndex{})
 
 	if _, err := store.InsertTransmission(ctx, pkt); err != nil {
 		t.Fatalf("re-ingest InsertTransmission: %v", err)
 	}
 
-	var after sql.NullString
-	mustScan(t, testRow(t, store, `SELECT resolved_path FROM observations WHERE transmission_id = (SELECT id FROM transmissions WHERE hash = $1)`, "h-clobber"), &after)
-	if !after.Valid {
-		t.Fatalf("data loss: resolved_path was NULL'd by re-ingest (was %q)", wantPreserved)
+	after, err := store.db.GetObservationsForHash(ctx, pkt.Hash)
+	if err != nil {
+		t.Fatalf("GetObservationsForHash (after): %v", err)
 	}
-	if after.String != wantPreserved {
-		t.Errorf("data loss: resolved_path was clobbered by all-nil re-ingest\n  before: %s\n  after:  %s", wantPreserved, after.String)
+	if len(after) != 1 || len(after[0].HopResolved) != 1 {
+		t.Fatalf("re-ingest changed the observation shape: %+v", after)
+	}
+	if after[0].HopResolved[0] == "" {
+		t.Fatalf("data loss: resolved pubkey was cleared by re-ingest (was %q)", wantPreserved)
+	}
+	if after[0].HopResolved[0] != wantPreserved {
+		t.Errorf("data loss: resolved pubkey was clobbered by all-nil re-ingest\n  before: %s\n  after:  %s", wantPreserved, after[0].HopResolved[0])
 	}
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"log"
 	"strings"
 	"sync"
@@ -52,27 +51,4 @@ func (b *syncBuffer) String() string {
 // (case-insensitive).
 func logContains(buf *syncBuffer, substr string) bool {
 	return strings.Contains(strings.ToLower(buf.String()), strings.ToLower(substr))
-}
-
-// columnExists reports whether the named column exists on the table.
-func columnExists(t *testing.T, db *sql.DB, table, col string) bool {
-	t.Helper()
-	rows, err := db.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dfltValue sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
-			t.Fatalf("scan PRAGMA: %v", err)
-		}
-		if name == col {
-			return true
-		}
-	}
-	return false
 }

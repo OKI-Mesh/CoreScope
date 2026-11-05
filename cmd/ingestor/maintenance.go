@@ -9,49 +9,21 @@ import (
 )
 
 // pruneBatchTransmissions bounds how many transmissions (and their child
-// observations) one prune transaction deletes before it commits and
-// releases the writer lock.
+// observations) one prune transaction deletes before it commits.
 //
-// Releasing between batches is the entire point. writerMu serialises every
-// wrapped writer call, so while the prune holds it the MQTT ingest path is
-// blocked. Go's sync.Mutex switches to FIFO handoff once a waiter has been
-// blocked for 1ms (starvation mode), so an ingest goroutine queued behind
-// the prune is served at the next batch boundary instead of after the whole
-// retention day.
+// Batching keeps each transaction small: it bounds the WAL written per commit,
+// how long the deleted rows stay locked, and how much dead space autovacuum has
+// to clean up at once, so a retention-day-sized delete is never one long
+// transaction.
 //
-// The bound is on transmissions, but hold time scales with the rows actually
+// The bound is on transmissions, but the work scales with the rows actually
 // deleted, and each transmission carries an unbounded number of observations.
-// At ~16 observations per transmission a batch is ~4k row deletes and a few
-// hundred milliseconds; an instance with a denser observation ratio gets a
-// proportionally longer hold from the same batch size. 250 also keeps the
-// commit count low (a 16k-transmission day is 64 transactions, not 16k).
+// At ~16 observations per transmission a batch is ~4k row deletes; an instance
+// with a denser observation ratio gets a proportionally larger transaction from
+// the same batch size. 250 also keeps the commit count low (a 16k-transmission
+// day is 64 transactions, not 16k).
 const pruneBatchTransmissions = 250
 
-// pruneAgedTransmissionIDs selects the next batch of transmissions older than
-// the cutoff. Both statements of a batch embed it, so they resolve the same
-// set: nothing modifies `transmissions` between them inside the transaction.
-//
-// The ORDER BY must be satisfiable from idx_transmissions_first_seen. That
-// index carries the rowid as its tiebreaker, so "first_seen, id" is walked
-// straight off it and the LIMIT stays deterministic even when timestamps tie.
-// Ordering by id alone looks equivalent but makes SQLite abandon the index for
-// a rowid SCAN. That is harmless while rows are being deleted — the oldest
-// rows have the lowest rowids and match at once — but the batch that finds
-// nothing, which is the steady state whenever nothing has aged out, walks the
-// whole table under writerMu. TestPruneAgedTransmissionIDsUsesFirstSeenIndex
-// pins the plan.
-const pruneAgedTransmissionIDs = `SELECT id FROM transmissions WHERE first_seen < ? ORDER BY first_seen, id LIMIT ?`
-
-// The two statements of one prune batch. Child observations go first (no
-// CASCADE in SQLite).
-const (
-	pruneObservationsBatch  = `DELETE FROM observations WHERE transmission_id IN (` + pruneAgedTransmissionIDs + `)`
-	pruneTransmissionsBatch = `DELETE FROM transmissions WHERE id IN (` + pruneAgedTransmissionIDs + `)`
-)
-
-// PruneNeighborEdges deletes rows older than maxAgeDays from
-// neighbor_edges. Owned by the ingestor per #1287 (was in cmd/server).
-// Returns DB rows deleted.
 // PruneNeighborEdges deletes rows older than maxAgeDays from neighbor_edges.
 // Owned by the ingestor per #1287 (was in cmd/server). Returns DB rows deleted.
 func (s *Store) PruneNeighborEdges(ctx context.Context, maxAgeDays int) (int64, error) {

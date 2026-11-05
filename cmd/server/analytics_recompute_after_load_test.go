@@ -15,14 +15,16 @@ package main
 //     replaced as soon as the load is done.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -47,17 +49,51 @@ func waitForTest(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for: %s", what)
 }
 
+// seedSpreadOverDays inserts numTx transmissions spread evenly across the `days`
+// days ending at anchor (the newest is at anchor, the oldest just under `days`
+// days before), one observation each.
+func seedSpreadOverDays(tb testing.TB, db *database.DB, numTx, days int, anchor time.Time) {
+	tb.Helper()
+	ctx := tb.Context()
+
+	var observerID int64
+	if err := db.SQL().QueryRowContext(ctx, `
+		INSERT INTO observers (pubkey, name, first_seen, last_seen)
+		VALUES ('obs1', 'Obs1', $1, $1)
+		ON CONFLICT (pubkey) DO UPDATE SET name = observers.name
+		RETURNING id`, anchor).Scan(&observerID); err != nil {
+		tb.Fatalf("insert observer: %v", err)
+	}
+
+	span := time.Duration(days) * 24 * time.Hour
+	if _, err := db.SQL().ExecContext(ctx, `
+		WITH t AS (
+			INSERT INTO transmissions
+				(raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+			SELECT 'aabb', 'h' || lpad(i::text, 4, '0'),
+			       $1::timestamptz - ($2::bigint * i / $3::int) * interval '1 microsecond',
+			       0, 4, 1, '{"pubKey":"pk' || lpad(i::text, 4, '0') || '"}',
+			       $1::timestamptz - ($2::bigint * i / $3::int) * interval '1 microsecond'
+			FROM generate_series(0, $3::int - 1) AS i
+			RETURNING id, first_seen
+		)
+		INSERT INTO observations
+			(transmission_id, observer_idx, direction, snr, rssi, score, timestamp)
+		SELECT id, $4::bigint, 'RX', -10.0, -80.0, 5, first_seen FROM t`,
+		anchor, span.Microseconds(), numTx, observerID); err != nil {
+		tb.Fatalf("seed packets: %v", err)
+	}
+}
+
 // The startup-load signal must stay open while the background fill is
 // still running (LoadComplete is already true at that point) and close
 // once RunStartupLoad returns.
 func TestStartupLoadDone_ClosesOnlyAfterBackgroundFill(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	createTestDBSpreadOverDays(t, dbPath, 100, 14, time.Now().UTC().Unix())
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
+
+	t.Cleanup(func() { db.Close() })
+	seedSpreadOverDays(t, db, 100, 14, time.Now().UTC())
 	store := NewPacketStore(db, &PacketStoreConfig{RetentionHours: 14 * 24, HotStartupHours: 24})
 
 	var closedAtBgEntry, loadCompleteAtBgEntry atomic.Bool
@@ -68,7 +104,7 @@ func TestStartupLoadDone_ClosesOnlyAfterBackgroundFill(t *testing.T) {
 	if isClosedForTest(store.StartupLoadDone()) {
 		t.Fatal("StartupLoadDone closed before RunStartupLoad ran")
 	}
-	if err := store.RunStartupLoad(500); err != nil {
+	if err := store.RunStartupLoad(ctx, 500); err != nil {
 		t.Fatalf("RunStartupLoad: %v", err)
 	}
 	if !loadCompleteAtBgEntry.Load() {
@@ -85,15 +121,12 @@ func TestStartupLoadDone_ClosesOnlyAfterBackgroundFill(t *testing.T) {
 // A failed load is terminal too: nothing more will be loaded, so the
 // signal must close instead of leaving the recomputers waiting forever.
 func TestStartupLoadDone_ClosesWhenLoadFails(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	createTestDBSpreadOverDays(t, dbPath, 10, 1, time.Now().UTC().Unix())
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	ctx := t.Context()
 	store := NewPacketStore(db, &PacketStoreConfig{RetentionHours: 24, HotStartupHours: 1})
-	db.conn.Close()
-	if err := store.RunStartupLoad(500); err == nil {
+	db.Close()
+	if err := store.RunStartupLoad(ctx, 500); err == nil {
 		t.Fatal("fixture precondition: RunStartupLoad on a closed conn should fail")
 	}
 	if !isClosedForTest(store.StartupLoadDone()) {
@@ -106,8 +139,8 @@ func TestStartupLoadDone_ClosesWhenLoadFails(t *testing.T) {
 // recomputes that follow the signal read them, so they must be dropped.
 func TestStartupLoadDone_DropsDerivedCaches(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	t.Cleanup(func() { db.Close() })
+	store := newPacketStoreForTest(t, db)
 
 	store.hashSizeInfoMu.Lock()
 	store.hashSizeInfoCache = map[string]*hashSizeNodeInfo{"partial": {}}
@@ -135,14 +168,15 @@ func TestStartupLoadDone_DropsDerivedCaches(t *testing.T) {
 
 // The recomputer must not wait a full interval once the store is loaded.
 func TestRecomputeWhenLoaded_RunsImmediately(t *testing.T) {
+	ctx := t.Context()
 	var loadedFlag atomic.Bool
-	rc := newAnalyticsRecomputer("t", time.Hour, func() interface{} {
+	rc := newAnalyticsRecomputer(ctx, "t", time.Hour, func(context.Context) interface{} {
 		if loadedFlag.Load() {
 			return "full"
 		}
 		return "partial"
 	})
-	rc.Start()
+	rc.Start(ctx)
 	defer rc.Stop()
 	if got := rc.Load(); got != "partial" {
 		t.Fatalf("initial snapshot = %v, want partial", got)
@@ -165,9 +199,10 @@ func TestRecomputeWhenLoaded_RunsImmediately(t *testing.T) {
 // that reads another one's snapshot (roles reads nodes-clock-skew) sees
 // the post-load version.
 func TestRecomputeWhenLoaded_RunsInOrder(t *testing.T) {
+	ctx := t.Context()
 	var loadedFlag atomic.Bool
 	var skewSnapshot atomic.Value
-	skew := newAnalyticsRecomputer("skew", time.Hour, func() interface{} {
+	skew := newAnalyticsRecomputer(ctx, "skew", time.Hour, func(context.Context) interface{} {
 		v := "partial"
 		if loadedFlag.Load() {
 			v = "full"
@@ -176,11 +211,11 @@ func TestRecomputeWhenLoaded_RunsInOrder(t *testing.T) {
 		skewSnapshot.Store(v)
 		return v
 	})
-	roles := newAnalyticsRecomputer("roles", time.Hour, func() interface{} {
+	roles := newAnalyticsRecomputer(ctx, "roles", time.Hour, func(context.Context) interface{} {
 		return skewSnapshot.Load()
 	})
-	skew.Start()
-	roles.Start()
+	skew.Start(ctx)
+	roles.Start(ctx)
 	defer skew.Stop()
 	defer roles.Stop()
 
@@ -208,10 +243,11 @@ func TestRecomputeWhenLoaded_RunsInOrder(t *testing.T) {
 // recomputers first (their 503 ends soonest), roles after
 // nodes-clock-skew (roles reads that snapshot).
 func TestAnalyticsRecomputers_PostLoadOrder(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
-	stop := store.StartAnalyticsRecomputers(time.Hour)
+	t.Cleanup(func() { db.Close() })
+	store := newPacketStoreForTest(t, db)
+	stop := store.StartAnalyticsRecomputers(ctx, time.Hour)
 	defer stop()
 
 	store.analyticsRecomputerMu.RLock()
@@ -237,10 +273,11 @@ func TestAnalyticsRecomputers_PostLoadOrder(t *testing.T) {
 // A pass that STARTED before the load finished must not end the warm-up,
 // even when the load finishes while that pass is still running.
 func TestWarmup_PassStartedBeforeLoadDoesNotOpenGate(t *testing.T) {
+	ctx := t.Context()
 	loaded := make(chan struct{})
 	releaseSecond := make(chan struct{})
 	var calls atomic.Int32
-	rc := newAnalyticsRecomputer("t", time.Hour, func() interface{} {
+	rc := newAnalyticsRecomputer(ctx, "t", time.Hour, func(context.Context) interface{} {
 		switch calls.Add(1) {
 		case 1:
 			close(loaded) // load finishes while the first pass is running
@@ -251,7 +288,7 @@ func TestWarmup_PassStartedBeforeLoadDoesNotOpenGate(t *testing.T) {
 		}
 	})
 	rc.setWarmupReadyGate_1659(func() bool { return isClosedForTest(loaded) })
-	rc.Start()
+	rc.Start(ctx)
 	defer rc.Stop()
 
 	if !rc.IsWarmingUp_1659() {
@@ -275,19 +312,20 @@ func TestWarmup_PassStartedBeforeLoadDoesNotOpenGate(t *testing.T) {
 // Force-open timeout followed by the load finishing: the first-chunk
 // snapshot that was served after the timeout is replaced right away.
 func TestWarmup_ForceOpenedSnapshotReplacedOnLoad(t *testing.T) {
+	ctx := t.Context()
 	prev := warmupForceTimeout
 	warmupForceTimeout = 30 * time.Millisecond
 	defer func() { warmupForceTimeout = prev }()
 
 	loaded := make(chan struct{})
-	rc := newAnalyticsRecomputer("t", time.Hour, func() interface{} {
+	rc := newAnalyticsRecomputer(ctx, "t", time.Hour, func(context.Context) interface{} {
 		if isClosedForTest(loaded) {
 			return "full"
 		}
 		return "partial"
 	})
 	rc.setWarmupReadyGate_1659(func() bool { return isClosedForTest(loaded) })
-	rc.Start()
+	rc.Start(ctx)
 	defer rc.Stop()
 	stop := make(chan struct{})
 	defer close(stop)
@@ -310,9 +348,10 @@ func TestWarmup_ForceOpenedSnapshotReplacedOnLoad(t *testing.T) {
 // periodic pass is a full interval after it instead of a redundant pass
 // on the original phase a moment later.
 func TestRecomputeNow_RestartsTicker(t *testing.T) {
+	ctx := t.Context()
 	const interval = 400 * time.Millisecond
-	rc := newAnalyticsRecomputer("t", interval, func() interface{} { return 1 })
-	rc.Start() // run 1 at t0; unreset ticker would fire at t0+400ms
+	rc := newAnalyticsRecomputer(ctx, "t", interval, func(context.Context) interface{} { return 1 })
+	rc.Start(ctx) // run 1 at t0; unreset ticker would fire at t0+400ms
 	defer rc.Stop()
 
 	time.Sleep(250 * time.Millisecond)
@@ -325,8 +364,9 @@ func TestRecomputeNow_RestartsTicker(t *testing.T) {
 
 // RecomputeNow must not hang when the recomputer is stopped.
 func TestRecomputeNow_ReturnsWhenStopped(t *testing.T) {
-	rc := newAnalyticsRecomputer("t", time.Hour, func() interface{} { return 1 })
-	rc.Start()
+	ctx := t.Context()
+	rc := newAnalyticsRecomputer(ctx, "t", time.Hour, func(context.Context) interface{} { return 1 })
+	rc.Start(ctx)
 	rc.Stop()
 	done := make(chan struct{})
 	go func() {
@@ -343,13 +383,15 @@ func TestRecomputeNow_ReturnsWhenStopped(t *testing.T) {
 // After a lazy distance-index build, the distance recomputer snapshot
 // must already reflect the new index when the handler stops answering 202.
 func TestDistanceIndexBuild_RefreshesRecomputerBeforeReportingBuilt(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load(): %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
-	stop := store.StartAnalyticsRecomputers(time.Hour)
+	stop := store.StartAnalyticsRecomputers(ctx, time.Hour)
 	defer stop()
 	before := store.recompDistance.ComputeRuns()
 
@@ -366,27 +408,28 @@ func TestDistanceIndexBuild_RefreshesRecomputerBeforeReportingBuilt(t *testing.T
 // Ungated recomputers keep answering (no new 503) and are recomputed
 // right after the load.
 func TestAnalyticsRecomputers_FullDataRightAfterStartupLoad(t *testing.T) {
+	db := setupTestDB(t)
 	const totalRows = 100
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	createTestDBSpreadOverDays(t, dbPath, totalRows, 14, time.Now().UTC().Unix())
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer db.conn.Close()
+	seedSpreadOverDays(t, db, totalRows, 14, time.Now().UTC())
+	t.Cleanup(func() { db.Close() })
+	ctx := t.Context()
 	store := NewPacketStore(db, &PacketStoreConfig{RetentionHours: 14 * 24, HotStartupHours: 24})
+	store.config = &Config{Port: 3000, SnapshotDir: t.TempDir()}
 
 	bgEntered := make(chan struct{})
 	releaseBg := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseBg) }) }
+	t.Cleanup(release)
 	store.bgLoaderEntryHook = func() {
 		close(bgEntered)
 		<-releaseBg
 	}
 	loadErr := make(chan error, 1)
-	go func() { loadErr <- store.RunStartupLoad(500) }()
+	go func() { loadErr <- store.RunStartupLoad(ctx, 500) }()
 	<-bgEntered
 
-	stop := store.StartAnalyticsRecomputers(time.Hour)
+	stop := store.StartAnalyticsRecomputers(ctx, time.Hour)
 	defer stop()
 
 	srv := NewServer(db, &Config{Port: 3000}, NewHub())
@@ -423,7 +466,7 @@ func TestAnalyticsRecomputers_FullDataRightAfterStartupLoad(t *testing.T) {
 		runsBefore[name] = rc.ComputeRuns()
 	}
 
-	close(releaseBg)
+	release()
 	if err := <-loadErr; err != nil {
 		t.Fatalf("RunStartupLoad: %v", err)
 	}
@@ -443,9 +486,8 @@ func TestAnalyticsRecomputers_FullDataRightAfterStartupLoad(t *testing.T) {
 		t.Fatalf("rf totalTransmissions = %v right after full load, want %d (first-chunk snapshot still served)", rf["totalTransmissions"], totalRows)
 	}
 	for _, p := range []string{"/api/analytics/topology", "/api/analytics/channels"} {
-		if w := get(p); w.Code != http.StatusOK {
-			t.Fatalf("%s after full load: got %d, want 200", p, w.Code)
-		}
+		p := p
+		waitForTest(t, p+" gate opens after full load", func() bool { return get(p).Code == http.StatusOK })
 	}
 	for name, rc := range all {
 		name, rc := name, rc

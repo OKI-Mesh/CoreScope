@@ -9,8 +9,106 @@ import (
 	"context"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const countActiveNodes = `-- name: CountActiveNodes :one
+SELECT COUNT(*) FROM nodes WHERE NOT inactive
+`
+
+func (q *Queries) CountActiveNodes(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveNodes)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countNodes = `-- name: CountNodes :one
+SELECT COUNT(*)::bigint
+FROM nodes n
+WHERE ($1::text IS NULL OR n.role = $1::text)
+  AND ($2::text IS NULL
+       OR strpos(lower(n.name), lower($2::text)) > 0)
+  AND ($3::timestamptz IS NULL OR n.first_seen <= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR n.last_seen > $4::timestamptz)
+  AND n.public_key <> ALL(COALESCE($5::text[], '{}'))
+  AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(COALESCE($6::text[], '{}')) AS hp(prefix)
+        WHERE starts_with(lower(COALESCE(n.name, '')), lower(hp.prefix))
+  )
+  AND (COALESCE(cardinality($7::text[]), 0) = 0
+       OR EXISTS (
+            SELECT 1
+            FROM transmissions t
+            JOIN observations o ON o.transmission_id = t.id
+            JOIN observers obs ON obs.id = o.observer_idx
+            WHERE t.from_pubkey = n.public_key
+              AND t.payload_type = 4
+              AND UPPER(TRIM(obs.iata)) = ANY($7::text[])
+       ))
+`
+
+type CountNodesParams struct {
+	Role           pgtype.Text
+	Search         pgtype.Text
+	Before         pgtype.Timestamptz
+	HeardSince     pgtype.Timestamptz
+	ExcludeKeys    []string
+	HiddenPrefixes []string
+	Regions        []string
+}
+
+// Same filters as ListNodes. Keep the two WHERE clauses in sync.
+func (q *Queries) CountNodes(ctx context.Context, arg CountNodesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countNodes,
+		arg.Role,
+		arg.Search,
+		arg.Before,
+		arg.HeardSince,
+		arg.ExcludeKeys,
+		arg.HiddenPrefixes,
+		arg.Regions,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countNodesByRole = `-- name: CountNodesByRole :many
+SELECT role::text AS role, count(*)::bigint AS n
+FROM nodes
+WHERE $1::timestamptz IS NULL
+   OR last_seen > $1::timestamptz
+GROUP BY role
+`
+
+type CountNodesByRoleRow struct {
+	Role string
+	N    int64
+}
+
+// active_since NULL = all nodes, no time filter.
+func (q *Queries) CountNodesByRole(ctx context.Context, activeSince pgtype.Timestamptz) ([]CountNodesByRoleRow, error) {
+	rows, err := q.db.Query(ctx, countNodesByRole, activeSince)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountNodesByRoleRow{}
+	for rows.Next() {
+		var i CountNodesByRoleRow
+		if err := rows.Scan(&i.Role, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const createOrUpdateNode = `-- name: CreateOrUpdateNode :exec
 INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
@@ -35,13 +133,13 @@ ON CONFLICT (public_key) DO UPDATE SET
 `
 
 type CreateOrUpdateNodeParams struct {
-	PublicKey string        `json:"public_key"`
-	Name      pgtype.Text   `json:"name"`
-	Role      pgtype.Text   `json:"role"`
-	Lat       pgtype.Float8 `json:"lat"`
-	Lon       pgtype.Float8 `json:"lon"`
-	RxTime    time.Time     `json:"rx_time"`
-	IngestNow time.Time     `json:"ingest_now"`
+	PublicKey string
+	Name      pgtype.Text
+	Role      *types.NodeRole
+	Lat       pgtype.Float8
+	Lon       pgtype.Float8
+	RxTime    time.Time
+	IngestNow time.Time
 }
 
 func (q *Queries) CreateOrUpdateNode(ctx context.Context, arg CreateOrUpdateNodeParams) error {
@@ -74,6 +172,90 @@ func (q *Queries) DeleteNodesByPubkeys(ctx context.Context, pubkeys []string) (i
 	return result.RowsAffected(), nil
 }
 
+const findNodesByKeyPrefix = `-- name: FindNodesByKeyPrefix :many
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive
+FROM nodes
+WHERE public_key LIKE $1::text || '%'
+ORDER BY public_key
+LIMIT 2
+`
+
+// At most two nodes whose public key starts with the prefix; two is enough to
+// tell "unique" from "ambiguous". The prefix is validated as hex by the
+// caller, so LIKE has no wildcard characters to worry about.
+func (q *Queries) FindNodesByKeyPrefix(ctx context.Context, prefix string) ([]Node, error) {
+	rows, err := q.db.Query(ctx, findNodesByKeyPrefix, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicKey,
+			&i.Name,
+			&i.Role,
+			&i.Lat,
+			&i.Lon,
+			&i.LastSeen,
+			&i.FirstSeen,
+			&i.AdvertCount,
+			&i.BatteryMv,
+			&i.TemperatureC,
+			&i.ForeignAdvert,
+			&i.DefaultScope,
+			&i.MultibyteSup,
+			&i.MultibyteEvidence,
+			&i.MultibyteMaxHashSize,
+			&i.ConfiguredScope,
+			&i.ConfiguredScopeAt,
+			&i.Inactive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getNodeByPublicKey = `-- name: GetNodeByPublicKey :one
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive
+FROM nodes
+WHERE public_key = $1::text
+`
+
+func (q *Queries) GetNodeByPublicKey(ctx context.Context, publicKey string) (Node, error) {
+	row := q.db.QueryRow(ctx, getNodeByPublicKey, publicKey)
+	var i Node
+	err := row.Scan(
+		&i.ID,
+		&i.PublicKey,
+		&i.Name,
+		&i.Role,
+		&i.Lat,
+		&i.Lon,
+		&i.LastSeen,
+		&i.FirstSeen,
+		&i.AdvertCount,
+		&i.BatteryMv,
+		&i.TemperatureC,
+		&i.ForeignAdvert,
+		&i.DefaultScope,
+		&i.MultibyteSup,
+		&i.MultibyteEvidence,
+		&i.MultibyteMaxHashSize,
+		&i.ConfiguredScope,
+		&i.ConfiguredScopeAt,
+		&i.Inactive,
+	)
+	return i, err
+}
+
 const incrementNodeAdvertCount = `-- name: IncrementNodeAdvertCount :exec
 UPDATE nodes SET advert_count = advert_count + 1 WHERE public_key = $1
 `
@@ -81,6 +263,447 @@ UPDATE nodes SET advert_count = advert_count + 1 WHERE public_key = $1
 func (q *Queries) IncrementNodeAdvertCount(ctx context.Context, publicKey string) error {
 	_, err := q.db.Exec(ctx, incrementNodeAdvertCount, publicKey)
 	return err
+}
+
+const listAllNodes = `-- name: ListAllNodes :many
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive FROM nodes ORDER BY public_key
+`
+
+// Every node, for the resolver cache. No filters or paging.
+func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listAllNodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicKey,
+			&i.Name,
+			&i.Role,
+			&i.Lat,
+			&i.Lon,
+			&i.LastSeen,
+			&i.FirstSeen,
+			&i.AdvertCount,
+			&i.BatteryMv,
+			&i.TemperatureC,
+			&i.ForeignAdvert,
+			&i.DefaultScope,
+			&i.MultibyteSup,
+			&i.MultibyteEvidence,
+			&i.MultibyteMaxHashSize,
+			&i.ConfiguredScope,
+			&i.ConfiguredScopeAt,
+			&i.Inactive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLocatedNodes = `-- name: ListLocatedNodes :many
+SELECT public_key, lat::float8 AS lat, lon::float8 AS lon
+FROM nodes
+WHERE lat IS NOT NULL AND lon IS NOT NULL
+`
+
+type ListLocatedNodesRow struct {
+	PublicKey string
+	Lat       float64
+	Lon       float64
+}
+
+func (q *Queries) ListLocatedNodes(ctx context.Context) ([]ListLocatedNodesRow, error) {
+	rows, err := q.db.Query(ctx, listLocatedNodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLocatedNodesRow{}
+	for rows.Next() {
+		var i ListLocatedNodesRow
+		if err := rows.Scan(&i.PublicKey, &i.Lat, &i.Lon); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMultibyteCapNodes = `-- name: ListMultibyteCapNodes :many
+SELECT public_key,
+       COALESCE(name, '')::text               AS name,
+       role,
+       last_seen,
+       multibyte_sup::int                     AS multibyte_sup,
+       COALESCE(multibyte_evidence, '')::text AS multibyte_evidence
+FROM nodes
+WHERE multibyte_sup > 0
+`
+
+type ListMultibyteCapNodesRow struct {
+	PublicKey         string
+	Name              string
+	Role              *types.NodeRole
+	LastSeen          pgtype.Timestamptz
+	MultibyteSup      int32
+	MultibyteEvidence string
+}
+
+func (q *Queries) ListMultibyteCapNodes(ctx context.Context) ([]ListMultibyteCapNodesRow, error) {
+	rows, err := q.db.Query(ctx, listMultibyteCapNodes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMultibyteCapNodesRow{}
+	for rows.Next() {
+		var i ListMultibyteCapNodesRow
+		if err := rows.Scan(
+			&i.PublicKey,
+			&i.Name,
+			&i.Role,
+			&i.LastSeen,
+			&i.MultibyteSup,
+			&i.MultibyteEvidence,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeCoordinates = `-- name: ListNodeCoordinates :many
+SELECT public_key, lat::float8 AS lat, lon::float8 AS lon
+FROM nodes
+WHERE lat IS NOT NULL
+  AND lon IS NOT NULL
+  AND NOT (lat = 0 AND lon = 0)
+`
+
+type ListNodeCoordinatesRow struct {
+	PublicKey string
+	Lat       float64
+	Lon       float64
+}
+
+func (q *Queries) ListNodeCoordinates(ctx context.Context) ([]ListNodeCoordinatesRow, error) {
+	rows, err := q.db.Query(ctx, listNodeCoordinates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeCoordinatesRow{}
+	for rows.Next() {
+		var i ListNodeCoordinatesRow
+		if err := rows.Scan(&i.PublicKey, &i.Lat, &i.Lon); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeHealth = `-- name: ListNodeHealth :many
+SELECT role, last_seen
+FROM nodes
+`
+
+type ListNodeHealthRow struct {
+	Role     *types.NodeRole
+	LastSeen pgtype.Timestamptz
+}
+
+func (q *Queries) ListNodeHealth(ctx context.Context) ([]ListNodeHealthRow, error) {
+	rows, err := q.db.Query(ctx, listNodeHealth)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeHealthRow{}
+	for rows.Next() {
+		var i ListNodeHealthRow
+		if err := rows.Scan(&i.Role, &i.LastSeen); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeIdentities = `-- name: ListNodeIdentities :many
+SELECT public_key, name, role
+FROM nodes
+WHERE public_key = ANY($1::text[])
+`
+
+type ListNodeIdentitiesRow struct {
+	PublicKey string
+	Name      pgtype.Text
+	Role      *types.NodeRole
+}
+
+func (q *Queries) ListNodeIdentities(ctx context.Context, pubkeys []string) ([]ListNodeIdentitiesRow, error) {
+	rows, err := q.db.Query(ctx, listNodeIdentities, pubkeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeIdentitiesRow{}
+	for rows.Next() {
+		var i ListNodeIdentitiesRow
+		if err := rows.Scan(&i.PublicKey, &i.Name, &i.Role); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodeLocationsByKeys = `-- name: ListNodeLocationsByKeys :many
+SELECT public_key, lat, lon, role
+FROM nodes
+WHERE public_key = ANY($1::text[])
+`
+
+type ListNodeLocationsByKeysRow struct {
+	PublicKey string
+	Lat       pgtype.Float8
+	Lon       pgtype.Float8
+	Role      *types.NodeRole
+}
+
+func (q *Queries) ListNodeLocationsByKeys(ctx context.Context, keys []string) ([]ListNodeLocationsByKeysRow, error) {
+	rows, err := q.db.Query(ctx, listNodeLocationsByKeys, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeLocationsByKeysRow{}
+	for rows.Next() {
+		var i ListNodeLocationsByKeysRow
+		if err := rows.Scan(
+			&i.PublicKey,
+			&i.Lat,
+			&i.Lon,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodePublicKeys = `-- name: ListNodePublicKeys :many
+SELECT public_key FROM nodes
+`
+
+func (q *Queries) ListNodePublicKeys(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listNodePublicKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var public_key string
+		if err := rows.Scan(&public_key); err != nil {
+			return nil, err
+		}
+		items = append(items, public_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodes = `-- name: ListNodes :many
+SELECT n.id, n.public_key, n.name, n.role, n.lat, n.lon, n.last_seen, n.first_seen, n.advert_count, n.battery_mv, n.temperature_c, n.foreign_advert, n.default_scope, n.multibyte_sup, n.multibyte_evidence, n.multibyte_max_hash_size, n.configured_scope, n.configured_scope_at, n.inactive
+FROM nodes n
+WHERE ($1::text IS NULL OR n.role = $1::text)
+  AND ($2::text IS NULL
+       OR strpos(lower(n.name), lower($2::text)) > 0)
+  AND ($3::timestamptz IS NULL OR n.first_seen <= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR n.last_seen > $4::timestamptz)
+  AND (COALESCE(cardinality($5::text[]), 0) = 0
+       OR EXISTS (
+            -- #1143: from_pubkey is the indexed column set at ingest for ADVERT rows
+            SELECT 1
+            FROM transmissions t
+            JOIN observations o ON o.transmission_id = t.id
+            JOIN observers obs ON obs.id = o.observer_idx
+            WHERE t.from_pubkey = n.public_key
+              AND t.payload_type = 4
+              AND UPPER(TRIM(obs.iata)) = ANY($5::text[])
+       ))
+  AND n.public_key <> ALL(COALESCE($6::text[], '{}'))
+  AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(COALESCE($7::text[], '{}')) AS hp(prefix)
+        WHERE starts_with(lower(COALESCE(n.name, '')), lower(hp.prefix))
+  )
+ORDER BY
+    CASE WHEN $8::text = 'name' THEN n.name END ASC NULLS FIRST,
+    CASE WHEN $8::text = 'packetCount' THEN n.advert_count END DESC NULLS LAST,
+    CASE WHEN $8::text NOT IN ('name', 'packetCount') THEN n.last_seen END DESC NULLS LAST,
+    n.public_key ASC
+LIMIT $10 OFFSET $9
+`
+
+type ListNodesParams struct {
+	Role           pgtype.Text
+	Search         pgtype.Text
+	Before         pgtype.Timestamptz
+	HeardSince     pgtype.Timestamptz
+	Regions        []string
+	ExcludeKeys    []string
+	HiddenPrefixes []string
+	Sort           string
+	RowOffset      int32
+	RowLimit       int32
+}
+
+// Filtered, sorted, paged node list. NULL filter = not applied.
+// sort: 'name', 'packetCount', anything else = last_seen.
+// NULLS clauses reproduce SQLite's ordering (NULLs smallest).
+func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listNodes,
+		arg.Role,
+		arg.Search,
+		arg.Before,
+		arg.HeardSince,
+		arg.Regions,
+		arg.ExcludeKeys,
+		arg.HiddenPrefixes,
+		arg.Sort,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicKey,
+			&i.Name,
+			&i.Role,
+			&i.Lat,
+			&i.Lon,
+			&i.LastSeen,
+			&i.FirstSeen,
+			&i.AdvertCount,
+			&i.BatteryMv,
+			&i.TemperatureC,
+			&i.ForeignAdvert,
+			&i.DefaultScope,
+			&i.MultibyteSup,
+			&i.MultibyteEvidence,
+			&i.MultibyteMaxHashSize,
+			&i.ConfiguredScope,
+			&i.ConfiguredScopeAt,
+			&i.Inactive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodesForGeoPrune = `-- name: ListNodesForGeoPrune :many
+SELECT public_key, COALESCE(name, '')::text AS name, lat, lon
+FROM nodes
+ORDER BY name NULLS FIRST, public_key
+`
+
+type ListNodesForGeoPruneRow struct {
+	PublicKey string
+	Name      string
+	Lat       pgtype.Float8
+	Lon       pgtype.Float8
+}
+
+func (q *Queries) ListNodesForGeoPrune(ctx context.Context) ([]ListNodesForGeoPruneRow, error) {
+	rows, err := q.db.Query(ctx, listNodesForGeoPrune)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodesForGeoPruneRow{}
+	for rows.Next() {
+		var i ListNodesForGeoPruneRow
+		if err := rows.Scan(
+			&i.PublicKey,
+			&i.Name,
+			&i.Lat,
+			&i.Lon,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lookupNode = `-- name: LookupNode :one
+SELECT public_key
+FROM nodes
+WHERE public_key = $1::text
+   OR name = $2::text
+ORDER BY (public_key = $1::text) DESC, public_key
+LIMIT 1
+`
+
+type LookupNodeParams struct {
+	Pubkey pgtype.Text
+	Name   pgtype.Text
+}
+
+func (q *Queries) LookupNode(ctx context.Context, arg LookupNodeParams) (string, error) {
+	row := q.db.QueryRow(ctx, lookupNode, arg.Pubkey, arg.Name)
+	var public_key string
+	err := row.Scan(&public_key)
+	return public_key, err
 }
 
 const markStaleNodesInactive = `-- name: MarkStaleNodesInactive :execrows
@@ -93,6 +716,140 @@ func (q *Queries) MarkStaleNodesInactive(ctx context.Context, lastSeen pgtype.Ti
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const matchNodesByPrefix = `-- name: MatchNodesByPrefix :many
+SELECT p.prefix::text AS prefix,
+       count(DISTINCT n.public_key)::bigint AS matches,
+       min(n.public_key)::text AS public_key,
+       min(COALESCE(n.name, ''))::text AS name
+FROM (SELECT unnest($1::text[]) AS prefix) AS p
+JOIN nodes n ON n.public_key LIKE p.prefix || '%'
+GROUP BY p.prefix
+`
+
+type MatchNodesByPrefixRow struct {
+	Prefix    string
+	Matches   int64
+	PublicKey string
+	Name      string
+}
+
+func (q *Queries) MatchNodesByPrefix(ctx context.Context, prefixes []string) ([]MatchNodesByPrefixRow, error) {
+	rows, err := q.db.Query(ctx, matchNodesByPrefix, prefixes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MatchNodesByPrefixRow{}
+	for rows.Next() {
+		var i MatchNodesByPrefixRow
+		if err := rows.Scan(
+			&i.Prefix,
+			&i.Matches,
+			&i.PublicKey,
+			&i.Name,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const resolveNodePubkeys = `-- name: ResolveNodePubkeys :many
+SELECT DISTINCT ON (i.input) i.input::text AS input, n.public_key
+FROM (SELECT unnest($1::text[]) AS input) AS i
+JOIN nodes n ON n.public_key = lower(i.input) OR n.name = i.input
+ORDER BY i.input, (n.public_key = lower(i.input)) DESC, n.public_key
+`
+
+type ResolveNodePubkeysRow struct {
+	Input     string
+	PublicKey string
+}
+
+// Maps each input (a pubkey or a node name) to a node's public key. Inputs that
+// match nothing are absent from the result. An exact pubkey match wins over a
+// name match, and among name matches the lowest pubkey wins, so the answer is
+// stable. (SQLite's LIMIT 1 had no ORDER BY, so it was arbitrary.)
+func (q *Queries) ResolveNodePubkeys(ctx context.Context, inputs []string) ([]ResolveNodePubkeysRow, error) {
+	rows, err := q.db.Query(ctx, resolveNodePubkeys, inputs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ResolveNodePubkeysRow{}
+	for rows.Next() {
+		var i ResolveNodePubkeysRow
+		if err := rows.Scan(&i.Input, &i.PublicKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchNodes = `-- name: SearchNodes :many
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive
+FROM nodes
+WHERE strpos(lower(name), lower($1::text)) > 0
+   OR starts_with(public_key, lower($1::text))
+ORDER BY last_seen DESC NULLS LAST, public_key ASC
+LIMIT $2
+`
+
+type SearchNodesParams struct {
+	Query    string
+	RowLimit int32
+}
+
+// Nodes whose name contains the query (case-insensitive) or whose public key
+// starts with it. The query is a literal: % and _ have no special meaning.
+func (q *Queries) SearchNodes(ctx context.Context, arg SearchNodesParams) ([]Node, error) {
+	rows, err := q.db.Query(ctx, searchNodes, arg.Query, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.PublicKey,
+			&i.Name,
+			&i.Role,
+			&i.Lat,
+			&i.Lon,
+			&i.LastSeen,
+			&i.FirstSeen,
+			&i.AdvertCount,
+			&i.BatteryMv,
+			&i.TemperatureC,
+			&i.ForeignAdvert,
+			&i.DefaultScope,
+			&i.MultibyteSup,
+			&i.MultibyteEvidence,
+			&i.MultibyteMaxHashSize,
+			&i.ConfiguredScope,
+			&i.ConfiguredScopeAt,
+			&i.Inactive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setForeignAdvert = `-- name: SetForeignAdvert :exec
@@ -111,9 +868,9 @@ UPDATE nodes SET battery_mv = COALESCE($1, battery_mv),
 `
 
 type UpdateBatteryVoltageAndTempCParams struct {
-	BatteryMv    pgtype.Int4   `json:"battery_mv"`
-	TemperatureC pgtype.Float8 `json:"temperature_c"`
-	PublicKey    string        `json:"public_key"`
+	BatteryMv    pgtype.Int4
+	TemperatureC pgtype.Float8
+	PublicKey    string
 }
 
 func (q *Queries) UpdateBatteryVoltageAndTempC(ctx context.Context, arg UpdateBatteryVoltageAndTempCParams) error {
@@ -132,9 +889,9 @@ WHERE public_key = $3
 `
 
 type UpdateNodeConfiguredScopeParams struct {
-	Scope      string             `json:"scope"`
-	ReportedAt pgtype.Timestamptz `json:"reported_at"`
-	PublicKey  string             `json:"public_key"`
+	Scope      string
+	ReportedAt pgtype.Timestamptz
+	PublicKey  string
 }
 
 func (q *Queries) UpdateNodeConfiguredScope(ctx context.Context, arg UpdateNodeConfiguredScopeParams) error {
@@ -150,8 +907,8 @@ WHERE public_key = $2
 `
 
 type UpdateNodeDefaultScopeParams struct {
-	Scope     string `json:"scope"`
-	PublicKey string `json:"public_key"`
+	Scope     string
+	PublicKey string
 }
 
 func (q *Queries) UpdateNodeDefaultScope(ctx context.Context, arg UpdateNodeDefaultScopeParams) error {
@@ -160,7 +917,6 @@ func (q *Queries) UpdateNodeDefaultScope(ctx context.Context, arg UpdateNodeDefa
 }
 
 const updateNodeLastSeen = `-- name: UpdateNodeLastSeen :execrows
-
 UPDATE nodes
 SET last_seen = $1
 WHERE public_key = $2
@@ -168,12 +924,10 @@ WHERE public_key = $2
 `
 
 type UpdateNodeLastSeenParams struct {
-	LastSeen  pgtype.Timestamptz `json:"last_seen"`
-	PublicKey string             `json:"public_key"`
+	LastSeen  pgtype.Timestamptz
+	PublicKey string
 }
 
-// -- name: GetObserverByPubkey :one
-// SELECT * FROM observers WHERE pubkey = $1;
 func (q *Queries) UpdateNodeLastSeen(ctx context.Context, arg UpdateNodeLastSeenParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateNodeLastSeen, arg.LastSeen, arg.PublicKey)
 	if err != nil {
@@ -199,9 +953,9 @@ WHERE n.public_key = v.public_key
 `
 
 type UpdateNodeMultibyteCapsParams struct {
-	Pubkeys  []string `json:"pubkeys"`
-	Sups     []int32  `json:"sups"`
-	Evidence []string `json:"evidence"`
+	Pubkeys  []string
+	Sups     []int32
+	Evidence []string
 }
 
 func (q *Queries) UpdateNodeMultibyteCaps(ctx context.Context, arg UpdateNodeMultibyteCapsParams) (int64, error) {

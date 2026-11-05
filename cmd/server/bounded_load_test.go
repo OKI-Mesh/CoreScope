@@ -1,100 +1,37 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
-func createTestDB(tb testing.TB) *sql.DB {
-	tb.Helper()
-	dbPath := filepath.Join(tb.TempDir(), "test.db")
-
-	conn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		tb.Fatal(err)
-	}
-	tb.Cleanup(func() { conn.Close() })
-
-	if _, err := database.BaselineStampMigrate(conn, nil); err != nil {
-		tb.Fatalf("migrating test db: %v", err)
-	}
-	return conn
-}
-
-// seedTransmissions inserts numTx transmissions with one observation each.
-func seedTransmissions(tb testing.TB, conn *sql.DB, numTx int) {
-	tb.Helper()
-
-	// Reuse the observer if a fixture already created it. Adjust columns to the real schema.
-	if _, err := conn.Exec(`INSERT OR IGNORE INTO observers (id, name) VALUES ('obs1', 'Obs1')`); err != nil {
-		tb.Fatalf("seed observer: %v", err)
-	}
-	var observerIdx int64
-	if err := conn.QueryRow(`SELECT rowid FROM observers WHERE id = 'obs1'`).Scan(&observerIdx); err != nil {
-		tb.Fatalf("lookup observer: %v", err)
-	}
-
-	tx, err := conn.Begin()
-	if err != nil {
-		tb.Fatal(err)
-	}
-	defer tx.Rollback()
-
-	txStmt, err := tx.Prepare(`INSERT INTO transmissions
-		(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		tb.Fatal(err)
-	}
-	defer txStmt.Close()
-	obsStmt, err := tx.Prepare(`INSERT INTO observations
-		(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		tb.Fatal(err)
-	}
-	defer obsStmt.Close()
-
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for i := 1; i <= numTx; i++ {
-		t := base.Add(time.Duration(i) * time.Minute)
-		if _, err := txStmt.Exec(i, "aabb", fmt.Sprintf("h%04d", i), t.Format(time.RFC3339),
-			0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i), t.Unix()); err != nil {
-			tb.Fatalf("insert transmission %d: %v", i, err)
-		}
-		if _, err := obsStmt.Exec(i, i, observerIdx, "RX", -10.0, -80.0, 5,
-			`["aa","bb"]`, t.Unix()); err != nil {
-			tb.Fatalf("insert observation %d: %v", i, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		tb.Fatal(err)
-	}
-}
-
-func loadStoreFromDB(t *testing.T, db *DB, maxMemMB int) *PacketStore {
+func loadStoreFromDB(t *testing.T, db *database.DB, maxMemMB int) *PacketStore {
+	ctx := t.Context()
 	t.Helper()
+
 	store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: maxMemMB})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	return store
 }
 
 func TestBoundedLoad_LimitedMemory(t *testing.T) {
-	db := createTestDB(t)
-	seedTransmissions(t, db, 5000)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	dbtest.SeedTransmissions(t, db, 5000)
 
 	// Use 1MB budget — should load far fewer than 5000 packets
-	store := loadStoreFromDB(t, &DB{conn: db, isV3: true}, 1)
-	defer store.db.conn.Close()
+	store := loadStoreFromDB(t, db, 1)
 
 	loaded := len(store.packets)
 	if loaded >= 5000 {
@@ -107,12 +44,12 @@ func TestBoundedLoad_LimitedMemory(t *testing.T) {
 }
 
 func TestBoundedLoad_NewestFirst(t *testing.T) {
-	db := createTestDB(t)
-	seedTransmissions(t, db, 5000)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	dbtest.SeedTransmissions(t, db, 5000)
 
 	// Use 1MB budget — should load far fewer than 5000 packets
-	store := loadStoreFromDB(t, &DB{conn: db, isV3: true}, 1)
-	defer store.db.conn.Close()
+	store := loadStoreFromDB(t, db, 1)
 
 	loaded := len(store.packets)
 	if loaded >= 5000 {
@@ -124,27 +61,27 @@ func TestBoundedLoad_NewestFirst(t *testing.T) {
 	// Last packet in store (sorted ASC) should be the newest in DB.
 	last := store.packets[loaded-1]
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	newestExpected := base.Add(5000 * time.Minute).Format(time.RFC3339)
-	if last.FirstSeen != newestExpected {
+	newestExpected := base.Add(5000 * time.Minute)
+	if !last.FirstSeen.Equal(newestExpected) {
 		t.Errorf("expected last packet to be newest (%s), got %s", newestExpected, last.FirstSeen)
 	}
 
 	// First packet should NOT be the oldest in the DB (minute 1)
 	first := store.packets[0]
-	oldestAll := base.Add(1 * time.Minute).Format(time.RFC3339)
-	if first.FirstSeen == oldestAll {
+	oldestAll := base.Add(1 * time.Minute)
+	if first.FirstSeen.Equal(oldestAll) {
 		t.Errorf("first loaded packet should not be the absolute oldest when bounded")
 	}
 }
 
 func TestBoundedLoad_OldestLoadedSet(t *testing.T) {
-	db := createTestDB(t)
-	seedTransmissions(t, db, 5000)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	dbtest.SeedTransmissions(t, db, 5000)
 
-	store := loadStoreFromDB(t, &DB{conn: db, isV3: true}, 1)
-	defer store.db.conn.Close()
+	store := loadStoreFromDB(t, db, 1)
 
-	if store.oldestLoaded == "" {
+	if store.oldestLoaded.IsZero() {
 		t.Fatal("oldestLoaded should be set after bounded load")
 	}
 	if len(store.packets) > 0 && store.oldestLoaded != store.packets[0].FirstSeen {
@@ -154,11 +91,11 @@ func TestBoundedLoad_OldestLoadedSet(t *testing.T) {
 }
 
 func TestBoundedLoad_UnlimitedWithZero(t *testing.T) {
-	db := createTestDB(t)
-	seedTransmissions(t, db, 200)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	dbtest.SeedTransmissions(t, db, 200)
 
-	store := loadStoreFromDB(t, &DB{conn: db, isV3: true}, 0)
-	defer store.db.conn.Close()
+	store := loadStoreFromDB(t, db, 0)
 
 	if len(store.packets) != 200 {
 		t.Errorf("expected all 200 packets with maxMemoryMB=0, got %d", len(store.packets))
@@ -166,112 +103,108 @@ func TestBoundedLoad_UnlimitedWithZero(t *testing.T) {
 }
 
 func TestBoundedLoad_AscendingOrder(t *testing.T) {
-	db := createTestDB(t)
-	seedTransmissions(t, db, 5000)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	dbtest.SeedTransmissions(t, db, 5000)
 
-	store := loadStoreFromDB(t, &DB{conn: db, isV3: true}, 1)
-	defer store.db.conn.Close()
+	store := loadStoreFromDB(t, db, 1)
 
 	// Verify packets are in ascending first_seen order
 	for i := 1; i < len(store.packets); i++ {
-		if store.packets[i].FirstSeen < store.packets[i-1].FirstSeen {
+		if store.packets[i].FirstSeen.Before(store.packets[i-1].FirstSeen) {
 			t.Fatalf("packets not in ascending order at index %d: %s < %s",
 				i, store.packets[i].FirstSeen, store.packets[i-1].FirstSeen)
 		}
 	}
 }
 
-// loadStoreWithRetention creates a PacketStore with retentionHours set.
-func loadStoreWithRetention(t *testing.T, dbPath string, retentionHours float64) *PacketStore {
+// loadStoreWithRetention creates a PacketStore with retentionHours set and loads it.
+func loadStoreWithRetention(t *testing.T, db *database.DB, retentionHours float64) *PacketStore {
+	ctx := t.Context()
 	t.Helper()
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	cfg := &PacketStoreConfig{RetentionHours: retentionHours}
 	store := NewPacketStore(db, cfg)
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	return store
 }
 
-// createTestDBWithAgedPackets inserts numRecent packets with timestamps within
-// the last hour and numOld packets with timestamps 48 hours ago.
-func createTestDBWithAgedPackets(t *testing.T, numRecent, numOld int) string {
-	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-
-	migrateConn, err := sql.Open("sqlite", dbPath)
+// ensureObserver returns the id of the observer with the given pubkey,
+// creating it if it does not exist yet.
+func ensureObserver(tb testing.TB, db *database.DB, pubkey string) int64 {
+	tb.Helper()
+	var id int64
+	err := db.SQL().QueryRowContext(tb.Context(), `
+		INSERT INTO observers (pubkey, name, first_seen, last_seen)
+		VALUES ($1, $1, now(), now())
+		ON CONFLICT (pubkey) DO UPDATE SET pubkey = EXCLUDED.pubkey
+		RETURNING id`, pubkey).Scan(&id)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatalf("ensure observer %s: %v", pubkey, err)
 	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
+	return id
+}
 
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
+func seedAgedPackets(tb testing.TB, db *database.DB, numRecent, numOld int) {
+	tb.Helper()
+	ctx := tb.Context()
+	now := time.Now().UTC().Truncate(time.Second)
 
-	// Real observers row so the LEFT JOIN observers ON obs.rowid =
-	// o.observer_idx resolves — without this, ObserverID/byObserver
-	// silently come back empty.
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
+	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        strings.Repeat("e3", 32),
+		Name:      "Obs1",
+		IATA:      "BRU",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
 	if err != nil {
-		t.Fatalf("insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("observer rowid: %v", err)
+		tb.Fatalf("seed observer: %v", err)
 	}
 
-	now := time.Now().UTC()
-	id := 1
-	// Single transaction for all inserts — see createTestDBAt for the rationale
-	// (auto-commit per Exec fsyncs per row). numOld+numRecent
-	// is small here today, but wrapping keeps the fixture robust if callers scale
-	// it up, and is consistent with the other builders.
-	if _, err := conn.Exec("BEGIN"); err != nil {
-		t.Fatalf("test DB BEGIN: %v", err)
+	insert := func(hashPrefix, rawHex string, n int, start time.Time, step time.Duration) {
+		tb.Helper()
+		for i := 0; i < n; i++ {
+			at := start.Add(time.Duration(i) * step)
+			txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+				Hash:        fmt.Sprintf("%s%012x", hashPrefix, i),
+				RawHex:      rawHex,
+				RouteType:   types.RouteType(0),
+				PayloadType: types.PayloadType(4),
+				DecodedJSON: "{}",
+			}, at)
+			if err != nil {
+				tb.Fatalf("insert %s transmission %d: %v", hashPrefix, i, err)
+			}
+			idx := observerIdx
+			_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+				TransmissionID: txID,
+				ObserverIdx:    &idx,
+				SNR:            nil,
+				RSSI:           nil,
+				Timestamp:      at,
+			}, nil, nil)
+			if err != nil {
+				tb.Fatalf("insert %s observation %d: %v", hashPrefix, i, err)
+			}
+			if !inserted {
+				tb.Fatalf("expected observation to be inserted for %s/%d", hashPrefix, i)
+			}
+		}
 	}
-	// Insert old packets (48 hours ago)
-	for i := 0; i < numOld; i++ {
-		oldT := now.Add(-48 * time.Hour).Add(time.Duration(i) * time.Second)
-		ts := oldT.Format(time.RFC3339)
-		conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-			VALUES (?,?,?,?,0,4,1,?,?)`, id, "aa", fmt.Sprintf("old%d", i), ts, `{}`, oldT.Unix())
-		conn.Exec(`INSERT INTO observations (id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-			VALUES (?,?,?,?,?,?,?,?,?)`, id, id, observerRowID, "RX", -10.0, -80.0, 5, `[]`, oldT.Unix())
-		id++
-	}
-	// Insert recent packets (within last hour)
-	for i := 0; i < numRecent; i++ {
-		newT := now.Add(-30 * time.Minute).Add(time.Duration(i) * time.Second)
-		ts := newT.Format(time.RFC3339)
-		conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-			VALUES (?,?,?,?,0,4,1,?,?)`, id, "bb", fmt.Sprintf("new%d", i), ts, `{}`, newT.Unix())
-		conn.Exec(`INSERT INTO observations (id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-			VALUES (?,?,?,?,?,?,?,?,?)`, id, id, observerRowID, "RX", -10.0, -80.0, 5, `[]`, newT.Unix())
-		id++
-	}
-	if _, err := conn.Exec("COMMIT"); err != nil {
-		t.Fatalf("test DB COMMIT: %v", err)
-	}
-	return dbPath
+	insert("0d00", "aa", numOld, now.Add(-48*time.Hour), time.Second)
+	insert("0e00", "bb", numRecent, now.Add(-30*time.Minute), time.Second)
 }
 
 func TestRetentionLoad_OnlyLoadsRecentPackets(t *testing.T) {
-	dbPath := createTestDBWithAgedPackets(t, 50, 100)
-	defer os.RemoveAll(filepath.Dir(dbPath))
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	seedAgedPackets(t, db, 50, 100)
 
 	// retention = 2 hours — should load only the 50 recent packets, not the 100 old ones
-	store := loadStoreWithRetention(t, dbPath, 2)
-	defer store.db.conn.Close()
+	store := loadStoreWithRetention(t, db, 2)
 
 	if len(store.packets) != 50 {
 		t.Errorf("expected 50 recent packets, got %d (old packets should be excluded by retentionHours)", len(store.packets))
@@ -279,12 +212,13 @@ func TestRetentionLoad_OnlyLoadsRecentPackets(t *testing.T) {
 }
 
 func TestRetentionLoad_ZeroRetentionLoadsAll(t *testing.T) {
-	dbPath := createTestDBWithAgedPackets(t, 50, 100)
-	defer os.RemoveAll(filepath.Dir(dbPath))
+
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	seedAgedPackets(t, db, 50, 100)
 
 	// retention = 0 (unlimited) — should load all 150 packets
-	store := loadStoreWithRetention(t, dbPath, 0)
-	defer store.db.conn.Close()
+	store := loadStoreWithRetention(t, db, 0)
 
 	if len(store.packets) != 150 {
 		t.Errorf("expected all 150 packets with retentionHours=0, got %d", len(store.packets))
@@ -306,162 +240,144 @@ func TestEstimateStoreTxBytesTypical(t *testing.T) {
 }
 
 func BenchmarkLoad_Bounded(b *testing.B) {
-	dir := b.TempDir()
-	dbPath := filepath.Join(dir, "bench.db")
-	createTestDBAt(b, dbPath, 5000)
+	ctx := b.Context()
+
+	db := setupTestDB(b)
+	dbtest.SeedTransmissions(b, db, 5000)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db, _ := OpenDB(dbPath)
-		cfg := &PacketStoreConfig{MaxMemoryMB: 1}
-		store := NewPacketStore(db, cfg)
-		store.Load()
-		db.conn.Close()
+		b.StopTimer()
+		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 1})
+		b.StartTimer()
+
+		if err := store.LoadChunked(ctx, 1000); err != nil {
+			b.Fatalf("LoadChunked(): %v", err)
+		}
 	}
 }
 
 func BenchmarkLoad_Unlimited(b *testing.B) {
-	dir := b.TempDir()
-	dbPath := filepath.Join(dir, "bench.db")
-	createTestDBAt(b, dbPath, 5000)
+	ctx := b.Context()
+
+	db := setupTestDB(b)
+	dbtest.SeedTransmissions(b, db, 5000)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db, _ := OpenDB(dbPath)
-		cfg := &PacketStoreConfig{MaxMemoryMB: 0}
-		store := NewPacketStore(db, cfg)
-		store.Load()
-		db.conn.Close()
+		b.StopTimer()
+		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 0})
+		b.StartTimer()
+
+		if err := store.LoadChunked(ctx, 1000); err != nil {
+			b.Fatalf("LoadChunked(): %v", err)
+		}
 	}
 }
 
 // BenchmarkLoad_30K_Bounded benchmarks bounded Load() with 30K transmissions
 // and realistic observation counts (1–5 per transmission).
 func BenchmarkLoad_30K_Bounded(b *testing.B) {
-	dir := b.TempDir()
-	dbPath := filepath.Join(dir, "bench30k.db")
-	createTestDBWithObs(b, dbPath, 30000)
+	ctx := b.Context()
+
+	db := setupTestDB(b)
+	dbtest.SeedTransmissions(b, db, 30000)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db, _ := OpenDB(dbPath)
-		cfg := &PacketStoreConfig{MaxMemoryMB: 50}
-		store := NewPacketStore(db, cfg)
-		store.Load()
-		db.conn.Close()
+		b.StopTimer()
+		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 1})
+		b.StartTimer()
+
+		if err := store.LoadChunked(ctx, 1000); err != nil {
+			b.Fatalf("LoadChunked(): %v", err)
+		}
 	}
 }
 
 // BenchmarkLoad_30K_Unlimited benchmarks unlimited Load() with 30K transmissions
 // and realistic observation counts (1–5 per transmission).
 func BenchmarkLoad_30K_Unlimited(b *testing.B) {
-	dir := b.TempDir()
-	dbPath := filepath.Join(dir, "bench30k.db")
-	createTestDBWithObs(b, dbPath, 30000)
+	ctx := b.Context()
+
+	dsn := createTestDBWithObs(b, 30000)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db, _ := OpenDB(dbPath)
-		cfg := &PacketStoreConfig{MaxMemoryMB: 0}
-		store := NewPacketStore(db, cfg)
-		store.Load()
-		db.conn.Close()
+		b.StopTimer()
+		db, err := OpenDB(b.Context(), dsn)
+		if err != nil {
+			b.Fatalf("OpenDB: %v", err)
+		}
+		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 0})
+		b.StartTimer()
+
+		if err := store.LoadChunked(ctx, 1000); err != nil {
+			b.Fatalf("LoadChunked(): %v", err)
+		}
+
+		b.StopTimer()
+		db.Close()
+		b.StartTimer()
 	}
 }
 
-// createTestDBAt is like createTestDB but writes to a specific path.
-func createTestDBAt(tb testing.TB, dbPath string, numTx int) {
+// createTestDBWithObs returns the connection string of a fresh migrated
+// database with numTx transmissions and realistic observation counts (1-5 per
+// transmission, from distinct observers so the dedup index is satisfied), two
+// hops per observation. Timestamps ascend with i and end at "now", so the
+// fixture does not age out of any retention window.
+func createTestDBWithObs(tb testing.TB, numTx int) string {
 	tb.Helper()
+	ctx := tb.Context()
+	dsn := pgtest.NewDatabase(tb)
 
-	conn, err := sql.Open("sqlite", dbPath)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if _, err := database.BaselineStampMigrate(conn, nil); err != nil {
-		conn.Close()
-		tb.Fatalf("migrating test db: %v", err)
-	}
-	conn.Close()
+	conn := stdlib.OpenDBFromPool(pool)
+	defer func() { conn.Close(); pool.Close() }()
 
-	// reopen with whatever pragmas this test needs, then seed data
-	conn, err = sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		tb.Fatal(err)
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO observers (pubkey, name, first_seen, last_seen) VALUES
+			('obs1', 'Alpha',   $1, $1),
+			('obs2', 'Bravo',   $1, $1),
+			('obs3', 'Charlie', $1, $1),
+			('obs4', 'Delta',   $1, $1),
+			('obs5', 'Echo',    $1, $1)`, now); err != nil {
+		tb.Fatalf("seed observers: %v", err)
 	}
-	defer conn.Close()
 
-	seedTransmissions(tb, conn, numTx)
-}
-
-// createTestDBWithObs creates a test DB with realistic observation counts (1–5 per tx).
-func createTestDBWithObs(tb testing.TB, dbPath string, numTx int) {
-	tb.Helper()
-	conn, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		tb.Fatal(err)
+	if _, err := conn.ExecContext(ctx, `
+		WITH t AS (
+			INSERT INTO transmissions
+				(raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+			SELECT 'aabb', 'h' || lpad(i::text, 6, '0'),
+			       $1::timestamptz - ($2::int - i) * interval '1 minute', 0, 4, 1,
+			       '{"pubKey":"pk' || lpad(i::text, 6, '0') || '"}',
+			       $1::timestamptz - ($2::int - i) * interval '1 minute'
+			FROM generate_series(1, $2::int) AS i
+			RETURNING id, first_seen
+		), o AS (
+			INSERT INTO observations
+				(transmission_id, observer_idx, direction, snr, rssi, score, timestamp)
+			SELECT t.id, ob.id, 'RX',
+			       -5.0 + j * 2.5,
+			       -90.0 + j * 5.0,
+			       5 - j,
+			       t.first_seen
+			FROM t
+			CROSS JOIN LATERAL generate_series(0, (t.id % 5)::int) AS j   -- 1 to 5 observations
+			JOIN observers ob ON ob.pubkey = 'obs' || (j + 1)
+			RETURNING id
+		)
+		INSERT INTO observation_path_hops (observation_id, hop_index, prefix)
+		SELECT o.id, h.idx, h.p
+		FROM o CROSS JOIN (VALUES (0, 'aa'), (1, 'bb')) AS h(idx, p)`,
+		now, numTx); err != nil {
+		tb.Fatalf("seed %d transmissions: %v", numTx, err)
 	}
-	defer conn.Close()
-
-	execOrFail := func(sqlStr string) {
-		if _, err := conn.Exec(sqlStr); err != nil {
-			tb.Fatalf("test DB setup exec failed: %v\nSQL: %s", err, sqlStr)
-		}
-	}
-	execOrFail(`CREATE TABLE IF NOT EXISTS transmissions (
-		id INTEGER PRIMARY KEY, raw_hex TEXT, hash TEXT, first_seen TEXT,
-		route_type INTEGER, payload_type INTEGER, payload_version INTEGER, decoded_json TEXT
-	)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS observations (
-		id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_id TEXT, observer_name TEXT,
-		direction TEXT, snr REAL, rssi REAL, score INTEGER, path_json TEXT, timestamp TEXT, raw_hex TEXT
-	)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS observers (rowid INTEGER PRIMARY KEY, id TEXT, name TEXT, iata TEXT, inactive INTEGER)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL,
-		last_seen TEXT, first_seen TEXT, frequency REAL
-	)`)
-	execOrFail(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)`)
-	execOrFail(`INSERT INTO schema_version (version) VALUES (1)`)
-	execOrFail(`CREATE INDEX IF NOT EXISTS idx_tx_first_seen ON transmissions(first_seen)`)
-
-	txStmt, err := conn.Prepare("INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		tb.Fatalf("test DB prepare transmissions: %v", err)
-	}
-	obsStmt, err := conn.Prepare("INSERT INTO observations (id, transmission_id, observer_id, observer_name, direction, snr, rssi, score, path_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		tb.Fatalf("test DB prepare observations: %v", err)
-	}
-	defer txStmt.Close()
-	defer obsStmt.Close()
-
-	observers := []string{"obs1", "obs2", "obs3", "obs4", "obs5"}
-	obsNames := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo"}
-	obsID := 1
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	// Single transaction for all inserts — see createTestDBAt for the rationale
-	// (auto-commit per Exec would fsync per row; at numTx=30000
-	// the benchmarks would otherwise stall for minutes). One BEGIN/COMMIT.
-	if _, err := conn.Exec("BEGIN"); err != nil {
-		tb.Fatalf("test DB BEGIN: %v", err)
-	}
-	for i := 1; i <= numTx; i++ {
-		ts := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
-		hash := fmt.Sprintf("h%06d", i)
-		if _, err := txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%06d"}`, i)); err != nil {
-			tb.Fatalf("test DB insert transmission %d: %v", i, err)
-		}
-		nObs := (i % 5) + 1 // 1–5 observations per transmission
-		for j := 0; j < nObs; j++ {
-			snr := -5.0 + float64(j)*2.5
-			rssi := -90.0 + float64(j)*5.0
-			if _, err := obsStmt.Exec(obsID, i, observers[j], obsNames[j], "RX", snr, rssi, 5-j, `["aa","bb"]`, ts); err != nil {
-				tb.Fatalf("test DB insert observation %d: %v", obsID, err)
-			}
-			obsID++
-		}
-	}
-	if _, err := conn.Exec("COMMIT"); err != nil {
-		tb.Fatalf("test DB COMMIT: %v", err)
-	}
+	return dsn
 }

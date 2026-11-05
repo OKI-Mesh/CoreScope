@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -17,39 +19,45 @@ func serveResolve(srv *Server, path string) *httptest.ResponseRecorder {
 }
 
 func TestResolvePrefix(t *testing.T) {
-	db := setupTestDBv2(t)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('efef7943505052b47f1809488ea4b4d3942d4ed72d2b1953b90a9f5e62a65fb5','NodeUnique','repeater','t','t',1)`)
-	// Two nodes sharing the 4-hex prefix aabb → ambiguous at the new minimum.
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('aabb110000000000000000000000000000000000000000000000000000000000','NodeA','repeater','t','t',1)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('aabb220000000000000000000000000000000000000000000000000000000000','NodeB','repeater','t','t',1)`)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+
+	for _, n := range []database.NodeInput{
+		{PublicKey: "efef7943505052b47f1809488ea4b4d3942d4ed72d2b1953b90a9f5e62a65fb5", Name: "NodeUnique", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: "aabb110000000000000000000000000000000000000000000000000000000000", Name: "NodeA", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: "aabb220000000000000000000000000000000000000000000000000000000000", Name: "NodeB", Role: "repeater", RxTime: now, IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
+	}
 	srv := &Server{db: db}
 
-	// unique 3-byte prefix → name
 	var r1 ResolvePrefixResp
-	json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=efef79").Body.Bytes(), &r1)
+	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=efef79").Body.Bytes(), &r1); err != nil {
+		t.Fatalf("decode unique: %v", err)
+	}
 	if r1.Name != "NodeUnique" || r1.Ambiguous {
 		t.Fatalf("unique: %+v", r1)
 	}
-	// colliding 4-hex prefix (aabb…) → ambiguous, no name
 	var r2 ResolvePrefixResp
-	json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=aabb").Body.Bytes(), &r2)
+	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=aabb").Body.Bytes(), &r2); err != nil {
+		t.Fatalf("decode ambiguous: %v", err)
+	}
 	if !r2.Ambiguous || r2.Name != "" {
 		t.Fatalf("ambiguous: %+v", r2)
 	}
-	// not found → empty name, not ambiguous
 	var r3 ResolvePrefixResp
-	json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=dead").Body.Bytes(), &r3)
+	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=dead").Body.Bytes(), &r3); err != nil {
+		t.Fatalf("decode notfound: %v", err)
+	}
 	if r3.Name != "" || r3.Ambiguous {
 		t.Fatalf("notfound: %+v", r3)
 	}
-	// non-hex prefix → 400
 	if serveResolve(srv, "/api/nodes/resolve?prefix=xyz").Code != 400 {
 		t.Fatal("non-hex prefix should be 400")
 	}
-	// #15: prefixes shorter than 4 hex are rejected (kills 256-prefix enumeration)
 	for _, short := range []string{"a", "aa", "abc"} {
 		if code := serveResolve(srv, "/api/nodes/resolve?prefix="+short).Code; code != 400 {
 			t.Fatalf("prefix %q (<4 hex) should be 400, got %d", short, code)
@@ -57,29 +65,37 @@ func TestResolvePrefix(t *testing.T) {
 	}
 }
 
-// TestResolvePrefixHidesBlacklistedAndHidden verifies the #15 parity fix: a
-// unique match that is blacklisted or whose name is hidden (#1181) resolves as
-// not-found, never leaking an identity the rest of the API hides.
 func TestResolvePrefixHidesBlacklistedAndHidden(t *testing.T) {
-	db := setupTestDBv2(t)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
 	const blPK = "bbcc110000000000000000000000000000000000000000000000000000000000"
 	const hidPK = "ddee220000000000000000000000000000000000000000000000000000000000"
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('`+blPK+`','BlacklistedNode','repeater','t','t',1)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('`+hidPK+`','🚫HiddenNode','repeater','t','t',1)`)
+
+	for _, n := range []database.NodeInput{
+		{PublicKey: blPK, Name: "BlacklistedNode", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: hidPK, Name: "🚫HiddenNode", Role: "repeater", RxTime: now, IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
+	}
 	srv := &Server{db: db, cfg: &Config{
 		NodeBlacklist:      []string{blPK},
 		HiddenNamePrefixes: []string{"🚫"},
 	}}
 
 	var rb ResolvePrefixResp
-	json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=bbcc11").Body.Bytes(), &rb)
+	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=bbcc11").Body.Bytes(), &rb); err != nil {
+		t.Fatalf("decode blacklisted: %v", err)
+	}
 	if rb.Name != "" || rb.Pubkey != "" || rb.Ambiguous {
 		t.Fatalf("blacklisted node must resolve as not-found: %+v", rb)
 	}
 	var rh ResolvePrefixResp
-	json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=ddee22").Body.Bytes(), &rh)
+	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=ddee22").Body.Bytes(), &rh); err != nil {
+		t.Fatalf("decode hidden: %v", err)
+	}
 	if rh.Name != "" || rh.Pubkey != "" || rh.Ambiguous {
 		t.Fatalf("hidden-prefix node must resolve as not-found: %+v", rh)
 	}

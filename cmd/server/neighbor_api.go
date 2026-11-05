@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -21,11 +24,11 @@ type NeighborResponse struct {
 }
 
 type NeighborEntry struct {
-	Pubkey *string `json:"pubkey"`
-	Prefix string  `json:"prefix"`
-	Name   *string `json:"name"`
-	Role   *string `json:"role"`
-	Count  int     `json:"count"`
+	Pubkey *string         `json:"pubkey"`
+	Prefix string          `json:"prefix"`
+	Name   *string         `json:"name"`
+	Role   *types.NodeRole `json:"role"`
+	Count  int             `json:"count"`
 	// CountsByMode breaks Count down by observation hash-prefix mode in bytes
 	// (1, 2, 4, 6). Lets the frontend weight confidence by ambiguity rather
 	// than treating every sighting as equal evidence. Issue #1638.
@@ -42,9 +45,9 @@ type NeighborEntry struct {
 }
 
 type CandidateEntry struct {
-	Pubkey string `json:"pubkey"`
-	Name   string `json:"name"`
-	Role   string `json:"role"`
+	Pubkey string         `json:"pubkey"`
+	Name   string         `json:"name"`
+	Role   types.NodeRole `json:"role"`
 }
 
 type NeighborGraphResponse struct {
@@ -54,10 +57,10 @@ type NeighborGraphResponse struct {
 }
 
 type GraphNode struct {
-	Pubkey        string `json:"pubkey"`
-	Name          string `json:"name"`
-	Role          string `json:"role"`
-	NeighborCount int    `json:"neighbor_count"`
+	Pubkey        string         `json:"pubkey"`
+	Name          string         `json:"name"`
+	Role          types.NodeRole `json:"role"`
+	NeighborCount int            `json:"neighbor_count"`
 }
 
 type GraphEdge struct {
@@ -104,12 +107,13 @@ func (s *Server) getNeighborGraph() *NeighborGraph {
 // ─── Handlers ──────────────────────────────────────────────────────────────────
 
 func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	pubkey := strings.ToLower(mux.Vars(r)["pubkey"])
 	if s.cfg.IsBlacklisted(pubkey) {
 		writeError(w, 404, "Not found")
 		return
 	}
-	if s.isPubkeyHidden(pubkey) {
+	if s.isPubkeyHidden(ctx, pubkey) {
 		writeError(w, 404, "Not found")
 		return
 	}
@@ -136,7 +140,7 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 
 	// Build node info lookup for names/roles/coordinates.
-	nodeMap := s.buildNodeInfoMap()
+	nodeMap := s.buildNodeInfoMap(ctx)
 
 	// Look up the queried node's GPS coordinates for distance computation.
 	var srcInfo nodeInfo
@@ -232,6 +236,7 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNeighborGraph(w http.ResponseWriter, r *http.Request) {
 	minCount := 5
+	ctx := r.Context()
 	if v := r.URL.Query().Get("min_count"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			minCount = n
@@ -244,7 +249,11 @@ func (s *Server) handleNeighborGraph(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	region := r.URL.Query().Get("region")
-	roleFilter := strings.ToLower(r.URL.Query().Get("role"))
+	roleFilter := types.NodeRole(strings.ToLower(r.URL.Query().Get("role")))
+	if roleFilter != "" && !roleFilter.Filterable() {
+		http.Error(w, "invalid role", http.StatusBadRequest)
+		return
+	}
 
 	// #1481 P0-1: serve the default-shape request from the atomic-pointer
 	// snapshot maintained by the background recomputer (5 min cadence).
@@ -270,30 +279,30 @@ func (s *Server) handleNeighborGraph(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := s.computeNeighborGraphResponseDispatch(minCount, minScore, region, roleFilter)
+	resp := s.computeNeighborGraphResponseDispatch(ctx, minCount, minScore, region, roleFilter)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
 // computeNeighborGraphResponseDispatch routes to the test-injected
 // function when set, otherwise to the real pipeline. #1483 follow-up.
-func (s *Server) computeNeighborGraphResponseDispatch(minCount int, minScore float64, region, roleFilter string) NeighborGraphResponse {
+func (s *Server) computeNeighborGraphResponseDispatch(ctx context.Context, minCount int, minScore float64, region string, roleFilter types.NodeRole) NeighborGraphResponse {
 	if s.computeNeighborGraphResponseFn != nil {
 		return s.computeNeighborGraphResponseFn(minCount, minScore, region, roleFilter)
 	}
-	return s.computeNeighborGraphResponse(minCount, minScore, region, roleFilter)
+	return s.computeNeighborGraphResponse(ctx, minCount, minScore, region, roleFilter)
 }
 
 // buildDefaultNeighborGraphResponse builds the default-shape response
 // used by the #1481 P0-1 recomputer. Goes through the dispatch so test
 // hooks can inject failures (#1483 follow-up).
-func (s *Server) buildDefaultNeighborGraphResponse() NeighborGraphResponse {
-	return s.computeNeighborGraphResponseDispatch(5, 0.1, "", "")
+func (s *Server) buildDefaultNeighborGraphResponse(ctx context.Context) NeighborGraphResponse {
+	return s.computeNeighborGraphResponseDispatch(ctx, 5, 0.1, "", "")
 }
 
 // computeNeighborGraphResponse does the full graph build + filter + score
 // pipeline previously inlined in handleNeighborGraph.
-func (s *Server) computeNeighborGraphResponse(minCount int, minScore float64, region, roleFilter string) NeighborGraphResponse {
+func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int, minScore float64, region string, roleFilter types.NodeRole) NeighborGraphResponse {
 	graph := s.getNeighborGraph()
 	allEdges := graph.AllEdges()
 	now := time.Now()
@@ -301,10 +310,10 @@ func (s *Server) computeNeighborGraphResponse(minCount int, minScore float64, re
 	// Resolve region observers if filtering.
 	var regionObs map[string]bool
 	if region != "" && s.store != nil {
-		regionObs = s.store.resolveRegionObservers(region)
+		regionObs = s.store.resolveRegionObservers(ctx, region)
 	}
 
-	nodeMap := s.buildNodeInfoMap()
+	nodeMap := s.buildNodeInfoMap(ctx)
 	nodeSet := make(map[string]bool)
 	var filteredEdges []GraphEdge
 	ambiguousCount := 0
@@ -319,8 +328,8 @@ func (s *Server) computeNeighborGraphResponse(minCount int, minScore float64, re
 		if roleFilter != "" && nodeMap != nil {
 			aInfo, aOK := nodeMap[strings.ToLower(e.NodeA)]
 			bInfo, bOK := nodeMap[strings.ToLower(e.NodeB)]
-			aMatch := aOK && strings.EqualFold(aInfo.Role, roleFilter)
-			bMatch := bOK && strings.EqualFold(bInfo.Role, roleFilter)
+			aMatch := aOK && aInfo.Role == roleFilter
+			bMatch := bOK && bInfo.Role == roleFilter
 			if !aMatch && !bMatch {
 				continue
 			}
@@ -345,7 +354,7 @@ func (s *Server) computeNeighborGraphResponse(minCount int, minScore float64, re
 			continue
 		}
 		// #1181: also drop edges touching a hidden-prefix node.
-		if s.isPubkeyHidden(e.NodeA) || s.isPubkeyHidden(e.NodeB) {
+		if s.isPubkeyHidden(ctx, e.NodeA) || s.isPubkeyHidden(ctx, e.NodeB) {
 			continue
 		}
 
@@ -453,7 +462,7 @@ func observerList(m map[string]bool) []string {
 }
 
 // buildNodeInfoMap returns a map of lowercase pubkey → nodeInfo for name/role lookups.
-func (s *Server) buildNodeInfoMap() map[string]nodeInfo {
+func (s *Server) buildNodeInfoMap(ctx context.Context) map[string]nodeInfo {
 	if s.store == nil {
 		return nil
 	}
@@ -469,18 +478,16 @@ func (s *Server) buildNodeInfoMap() map[string]nodeInfo {
 	// Enrich observer-only nodes: if an observer pubkey isn't already in the
 	// map (i.e. it's not also a repeater/companion), add it with role "observer".
 	if s.db != nil {
-		rows, err := s.db.conn.Query("SELECT id, name FROM observers")
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var id, name string
-				if rows.Scan(&id, &name) != nil {
-					continue
-				}
-				key := strings.ToLower(id)
-				if _, exists := m[key]; !exists {
-					m[key] = nodeInfo{PublicKey: id, Name: name, Role: "observer"}
-				}
+		observers, err := s.db.ListObserverNames(ctx)
+		if err != nil {
+			// Names are enrichment: serve the node map without observers.
+			log.Printf("[nodes] observer names: %v", err)
+			return m
+		}
+		for _, o := range observers {
+			key := strings.ToLower(o.Pubkey)
+			if _, exists := m[key]; !exists {
+				m[key] = nodeInfo{PublicKey: o.Pubkey, Name: o.Name, Role: types.RoleObserver}
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -100,14 +101,19 @@ func TestIssue1690_LastSeenUpdatedOnObservation(t *testing.T) {
 	defer s.Close()
 	ctx := t.Context()
 
-	hash := "abcdef1690cafebabe"
-	weekAgo := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	obs1 := strings.Repeat("e1", 32)
+	obs2 := strings.Repeat("e2", 32)
+	seedObserver(t, s, obs1, 0)
+	seedObserver(t, s, obs2, 0)
+
+	hash := "1690cafebabe0001"
+	weekAgo := time.Now().UTC().Add(-7 * 24 * time.Hour).Truncate(time.Second)
 	snr, rssi := 5.5, -100.0
 
 	first := &PacketData{
 		RawHex:         "0A00",
 		Timestamp:      weekAgo,
-		ObserverID:     "obs1",
+		ObserverID:     obs1,
 		Hash:           hash,
 		RouteType:      2,
 		PayloadType:    2,
@@ -121,19 +127,17 @@ func TestIssue1690_LastSeenUpdatedOnObservation(t *testing.T) {
 		t.Fatalf("seed insert: %v", err)
 	}
 
-	// Sanity: confirm the seed last_seen is the 7d-ago time.
 	var seededLastSeen time.Time
-	mustScan(t, testRow(t, s, "SELECT COALESCE(last_seen, 0) FROM transmissions WHERE hash = ?", hash), &seededLastSeen)
-	if seededLastSeen != weekAgo {
+	mustScan(t, testRow(t, s, "SELECT last_seen FROM transmissions WHERE hash = $1", hash), &seededLastSeen)
+	if !seededLastSeen.Equal(weekAgo) {
 		t.Logf("seed last_seen=%v expected %v (allowed for fresh column)", seededLastSeen, weekAgo)
 	}
 
-	// New observation: nowSec timestamp.
 	nowSec := time.Now().UTC()
 	second := &PacketData{
 		RawHex:         "0A00",
 		Timestamp:      nowSec,
-		ObserverID:     "obs2", // different observer → new observation row
+		ObserverID:     obs2,
 		Hash:           hash,
 		RouteType:      2,
 		PayloadType:    2,
@@ -148,9 +152,7 @@ func TestIssue1690_LastSeenUpdatedOnObservation(t *testing.T) {
 	}
 
 	var ls time.Time
-	mustScan(t, testRow(t, s, "SELECT last_seen FROM transmissions WHERE hash = ?", hash), &ls)
-	// The post-fix writer must bump last_seen to at least the new observation's
-	// epoch second. We allow ±2s slack for the unix-second round trip.
+	mustScan(t, testRow(t, s, "SELECT last_seen FROM transmissions WHERE hash = $1", hash), &ls)
 	if ls.Before(nowSec.Add(-2 * time.Second)) {
 		t.Errorf("transmissions.last_seen=%v after fresh observation; expected ≥ %v (a recent unix-second). "+
 			"Pre-fix the column is never updated on re-observation — the original cold-load bug (#1690).",

@@ -1,38 +1,13 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"strconv"
 	"testing"
-)
+	"time"
 
-// newReachScanTestDB builds a minimal observer_idx-schema DB with two rows whose
-// path contains "01FA" and one that does not, for scanReachRows coverage.
-func newReachScanTestDB(t *testing.T) *DB {
-	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stmts := []string{
-		`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, from_pubkey TEXT, payload_type INTEGER)`,
-		`CREATE TABLE observers (id TEXT, inactive INTEGER)`,
-		`CREATE TABLE observations (id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_idx INTEGER, snr REAL, path_json TEXT, timestamp INTEGER)`,
-		`INSERT INTO observers (id) VALUES ('OBS1')`, // rowid 1
-		`INSERT INTO transmissions (id, from_pubkey, payload_type) VALUES (1,'FF00',4),(2,'',5),(3,'',5)`,
-		`INSERT INTO observations (id, transmission_id, observer_idx, snr, path_json, timestamp) VALUES
-			(1,1,1,-7.0,'["AA","01FA","BB"]',1000),
-			(2,2,1,NULL,'["01FA","CC"]',1000),
-			(3,3,1,-5.0,'["AA","CC"]',1000)`, // no 01FA → excluded
-	}
-	for _, s := range stmts {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return &DB{conn: conn}
-}
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+)
 
 // resolver that only resolves the exact tokens it's told are unique.
 func testResolver(unique map[string]string) func(string) string {
@@ -173,11 +148,13 @@ func TestReliableTokens_CompanionNotMisattributed(t *testing.T) {
 
 func TestScanReachRows_CapTruncates(t *testing.T) {
 	defer func(orig int) { reachScanRowLimit = orig }(reachScanRowLimit)
-	reachScanRowLimit = 1 // newReachScanTestDB has 2 matching rows
-	db := newReachScanTestDB(t)
-	defer db.conn.Close()
+	reachScanRowLimit = 1
+	db := reachFixtureDB(t, 2, 1)
 	srv := &Server{db: db}
-	rows, _ := srv.scanReachRows(context.Background(), map[string]bool{"01FA": true}, 0)
+	rows, err := srv.scanReachRows(t.Context(), map[string]bool{"01fa": true}, time.Time{})
+	if err != nil {
+		t.Fatalf("scanReachRows: %v", err)
+	}
 	if len(rows) != 1 {
 		t.Fatalf("scan must hard-cap at reachScanRowLimit (1), got %d rows", len(rows))
 	}
@@ -259,14 +236,78 @@ func TestAttributeDirections_ObserverAggregatesAcrossRows(t *testing.T) {
 }
 
 func TestScanReachRows_DecodesRows(t *testing.T) {
-	db := newReachScanTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+	sender := scopeKey(0xff00)
+
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: sender,
+		Name:      "sender",
+		Role:      "repeater",
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed sender: %v", err)
+	}
+	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "obs1",
+		Name:      "obs1",
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	seeds := []struct {
+		hash    string
+		payload types.PayloadType
+		from    string
+		hops    []string
+	}{
+		{"decode-advert", types.PayloadType(4), sender, []string{"aa", "01fa", "bb"}},
+		{"decode-grp", types.PayloadType(5), "", []string{"aa", "01fa", "cc"}},
+		{"decode-nomatch", types.PayloadType(5), "", []string{"aa", "cc", "bb"}},
+	}
+	for _, s := range seeds {
+		var advert *database.NodeInput
+		if s.from != "" {
+			advert = &database.NodeInput{PublicKey: s.from, Name: "sender", Role: "repeater", RxTime: now, IngestNow: now}
+		}
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        s.hash,
+			RawHex:      "AA",
+			RouteType:   types.RouteType(1),
+			PayloadType: s.payload,
+			Advert:      advert,
+		}, now)
+		if err != nil {
+			t.Fatalf("seed tx %s: %v", s.hash, err)
+		}
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    ptr(observerIdx),
+			Direction:      ptr("RX"),
+			SNR:            ptr(-7.0),
+			Timestamp:      now,
+		}, s.hops, nil)
+		if err != nil {
+			t.Fatalf("seed observation %s: %v", s.hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+	}
+
 	srv := &Server{db: db}
-	rows, _ := srv.scanReachRows(context.Background(), map[string]bool{"01FA": true}, 0)
+	rows, err := srv.scanReachRows(ctx, map[string]bool{"01fa": true}, time.Time{})
+	if err != nil {
+		t.Fatalf("scanReachRows: %v", err)
+	}
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 matching rows (non-matching path excluded), got %d", len(rows))
 	}
-	// Find the advert row (order is not guaranteed without ORDER BY).
 	var got *pathRow
 	for i := range rows {
 		if rows[i].payloadType == 4 {
@@ -276,8 +317,7 @@ func TestScanReachRows_DecodesRows(t *testing.T) {
 	if got == nil {
 		t.Fatalf("advert row not returned: %+v", rows)
 	}
-	// Fields are decoded + normalized: lowercase observer/from, uppercase path.
-	if got.observerPK != "obs1" || got.fromPubkey != "ff00" {
+	if got.observerPK != "obs1" || got.fromPubkey != sender {
 		t.Fatalf("decoded fields wrong: %+v", *got)
 	}
 	if len(got.path) != 3 || got.path[1] != "01FA" {

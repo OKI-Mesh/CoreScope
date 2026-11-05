@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // InsertTransmission inserts a decoded packet into transmissions + observations.
@@ -29,18 +31,18 @@ func (s *Store) InsertTransmission(ctx context.Context, data *PacketData) (bool,
 	}
 
 	txID, isNew, err := s.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
-		RawHex:         data.RawHex,
-		Hash:           hash,
-		RouteType:      data.RouteType,
-		PayloadType:    data.PayloadType,
-		PayloadVersion: data.PayloadVersion,
-		DecodedJSON:    data.DecodedJSON,
-		ChannelHash:    data.ChannelHash,
-		ScopeName:      scopeNameForDB(data),
-		FromPubkey:     data.FromPubkey,
-		Code1:          data.Code1,
-		Code2:          data.Code2,
-		Advert:         data.Advert,
+		RawHex:           data.RawHex,
+		Hash:             hash,
+		RouteType:        data.RouteType,
+		PayloadType:      data.PayloadType,
+		PayloadVersion:   data.PayloadVersion,
+		DecodedJSON:      data.DecodedJSON,
+		ChannelHash:      data.ChannelHash,
+		ChannelEncrypted: data.ChannelEncrypted,
+		ScopeName:        scopeNameForDB(data),
+		Code1:            data.Code1,
+		Code2:            data.Code2,
+		Advert:           data.Advert,
 	}, rxTime)
 	if err != nil {
 		s.Stats.WriteErrors.Add(1)
@@ -51,9 +53,8 @@ func (s *Store) InsertTransmission(ctx context.Context, data *PacketData) (bool,
 	} else {
 		s.Stats.DuplicateTransmissions.Add(1)
 	}
-
-	if !isNew {
-		s.Stats.DuplicateTransmissions.Add(1)
+	if data.Advert != nil {
+		s.Stats.NodeUpserts.Add(1)
 	}
 
 	// Resolve observer_idx and update last_seen
@@ -65,16 +66,13 @@ func (s *Store) InsertTransmission(ctx context.Context, data *PacketData) (bool,
 	// 1-byte prefix collisions are disambiguated via NeighborGraph
 	// adjacency (anchored on from_pubkey for ADVERTs, previous hop
 	// otherwise). Empty resolved JSON → NULL via nilIfEmpty.
+	hops := parsePathArray(data.PathJSON)
 	resolved := resolvePathWithContext(
-		parsePathArray(data.PathJSON),
+		hops,
 		strings.ToLower(data.FromPubkey),
 		s.neighborGraph.load(),
 		s.prefixIdx.load(),
 	)
-
-	hops := parsePathArray(data.PathJSON)
-	pathhash := pathHash(hops)
-
 	obs := database.ObservationInput{
 		TransmissionID: txID,
 		ObserverIdx:    observerIdx,
@@ -82,22 +80,23 @@ func (s *Store) InsertTransmission(ctx context.Context, data *PacketData) (bool,
 		SNR:            data.SNR,
 		RSSI:           data.RSSI,
 		Score:          data.Score,
-		PathHash:       pathhash,
+		PathHash:       types.HopList(hops).Hash(),
 		Timestamp:      rxTime,
 		RawHex:         data.RawHex,
 	}
 
-	err = s.db.InsertObservationWithHops(ctx, obs, hops, resolved)
+	_, inserted, err := s.db.InsertObservationWithHops(ctx, obs, hops, resolved)
 	if err != nil {
 		s.Stats.WriteErrors.Add(1)
 		log.Printf("[db] observation+hops insert failed, rolled back: %v", err)
 		return false, fmt.Errorf("observation insert: %w", err)
-	} else {
+	}
+	if inserted {
 		s.Stats.ObservationsInserted.Add(1)
-		s.touchRelayNodesLocked(ctx, resolvedPubkeys(resolved), rxTime)
-		if err := s.db.BumpTransmissionLastSeen(ctx, txID, rxTime); err != nil {
-			log.Printf("[db] tx last_seen bump (non-fatal): %v", err)
-		}
+	}
+	s.touchRelayNodes(ctx, resolvedPubkeys(resolved), rxTime)
+	if err := s.db.BumpTransmissionLastSeen(ctx, txID, rxTime); err != nil {
+		log.Printf("[db] tx last_seen bump (non-fatal): %v", err)
 	}
 
 	return isNew, nil
@@ -113,5 +112,5 @@ func parsePathArray(s string) []string {
 	if json.Unmarshal([]byte(s), &arr) != nil {
 		return nil
 	}
-	return arr
+	return packetpath.LowerHops(arr)
 }

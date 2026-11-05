@@ -30,7 +30,7 @@ func (s *Store) UpsertObserverAt(ctx context.Context, id, name, iata string, met
 		lastSeen = ingestNow
 	}
 
-	err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+	_, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        id,
 		Name:      name,
 		IATA:      strings.TrimSpace(strings.ToUpper(iata)),

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 )
 
 // TestAggregateCoverageCapsNodesPerCell verifies #11: a cell that heard more than
@@ -121,20 +122,26 @@ func TestAggregateCoverageNodeBreakdown(t *testing.T) {
 // returns the canonical pubkey + name; an ambiguous prefix (>1 node) and an
 // unknown/empty key return the key itself with an empty name.
 func TestResolveHeardKey(t *testing.T) {
-	db := seedCoverageDB(t)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key,name,role) VALUES ('aabbccdd11223344','Alice','repeater')`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key,name,role) VALUES ('aabbcc99887766aa','Bob','repeater')`)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+
+	alicePK := padKey("aabbccdd11223344")
+	bobPK := padKey("aabbcc99887766aa")
+	seedNode(t, db, alicePK, "Alice", "repeater", nil, nil, now)
+	seedNode(t, db, bobPK, "Bob", "repeater", nil, nil, now)
+
 	srv := &Server{db: db}
-	if k, n := srv.resolveHeardKey("aabbccdd"); k != "aabbccdd11223344" || n != "Alice" {
+	if k, n := srv.resolveHeardKey(ctx, "aabbccdd"); k != alicePK || n != "Alice" {
 		t.Errorf("unique prefix → (pubkey,Alice), got (%q,%q)", k, n)
 	}
-	if k, n := srv.resolveHeardKey("aabbcc"); k != "aabbcc" || n != "" {
+	if k, n := srv.resolveHeardKey(ctx, "aabbcc"); k != "aabbcc" || n != "" {
 		t.Errorf("ambiguous prefix → (key,\"\"), got (%q,%q)", k, n)
 	}
-	if k, n := srv.resolveHeardKey("ffff"); k != "ffff" || n != "" {
+	if k, n := srv.resolveHeardKey(ctx, "ffff"); k != "ffff" || n != "" {
 		t.Errorf("unknown prefix → (key,\"\"), got (%q,%q)", k, n)
 	}
-	if k, n := srv.resolveHeardKey(""); k != "" || n != "" {
+	if k, n := srv.resolveHeardKey(ctx, ""); k != "" || n != "" {
 		t.Errorf("empty prefix → (\"\",\"\"), got (%q,%q)", k, n)
 	}
 }

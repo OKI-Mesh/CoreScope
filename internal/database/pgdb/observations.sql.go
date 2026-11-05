@@ -12,30 +12,97 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countObservationsByObserverSince = `-- name: CountObservationsByObserverSince :many
+SELECT obs.pubkey, COUNT(*)::bigint AS cnt
+FROM observations o
+JOIN observers obs ON obs.id = o.observer_idx
+WHERE o.timestamp > $1::timestamptz
+GROUP BY obs.pubkey
+`
+
+type CountObservationsByObserverSinceRow struct {
+	Pubkey string
+	Cnt    int64
+}
+
+// Observations per observer since a cutoff. Observers with none are absent.
+func (q *Queries) CountObservationsByObserverSince(ctx context.Context, since time.Time) ([]CountObservationsByObserverSinceRow, error) {
+	rows, err := q.db.Query(ctx, countObservationsByObserverSince, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountObservationsByObserverSinceRow{}
+	for rows.Next() {
+		var i CountObservationsByObserverSinceRow
+		if err := rows.Scan(&i.Pubkey, &i.Cnt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countObservationsSince = `-- name: CountObservationsSince :one
+SELECT COUNT(*) FROM observations WHERE timestamp > $1::timestamptz
+`
+
+func (q *Queries) CountObservationsSince(ctx context.Context, since time.Time) (int64, error) {
+	row := q.db.QueryRow(ctx, countObservationsSince, since)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createOrUpdateObservation = `-- name: CreateOrUpdateObservation :one
-INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_hash, timestamp, raw_hex)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_hash, timestamp, hop_prefixes, hop_nodes)
+VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9::text[],
+    ARRAY(SELECT COALESCE(n.id, 0)
+          FROM unnest($10::text[]) WITH ORDINALITY AS r(pubkey, ord)
+          LEFT JOIN nodes n ON n.public_key = r.pubkey
+          ORDER BY r.ord)::int4[]
+)
 ON CONFLICT (transmission_id, observer_idx, COALESCE(path_hash, '')) DO UPDATE SET
-    snr     = COALESCE(EXCLUDED.snr,     observations.snr),
-    rssi    = COALESCE(EXCLUDED.rssi,    observations.rssi),
-    score   = COALESCE(EXCLUDED.score,   observations.score),
-    raw_hex = COALESCE(EXCLUDED.raw_hex, observations.raw_hex)
-RETURNING id
+    snr       = COALESCE(EXCLUDED.snr,   observations.snr),
+    rssi      = COALESCE(EXCLUDED.rssi,  observations.rssi),
+    score     = COALESCE(EXCLUDED.score, observations.score),
+    hop_nodes = CASE WHEN cardinality(EXCLUDED.hop_nodes) > 0
+                     THEN EXCLUDED.hop_nodes
+                     ELSE observations.hop_nodes END
+RETURNING id, (xmax = 0) AS inserted
 `
 
 type CreateOrUpdateObservationParams struct {
-	TransmissionID int64         `json:"transmission_id"`
-	ObserverIdx    pgtype.Int8   `json:"observer_idx"`
-	Direction      pgtype.Text   `json:"direction"`
-	Snr            pgtype.Float8 `json:"snr"`
-	Rssi           pgtype.Float8 `json:"rssi"`
-	Score          pgtype.Float8 `json:"score"`
-	PathHash       pgtype.Text   `json:"path_hash"`
-	Timestamp      time.Time     `json:"timestamp"`
-	RawHex         pgtype.Text   `json:"raw_hex"`
+	TransmissionID  int64
+	ObserverIdx     pgtype.Int8
+	Direction       pgtype.Text
+	Snr             pgtype.Float8
+	Rssi            pgtype.Float8
+	Score           pgtype.Float8
+	PathHash        pgtype.Text
+	Timestamp       time.Time
+	HopPrefixes     []string
+	ResolvedPubkeys []string
 }
 
-func (q *Queries) CreateOrUpdateObservation(ctx context.Context, arg CreateOrUpdateObservationParams) (int64, error) {
+type CreateOrUpdateObservationRow struct {
+	ID       int64
+	Inserted bool
+}
+
+func (q *Queries) CreateOrUpdateObservation(ctx context.Context, arg CreateOrUpdateObservationParams) (CreateOrUpdateObservationRow, error) {
 	row := q.db.QueryRow(ctx, createOrUpdateObservation,
 		arg.TransmissionID,
 		arg.ObserverIdx,
@@ -45,9 +112,158 @@ func (q *Queries) CreateOrUpdateObservation(ctx context.Context, arg CreateOrUpd
 		arg.Score,
 		arg.PathHash,
 		arg.Timestamp,
-		arg.RawHex,
+		arg.HopPrefixes,
+		arg.ResolvedPubkeys,
 	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
+	var i CreateOrUpdateObservationRow
+	err := row.Scan(&i.ID, &i.Inserted)
+	return i, err
+}
+
+const getMaxObservationID = `-- name: GetMaxObservationID :one
+SELECT COALESCE(MAX(id), 0)::bigint FROM observations
+`
+
+func (q *Queries) GetMaxObservationID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxObservationID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const getObservationCount = `-- name: GetObservationCount :one
+SELECT COUNT(*) FROM observations
+`
+
+func (q *Queries) GetObservationCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getObservationCount)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const insertObservationFrame = `-- name: InsertObservationFrame :execrows
+INSERT INTO observation_frames (observation_id, frame)
+SELECT o.id, $1::bytea
+FROM observations o
+JOIN transmissions t ON t.id = o.transmission_id
+WHERE o.id = $2::bigint
+  AND t.raw_hex <> $1::bytea
+ON CONFLICT (observation_id) DO UPDATE SET frame = EXCLUDED.frame
+`
+
+type InsertObservationFrameParams struct {
+	Frame         []byte
+	ObservationID int64
+}
+
+func (q *Queries) InsertObservationFrame(ctx context.Context, arg InsertObservationFrameParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertObservationFrame, arg.Frame, arg.ObservationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listObservationRawHexByHash = `-- name: ListObservationRawHexByHash :many
+SELECT o.id, f.frame
+FROM transmissions t
+JOIN observations o ON o.transmission_id = t.id
+JOIN observation_frames f ON f.observation_id = o.id
+WHERE t.hash = $1::text
+`
+
+type ListObservationRawHexByHashRow struct {
+	ID    int64
+	Frame []byte
+}
+
+func (q *Queries) ListObservationRawHexByHash(ctx context.Context, hash string) ([]ListObservationRawHexByHashRow, error) {
+	rows, err := q.db.Query(ctx, listObservationRawHexByHash, hash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObservationRawHexByHashRow{}
+	for rows.Next() {
+		var i ListObservationRawHexByHashRow
+		if err := rows.Scan(&i.ID, &i.Frame); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObservationsByTransmissionIDs = `-- name: ListObservationsByTransmissionIDs :many
+SELECT o.transmission_id,
+       o.id,
+       obs.pubkey                   AS observer_pubkey,
+       obs.name                     AS observer_name,
+       COALESCE(obs.iata, '')::text AS observer_iata,
+       o.direction,
+       o.snr,
+       o.rssi,
+       o.score,
+       o.timestamp,
+       o.hop_prefixes::text[] AS hop_prefixes,
+       ARRAY(SELECT COALESCE(n.public_key, '')
+             FROM unnest(o.hop_prefixes) WITH ORDINALITY AS p(prefix, ord)
+             LEFT JOIN nodes n ON n.id = o.hop_nodes[p.ord::int]
+             ORDER BY p.ord)::text[] AS hop_resolved
+FROM observations o
+LEFT JOIN observers obs ON obs.id = o.observer_idx
+WHERE o.transmission_id = ANY($1::bigint[])
+ORDER BY o.timestamp DESC, o.id DESC
+`
+
+type ListObservationsByTransmissionIDsRow struct {
+	TransmissionID int64
+	ID             int64
+	ObserverPubkey pgtype.Text
+	ObserverName   pgtype.Text
+	ObserverIata   string
+	Direction      pgtype.Text
+	Snr            pgtype.Float8
+	Rssi           pgtype.Float8
+	Score          pgtype.Float8
+	Timestamp      time.Time
+	HopPrefixes    []string
+	HopResolved    []string
+}
+
+func (q *Queries) ListObservationsByTransmissionIDs(ctx context.Context, txIds []int64) ([]ListObservationsByTransmissionIDsRow, error) {
+	rows, err := q.db.Query(ctx, listObservationsByTransmissionIDs, txIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObservationsByTransmissionIDsRow{}
+	for rows.Next() {
+		var i ListObservationsByTransmissionIDsRow
+		if err := rows.Scan(
+			&i.TransmissionID,
+			&i.ID,
+			&i.ObserverPubkey,
+			&i.ObserverName,
+			&i.ObserverIata,
+			&i.Direction,
+			&i.Snr,
+			&i.Rssi,
+			&i.Score,
+			&i.Timestamp,
+			&i.HopPrefixes,
+			&i.HopResolved,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

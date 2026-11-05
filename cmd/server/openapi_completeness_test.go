@@ -98,18 +98,6 @@ func collectHandlerRoutes(t *testing.T) map[string]string {
 	return out
 }
 
-// strconvUnquote strips Go string-literal quoting without pulling strconv
-// into the import list (keeps the file's imports lean).
-func strconvUnquote(s string) (string, error) {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1], nil
-	}
-	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
-		return s[1 : len(s)-1], nil
-	}
-	return s, nil
-}
-
 // collectSpecRoutes returns the set of "/api/..." paths declared in the
 // routeDescriptions() map in openapi.go. Keys are "METHOD /path"; we strip
 // the method and take just the path.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/lora"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // relay_airtime_share.go — issues #1359 + #1768
@@ -135,14 +136,13 @@ func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) map[string]int
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ptNames := payloadTypeNames
 	preset := s.resolveLoRaPreset()
 
 	type bucket struct {
 		count int
 		score int64 // sum of ToA(payload) × relays, in nanoseconds
 	}
-	buckets := make(map[int]*bucket)
+	buckets := map[types.PayloadType]*bucket{}
 	seenHash := make(map[string]bool, len(s.packets))
 	totalCount := 0
 	var totalScore int64
@@ -185,9 +185,9 @@ func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) map[string]int
 
 	rows := make([]map[string]interface{}, 0, len(buckets))
 	for pt, b := range buckets {
-		name := ptNames[pt]
-		if name == "" {
-			name = "UNK"
+		name := "UNK"
+		if pt.Valid() {
+			name = pt.String()
 		}
 		var countPct, airtimePct float64
 		if totalCount > 0 {

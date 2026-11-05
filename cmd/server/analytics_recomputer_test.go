@@ -26,13 +26,13 @@ func numGoroutinesForTest() int { return runtime.NumGoroutine() }
 // Load() from the background-refreshed atomic snapshot — never blocking
 // under writer contention.
 func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
+	ctx := t.Context()
 	if testing.Short() {
 		t.Skip("skipping latency timing test in -short mode")
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 
 	// Populate with enough records to make on-request compute non-trivial.
 	const N = 20000
@@ -44,7 +44,7 @@ func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
 			Dist:       float64(i%500) + 0.5,
 			Type:       []string{"R↔R", "C↔R", "C↔C"}[i%3],
 			Hash:       "h",
-			Timestamp:  "2024-01-01T00:00:00Z",
+			Timestamp:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 			HourBucket: "2024-01-01-00",
 		}
 	}
@@ -57,7 +57,7 @@ func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
 	// lands; the RED commit lands the test + a stub. Stub returns
 	// without wiring background recompute, so the test still fails on
 	// the latency assertion below.
-	stop := store.StartAnalyticsRecomputers(10 * time.Millisecond)
+	stop := store.StartAnalyticsRecomputers(ctx, 10*time.Millisecond)
 	defer stop()
 
 	// Give the initial compute a moment to populate.
@@ -78,7 +78,7 @@ func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
 				store.mu.Lock()
 				// Trivial mutation: extend distHops by one and shrink back.
 				store.distHops = append(store.distHops, distHopRecord{
-					Dist: 1, Hash: "x", Timestamp: "2024-01-01T00:00:00Z",
+					Dist: 1, Hash: "x", Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 				})
 				store.distHops = store.distHops[:len(store.distHops)-1]
 				store.mu.Unlock()
@@ -98,7 +98,7 @@ func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
 		go func() {
 			defer rwg.Done()
 			t0 := time.Now()
-			r := store.GetAnalyticsDistance("", "")
+			r := store.GetAnalyticsDistance(ctx, "", "")
 			latencies[i] = time.Since(t0)
 			if r == nil {
 				t.Errorf("reader %d got nil result", i)
@@ -130,13 +130,13 @@ func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
 // the returned stop function is called — no leak across server
 // shutdown (issue #1240 acceptance criterion).
 func TestAnalyticsRecomputerShutdownNoLeak(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 
 	// Use a tight tick so we know recompute is actually running (not
 	// just blocked on the ticker).
-	stop := store.StartAnalyticsRecomputers(20 * time.Millisecond)
+	stop := store.StartAnalyticsRecomputers(ctx, 20*time.Millisecond)
 
 	// Snapshot active goroutines a beat after start.
 	time.Sleep(80 * time.Millisecond)

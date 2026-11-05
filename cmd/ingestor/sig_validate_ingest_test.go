@@ -269,9 +269,8 @@ func TestPruneDroppedPackets(t *testing.T) {
 	ctx := testCtx(t)
 	defer store.Close()
 
-	// Insert an old dropped packet
-	testExec(t, store, `INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('old', 'test', datetime('now', '-60 days'))`)
-	testExec(t, store, `INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('new', 'test', datetime('now'))`)
+	testExec(t, store, `INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('old', 'test', NOW() - INTERVAL '60 days')`)
+	testExec(t, store, `INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('new', 'test', NOW())`)
 
 	n, err := store.PruneDroppedPackets(ctx, 30)
 	if err != nil {
@@ -281,9 +280,7 @@ func TestPruneDroppedPackets(t *testing.T) {
 		t.Fatalf("expected 1 pruned, got %d", n)
 	}
 
-	var count int
-
-	count = countRows(t, store, "dropped_packets")
+	count := countRows(t, store, "dropped_packets")
 	if count != 1 {
 		t.Fatalf("expected 1 remaining, got %d", count)
 	}

@@ -4,8 +4,10 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/lora"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // newRelayAirtimeShareTestStore builds a minimal PacketStore for testing
@@ -20,7 +22,7 @@ func newRelayAirtimeShareTestStore(packets []*StoreTx) *PacketStore {
 		byNode:         make(map[string][]*StoreTx),
 		byPathHop:      make(map[string][]*StoreTx),
 		nodeHashes:     make(map[string]map[string]bool),
-		byPayloadType:  make(map[int][]*StoreTx),
+		byPayloadType:  make(map[types.PayloadType][]*StoreTx),
 		rfCache:        make(map[string]*cachedResult),
 		topoCache:      make(map[string]*cachedResult),
 		hashCache:      make(map[string]*cachedResult),
@@ -49,12 +51,12 @@ func newRelayAirtimeShareTestStore(packets []*StoreTx) *PacketStore {
 
 // makeRelayAirtimeTx builds a synthetic transmission with rawHex sized for the
 // given byte count.
-func makeRelayAirtimeTx(id int, payloadType int, payloadBytes int, distinctRelays int, hashPrefix string) *StoreTx {
+func makeRelayAirtimeTx(id int, payloadType types.PayloadType, payloadBytes int, hashPrefix string) *StoreTx {
 	pt := payloadType
 	return &StoreTx{
 		ID:          id,
 		Hash:        hashPrefix,
-		FirstSeen:   "2026-01-01T00:00:00Z",
+		FirstSeen:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		PayloadType: &pt,
 		RawHex:      strings.Repeat("ab", payloadBytes),
 	}
@@ -71,10 +73,10 @@ func makeRelayAirtimeTx(id int, payloadType int, payloadBytes int, distinctRelay
 // the preset in the caption, so it must reach the client).
 func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 	packets := make([]*StoreTx, 0, 1001)
-	advert := makeRelayAirtimeTx(1, PayloadADVERT, 200, 8, "ad000001")
+	advert := makeRelayAirtimeTx(1, types.PayloadADVERT, 8, "ad000001")
 	packets = append(packets, advert)
 	for i := 0; i < 1000; i++ {
-		ack := makeRelayAirtimeTx(100+i, PayloadACK, 10, 0, "")
+		ack := makeRelayAirtimeTx(100+i, types.PayloadACK, 0, "")
 		ack.Hash = "ac" + zeroPad(i, 6)
 		packets = append(packets, ack)
 	}
@@ -178,9 +180,13 @@ func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 // intercept finally enters the score. A test that still passes against
 // the byte proxy would fail to gate the regression — we explicitly
 // assert away from 95 %.
+
+const advertBytes = 200
+const ackBytes = 10
+
 func TestRelayAirtimeShare_ToAReplacesByteProxy(t *testing.T) {
-	advert := makeRelayAirtimeTx(1, PayloadADVERT, 200, 1, "ad000001")
-	ack := makeRelayAirtimeTx(2, PayloadACK, 10, 1, "ac000001")
+	advert := makeRelayAirtimeTx(1, types.PayloadADVERT, advertBytes, "ad000001")
+	ack := makeRelayAirtimeTx(2, types.PayloadACK, ackBytes, "ac000001")
 
 	store := newRelayAirtimeShareTestStore([]*StoreTx{advert, ack})
 	store.addToResolvedPubkeyIndex(advert.ID, []string{"relay-A"})
@@ -207,8 +213,8 @@ func TestRelayAirtimeShare_ToAReplacesByteProxy(t *testing.T) {
 	// to 100. Driving from lora.TimeOnAir means a regression there
 	// surfaces here.)
 	preset := defaultLoRaPreset()
-	advertToA := float64(lora.TimeOnAir(200, preset))
-	ackToA := float64(lora.TimeOnAir(10, preset))
+	advertToA := float64(lora.TimeOnAir(advertBytes, preset))
+	ackToA := float64(lora.TimeOnAir(ackBytes, preset))
 	wantAdvert := advertToA / (advertToA + ackToA) * 100.0
 	wantAck := ackToA / (advertToA + ackToA) * 100.0
 	// Sanity guards on the independent calculation. Tolerances ±0.05 pp

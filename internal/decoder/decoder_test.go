@@ -46,24 +46,25 @@ func TestAdvertRole(t *testing.T) {
 	// advertRole now keys off AdvertFlags.Type (firmware ADV_TYPE_*) — see
 	// firmware/src/helpers/AdvertDataHelpers.h:7-12 and issue #1279 P1 #3.
 	tests := []struct {
-		name  string
-		flags *AdvertFlags
-		want  string
+		name   string
+		flags  *AdvertFlags
+		want   types.NodeRole
+		wantOK bool
 	}{
-		{"none (type 0)", &AdvertFlags{Type: 0}, "none"},
-		{"companion (type 1)", &AdvertFlags{Type: 1, Chat: true}, "companion"},
-		{"repeater (type 2)", &AdvertFlags{Type: 2, Repeater: true}, "repeater"},
-		{"room (type 3)", &AdvertFlags{Type: 3, Room: true}, "room"},
-		{"sensor (type 4)", &AdvertFlags{Type: 4, Sensor: true}, "sensor"},
-		{"future type-5", &AdvertFlags{Type: 5}, "type-5"},
-		{"nil flags falls back to companion", nil, "companion"},
+		{"none (type 0)", &AdvertFlags{Type: 0}, "", false},
+		{"companion (type 1)", &AdvertFlags{Type: 1, Chat: true}, types.RoleCompanion, true},
+		{"repeater (type 2)", &AdvertFlags{Type: 2, Repeater: true}, types.RoleRepeater, true},
+		{"room (type 3)", &AdvertFlags{Type: 3, Room: true}, types.RoleRoom, true},
+		{"sensor (type 4)", &AdvertFlags{Type: 4, Sensor: true}, types.RoleSensor, true},
+		{"future type-5", &AdvertFlags{Type: 5}, "", false},
+		{"nil flags has no role", nil, "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AdvertRole(tt.flags)
-			if got != tt.want {
-				t.Errorf("AdvertRole(%+v) = %s, want %s", tt.flags, got, tt.want)
+			got, ok := AdvertRole(tt.flags)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("AdvertRole(%+v) = (%q, %v), want (%q, %v)", tt.flags, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
@@ -630,6 +631,16 @@ func TestDecodeAdvertTypeEnums(t *testing.T) {
 	p4 := makeAdvert(0x04)
 	if !p4.Payload.Flags.Sensor {
 		t.Error("type 4: sensor should be true")
+	}
+
+	for _, typ := range []byte{0x05, 0x07, 0x08, 0x0F} {
+		p := makeAdvert(typ)
+		if p.Payload.Flags.Type != int(typ) {
+			t.Errorf("type %d: flags.type=%d", typ, p.Payload.Flags.Type)
+		}
+		if p.Payload.Flags.Chat || p.Payload.Flags.Repeater || p.Payload.Flags.Room || p.Payload.Flags.Sensor {
+			t.Errorf("type %d: no named role flag may be set", typ)
+		}
 	}
 }
 
@@ -2721,23 +2732,25 @@ func TestDecodeMultipartNonAck(t *testing.T) {
 
 func TestAdvertRoleLabelsRawType(t *testing.T) {
 	// Firmware: ADV_TYPE_NONE=0, CHAT=1, REPEATER=2, ROOM=3, SENSOR=4, 5..15 FUTURE.
-	cases := []struct {
-		typ  int
-		want string
-	}{
-		{0, "none"},
-		{1, "companion"},
-		{2, "repeater"},
-		{3, "room"},
-		{4, "sensor"},
-		{5, "type-5"},
-		{15, "type-15"},
+	want := map[int]types.NodeRole{
+		1: types.RoleCompanion,
+		2: types.RoleRepeater,
+		3: types.RoleRoom,
+		4: types.RoleSensor,
 	}
-	for _, tc := range cases {
-		got := AdvertRole(&AdvertFlags{Type: tc.typ, Repeater: tc.typ == 2, Room: tc.typ == 3, Sensor: tc.typ == 4})
-		if got != tc.want {
-			t.Errorf("advertRole(type=%d) = %q, want %q", tc.typ, got, tc.want)
+	for typ := 0; typ <= 15; typ++ {
+		got, ok := AdvertRole(&AdvertFlags{Type: typ, Repeater: typ == 2, Room: typ == 3, Sensor: typ == 4})
+		wantRole, wantOK := want[typ]
+		if got != wantRole || ok != wantOK {
+			t.Errorf("AdvertRole(type=%d) = (%q, %v), want (%q, %v)", typ, got, ok, wantRole, wantOK)
 		}
+	}
+}
+
+func TestAdvertRoleIgnoresMirroredBooleans(t *testing.T) {
+	got, ok := AdvertRole(&AdvertFlags{Type: 2, Room: true, Sensor: true})
+	if !ok || got != types.RoleRepeater {
+		t.Errorf("AdvertRole = (%q, %v), want the Type (repeater) to decide over the booleans", got, ok)
 	}
 }
 

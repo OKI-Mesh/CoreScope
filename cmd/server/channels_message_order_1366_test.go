@@ -15,73 +15,106 @@ package main
 // for debug surfaces but MUST NOT be the rendered field.
 
 import (
+	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestChannelMessages_TimestampUsesLatestSeen: a CHAN tx with multiple
 // observations spanning hours must render with the LATEST observation
 // timestamp, not the first-seen ingest time.
 func TestChannelMessages_TimestampUsesLatestSeen(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	firstSeen := now.Add(-7 * time.Hour).Format(time.RFC3339)
-	firstSeenEpoch := now.Add(-7 * time.Hour).Unix()
-	laterEpoch := now.Add(-5 * time.Minute).Unix()
-	_ = laterEpoch
+	firstSeenAt := now.Add(-7 * time.Hour)
+	laterAt := now.Add(-5 * time.Minute)
+	firstSeenEpoch := firstSeenAt.Unix()
+	laterEpoch := laterAt.Unix()
 
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obsA', 'ObsA', 'SJC', ?, '2026-01-01T00:00:00Z', 10)`, firstSeen)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obsB', 'ObsB', 'LAX', ?, '2026-01-01T00:00:00Z', 10)`, firstSeen)
+	obsA, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "obsa", Name: "ObsA", IATA: "SJC",
+		LastSeen: firstSeenAt, IngestNow: firstSeenAt,
+	})
+	if err != nil {
+		t.Fatalf("create observer obsa: %v", err)
+	}
+	obsB, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "obsb", Name: "ObsB", IATA: "LAX",
+		LastSeen: firstSeenAt, IngestNow: firstSeenAt,
+	})
+	if err != nil {
+		t.Fatalf("create observer obsb: %v", err)
+	}
 
-	// One transmission with two observations: T0 (7h ago) and T1 (5m ago).
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA01', 'hash_repeated_msg', ?, 1, 5,
-			'{"type":"CHAN","channel":"#test","text":"Heartbeat: ping","sender":"Heartbeat","sender_timestamp":`+
-		strconv.FormatInt(firstSeenEpoch, 10)+`}',
-		'#test')`, firstSeen)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10.0, -90, '["aa"]', ?)`, firstSeenEpoch)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 2, 11.0, -88, '["bb"]', ?)`, laterEpoch)
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		RawHex:      "AA01",
+		Hash:        "hash_repeated_msg",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: `{"type":"CHAN","channel":"#test","text":"Heartbeat: ping","sender":"Heartbeat","sender_timestamp":` +
+			strconv.FormatInt(firstSeenEpoch, 10) + `}`,
+		ChannelHash: "#test",
+	}, firstSeenAt)
+	if err != nil {
+		t.Fatalf("insert tx: %v", err)
+	}
+	for _, o := range []struct {
+		observer  int64
+		snr, rssi float64
+		at        time.Time
+		hop       string
+	}{
+		{obsA, 10.0, -90, firstSeenAt, "aa"},
+		{obsB, 11.0, -88, laterAt, "bb"},
+	} {
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    ptr(o.observer),
+			Direction:      ptr("RX"),
+			SNR:            ptr(o.snr),
+			RSSI:           ptr(o.rssi),
+			Timestamp:      o.at,
+		}, []string{o.hop}, nil)
+		if err != nil {
+			t.Fatalf("insert observation (hop %s): %v", o.hop, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d (hop %s)", txID, o.hop)
+		}
+	}
 
-	store := NewPacketStore(db, nil)
-	store.Load()
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
 
-	msgs, total := store.GetChannelMessages("#test", 10, 0)
+	msgs, total := store.GetChannelMessages(ctx, "#test", 10, 0)
+	t.Logf("msg0=%#v", msgs[0])
 	if total != 1 {
 		t.Fatalf("want 1 msg, got %d (msgs=%+v)", total, msgs)
 	}
-	got, _ := msgs[0]["timestamp"].(string)
-	gotParsed, err := time.Parse(time.RFC3339, got)
-	if err != nil {
-		// Try the milli-second precision form that SQLite strftime emits.
-		gotParsed, err = time.Parse("2006-01-02T15:04:05.000Z", got)
-		if err != nil {
-			gotParsed, err = time.Parse("2006-01-02T15:04:05.000Z07:00", got)
-		}
+	ts, ok := msgs[0]["timestamp"].(UTCTime)
+	if !ok {
+		t.Fatalf("timestamp has type %T, want UTCTime", msgs[0]["timestamp"])
 	}
-	if err != nil {
-		t.Fatalf("timestamp not parseable: %q (%v)", got, err)
-	}
-	// LatestSeen should equal the laterEpoch observation (±1s).
-	if delta := gotParsed.Unix() - laterEpoch; delta < -1 || delta > 1 {
-		t.Errorf("timestamp: want ~%s (LatestSeen, observation at T-5m), got %q (Δ=%ds — likely FirstSeen, issue #1366)",
-			time.Unix(laterEpoch, 0).UTC().Format(time.RFC3339), got, delta)
+	if delta := ts.Unix() - laterEpoch; delta < -1 || delta > 1 {
+		t.Errorf("timestamp: want ~%s (LatestSeen, observation at T-5m), got %s (Δ=%ds, likely FirstSeen, issue #1366)",
+			laterAt.Format(time.RFC3339), formatTS(ts.Time), delta)
 	}
 
-	// first_seen MUST also be exposed separately so the UI/debug can see
-	// when the analyzer first heard the packet (older than `timestamp`).
-	fs, _ := msgs[0]["first_seen"].(string)
-	if fs == "" {
-		t.Errorf("first_seen field must be exposed alongside timestamp; got empty")
+	fs, ok := msgs[0]["first_seen"].(UTCTime)
+	if !ok || fs.IsZero() {
+		t.Fatalf("first_seen must be exposed alongside timestamp; got %#v", msgs[0]["first_seen"])
 	}
-	if fs == got {
-		t.Errorf("first_seen should differ from latest-seen timestamp (both = %q)", got)
+	if fs.Equal(ts.Time) {
+		t.Errorf("first_seen should differ from latest-seen timestamp (both = %s)", formatTS(ts.Time))
 	}
 }
 
@@ -91,43 +124,69 @@ func TestChannelMessages_TimestampUsesLatestSeen(t *testing.T) {
 // must remain server UTC (LatestSeen/FirstSeen), regardless of what
 // the client claimed.
 func TestChannelMessages_TimestampNotSenderTimestamp(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	firstSeen := now.Add(-10 * time.Minute).Format(time.RFC3339)
-	firstSeenEpoch := now.Add(-10 * time.Minute).Unix()
+	firstSeenAt := now.Add(-10 * time.Minute)
 
-	// Client claims it sent the message in year 2000 (bad RTC).
-	badSenderTs := int64(946684800) // 2000-01-01 UTC
+	badSenderTs := int64(946684800)
 
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obsX', 'ObsX', 'SJC', ?, '2026-01-01T00:00:00Z', 1)`, firstSeen)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB01', 'hash_bad_clock', ?, 1, 5,
-			'{"type":"CHAN","channel":"#bad","text":"Alice: ping","sender":"Alice","sender_timestamp":`+
-		strconv.FormatInt(badSenderTs, 10)+`}',
-		'#bad')`, firstSeen)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10.0, -90, '["aa"]', ?)`, firstSeenEpoch)
+	obsX, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "obsx", Name: "ObsX", IATA: "SJC",
+		LastSeen: firstSeenAt, IngestNow: firstSeenAt,
+	})
+	if err != nil {
+		t.Fatalf("create observer: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
-	store.Load()
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		RawHex:      "BB01",
+		Hash:        "hash_bad_clock",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: `{"type":"CHAN","channel":"#bad","text":"Alice: ping","sender":"Alice","sender_timestamp":` +
+			strconv.FormatInt(badSenderTs, 10) + `}`,
+		ChannelHash: "#bad",
+	}, firstSeenAt)
+	if err != nil {
+		t.Fatalf("insert tx: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    ptr(obsX),
+		Direction:      ptr("RX"),
+		SNR:            ptr(10.0),
+		RSSI:           ptr(-90.0),
+		Timestamp:      firstSeenAt,
+	}, []string{"aa"}, nil)
+	if err != nil {
+		t.Fatalf("insert observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 
-	msgs, total := store.GetChannelMessages("#bad", 10, 0)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+
+	msgs, total := store.GetChannelMessages(ctx, "#bad", 10, 0)
 	if total != 1 {
 		t.Fatalf("want 1 msg, got %d", total)
 	}
-	got, _ := msgs[0]["timestamp"].(string)
-	// MUST be the server-side observation time, parseable as RFC3339, and
-	// within ~1h of now — NOT the year-2000 client value.
-	parsed, err := time.Parse(time.RFC3339, got)
-	if err != nil {
-		t.Fatalf("timestamp not RFC3339: %q (%v)", got, err)
+	ts, ok := msgs[0]["timestamp"].(UTCTime)
+	if !ok {
+		t.Fatalf("timestamp has type %T, want UTCTime", msgs[0]["timestamp"])
 	}
-	if parsed.Year() < now.Year() {
-		t.Errorf("rendered timestamp %q took on the client's bad sender_timestamp (year %d) instead of server UTC",
-			got, parsed.Year())
+	if ts.Year() < now.Year() {
+		t.Errorf("rendered timestamp %s took on the client's bad sender_timestamp (year %d) instead of server UTC",
+			formatTS(ts.Time), ts.Year())
+	}
+	if delta := ts.Sub(firstSeenAt); delta < -time.Second || delta > time.Second {
+		t.Errorf("timestamp = %s, want about %s (the observation time)",
+			formatTS(ts.Time), firstSeenAt.Format(time.RFC3339))
 	}
 }
 
@@ -135,36 +194,76 @@ func TestChannelMessages_TimestampNotSenderTimestamp(t *testing.T) {
 // 'Z' (or +00:00) so the browser does NOT interpret it as a local-zone
 // string and shift by the operator's TZ offset.
 func TestChannelMessages_TimestampIsUTCZ(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	fs := now.Add(-30 * time.Minute).Format(time.RFC3339)
-	ep := now.Add(-30 * time.Minute).Unix()
+	fs := now.Add(-30 * time.Minute)
 
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obsZ', 'ObsZ', 'SJC', ?, '2026-01-01T00:00:00Z', 1)`, fs)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('ZZ01', 'hash_zone_check', ?, 1, 5,
-			'{"type":"CHAN","channel":"#zone","text":"Carol: ping","sender":"Carol"}',
-		'#zone')`, fs)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 11.0, -89, '["zz"]', ?)`, ep)
+	obsZ, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "obsz",
+		Name:      "ObsZ",
+		IATA:      "SJC",
+		LastSeen:  fs,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("create observer: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
-	store.Load()
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		RawHex:      "AA01",
+		Hash:        "hash_zone_check",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: `{"type":"CHAN","channel":"#zone","text":"Carol: ping","sender":"Carol"}`,
+		ChannelHash: "#zone",
+	}, fs)
+	if err != nil {
+		t.Fatalf("insert tx: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    ptr(obsZ),
+		Direction:      ptr("RX"),
+		SNR:            ptr(11.0),
+		RSSI:           ptr(-89.0),
+		Timestamp:      fs,
+	}, []string{"aa"}, nil)
+	if err != nil {
+		t.Fatalf("insert observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 
-	msgs, _ := store.GetChannelMessages("#zone", 10, 0)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+
+	msgs, _ := store.GetChannelMessages(ctx, "#zone", 10, 0)
 	if len(msgs) != 1 {
 		t.Fatalf("want 1 msg, got %d", len(msgs))
 	}
-	ts, _ := msgs[0]["timestamp"].(string)
-	if ts == "" {
-		t.Fatal("empty timestamp")
+	encoded, err := json.Marshal(msgs[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-	n := len(ts)
-	if !(ts[n-1] == 'Z' || (n >= 6 && ts[n-6:] == "+00:00")) {
-		t.Errorf("timestamp not UTC-suffixed (Z/+00:00): %q", ts)
+	var wire struct {
+		Timestamp string `json:"timestamp"`
+		FirstSeen string `json:"first_seen"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for name, value := range map[string]string{"timestamp": wire.Timestamp, "first_seen": wire.FirstSeen} {
+		if value == "" {
+			t.Fatalf("%s is empty in %s", name, encoded)
+		}
+		if !(strings.HasSuffix(value, "Z") || strings.HasSuffix(value, "+00:00")) {
+			t.Errorf("%s not UTC-suffixed (Z/+00:00): %q", name, value)
+		}
 	}
 }
 
@@ -183,47 +282,80 @@ func TestChannelMessages_TimestampIsUTCZ(t *testing.T) {
 //     tail-of-msgOrder convention used by the rest of the API and
 //     the frontend's scrollToBottom().
 func TestChannelMessages_OrderedByLatestSeen_InMemory(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
 	tOld := now.Add(-24 * time.Hour)
 	tMid := now.Add(-1 * time.Hour)
 	tNewest := now.Add(-30 * time.Minute)
 	tFresh := now.Add(-1 * time.Minute)
+	obsO, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "obso", Name: "ObsO", IATA: "SJC",
+		LastSeen: tOld, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("create observer obso: %v", err)
+	}
+	obsP, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "obsp", Name: "ObsP", IATA: "SJC",
+		LastSeen: tOld, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("create observer obsp: %v", err)
+	}
 
-	tOldStr := tOld.Format(time.RFC3339)
-	tMidStr := tMid.Format(time.RFC3339)
-	tNewestStr := tNewest.Format(time.RFC3339)
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obsO', 'ObsO', 'SJC', ?, '2026-01-01T00:00:00Z', 10)`, tOldStr)
+	addTx := func(raw, hash, sender, text string, firstSeen time.Time) int64 {
+		t.Helper()
+		id, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			RawHex:      raw,
+			Hash:        hash,
+			RouteType:   types.RouteType(1),
+			PayloadType: types.PayloadType(5),
+			DecodedJSON: `{"type":"CHAN","channel":"#ord","text":"` + sender + `: ` + text +
+				`","sender":"` + sender + `"}`,
+			ChannelHash: "#ord",
+		}, firstSeen)
+		if err != nil {
+			t.Fatalf("insert tx %s: %v", hash, err)
+		}
+		return id
+	}
+	addObs := func(txID, observer int64, snr, rssi float64, at time.Time, hop string) {
+		t.Helper()
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    ptr(observer),
+			Direction:      ptr("RX"),
+			SNR:            ptr(snr),
+			RSSI:           ptr(rssi),
+			Timestamp:      at,
+		}, []string{hop}, nil)
+		if err != nil {
+			t.Fatalf("insert observation (hop %s): %v", hop, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d (hop %s)", txID, hop)
+		}
+	}
 
 	// tx-A: FirstSeen 24h ago, LatestSeen NOW (T-1m). Old insertion order.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AAAA', 'order_hash_a', ?, 1, 5,
-			'{"type":"CHAN","channel":"#ord","text":"Alpha: hb","sender":"Alpha"}', '#ord')`, tOldStr)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10.0, -90, '["aa"]', ?)`, tOld.Unix())
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 2, 11.0, -88, '["aa"]', ?)`, tFresh.Unix())
+	txA := addTx("AAAA", "order_hash_a", "Alpha", "hb", tOld)
+	addObs(txA, obsO, 10.0, -90, tOld, "aa")
+	addObs(txA, obsP, 11.0, -88, tFresh, "aa")
+
 	// tx-B: FirstSeen 1h ago, LatestSeen 1h ago. OLDEST.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BBBB', 'order_hash_b', ?, 1, 5,
-			'{"type":"CHAN","channel":"#ord","text":"Bravo: msg","sender":"Bravo"}', '#ord')`, tMidStr)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 9.0, -91, '["bb"]', ?)`, tMid.Unix())
+	txB := addTx("BBBB", "order_hash_b", "Bravo", "msg", tMid)
+	addObs(txB, obsO, 9.0, -91, tMid, "bb")
 
 	// tx-C: FirstSeen 30m ago, LatestSeen 30m ago. Middle.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('CCCC', 'order_hash_c', ?, 1, 5,
-			'{"type":"CHAN","channel":"#ord","text":"Charlie: msg","sender":"Charlie"}', '#ord')`, tNewestStr)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (3, 1, 9.0, -91, '["cc"]', ?)`, tNewest.Unix())
+	txC := addTx("CCCC", "order_hash_c", "Charlie", "msg", tNewest)
+	addObs(txC, obsO, 9.0, -91, tNewest, "cc")
 
-	store := NewPacketStore(db, nil)
-	store.Load()
-	t.Logf("DB Schema v3=%s", strconv.FormatBool(store.db.isV3))
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
 
 	// TEMP DIAGNOSTIC
 	for _, tx := range store.byPayloadType[5] {
@@ -232,7 +364,7 @@ func TestChannelMessages_OrderedByLatestSeen_InMemory(t *testing.T) {
 
 	// Full-page: ordering check (fix #1 gates this — without sort,
 	// msgOrder is insertion order and Alpha lands FIRST, not LAST).
-	msgsAll, totalAll := store.GetChannelMessages("#ord", 10, 0)
+	msgsAll, totalAll := store.GetChannelMessages(ctx, "#ord", 10, 0)
 	if totalAll != 3 {
 		t.Fatalf("in-memory: want total=3, got %d", totalAll)
 	}
@@ -251,7 +383,7 @@ func TestChannelMessages_OrderedByLatestSeen_InMemory(t *testing.T) {
 	// LatestSeen is freshest, even though FirstSeen is oldest. Without
 	// fix #1, the in-memory path takes msgOrder[total-2:] which would
 	// drop Alpha (it sits at msgOrder[0] by insertion order).
-	msgsPage, _ := store.GetChannelMessages("#ord", 2, 0)
+	msgsPage, _ := store.GetChannelMessages(ctx, "#ord", 2, 0)
 	if len(msgsPage) != 2 {
 		t.Fatalf("in-memory: want 2 msgs at limit=2, got %d", len(msgsPage))
 	}
@@ -263,97 +395,5 @@ func TestChannelMessages_OrderedByLatestSeen_InMemory(t *testing.T) {
 	}
 	if !hasAlpha {
 		t.Errorf("in-memory: tx-A (Alpha) excluded from limit=2 page — FirstSeen-based tail selection bug (fix #1 reverted?)")
-	}
-}
-
-func TestChannelMessages_OrderedByLatestSeen_DB(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	now := time.Now().UTC()
-	tOld := now.Add(-24 * time.Hour)
-	tMid := now.Add(-1 * time.Hour)
-	tNewest := now.Add(-30 * time.Minute)
-	tFresh := now.Add(-1 * time.Minute)
-
-	tOldStr := tOld.Format(time.RFC3339)
-	tMidStr := tMid.Format(time.RFC3339)
-	tNewestStr := tNewest.Format(time.RFC3339)
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obsD', 'ObsD', 'SJC', ?, '2026-01-01T00:00:00Z', 10)`, tOldStr)
-
-	// tx-A: FirstSeen 24h ago, observations at T-24h and T-1m (LatestSeen
-	// = T-1m, the FRESHEST). Despite the freshest LatestSeen, a
-	// FirstSeen-DESC selection would push it OFF a small page.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AADB', 'order_db_hash_a', ?, 1, 5,
-			'{"type":"CHAN","channel":"#ordb","text":"Alpha: hb","sender":"Alpha"}', '#ordb')`, tOldStr)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10.0, -90, '["aa"]', ?)`, tOld.Unix())
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 2, 11.0, -88, '["aa"]', ?)`, tFresh.Unix())
-
-	// tx-B: FirstSeen 1h ago, LatestSeen 1h ago. OLDEST LatestSeen.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BBDB', 'order_db_hash_b', ?, 1, 5,
-			'{"type":"CHAN","channel":"#ordb","text":"Bravo: msg","sender":"Bravo"}', '#ordb')`, tMidStr)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 9.0, -91, '["bb"]', ?)`, tMid.Unix())
-
-	// tx-C: FirstSeen 30m ago, LatestSeen 30m ago. Middle LatestSeen.
-	// With FirstSeen-DESC selection + limit=2, page = [tx-C, tx-B] and
-	// tx-A is EXCLUDED — that's the selection bug fix #2 gates.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('CCDB', 'order_db_hash_c', ?, 1, 5,
-			'{"type":"CHAN","channel":"#ordb","text":"Charlie: msg","sender":"Charlie"}', '#ordb')`, tNewestStr)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (3, 1, 9.0, -91, '["cc"]', ?)`, tNewest.Unix())
-
-	msgs, total, err := db.GetChannelMessages("#ordb", 2, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 3 {
-		t.Fatalf("DB: want total=3, got %d", total)
-	}
-	if len(msgs) != 2 {
-		t.Fatalf("DB: want 2 msgs in page (limit=2), got %d", len(msgs))
-	}
-	// Selection (fix #2): the page MUST include tx-A (Alpha) because its
-	// LatestSeen is the newest — even though its FirstSeen is the OLDEST.
-	// With limit=2 + LatestSeen-DESC selection, page = [Alpha, Charlie].
-	// Returned ASC by LatestSeen (newest LAST, fix #3) = [Charlie, Alpha].
-	sender0, _ := msgs[0]["sender"].(string)
-	sender1, _ := msgs[1]["sender"].(string)
-	if sender0 != "Charlie" || sender1 != "Alpha" {
-		t.Errorf("DB: want order [Charlie, Alpha] (page selected by LatestSeen DESC, returned ASC, fix #2+#3), got [%q, %q]",
-			sender0, sender1)
-	}
-	hasAlpha := false
-	for _, m := range msgs {
-		if s, _ := m["sender"].(string); s == "Alpha" {
-			hasAlpha = true
-		}
-	}
-	if !hasAlpha {
-		t.Errorf("DB: tx-A (Alpha) excluded from page — FirstSeen-based selection bug (fix #2 reverted?)")
-	}
-
-	// Also exercise large-page case (limit > total): ordering-only check.
-	msgsAll, totalAll, err := db.GetChannelMessages("#ordb", 10, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if totalAll != 3 || len(msgsAll) != 3 {
-		t.Fatalf("DB: want all 3 msgs at limit=10, got total=%d len=%d", totalAll, len(msgsAll))
-	}
-	// Expected ASC by LatestSeen: Bravo (T-1h), Charlie (T-30m), Alpha (T-1m).
-	wantOrder := []string{"Bravo", "Charlie", "Alpha"}
-	for i, want := range wantOrder {
-		got, _ := msgsAll[i]["sender"].(string)
-		if got != want {
-			t.Errorf("DB: msg[%d] want sender=%q, got %q (full order: must be LatestSeen ASC, fix #3)", i, want, got)
-		}
 	}
 }

@@ -12,6 +12,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countDroppedPackets = `-- name: CountDroppedPackets :one
+SELECT count(*) FROM dropped_packets
+`
+
+func (q *Queries) CountDroppedPackets(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countDroppedPackets)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertDroppedPacket = `-- name: InsertDroppedPacket :exec
 INSERT INTO dropped_packets (
     hash, raw_hex, reason, observer_id, observer_name, node_pubkey, node_name
@@ -24,13 +35,13 @@ VALUES (
 `
 
 type InsertDroppedPacketParams struct {
-	Hash         pgtype.Text `json:"hash"`
-	RawHex       pgtype.Text `json:"raw_hex"`
-	Reason       string      `json:"reason"`
-	ObserverID   pgtype.Text `json:"observer_id"`
-	ObserverName pgtype.Text `json:"observer_name"`
-	NodePubkey   pgtype.Text `json:"node_pubkey"`
-	NodeName     pgtype.Text `json:"node_name"`
+	Hash         pgtype.Text
+	RawHex       pgtype.Text
+	Reason       string
+	ObserverID   pgtype.Text
+	ObserverName pgtype.Text
+	NodePubkey   pgtype.Text
+	NodeName     pgtype.Text
 }
 
 func (q *Queries) InsertDroppedPacket(ctx context.Context, arg InsertDroppedPacketParams) error {
@@ -44,6 +55,51 @@ func (q *Queries) InsertDroppedPacket(ctx context.Context, arg InsertDroppedPack
 		arg.NodeName,
 	)
 	return err
+}
+
+const listDroppedPackets = `-- name: ListDroppedPackets :many
+SELECT id, hash, raw_hex, reason, observer_id, observer_name, node_pubkey, node_name, dropped_at
+FROM dropped_packets
+WHERE ($1::text IS NULL OR observer_id = $1::text)
+  AND ($2::text IS NULL OR node_pubkey = $2::text)
+ORDER BY dropped_at DESC, id DESC
+LIMIT $3::int
+`
+
+type ListDroppedPacketsParams struct {
+	ObserverID pgtype.Text
+	NodePubkey pgtype.Text
+	MaxRows    int32
+}
+
+func (q *Queries) ListDroppedPackets(ctx context.Context, arg ListDroppedPacketsParams) ([]DroppedPacket, error) {
+	rows, err := q.db.Query(ctx, listDroppedPackets, arg.ObserverID, arg.NodePubkey, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DroppedPacket{}
+	for rows.Next() {
+		var i DroppedPacket
+		if err := rows.Scan(
+			&i.ID,
+			&i.Hash,
+			&i.RawHex,
+			&i.Reason,
+			&i.ObserverID,
+			&i.ObserverName,
+			&i.NodePubkey,
+			&i.NodeName,
+			&i.DroppedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneDroppedPackets = `-- name: PruneDroppedPackets :execrows

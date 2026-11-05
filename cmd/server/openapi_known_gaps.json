@@ -21,7 +21,6 @@
     "/api/observers/clock-skew",
     "/api/paths/inspect",
     "/api/perf/io",
-    "/api/perf/sqlite",
     "/api/perf/write-sources",
     "/api/rx-coverage",
     "/api/rx-leaderboard",

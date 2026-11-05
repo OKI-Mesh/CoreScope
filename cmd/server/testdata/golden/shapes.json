@@ -1461,7 +1461,7 @@
           }
         }
       },
-      "sqlite": {
+      "dbStats": {
         "type": "object",
         "keys": {
           "dbSizeMB": {
@@ -1470,22 +1470,8 @@
           "walSizeMB": {
             "type": "number"
           },
-          "freelistMB": {
+          "deadTuples": {
             "type": "number"
-          },
-          "walPages": {
-            "type": "object",
-            "keys": {
-              "total": {
-                "type": "number"
-              },
-              "checkpointed": {
-                "type": "number"
-              },
-              "busy": {
-                "type": "number"
-              }
-            }
           },
           "rows": {
             "type": "object",

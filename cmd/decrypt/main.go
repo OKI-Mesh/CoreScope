@@ -1,29 +1,35 @@
-// corescope-decrypt decrypts and exports hashtag channel messages from a CoreScope SQLite database.
+// corescope-decrypt decrypts and exports hashtag channel messages from a CoreScope Postgres database.
 //
 // Usage:
 //
-//	corescope-decrypt --channel "#wardriving" --db meshcore.db [--format json|html] [--output file]
+//	corescope-decrypt --channel "#wardriving" [--dsn URL] [--format json|html|irc|log] [--output file]
 package main
 
 import (
-	"database/sql"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html"
 	"log"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/channel"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Version info (set via ldflags).
 var version = "dev"
+
+// pageSize is how many GRP_TXT transmissions are read per query.
+const pageSize = 5000
 
 // ChannelMessage is a single decrypted channel message with metadata.
 type ChannelMessage struct {
@@ -47,7 +53,7 @@ type Observer struct {
 
 func main() {
 	channelName := flag.String("channel", "", "Channel name (e.g. \"#wardriving\")")
-	dbPath := flag.String("db", "", "Path to CoreScope SQLite database")
+	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "Postgres connection string (default: $DATABASE_URL)")
 	format := flag.String("format", "json", "Output format: json, html, irc (or log)")
 	output := flag.String("output", "", "Output file (default: stdout)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
@@ -56,12 +62,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, `corescope-decrypt — Decrypt and export MeshCore hashtag channel messages
 
 USAGE
-  corescope-decrypt --channel NAME --db PATH [--format FORMAT] [--output FILE]
+  corescope-decrypt --channel NAME [--dsn URL] [--format FORMAT] [--output FILE]
 
 FLAGS
   --channel NAME   Channel name to decrypt (e.g. "#wardriving", "wardriving")
                    The "#" prefix is added automatically if missing.
-  --db PATH        Path to a CoreScope SQLite database file (read-only access).
+  --dsn URL        Postgres connection string. Defaults to $DATABASE_URL. The DSN
+                   carries a password, so prefer the environment variable: a flag
+                   shows up in the process list. Access is read-only.
   --format FORMAT  Output format (default: json):
                      json  — Machine-readable JSON array with full metadata
                      html  — Self-contained HTML viewer with search and sorting
@@ -72,17 +80,17 @@ FLAGS
 
 EXAMPLES
   # Export #wardriving messages as JSON
-  corescope-decrypt --channel "#wardriving" --db /app/data/meshcore.db
+  corescope-decrypt --channel "#wardriving"
 
   # Generate an interactive HTML viewer
-  corescope-decrypt --channel wardriving --db meshcore.db --format html --output wardriving.html
+  corescope-decrypt --channel wardriving --format html --output wardriving.html
 
   # Greppable IRC log
-  corescope-decrypt --channel "#MeshCore" --db meshcore.db --format irc --output meshcore.log
+  corescope-decrypt --channel "#MeshCore" --format irc --output meshcore.log
   grep "KE6QR" meshcore.log
 
   # From the Docker container
-  docker exec corescope-prod /app/corescope-decrypt --channel "#wardriving" --db /app/data/meshcore.db
+  docker exec corescope-prod /app/corescope-decrypt --channel "#wardriving"
 
 RETROACTIVE DECRYPTION
   MeshCore hashtag channels use symmetric encryption — the key is derived from the
@@ -92,6 +100,7 @@ RETROACTIVE DECRYPTION
   never configured with that channel's key.
 
   This means you can recover historical messages by simply knowing the channel name.
+  Messages whose payload has been scrubbed by the retention roll-off cannot be recovered.
 
 LIMITATIONS
   - Only hashtag channels (shared-secret, name-derived key) are supported.
@@ -107,9 +116,15 @@ LIMITATIONS
 		os.Exit(0)
 	}
 
-	if *channelName == "" || *dbPath == "" {
+	if *channelName == "" || *dsn == "" {
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	switch *format {
+	case "json", "html", "irc", "log":
+	default:
+		log.Fatalf("Unknown format: %s (use json, html, irc, or log)", *format)
 	}
 
 	// Normalize channel name
@@ -118,216 +133,171 @@ LIMITATIONS
 		ch = "#" + ch
 	}
 
-	key := channel.DeriveKey(ch)
-	chHash := channel.ChannelHash(key)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if err := run(ctx, *dsn, ch, *format, *output); err != nil {
+		stop()
+		log.Fatal(err)
+	}
+	stop()
+}
 
-	db, err := sql.Open("sqlite3", "file:"+*dbPath+"?mode=ro")
+func run(ctx context.Context, dsn, ch, format, output string) error {
+	db, err := database.OpenReadOnly(ctx, dsn)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 
-	// Query all GRP_TXT packets
-	rows, err := db.Query(`SELECT id, hash, raw_hex, first_seen FROM transmissions WHERE payload_type = 5`)
+	messages, total, decrypted, err := exportChannel(ctx, db, ch, pageSize)
 	if err != nil {
-		log.Fatalf("Query failed: %v", err)
-	}
-	defer rows.Close()
-
-	var messages []ChannelMessage
-	decrypted, total := 0, 0
-
-	for rows.Next() {
-		var id int
-		var txHash, rawHex, firstSeen string
-		if err := rows.Scan(&id, &txHash, &rawHex, &firstSeen); err != nil {
-			log.Printf("Scan error: %v", err)
-			continue
-		}
-		total++
-
-		payload, err := extractGRPPayload(rawHex)
-		if err != nil {
-			continue
-		}
-		if len(payload) < 3 {
-			continue
-		}
-
-		// Check channel hash byte
-		if payload[0] != chHash {
-			continue
-		}
-
-		mac := payload[1:3]
-		ciphertext := payload[3:]
-		if len(ciphertext) < 5 || len(ciphertext)%16 != 0 {
-			// Pad ciphertext to block boundary for decryption attempt
-			if len(ciphertext) < 16 {
-				continue
-			}
-			// Truncate to block boundary
-			ciphertext = ciphertext[:len(ciphertext)/16*16]
-		}
-
-		plaintext, ok := channel.Decrypt(key, mac, ciphertext)
-		if !ok {
-			continue
-		}
-
-		ts, sender, msg, err := channel.ParsePlaintext(plaintext)
-		if err != nil {
-			continue
-		}
-
-		decrypted++
-
-		// Convert MeshCore timestamp
-		timestamp := time.Unix(int64(ts), 0).UTC().Format(time.RFC3339)
-
-		// Get path from decoded_json
-		path := getPathFromDB(db, id)
-
-		// Get observers
-		observers := getObservers(db, id)
-
-		messages = append(messages, ChannelMessage{
-			Hash:      txHash,
-			Timestamp: timestamp,
-			Sender:    sender,
-			Message:   msg,
-			Channel:   ch,
-			RawHex:    rawHex,
-			Path:      path,
-			Observers: observers,
-		})
+		return err
 	}
 
-	// Sort by timestamp
 	sort.Slice(messages, func(i, j int) bool {
 		return messages[i].Timestamp < messages[j].Timestamp
 	})
 
 	log.Printf("Scanned %d GRP_TXT packets, decrypted %d for channel %s", total, decrypted, ch)
 
-	// Generate output
 	var out []byte
-	switch *format {
+	switch format {
 	case "json":
 		out, err = json.MarshalIndent(messages, "", "  ")
 		if err != nil {
-			log.Fatalf("JSON marshal: %v", err)
+			return fmt.Errorf("JSON marshal: %w", err)
 		}
 		out = append(out, '\n')
 	case "html":
 		out = renderHTML(messages, ch)
-	case "irc", "log":
+	default: // irc, log
 		out = renderIRC(messages)
-	default:
-		log.Fatalf("Unknown format: %s (use json, html, irc, or log)", *format)
 	}
 
-	if *output != "" {
-		if err := os.WriteFile(*output, out, 0644); err != nil {
-			log.Fatalf("Write file: %v", err)
+	if output != "" {
+		if err := os.WriteFile(output, out, 0o644); err != nil {
+			return fmt.Errorf("write file: %w", err)
 		}
-		log.Printf("Written to %s", *output)
-	} else {
-		os.Stdout.Write(out)
-	}
-}
-
-// extractGRPPayload parses a raw hex packet and returns the GRP_TXT payload bytes.
-func extractGRPPayload(rawHex string) ([]byte, error) {
-	buf, err := hex.DecodeString(strings.TrimSpace(rawHex))
-	if err != nil || len(buf) < 2 {
-		return nil, fmt.Errorf("invalid hex")
-	}
-
-	// Header byte
-	header := buf[0]
-	payloadType := int((header >> 2) & 0x0F)
-	if payloadType != 5 { // GRP_TXT
-		return nil, fmt.Errorf("not GRP_TXT")
-	}
-
-	routeType := int(header & 0x03)
-	offset := 1
-
-	// Transport codes (2 codes × 2 bytes) come BEFORE path for transport routes
-	if routeType == 0 || routeType == 3 {
-		offset += 4
-	}
-
-	// Path byte
-	if offset >= len(buf) {
-		return nil, fmt.Errorf("too short for path")
-	}
-	pathByte := buf[offset]
-	offset++
-	hashSize := int(pathByte>>6) + 1
-	hashCount := int(pathByte & 0x3F)
-	offset += hashSize * hashCount
-
-	if offset >= len(buf) {
-		return nil, fmt.Errorf("too short for payload")
-	}
-
-	return buf[offset:], nil
-}
-
-func getPathFromDB(db *sql.DB, txID int) []string {
-	var decodedJSON sql.NullString
-	err := db.QueryRow(`SELECT decoded_json FROM transmissions WHERE id = ?`, txID).Scan(&decodedJSON)
-	if err != nil || !decodedJSON.Valid {
+		log.Printf("Written to %s", output)
 		return nil
 	}
-
-	var decoded struct {
-		Path struct {
-			Hops []string `json:"hops"`
-		} `json:"path"`
-	}
-	if json.Unmarshal([]byte(decodedJSON.String), &decoded) == nil {
-		return decoded.Path.Hops
-	}
-	return nil
+	_, err = os.Stdout.Write(out)
+	return err
 }
 
-func getObservers(db *sql.DB, txID int) []Observer {
-	rows, err := db.Query(`
-		SELECT o.name, obs.snr, obs.rssi, obs.timestamp
-		FROM observations obs
-		LEFT JOIN observers o ON o.id = CAST(obs.observer_idx AS TEXT)
-		WHERE obs.transmission_id = ?
-		ORDER BY obs.timestamp
-	`, txID)
+// exportChannel scans every GRP_TXT transmission, page by page, and returns the
+// ones that decrypt under ch's key, plus how many transmissions it scanned and
+// how many it decrypted.
+func exportChannel(ctx context.Context, db *database.DB, ch string, limit int) ([]ChannelMessage, int, int, error) {
+	key := channel.DeriveKey(ch)
+	chHash := channel.ChannelHash(key)
+
+	messages := make([]ChannelMessage, 0)
+	total, decrypted := 0, 0
+	var afterID int64
+
+	for {
+		page, err := db.ListGroupTextTransmissions(ctx, afterID, limit)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("list GRP_TXT transmissions: %w", err)
+		}
+		if len(page) == 0 {
+			return messages, total, decrypted, nil
+		}
+		afterID = page[len(page)-1].ID
+
+		var pageMessages []ChannelMessage
+		var pageIDs []int64
+		for _, tx := range page {
+			total++
+
+			path, payload, err := splitGroupText(tx.Frame)
+			if err != nil {
+				continue
+			}
+			ts, sender, msg, ok := decryptGroupText(key, chHash, payload)
+			if !ok {
+				continue
+			}
+			decrypted++
+
+			pageIDs = append(pageIDs, tx.ID)
+			pageMessages = append(pageMessages, ChannelMessage{
+				Hash:      tx.Hash,
+				Timestamp: time.Unix(int64(ts), 0).UTC().Format(time.RFC3339),
+				Sender:    sender,
+				Message:   msg,
+				Channel:   ch,
+				RawHex:    tx.Frame.Hex(),
+				Path:      path,
+			})
+		}
+
+		if len(pageIDs) > 0 {
+			receptions, err := db.ListObserverReceptions(ctx, pageIDs)
+			if err != nil {
+				return nil, 0, 0, fmt.Errorf("list observer receptions: %w", err)
+			}
+			for i := range pageMessages {
+				pageMessages[i].Observers = toObservers(receptions[pageIDs[i]])
+			}
+		}
+		messages = append(messages, pageMessages...)
+	}
+}
+
+// decryptGroupText tries to decrypt a GRP_TXT payload (channel hash byte, 2-byte
+// MAC, ciphertext) under key. ok is false when the payload belongs to another
+// channel, is too short, fails the MAC, or does not parse.
+func decryptGroupText(key []byte, chHash byte, payload []byte) (ts uint32, sender, message string, ok bool) {
+	if len(payload) < 3 || payload[0] != chHash {
+		return 0, "", "", false
+	}
+	mac := payload[1:3]
+	ciphertext := payload[3:]
+	if len(ciphertext) < 16 {
+		return 0, "", "", false
+	}
+	// Truncate to a block boundary for the decryption attempt.
+	ciphertext = ciphertext[:len(ciphertext)/16*16]
+
+	plaintext, ok := channel.Decrypt(key, mac, ciphertext)
+	if !ok {
+		return 0, "", "", false
+	}
+	ts, sender, message, err := channel.ParsePlaintext(plaintext)
 	if err != nil {
-		return nil
+		return 0, "", "", false
 	}
-	defer rows.Close()
+	return ts, sender, message, true
+}
 
+// splitGroupText parses a GRP_TXT frame and returns its path hops (uppercase
+// hex) and its payload bytes.
+func splitGroupText(frame types.RawFrame) (path []string, payload []byte, err error) {
+	env, err := decoder.ParseEnvelope(frame)
+	if err != nil {
+		return nil, nil, err
+	}
+	if env.Header.PayloadType != types.PayloadGRP_TXT {
+		return nil, nil, fmt.Errorf("not GRP_TXT")
+	}
+	return env.Path.Hops, env.Payload, nil
+}
+
+func toObservers(receptions []database.ObserverReception) []Observer {
 	var observers []Observer
-	for rows.Next() {
-		var name sql.NullString
-		var snr, rssi sql.NullFloat64
-		var ts int64
-		if err := rows.Scan(&name, &snr, &rssi, &ts); err != nil {
-			continue
+	for _, r := range receptions {
+		o := Observer{Timestamp: r.ReceivedAt.UTC().Format(time.RFC3339)}
+		if r.ObserverName != nil {
+			o.Name = *r.ObserverName
 		}
-		obs := Observer{
-			Timestamp: time.Unix(ts, 0).UTC().Format(time.RFC3339),
+		if r.SNR != nil {
+			o.SNR = *r.SNR
 		}
-		if name.Valid {
-			obs.Name = name.String
+		if r.RSSI != nil {
+			o.RSSI = *r.RSSI
 		}
-		if snr.Valid {
-			obs.SNR = snr.Float64
-		}
-		if rssi.Valid {
-			obs.RSSI = rssi.Float64
-		}
-		observers = append(observers, obs)
+		observers = append(observers, o)
 	}
 	return observers
 }

@@ -159,13 +159,6 @@ func RegisterSourceStatus(tag, broker string) *sourceStatusState {
 	return s
 }
 
-// lookupSourceStatus returns the state for tag, or nil if unregistered.
-func lookupSourceStatus(tag string) *sourceStatusState {
-	sourceStatusRegistryMu.RLock()
-	defer sourceStatusRegistryMu.RUnlock()
-	return sourceStatusRegistry[tag]
-}
-
 // SnapshotSourceStatuses returns a slice of every registered source's
 // current snapshot. Surfaced via the ingestor stats file under
 // "source_statuses" so /api/mqtt/status can serve it (#1043).

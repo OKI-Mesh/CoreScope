@@ -29,15 +29,15 @@ ON CONFLICT (observer_id, timestamp) DO UPDATE SET
 `
 
 type CreateOrUpdateObserverMetricsParams struct {
-	ObserverID  string        `json:"observer_id"`
-	Timestamp   time.Time     `json:"timestamp"`
-	NoiseFloor  pgtype.Float8 `json:"noise_floor"`
-	TxAirSecs   pgtype.Int4   `json:"tx_air_secs"`
-	RxAirSecs   pgtype.Int4   `json:"rx_air_secs"`
-	RecvErrors  pgtype.Int4   `json:"recv_errors"`
-	BatteryMv   pgtype.Int4   `json:"battery_mv"`
-	PacketsSent pgtype.Int4   `json:"packets_sent"`
-	PacketsRecv pgtype.Int4   `json:"packets_recv"`
+	ObserverID  string
+	Timestamp   time.Time
+	NoiseFloor  pgtype.Float8
+	TxAirSecs   pgtype.Int4
+	RxAirSecs   pgtype.Int4
+	RecvErrors  pgtype.Int4
+	BatteryMv   pgtype.Int4
+	PacketsSent pgtype.Int4
+	PacketsRecv pgtype.Int4
 }
 
 func (q *Queries) CreateOrUpdateObserverMetrics(ctx context.Context, arg CreateOrUpdateObserverMetricsParams) error {
@@ -66,6 +66,217 @@ func (q *Queries) DeleteMetricsForInactiveObservers(ctx context.Context) (int64,
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listMetricsSince = `-- name: ListMetricsSince :many
+SELECT m.observer_id, o.name, o.iata, m.noise_floor, m.battery_mv
+FROM observer_metrics m
+JOIN observers o ON o.pubkey = m.observer_id
+WHERE m.timestamp >= $1
+ORDER BY m.observer_id, m.timestamp ASC
+`
+
+type ListMetricsSinceRow struct {
+	ObserverID string
+	Name       pgtype.Text
+	Iata       pgtype.Text
+	NoiseFloor pgtype.Float8
+	BatteryMv  pgtype.Int4
+}
+
+func (q *Queries) ListMetricsSince(ctx context.Context, timestamp time.Time) ([]ListMetricsSinceRow, error) {
+	rows, err := q.db.Query(ctx, listMetricsSince, timestamp)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMetricsSinceRow{}
+	for rows.Next() {
+		var i ListMetricsSinceRow
+		if err := rows.Scan(
+			&i.ObserverID,
+			&i.Name,
+			&i.Iata,
+			&i.NoiseFloor,
+			&i.BatteryMv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMetricsSummarySamples = `-- name: ListMetricsSummarySamples :many
+SELECT
+    m.observer_id,
+    COALESCE(o.name, '')::text AS name,
+    COALESCE(o.iata, '')::text AS iata,
+    m.noise_floor,
+    m.battery_mv
+FROM observer_metrics m
+JOIN observers o ON o.pubkey = m.observer_id
+WHERE m.timestamp >= $1::timestamptz
+ORDER BY m.observer_id, m.timestamp ASC
+`
+
+type ListMetricsSummarySamplesRow struct {
+	ObserverID string
+	Name       string
+	Iata       string
+	NoiseFloor pgtype.Float8
+	BatteryMv  pgtype.Int4
+}
+
+func (q *Queries) ListMetricsSummarySamples(ctx context.Context, since time.Time) ([]ListMetricsSummarySamplesRow, error) {
+	rows, err := q.db.Query(ctx, listMetricsSummarySamples, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMetricsSummarySamplesRow{}
+	for rows.Next() {
+		var i ListMetricsSummarySamplesRow
+		if err := rows.Scan(
+			&i.ObserverID,
+			&i.Name,
+			&i.Iata,
+			&i.NoiseFloor,
+			&i.BatteryMv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObserverMetrics = `-- name: ListObserverMetrics :many
+SELECT m.timestamp, m.noise_floor, m.tx_air_secs, m.rx_air_secs, m.recv_errors,
+       m.battery_mv, m.packets_sent, m.packets_recv
+FROM observer_metrics m
+WHERE m.observer_id = $1
+  AND ($2::timestamptz IS NULL OR m.timestamp >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR m.timestamp <= $3::timestamptz)
+ORDER BY m.timestamp ASC
+`
+
+type ListObserverMetricsParams struct {
+	ObserverID string
+	Since      pgtype.Timestamptz
+	Until      pgtype.Timestamptz
+}
+
+type ListObserverMetricsRow struct {
+	Timestamp   time.Time
+	NoiseFloor  pgtype.Float8
+	TxAirSecs   pgtype.Int4
+	RxAirSecs   pgtype.Int4
+	RecvErrors  pgtype.Int4
+	BatteryMv   pgtype.Int4
+	PacketsSent pgtype.Int4
+	PacketsRecv pgtype.Int4
+}
+
+func (q *Queries) ListObserverMetrics(ctx context.Context, arg ListObserverMetricsParams) ([]ListObserverMetricsRow, error) {
+	rows, err := q.db.Query(ctx, listObserverMetrics, arg.ObserverID, arg.Since, arg.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObserverMetricsRow{}
+	for rows.Next() {
+		var i ListObserverMetricsRow
+		if err := rows.Scan(
+			&i.Timestamp,
+			&i.NoiseFloor,
+			&i.TxAirSecs,
+			&i.RxAirSecs,
+			&i.RecvErrors,
+			&i.BatteryMv,
+			&i.PacketsSent,
+			&i.PacketsRecv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObserverMetricsBucketed = `-- name: ListObserverMetricsBucketed :many
+SELECT DISTINCT ON (date_trunc($1::text, m.timestamp AT TIME ZONE 'UTC'))
+       (date_trunc($1::text, m.timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS timestamp,
+       m.noise_floor, m.tx_air_secs, m.rx_air_secs, m.recv_errors,
+       m.battery_mv, m.packets_sent, m.packets_recv
+FROM observer_metrics m
+WHERE m.observer_id = $2
+  AND ($3::timestamptz IS NULL OR m.timestamp >= $3::timestamptz)
+  AND ($4::timestamptz IS NULL OR m.timestamp <= $4::timestamptz)
+ORDER BY date_trunc($1::text, m.timestamp AT TIME ZONE 'UTC'), m.timestamp DESC
+`
+
+type ListObserverMetricsBucketedParams struct {
+	Bucket     string
+	ObserverID string
+	Since      pgtype.Timestamptz
+	Until      pgtype.Timestamptz
+}
+
+type ListObserverMetricsBucketedRow struct {
+	Timestamp   time.Time
+	NoiseFloor  pgtype.Float8
+	TxAirSecs   pgtype.Int4
+	RxAirSecs   pgtype.Int4
+	RecvErrors  pgtype.Int4
+	BatteryMv   pgtype.Int4
+	PacketsSent pgtype.Int4
+	PacketsRecv pgtype.Int4
+}
+
+// Last sample per bucket (not MAX): if a device reboots mid-bucket, the last sample is the
+// post-reboot baseline, not the pre-reboot high-water mark. bucket is 'hour' or 'day' (UTC).
+func (q *Queries) ListObserverMetricsBucketed(ctx context.Context, arg ListObserverMetricsBucketedParams) ([]ListObserverMetricsBucketedRow, error) {
+	rows, err := q.db.Query(ctx, listObserverMetricsBucketed,
+		arg.Bucket,
+		arg.ObserverID,
+		arg.Since,
+		arg.Until,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObserverMetricsBucketedRow{}
+	for rows.Next() {
+		var i ListObserverMetricsBucketedRow
+		if err := rows.Scan(
+			&i.Timestamp,
+			&i.NoiseFloor,
+			&i.TxAirSecs,
+			&i.RxAirSecs,
+			&i.RecvErrors,
+			&i.BatteryMv,
+			&i.PacketsSent,
+			&i.PacketsRecv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const pruneObserverMetrics = `-- name: PruneObserverMetrics :execrows

@@ -12,6 +12,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Seeds 5 recent adverts: 3 healthy (~-20s skew) and 2 with a "nonsense"
@@ -20,10 +22,10 @@ import (
 func seedIssue1094Repro(t *testing.T) (*PacketStore, []string, []int64) {
 	t.Helper()
 	ps := NewPacketStore(nil, nil)
-	pt := 4 // ADVERT
+	pt := types.PayloadADVERT
 
 	const pubkey = "BADTS1094"
-	baseObs := int64(1779000000)
+	baseObs := time.Date(2026, 5, 17, 6, 40, 0, 0, time.UTC) // equivalent to the old 1779000000
 
 	var txs []*StoreTx
 	var badHashes []string
@@ -31,14 +33,14 @@ func seedIssue1094Repro(t *testing.T) (*PacketStore, []string, []int64) {
 
 	// 3 healthy adverts (skew = -20s).
 	for i := 0; i < 3; i++ {
-		obsTS := baseObs + int64(i)*60
-		advTS := obsTS - 20
+		obsTime := baseObs.Add(time.Duration(i) * time.Minute)
+		advTS := obsTime.Add(-20 * time.Second).Unix()
 		txs = append(txs, &StoreTx{
 			Hash:        "healthy-1094-" + formatInt64(int64(i)),
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"BADTS1094"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTime},
 			},
 		})
 	}
@@ -46,15 +48,15 @@ func seedIssue1094Repro(t *testing.T) (*PacketStore, []string, []int64) {
 	// 2 nonsense-timestamp adverts (skew = -7200s = -2h — bimodal-bad,
 	// below the 24h RTC-reset exclusion so they DO count in recentBadCount).
 	for i := 0; i < 2; i++ {
-		obsTS := baseObs + int64(3+i)*60
-		advTS := obsTS - 7200
+		obsTS := baseObs.Add(time.Duration(3+i) * 60)
+		advTS := obsTS.Add(-2 * time.Hour).Unix()
 		hash := "bad-1094-" + formatInt64(int64(i))
 		txs = append(txs, &StoreTx{
 			Hash:        hash,
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"BADTS1094"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTS},
 			},
 		})
 		badHashes = append(badHashes, hash)

@@ -26,13 +26,3 @@ func fromPubkeyBackfillSnapshot() (total, processed int64, done bool) {
 	defer fromPubkeyBackfillMu.RUnlock()
 	return fromPubkeyBackfillTotal, fromPubkeyBackfillProcessed, fromPubkeyBackfillDone
 }
-
-// fromPubkeyBackfillReset is a test helper used by legacy tests; in
-// the post-#1287 world it merely resets the static snapshot fields.
-func fromPubkeyBackfillReset() {
-	fromPubkeyBackfillMu.Lock()
-	fromPubkeyBackfillTotal = 0
-	fromPubkeyBackfillProcessed = 0
-	fromPubkeyBackfillDone = true
-	fromPubkeyBackfillMu.Unlock()
-}

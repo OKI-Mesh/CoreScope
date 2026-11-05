@@ -80,7 +80,6 @@ type beamEntry struct {
 
 const (
 	beamWidth            = 20
-	maxInputHops         = 64
 	maxPrefixBytes       = 3
 	maxRequestItems      = 64
 	geoMaxKm             = 50.0
@@ -236,7 +235,7 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 			allCands := pm.m[prefix]
 			var alts []hopAlternative
 			for _, c := range allCands {
-				if !canAppearInPath(c.Role) || c.PublicKey == ev.Chosen {
+				if !c.Role.RelaysTraffic() || c.PublicKey == ev.Chosen {
 					continue
 				}
 				var partialEntry beamEntry
@@ -335,7 +334,7 @@ func (s *PacketStore) beamSearch(prefixes []string, pm *prefixMap, graph *Neighb
 		// Filter by role at lookup time (spec §2.2 step 2).
 		var filtered []nodeInfo
 		for _, c := range candidates {
-			if canAppearInPath(c.Role) {
+			if c.Role.RelaysTraffic() {
 				filtered = append(filtered, c)
 			}
 		}

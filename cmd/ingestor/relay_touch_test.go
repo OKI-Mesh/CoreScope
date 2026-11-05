@@ -22,7 +22,7 @@ import (
 func seedRelayNode(t *testing.T, s *Store, pubkey, name string, lastSeen time.Time) {
 	ctx := t.Context()
 	t.Helper()
-	if err := s.UpsertNode(ctx, pubkey, name, "repeater", nil, nil, lastSeen); err != nil {
+	if err := upsertNode(ctx, s, pubkey, name, "repeater", nil, nil, lastSeen); err != nil {
 		t.Fatalf("seed node %s: %v", name, err)
 	}
 }
@@ -45,7 +45,7 @@ func TestTouchRelayNodes_AdvancesLastSeen(t *testing.T) {
 	seedRelayNode(t, store, relay, "RelayOnly", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
 	rxTime := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	store.touchRelayNodesLocked(ctx, []string{relay}, rxTime)
+	store.touchRelayNodes(ctx, []string{relay}, rxTime)
 
 	got := nodeLastSeen(t, store, relay)
 	if !got.Equal(rxTime) {
@@ -66,7 +66,7 @@ func TestTouchRelayNodes_NeverGoesBackwards(t *testing.T) {
 	const relay = "bb11223344556677889900aabbccddeeff00112233445566778899aabbccddee"
 	seedRelayNode(t, store, relay, "Backbone", time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
 
-	store.touchRelayNodesLocked(ctx, []string{relay}, time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC))
+	store.touchRelayNodes(ctx, []string{relay}, time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC))
 
 	if got := nodeLastSeen(t, store, relay); !got.Equal(time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("last_seen went backwards: got %q, want 2026-07-10T12:00:00Z", got)
@@ -84,9 +84,9 @@ func TestTouchRelayNodes_Debounces(t *testing.T) {
 	seedRelayNode(t, store, relay, "Chatty", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
 	base := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	store.touchRelayNodesLocked(ctx, []string{relay}, base)
+	store.touchRelayNodes(ctx, []string{relay}, base)
 	// Second hit two minutes later — inside the debounce window, no write.
-	store.touchRelayNodesLocked(ctx, []string{relay}, base.Add(2*time.Minute))
+	store.touchRelayNodes(ctx, []string{relay}, base.Add(2*time.Minute))
 
 	if n := store.Stats.RelayTouches.Load(); n != 1 {
 		t.Errorf("RelayTouches = %d, want 1 (second touch should be debounced)", n)
@@ -97,7 +97,7 @@ func TestTouchRelayNodes_Debounces(t *testing.T) {
 
 	// Past the debounce window the write goes through again.
 	later := base.Add(6 * time.Minute)
-	store.touchRelayNodesLocked(ctx, []string{relay}, later)
+	store.touchRelayNodes(ctx, []string{relay}, later)
 	if n := store.Stats.RelayTouches.Load(); n != 2 {
 		t.Errorf("RelayTouches = %d, want 2 after debounce window elapsed", n)
 	}
@@ -113,10 +113,10 @@ func TestTouchRelayNodes_IgnoresEmptyAndUnknown(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
-	store.touchRelayNodesLocked(ctx, nil, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
-	store.touchRelayNodesLocked(ctx, []string{}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
-	store.touchRelayNodesLocked(ctx, []string{""}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
-	store.touchRelayNodesLocked(ctx, []string{"ff99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbb"}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodes(ctx, nil, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodes(ctx, []string{}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodes(ctx, []string{""}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	store.touchRelayNodes(ctx, []string{"ff99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbb"}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
 
 	var count int
 	count = countRows(t, store, "nodes")
@@ -137,7 +137,7 @@ func TestTouchRelayNodes_MalformedTimestamp(t *testing.T) {
 	const relay = "dd11223344556677889900aabbccddeeff00112233445566778899aabbccddee"
 	seedRelayNode(t, store, relay, "Fine", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
-	store.touchRelayNodesLocked(ctx, []string{relay}, time.Time{})
+	store.touchRelayNodes(ctx, []string{relay}, time.Time{})
 
 	if got := nodeLastSeen(t, store, relay); !got.Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("last_seen = %q, want it unchanged on malformed rxTime", got)

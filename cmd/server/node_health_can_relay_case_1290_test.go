@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Issue #1290 (MAJOR-1, adversarial review of PR #1624) — regression guard.
@@ -17,19 +20,25 @@ import (
 // seeding an observer.id with mixed-case packet ObserverID and asserting
 // the listener badge is rendered for the matching observer in HeardBy.
 func TestNodeHealth_CanRelayCaseInsensitive_Issue1290(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 
 	// DB row: observer id is the canonical LOWERCASE pubkey with can_relay=0.
 	const obsIDLower = "deadbeefcafe1290"
 	const obsIDMixed = "DeadBeefCafe1290" // packet observer-id w/ mixed case
 	const nodePubkey = "aabbccdd11223344" // seeded by seedTestData
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 
-	if _, err := srv.store.db.conn.Exec(
-		`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count, can_relay, can_relay_seen)
-		 VALUES (?, 'ListenerOnly', 'SJC', ?, '2026-01-01T00:00:00Z', 1, 0, 1)`,
-		obsIDLower, now); err != nil {
-		t.Fatalf("seed observer: %v", err)
+	canRelay := false
+	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        obsIDLower,
+		Name:      "ListenerOnly",
+		IATA:      "SJC",
+		Meta:      &types.ObserverMeta{CanRelay: &canRelay},
+		LastSeen:  now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("CreateOrUpdateObserver: %v", err)
 	}
 
 	// In-memory packet with the MIXED-case observer id so the badge resolver
@@ -38,18 +47,15 @@ func TestNodeHealth_CanRelayCaseInsensitive_Issue1290(t *testing.T) {
 	// makes the observer a DIRECT receiver of nodePubkey — only direct rows
 	// carry the badge (see direct_heard.go).
 	snr := 7.0
-	routeFlood := RouteFlood
-	payloadAdvert := PayloadADVERT
+	routeFlood := types.RouteType(types.RouteFlood)
+	payloadAdvert := types.PayloadType(types.PayloadADVERT)
 	tx := &StoreTx{
 		Hash:             "1290casebadge00",
 		FirstSeen:        now,
 		RouteType:        &routeFlood,
 		PayloadType:      &payloadAdvert,
 		DecodedJSON:      `{"type":"ADVERT","pubKey":"` + nodePubkey + `"}`,
-		SNR:              &snr,
 		ObservationCount: 1,
-		ObserverID:       obsIDMixed,
-		ObserverName:     "ListenerOnly",
 		Observations: []*StoreObs{{
 			ObserverID:   obsIDMixed,
 			ObserverName: "ListenerOnly",

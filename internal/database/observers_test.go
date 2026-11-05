@@ -1,60 +1,55 @@
-// internal/database/observers_test.go
-package database
+package database_test
 
 import (
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 func TestSoftDeleteBlacklistedObservers(t *testing.T) {
-	db := newMemoryDB(t)
-	execRaw(t, db, `CREATE TABLE observers (id TEXT PRIMARY KEY, inactive INTEGER)`)
-	execRaw(t, db, `INSERT INTO observers (id, inactive) VALUES
-		('bad-observer-1', 0 ),
-		('BAD-OBSERVER-2', 0),
-		('good-observer', 0),
-		('already-inactive', 1)`)
+	ctx := t.Context()
+	db := dbtest.New(t)
+	now := time.Now().UTC()
+	dbtest.Observer(t, db, "bad-observer-1", "bad one", "", now, now)
+	dbtest.Observer(t, db, "bad-observer-2", "bad two", "", now, now)
+	dbtest.Observer(t, db, "good-observer", "good", "", now, now)
 
-	n, err := SoftDeleteBlacklistedObservers(db, []string{"bad-observer-1", "bad-observer-2"})
+	n, err := db.SoftDeleteBlacklistedObservers(ctx, []string{" BAD-OBSERVER-1 ", "bad-observer-2"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("SoftDeleteBlacklistedObservers(): %v", err)
 	}
 	if n != 2 {
 		t.Errorf("expected 2 rows affected, got %d", n)
 	}
 
-	var inactive int
-	if err := db.QueryRow(`SELECT inactive FROM observers WHERE id = 'bad-observer-1'`).Scan(&inactive); err != nil {
-		t.Fatal(err)
+	for _, pubkey := range []string{"bad-observer-1", "bad-observer-2"} {
+		var inactive bool
+		if err := db.Pool().QueryRow(ctx, `SELECT inactive FROM observers WHERE pubkey = $1`, pubkey).Scan(&inactive); err != nil {
+			t.Fatalf("read inactive for %s: %v", pubkey, err)
+		}
+		if !inactive {
+			t.Errorf("%s: expected inactive=true", pubkey)
+		}
 	}
-	if inactive != 1 {
-		t.Errorf("bad-observer-1: expected inactive=1, got %d", inactive)
+	var inactive bool
+	if err := db.Pool().QueryRow(ctx, `SELECT inactive FROM observers WHERE pubkey = 'good-observer'`).Scan(&inactive); err != nil {
+		t.Fatalf("read inactive for good-observer: %v", err)
 	}
-
-	// Case-insensitive match: BAD-OBSERVER-2 should be caught by lowercase blacklist entry
-	if err := db.QueryRow(`SELECT inactive FROM observers WHERE id = 'BAD-OBSERVER-2'`).Scan(&inactive); err != nil {
-		t.Fatal(err)
-	}
-	if inactive != 1 {
-		t.Errorf("BAD-OBSERVER-2: expected inactive=1 (case-insensitive match), got %d", inactive)
-	}
-
-	// Untouched rows
-	if err := db.QueryRow(`SELECT inactive FROM observers WHERE id = 'good-observer'`).Scan(&inactive); err != nil {
-		t.Fatal(err)
-	}
-	if inactive != 0 {
-		t.Errorf("good-observer should remain untouched (NULL), got %d", inactive)
+	if inactive {
+		t.Error("good-observer should remain active")
 	}
 }
 
 func TestSoftDeleteBlacklistedObservers_EmptyBlacklist(t *testing.T) {
-	db := newMemoryDB(t)
-	execRaw(t, db, `CREATE TABLE observers (id TEXT PRIMARY KEY, inactive INTEGER)`)
-	execRaw(t, db, `INSERT INTO observers (id, inactive) VALUES ('obs1', NULL)`)
+	ctx := t.Context()
+	db := dbtest.New(t)
+	now := time.Now().UTC()
+	dbtest.Observer(t, db, "obs1", "observer", "", now, now)
 
-	n, err := SoftDeleteBlacklistedObservers(db, nil)
+	n, err := db.SoftDeleteBlacklistedObservers(ctx, nil)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("SoftDeleteBlacklistedObservers(): %v", err)
 	}
 	if n != 0 {
 		t.Errorf("expected 0 rows affected for empty blacklist, got %d", n)
@@ -62,15 +57,14 @@ func TestSoftDeleteBlacklistedObservers_EmptyBlacklist(t *testing.T) {
 }
 
 func TestSoftDeleteBlacklistedObservers_BlankEntriesIgnored(t *testing.T) {
-	db := newMemoryDB(t)
-	execRaw(t, db, `CREATE TABLE observers (id TEXT PRIMARY KEY, inactive INTEGER)`)
-	execRaw(t, db, `INSERT INTO observers (id, inactive) VALUES ('obs1', NULL)`)
+	ctx := t.Context()
+	db := dbtest.New(t)
+	now := time.Now().UTC()
+	dbtest.Observer(t, db, "obs1", "observer", "", now, now)
 
-	// Blacklist entries that are only whitespace should be skipped, not
-	// error or match every row.
-	n, err := SoftDeleteBlacklistedObservers(db, []string{"  ", "", "\t"})
+	n, err := db.SoftDeleteBlacklistedObservers(ctx, []string{"  ", "", "\t"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("SoftDeleteBlacklistedObservers(): %v", err)
 	}
 	if n != 0 {
 		t.Errorf("expected 0 rows affected when blacklist entries are all blank, got %d", n)
@@ -78,15 +72,19 @@ func TestSoftDeleteBlacklistedObservers_BlankEntriesIgnored(t *testing.T) {
 }
 
 func TestSoftDeleteBlacklistedObservers_AlreadyInactiveNotDoubleCounted(t *testing.T) {
-	db := newMemoryDB(t)
-	execRaw(t, db, `CREATE TABLE observers (id TEXT PRIMARY KEY, inactive INTEGER)`)
-	execRaw(t, db, `INSERT INTO observers (id, inactive) VALUES ('obs1', 1)`)
+	ctx := t.Context()
+	db := dbtest.New(t)
+	now := time.Now().UTC()
+	dbtest.Observer(t, db, "obs1", "observer", "", now, now)
+	if _, err := db.SoftDeleteBlacklistedObservers(ctx, []string{"obs1"}); err != nil {
+		t.Fatalf("first SoftDeleteBlacklistedObservers(): %v", err)
+	}
 
-	n, err := SoftDeleteBlacklistedObservers(db, []string{"obs1"})
+	n, err := db.SoftDeleteBlacklistedObservers(ctx, []string{"obs1"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("second SoftDeleteBlacklistedObservers(): %v", err)
 	}
 	if n != 0 {
-		t.Errorf("expected 0 rows affected (already inactive, filtered by WHERE clause), got %d", n)
+		t.Errorf("expected 0 rows affected for already inactive observer, got %d", n)
 	}
 }

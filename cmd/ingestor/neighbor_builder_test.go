@@ -18,6 +18,46 @@ const (
 	nbObserver = "obs-1"      // the observer's pubkey
 )
 
+func seedNeighborObservation(t *testing.T, s *Store, obsID int64, hash string, at time.Time,
+	from string, pt types.PayloadType, hops ...string) {
+	t.Helper()
+	ctx := testCtx(t)
+
+	in := database.TransmissionInput{
+		Hash:        hash,
+		RouteType:   types.RouteFlood,
+		PayloadType: pt,
+		DecodedJSON: "{}",
+	}
+	if from != "" {
+		in.Advert = &database.NodeInput{
+			PublicKey: from,
+			Name:      from,
+			Role:      types.RoleRepeater,
+		}
+	}
+	txID, _, err := s.db.CreateOrUpdateTransmission(ctx, in, at)
+	if err != nil {
+		t.Fatalf("seed transmission %s: %v", hash, err)
+	}
+
+	var observer *int64
+	if obsID != 0 {
+		observer = &obsID
+	}
+	_, inserted, err := s.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    observer,
+		Timestamp:      at,
+	}, hops, nil)
+	if err != nil {
+		t.Fatalf("seed observation for %s: %v", hash, err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for %s", hash)
+	}
+}
+
 func noRefresh(context.Context) error { return nil }
 
 func nbHop(s string) *string { return &s }
@@ -128,7 +168,7 @@ func TestAggregateEdges(t *testing.T) {
 		{nbNodeA, nbNodeB, t0.Add(-time.Hour)},
 		{nbNodeA, "cccccccccc", t0},
 	})
-	byPair := map[string]database.NeighborEdge{}
+	byPair := map[string]database.NeighborEdgeInput{}
 	for _, e := range got {
 		byPair[e.NodeA+"|"+e.NodeB] = e
 	}
@@ -140,6 +180,10 @@ func TestAggregateEdges(t *testing.T) {
 	}
 	if ac := byPair[nbNodeA+"|cccccccccc"]; ac.Hits != 1 {
 		t.Errorf("a|c = %+v, want 1 hit", ac)
+	}
+	// Output order is deterministic (sorted by NodeA, then NodeB).
+	if got[0].NodeB != nbNodeB && got[0].NodeB != "cccccccccc" {
+		t.Errorf("unexpected first row: %+v", got[0])
 	}
 }
 
@@ -171,7 +215,7 @@ func (f *fakeNeighborStore) ScanNeighborObservations(_ context.Context, since ti
 	}
 	return out, nil
 }
-func (f *fakeNeighborStore) UpsertNeighborEdges(_ context.Context, edges []database.NeighborEdge) (int64, error) {
+func (f *fakeNeighborStore) UpsertNeighborEdges(_ context.Context, edges []database.NeighborEdgeInput) (int64, error) {
 	f.upserts += len(edges)
 	return int64(len(edges)), nil
 }
@@ -233,7 +277,7 @@ func newTestNeighborBuilder(s *Store, batch int) *neighborBuilder {
 
 func seedNeighborNode(t *testing.T, s *Store, pk string) {
 	t.Helper()
-	if err := s.UpsertNode(testCtx(t), pk, "node-"+pk[:2], "repeater", nil, nil, time.Now().UTC()); err != nil {
+	if err := upsertNode(testCtx(t), s, pk, "node-"+pk[:2], "repeater", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -247,39 +291,6 @@ func seedNeighborObserver(t *testing.T, s *Store) int64 {
 	var id int64
 	mustScan(t, testRow(t, s, `SELECT id FROM observers WHERE pubkey = $1`, nbObserver), &id)
 	return id
-}
-
-// seedNeighborObservation inserts one transmission, one observation and its hop
-// rows with plain SQL, so the test controls every column the builder reads.
-// obsID 0 means "no observer row"; an empty from leaves from_pubkey NULL.
-// Adjust the column lists if your schema has other NOT NULL columns.
-func seedNeighborObservation(t *testing.T, s *Store, obsID int64, hash string, at time.Time,
-	from string, pt types.PayloadType, hops ...string) {
-	t.Helper()
-	if from != "" {
-		testExec(t, s, `INSERT INTO nodes (public_key, name, role, last_seen)
-		                VALUES ($1, $1, 'repeater', now())
-		                ON CONFLICT (public_key) DO NOTHING`, from)
-	}
-
-	var txID int64
-	mustScan(t, testRow(t, s, `INSERT INTO transmissions
-		(raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, from_pubkey)
-		VALUES ('', $1, $2, $3, $4, 0, '{}', NULLIF($5, '')) RETURNING id`,
-		hash, at, int32(types.RouteFlood), int32(pt), from), &txID)
-
-	var observer any // NULL when there is no observer row
-	if obsID != 0 {
-		observer = obsID
-	}
-	var obsRowID int64
-	mustScan(t, testRow(t, s, `INSERT INTO observations (transmission_id, observer_idx, timestamp)
-		VALUES ($1, $2, $3) RETURNING id`, txID, observer, at), &obsRowID)
-
-	for i, h := range hops {
-		testExec(t, s, `INSERT INTO observation_path_hops (observation_id, hop_index, prefix)
-			VALUES ($1, $2, $3)`, obsRowID, i, h)
-	}
 }
 
 func TestNeighborBuilderPersistsEdges(t *testing.T) {

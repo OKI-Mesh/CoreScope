@@ -124,7 +124,7 @@ func TestEvictionTriggersWithImprovedEstimates(t *testing.T) {
 	store.maxMemoryMB = 3            // 3MB limit
 
 	beforeCount := len(store.packets)
-	store.RunEviction()
+	runEviction(t, store)
 	afterCount := len(store.packets)
 
 	if afterCount >= beforeCount {
@@ -173,7 +173,7 @@ func TestTrackedBytes_PathKnownAfterCreate(t *testing.T) {
 	store := makeTestStore(0, time.Now().UTC(), 0)
 	store.retentionHours = 1
 
-	tx := &StoreTx{ID: 1, Hash: "aabb", FirstSeen: time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+	tx := &StoreTx{ID: 1, Hash: "aabb", FirstSeen: time.Now().UTC().Add(-2 * time.Hour),
 		obsKeys: map[string]bool{}, observerSet: map[string]bool{}}
 	store.trackedBytes += rechargeTx(tx)
 	bare := store.trackedBytes

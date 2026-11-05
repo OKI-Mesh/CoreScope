@@ -12,235 +12,217 @@ import (
 )
 
 type ClientObserver struct {
-	Pubkey   string      `json:"pubkey"`
-	Name     pgtype.Text `json:"name"`
-	LastSeen time.Time   `json:"last_seen"`
+	Pubkey   string
+	Name     pgtype.Text
+	LastSeen time.Time
 }
 
 type ClientReception struct {
-	ID          int64         `json:"id"`
-	RxPubkey    string        `json:"rx_pubkey"`
-	HeardKey    string        `json:"heard_key"`
-	HeardKeylen int32         `json:"heard_keylen"`
-	Rssi        pgtype.Int4   `json:"rssi"`
-	Snr         pgtype.Float8 `json:"snr"`
-	Lat         float64       `json:"lat"`
-	Lon         float64       `json:"lon"`
-	PosAccM     pgtype.Float8 `json:"pos_acc_m"`
-	RxAt        time.Time     `json:"rx_at"`
-	IngestedAt  time.Time     `json:"ingested_at"`
-	Src         string        `json:"src"`
+	ID          int64
+	RxPubkey    string
+	HeardKey    string
+	HeardKeylen int32
+	Rssi        pgtype.Int4
+	Snr         pgtype.Float8
+	Lat         float64
+	Lon         float64
+	PosAccM     pgtype.Float8
+	RxAt        time.Time
+	IngestedAt  time.Time
+	Src         string
 }
 
 type ClientRfSample struct {
-	ID         int64         `json:"id"`
-	RxPubkey   string        `json:"rx_pubkey"`
-	SampledAt  time.Time     `json:"sampled_at"`
-	IngestedAt time.Time     `json:"ingested_at"`
-	Lat        float64       `json:"lat"`
-	Lon        float64       `json:"lon"`
-	PosAccM    pgtype.Float8 `json:"pos_acc_m"`
-	Stationary bool          `json:"stationary"`
-	UptimeSecs int64         `json:"uptime_secs"`
-	BatteryMv  pgtype.Int4   `json:"battery_mv"`
-	QueueLen   pgtype.Int4   `json:"queue_len"`
-	Errors     pgtype.Int4   `json:"errors"`
-	NoiseFloor pgtype.Int4   `json:"noise_floor"`
-	LastRssi   pgtype.Int4   `json:"last_rssi"`
-	LastSnr    pgtype.Float8 `json:"last_snr"`
-	TxAirSecs  pgtype.Int8   `json:"tx_air_secs"`
-	RxAirSecs  pgtype.Int8   `json:"rx_air_secs"`
-	Recv       pgtype.Int8   `json:"recv"`
-	Sent       pgtype.Int8   `json:"sent"`
-	FloodRx    pgtype.Int8   `json:"flood_rx"`
-	DirectRx   pgtype.Int8   `json:"direct_rx"`
-	FloodTx    pgtype.Int8   `json:"flood_tx"`
-	DirectTx   pgtype.Int8   `json:"direct_tx"`
-	RecvErrors pgtype.Int8   `json:"recv_errors"`
+	ID         int64
+	RxPubkey   string
+	SampledAt  time.Time
+	IngestedAt time.Time
+	Lat        float64
+	Lon        float64
+	PosAccM    pgtype.Float8
+	Stationary bool
+	UptimeSecs int64
+	BatteryMv  pgtype.Int4
+	QueueLen   pgtype.Int4
+	Errors     pgtype.Int4
+	NoiseFloor pgtype.Int4
+	LastRssi   pgtype.Int4
+	LastSnr    pgtype.Float8
+	TxAirSecs  pgtype.Int8
+	RxAirSecs  pgtype.Int8
+	Recv       pgtype.Int8
+	Sent       pgtype.Int8
+	FloodRx    pgtype.Int8
+	DirectRx   pgtype.Int8
+	FloodTx    pgtype.Int8
+	DirectTx   pgtype.Int8
+	RecvErrors pgtype.Int8
 }
 
 type ClientRxObservation struct {
-	ID          int64             `json:"id"`
-	RxPubkey    string            `json:"rx_pubkey"`
-	RxAt        time.Time         `json:"rx_at"`
-	IngestedAt  time.Time         `json:"ingested_at"`
-	PktHash     string            `json:"pkt_hash"`
-	RouteType   types.RouteType   `json:"route_type"`
-	PayloadType types.PayloadType `json:"payload_type"`
-	Code1       pgtype.Text       `json:"code1"`
-	Code2       pgtype.Text       `json:"code2"`
-	ScopeName   pgtype.Text       `json:"scope_name"`
-	HashSize    int32             `json:"hash_size"`
-	HopCount    int32             `json:"hop_count"`
-	PathJson    pgtype.Text       `json:"path_json"`
-	Forwarder   pgtype.Text       `json:"forwarder"`
-	Snr         pgtype.Float8     `json:"snr"`
-	Rssi        pgtype.Int4       `json:"rssi"`
-	Lat         float64           `json:"lat"`
-	Lon         float64           `json:"lon"`
-	PosAccM     pgtype.Float8     `json:"pos_acc_m"`
+	ID          int64
+	RxPubkey    string
+	RxAt        time.Time
+	IngestedAt  time.Time
+	PktHash     string
+	RouteType   types.RouteType
+	PayloadType types.PayloadType
+	Code1       pgtype.Text
+	Code2       pgtype.Text
+	ScopeName   pgtype.Text
+	HashSize    int32
+	HopCount    int32
+	PathJson    pgtype.Text
+	Forwarder   pgtype.Text
+	Snr         pgtype.Float8
+	Rssi        pgtype.Int4
+	Lat         float64
+	Lon         float64
+	PosAccM     pgtype.Float8
 }
 
 type DroppedPacket struct {
-	ID           int64       `json:"id"`
-	Hash         pgtype.Text `json:"hash"`
-	RawHex       pgtype.Text `json:"raw_hex"`
-	Reason       string      `json:"reason"`
-	ObserverID   pgtype.Text `json:"observer_id"`
-	ObserverName pgtype.Text `json:"observer_name"`
-	NodePubkey   pgtype.Text `json:"node_pubkey"`
-	NodeName     pgtype.Text `json:"node_name"`
-	DroppedAt    time.Time   `json:"dropped_at"`
+	ID           int64
+	Hash         pgtype.Text
+	RawHex       pgtype.Text
+	Reason       string
+	ObserverID   pgtype.Text
+	ObserverName pgtype.Text
+	NodePubkey   pgtype.Text
+	NodeName     pgtype.Text
+	DroppedAt    time.Time
 }
 
 type IataBoundary struct {
-	ID       int64       `json:"id"`
-	Iata     string      `json:"iata"`
-	Boundary interface{} `json:"boundary"`
+	ID       int64
+	Iata     string
+	Boundary interface{}
 }
 
 type NeighborEdge struct {
-	NodeA    string             `json:"node_a"`
-	NodeB    string             `json:"node_b"`
-	Count    int32              `json:"count"`
-	LastSeen pgtype.Timestamptz `json:"last_seen"`
+	NodeA    string
+	NodeB    string
+	Count    int32
+	LastSeen time.Time
 }
 
 type Node struct {
-	PublicKey         string                 `json:"public_key"`
-	Name              pgtype.Text            `json:"name"`
-	Role              pgtype.Text            `json:"role"`
-	Lat               pgtype.Float8          `json:"lat"`
-	Lon               pgtype.Float8          `json:"lon"`
-	LastSeen          pgtype.Timestamptz     `json:"last_seen"`
-	FirstSeen         pgtype.Timestamptz     `json:"first_seen"`
-	AdvertCount       int32                  `json:"advert_count"`
-	BatteryMv         pgtype.Int4            `json:"battery_mv"`
-	TemperatureC      pgtype.Float8          `json:"temperature_c"`
-	ForeignAdvert     bool                   `json:"foreign_advert"`
-	DefaultScope      pgtype.Text            `json:"default_scope"`
-	MultibyteSup      types.MultibyteSupport `json:"multibyte_sup"`
-	MultibyteEvidence pgtype.Text            `json:"multibyte_evidence"`
-	ConfiguredScope   pgtype.Text            `json:"configured_scope"`
-	ConfiguredScopeAt pgtype.Timestamptz     `json:"configured_scope_at"`
-	Inactive          bool                   `json:"inactive"`
+	ID                   pgtype.Int4
+	PublicKey            string
+	Name                 pgtype.Text
+	Role                 *types.NodeRole
+	Lat                  pgtype.Float8
+	Lon                  pgtype.Float8
+	LastSeen             pgtype.Timestamptz
+	FirstSeen            pgtype.Timestamptz
+	AdvertCount          int32
+	BatteryMv            pgtype.Int4
+	TemperatureC         pgtype.Float8
+	ForeignAdvert        bool
+	DefaultScope         pgtype.Text
+	MultibyteSup         types.MultibyteSupport
+	MultibyteEvidence    *types.MultibyteEvidence
+	MultibyteMaxHashSize int32
+	ConfiguredScope      pgtype.Text
+	ConfiguredScopeAt    pgtype.Timestamptz
+	Inactive             bool
 }
 
 type NodeDeclaredRegion struct {
-	ID            int64         `json:"id"`
-	Target        string        `json:"target"`
-	RxPubkey      string        `json:"rx_pubkey"`
-	ObservedAt    time.Time     `json:"observed_at"`
-	IngestedAt    time.Time     `json:"ingested_at"`
-	RegionsCsv    string        `json:"regions_csv"`
-	Truncated     bool          `json:"truncated"`
-	Lat           pgtype.Float8 `json:"lat"`
-	Lon           pgtype.Float8 `json:"lon"`
-	PosAccM       pgtype.Float8 `json:"pos_acc_m"`
-	RepeaterClock pgtype.Int8   `json:"repeater_clock"`
+	ID            int64
+	Target        string
+	RxPubkey      string
+	ObservedAt    time.Time
+	IngestedAt    time.Time
+	RegionsCsv    string
+	Truncated     bool
+	Lat           pgtype.Float8
+	Lon           pgtype.Float8
+	PosAccM       pgtype.Float8
+	RepeaterClock pgtype.Int8
 }
 
 type Observation struct {
-	ID             int64         `json:"id"`
-	TransmissionID int64         `json:"transmission_id"`
-	ObserverIdx    pgtype.Int8   `json:"observer_idx"`
-	Direction      pgtype.Text   `json:"direction"`
-	Snr            pgtype.Float8 `json:"snr"`
-	Rssi           pgtype.Float8 `json:"rssi"`
-	Score          pgtype.Float8 `json:"score"`
-	PathHash       pgtype.Text   `json:"path_hash"`
-	Timestamp      time.Time     `json:"timestamp"`
-	RawHex         pgtype.Text   `json:"raw_hex"`
+	ID             int64
+	TransmissionID int64
+	ObserverIdx    pgtype.Int8
+	Direction      pgtype.Text
+	Snr            pgtype.Float8
+	Rssi           pgtype.Float8
+	Score          pgtype.Float8
+	PathHash       pgtype.Text
+	Timestamp      time.Time
+	HopPrefixes    []string
+	HopNodes       []int32
 }
 
-type ObservationPathHop struct {
-	ObservationID  int64       `json:"observation_id"`
-	HopIndex       int32       `json:"hop_index"`
-	Prefix         string      `json:"prefix"`
-	ResolvedPubkey pgtype.Text `json:"resolved_pubkey"`
+type ObservationFrame struct {
+	ObservationID int64
+	Frame         []byte
 }
 
 type Observer struct {
-	ID                int64              `json:"id"`
-	Pubkey            string             `json:"pubkey"`
-	Name              pgtype.Text        `json:"name"`
-	LastSeen          pgtype.Timestamptz `json:"last_seen"`
-	FirstSeen         pgtype.Timestamptz `json:"first_seen"`
-	PacketCount       int32              `json:"packet_count"`
-	Model             pgtype.Text        `json:"model"`
-	Firmware          pgtype.Text        `json:"firmware"`
-	ClientVersion     pgtype.Text        `json:"client_version"`
-	Radio             pgtype.Text        `json:"radio"`
-	BatteryMv         pgtype.Int4        `json:"battery_mv"`
-	UptimeSecs        pgtype.Int4        `json:"uptime_secs"`
-	NoiseFloor        pgtype.Float8      `json:"noise_floor"`
-	Inactive          bool               `json:"inactive"`
-	LastPacketAt      pgtype.Timestamptz `json:"last_packet_at"`
-	RawHex            pgtype.Text        `json:"raw_hex"`
-	ClockSkewSeconds  pgtype.Int4        `json:"clock_skew_seconds"`
-	ClockSkewCount24h int32              `json:"clock_skew_count_24h"`
-	ClockLastNaiveAt  pgtype.Timestamptz `json:"clock_last_naive_at"`
-	Iata              pgtype.Text        `json:"iata"`
-	CanRelay          bool               `json:"can_relay"`
-	CanRelaySeen      bool               `json:"can_relay_seen"`
+	ID                int64
+	Pubkey            string
+	Name              pgtype.Text
+	LastSeen          time.Time
+	FirstSeen         time.Time
+	PacketCount       int64
+	Model             pgtype.Text
+	Firmware          pgtype.Text
+	ClientVersion     pgtype.Text
+	Radio             pgtype.Text
+	BatteryMv         pgtype.Int4
+	UptimeSecs        pgtype.Int8
+	NoiseFloor        pgtype.Float8
+	Inactive          bool
+	LastPacketAt      pgtype.Timestamptz
+	RawHex            pgtype.Text
+	ClockSkewSeconds  pgtype.Int4
+	ClockSkewCount24h int32
+	ClockLastNaiveAt  pgtype.Timestamptz
+	Iata              pgtype.Text
+	CanRelay          bool
+	CanRelaySeen      bool
 }
 
 type ObserverMetric struct {
-	ObserverID  string        `json:"observer_id"`
-	Timestamp   time.Time     `json:"timestamp"`
-	NoiseFloor  pgtype.Float8 `json:"noise_floor"`
-	TxAirSecs   pgtype.Int4   `json:"tx_air_secs"`
-	RxAirSecs   pgtype.Int4   `json:"rx_air_secs"`
-	RecvErrors  pgtype.Int4   `json:"recv_errors"`
-	BatteryMv   pgtype.Int4   `json:"battery_mv"`
-	PacketsSent pgtype.Int4   `json:"packets_sent"`
-	PacketsRecv pgtype.Int4   `json:"packets_recv"`
-}
-
-type PacketsV struct {
-	ID             int64         `json:"id"`
-	RawHex         string        `json:"raw_hex"`
-	Timestamp      time.Time     `json:"timestamp"`
-	ObserverID     pgtype.Int8   `json:"observer_id"`
-	ObserverName   pgtype.Text   `json:"observer_name"`
-	Direction      pgtype.Text   `json:"direction"`
-	Snr            pgtype.Float8 `json:"snr"`
-	Rssi           pgtype.Float8 `json:"rssi"`
-	Score          pgtype.Float8 `json:"score"`
-	Hash           string        `json:"hash"`
-	RouteType      int32         `json:"route_type"`
-	PayloadType    int32         `json:"payload_type"`
-	PayloadVersion pgtype.Int4   `json:"payload_version"`
-	DecodedJson    pgtype.Text   `json:"decoded_json"`
-	CreatedAt      time.Time     `json:"created_at"`
+	ObserverID  string
+	Timestamp   time.Time
+	NoiseFloor  pgtype.Float8
+	TxAirSecs   pgtype.Int4
+	RxAirSecs   pgtype.Int4
+	RecvErrors  pgtype.Int4
+	BatteryMv   pgtype.Int4
+	PacketsSent pgtype.Int4
+	PacketsRecv pgtype.Int4
 }
 
 type ScopeMatchTotal struct {
-	ID                  int32     `json:"id"`
-	CountingSince       time.Time `json:"counting_since"`
-	UniqueMatches       int64     `json:"unique_matches"`
-	ExplicitOverDerived int64     `json:"explicit_over_derived"`
-	Ambiguous           int64     `json:"ambiguous"`
-	NoneMatches         int64     `json:"none_matches"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                  int32
+	CountingSince       time.Time
+	UniqueMatches       int64
+	ExplicitOverDerived int64
+	Ambiguous           int64
+	NoneMatches         int64
+	UpdatedAt           time.Time
 }
 
 type Transmission struct {
-	ID               int64              `json:"id"`
-	RawHex           string             `json:"raw_hex"`
-	Hash             string             `json:"hash"`
-	FirstSeen        time.Time          `json:"first_seen"`
-	RouteType        types.RouteType    `json:"route_type"`
-	PayloadType      types.PayloadType  `json:"payload_type"`
-	PayloadVersion   pgtype.Int4        `json:"payload_version"`
-	DecodedJson      pgtype.Text        `json:"decoded_json"`
-	CreatedAt        time.Time          `json:"created_at"`
-	FromPubkeyPrefix string             `json:"from_pubkey_prefix"`
-	FromPubkey       pgtype.Text        `json:"from_pubkey"`
-	FromPubkeyState  string             `json:"from_pubkey_state"`
-	ChannelHash      pgtype.Text        `json:"channel_hash"`
-	ScopeName        pgtype.Text        `json:"scope_name"`
-	LastSeen         pgtype.Timestamptz `json:"last_seen"`
-	Code1            pgtype.Text        `json:"code1"`
-	Code2            pgtype.Text        `json:"code2"`
+	ID               int64
+	RawHex           []byte
+	Hash             string
+	FirstSeen        time.Time
+	RouteType        types.RouteType
+	PayloadType      types.PayloadType
+	PayloadVersion   int32
+	DecodedJson      pgtype.Text
+	CreatedAt        time.Time
+	FromPubkey       pgtype.Text
+	ChannelHash      pgtype.Text
+	ChannelEncrypted bool
+	ScopeName        pgtype.Text
+	LastSeen         pgtype.Timestamptz
+	Code1            pgtype.Text
+	Code2            pgtype.Text
 }

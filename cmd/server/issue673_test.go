@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 const issue673NodePK = "7502f19f44cad6d7b626e1d811c00a914af452636182ccded3fd019803395ec9"
@@ -11,23 +14,21 @@ const issue673NodePK = "7502f19f44cad6d7b626e1d811c00a914af452636182ccded3fd0198
 // setupIssue673Store builds an in-memory store with one repeater node having:
 //   - one ADVERT packet (legitimately indexed in byNode)
 //   - one GRP_TXT packet whose decoded text contains the node's pubkey (false-positive candidate)
-func setupIssue673Store(t *testing.T) (*PacketStore, *DB) {
+func setupIssue673Store(t *testing.T) (*PacketStore, *database.DB) {
 	t.Helper()
 	db := setupTestDB(t)
-
-	_, err := db.conn.Exec(
-		"INSERT INTO nodes (public_key, name, role) VALUES (?, ?, ?)",
-		issue673NodePK, "Quail Hollow Park", "repeater",
-	)
-	if err != nil {
+	now := time.Now().UTC()
+	if err := db.CreateOrUpdateNode(t.Context(), database.NodeInput{
+		PublicKey: issue673NodePK, Name: "Quail Hollow Park", Role: "repeater",
+		RxTime: now, IngestNow: now,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	ps := NewPacketStore(db, nil)
-	now := time.Now().UTC().Format(time.RFC3339)
+	ps := newPacketStoreForTest(t, db)
 
-	pt4 := 4 // ADVERT
-	pt5 := 5 // GRP_TXT
+	pt4 := types.PayloadType(4) // ADVERT
+	pt5 := types.PayloadType(5) // GRP_TXT
 
 	advertDecoded, _ := json.Marshal(map[string]interface{}{"pubKey": issue673NodePK})
 	advert := &StoreTx{
@@ -66,10 +67,11 @@ func setupIssue673Store(t *testing.T) (*PacketStore, *DB) {
 // TestGetNodeAnalytics_ExcludesGRPTXTWithPubkeyInText verifies that a GRP_TXT packet
 // whose message text contains a node's pubkey is not counted in that node's analytics.
 func TestGetNodeAnalytics_ExcludesGRPTXTWithPubkeyInText(t *testing.T) {
+	ctx := t.Context()
 	ps, db := setupIssue673Store(t)
 	defer db.Close()
 
-	analytics, err := ps.GetNodeAnalytics(issue673NodePK, 30)
+	analytics, err := ps.GetNodeAnalytics(ctx, issue673NodePK, 30)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,17 +90,21 @@ func TestGetNodeAnalytics_ExcludesGRPTXTWithPubkeyInText(t *testing.T) {
 // filterPackets (node filter combined with Since) does not return a GRP_TXT packet
 // whose pubkey appears only in message text, not in a structured pubkey field.
 func TestFilterPackets_NodeQueryDoesNotMatchChatText(t *testing.T) {
+	ctx := t.Context()
 	ps, db := setupIssue673Store(t)
 	defer db.Close()
 
-	yesterday := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
-	result := ps.QueryPackets(PacketQuery{Node: issue673NodePK, Since: yesterday, Limit: 50})
+	yesterday := time.Now().Add(-24 * time.Hour).UTC()
+	result, err := ps.QueryPackets(ctx, database.PacketQuery{Node: issue673NodePK, FirstSeenAfter: &yesterday, Limit: 50})
+	if err != nil {
+		t.Fatalf("QueryPackets(): %v", err)
+	}
 
 	if result.Total != 1 {
 		t.Errorf("expected 1 packet for node (ADVERT only), got %d", result.Total)
 	}
 	for _, pkt := range result.Packets {
-		if pkt["hash"] == "chat_hash_673" {
+		if pkt.Hash != nil && *pkt.Hash == "chat_hash_673" {
 			t.Errorf("GRP_TXT with pubkey in message text was incorrectly returned for node query")
 		}
 	}

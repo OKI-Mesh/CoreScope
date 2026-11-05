@@ -60,3 +60,26 @@ SELECT COUNT(*) FROM client_rx_observations;
 
 -- name: PruneClientRfSamples :execrows
 DELETE FROM client_rf_samples WHERE sampled_at < sqlc.arg(cutoff)::timestamptz;
+
+-- name: ListCoverageRows :many
+SELECT lat, lon, snr, rssi, heard_key, rx_at
+FROM client_receptions
+WHERE heard_key = ANY(sqlc.arg(heard_keys)::text[])
+  AND lat BETWEEN sqlc.arg(min_lat) AND sqlc.arg(max_lat)
+  AND lon BETWEEN sqlc.arg(min_lon) AND sqlc.arg(max_lon)
+  AND (sqlc.narg(rx_pubkey)::text IS NULL OR rx_pubkey = sqlc.narg(rx_pubkey)::text)
+  AND (sqlc.narg(since)::timestamptz IS NULL OR rx_at >= sqlc.narg(since)::timestamptz);
+
+-- name: ListCoverageRowsAnyNode :many
+SELECT lat, lon, snr, rssi, heard_key, rx_at
+FROM client_receptions
+WHERE lat BETWEEN sqlc.arg(min_lat) AND sqlc.arg(max_lat)
+  AND lon BETWEEN sqlc.arg(min_lon) AND sqlc.arg(max_lon)
+  AND (sqlc.narg(rx_pubkey)::text IS NULL OR rx_pubkey = sqlc.narg(rx_pubkey)::text)
+  AND (sqlc.narg(since)::timestamptz IS NULL OR rx_at >= sqlc.narg(since)::timestamptz);
+
+-- name: CountMobileReceptions :one
+SELECT COUNT(*)::bigint AS receptions,
+       COUNT(DISTINCT rx_pubkey)::bigint AS clients
+FROM client_receptions
+WHERE heard_key = ANY(sqlc.arg(heard_keys)::text[]);

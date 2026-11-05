@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -144,9 +145,9 @@ func extractEdges(rows []database.NeighborObservation, idx prefixIndex, trust *p
 // aggregateEdges collapses duplicate pairs into one row each, summing hits and
 // keeping the newest timestamp. This is required, not an optimization: a
 // single INSERT ... ON CONFLICT DO UPDATE cannot touch the same row twice.
-func aggregateEdges(edges []edgeRow) []database.NeighborEdge {
+func aggregateEdges(edges []edgeRow) []database.NeighborEdgeInput {
 	type key struct{ a, b string }
-	byPair := make(map[key]*database.NeighborEdge, len(edges))
+	byPair := make(map[key]*database.NeighborEdgeInput, len(edges))
 	for _, e := range edges {
 		k := key{e.a, e.b}
 		if x, ok := byPair[k]; ok {
@@ -156,12 +157,18 @@ func aggregateEdges(edges []edgeRow) []database.NeighborEdge {
 			}
 			continue
 		}
-		byPair[k] = &database.NeighborEdge{NodeA: e.a, NodeB: e.b, Hits: 1, LastSeen: e.ts}
+		byPair[k] = &database.NeighborEdgeInput{NodeA: e.a, NodeB: e.b, Hits: 1, LastSeen: e.ts}
 	}
-	out := make([]database.NeighborEdge, 0, len(byPair))
+	out := make([]database.NeighborEdgeInput, 0, len(byPair))
 	for _, x := range byPair {
 		out = append(out, *x)
 	}
+	slices.SortFunc(out, func(l, r database.NeighborEdgeInput) int {
+		if c := strings.Compare(l.NodeA, r.NodeA); c != 0 {
+			return c
+		}
+		return strings.Compare(l.NodeB, r.NodeB)
+	})
 	return out
 }
 
@@ -171,7 +178,7 @@ type neighborEdgeStore interface {
 	ListNodePublicKeys(ctx context.Context) ([]string, error)
 	LatestNeighborEdgeTime(ctx context.Context) (time.Time, error)
 	ScanNeighborObservations(ctx context.Context, since time.Time, limit int32, jsonTypes []types.PayloadType) ([]database.NeighborObservation, error)
-	UpsertNeighborEdges(ctx context.Context, edges []database.NeighborEdge) (int64, error)
+	UpsertNeighborEdges(ctx context.Context, edges []database.NeighborEdgeInput) (int64, error)
 }
 
 // neighborBuilder periodically derives neighbor_edges from observations. It is

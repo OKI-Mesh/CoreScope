@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -70,9 +71,10 @@ func TestConfigBlacklistEmptyEntries(t *testing.T) {
 }
 
 func TestBlacklistFiltersHandleNodes(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('goodnode', 'GoodNode', 'companion', datetime('now'))")
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('badnode', 'BadNode', 'companion', datetime('now'))")
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "goodnode", Name: "GoodNode", Role: "companion"})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "badnode", Name: "BadNode", Role: "companion"})
 
 	cfg := &Config{
 		NodeBlacklist: []string{"badnode"},
@@ -94,7 +96,7 @@ func TestBlacklistFiltersHandleNodes(t *testing.T) {
 	}
 
 	for _, node := range resp.Nodes {
-		if pk, _ := node["public_key"].(string); pk == "badnode" {
+		if node.PublicKey == "badnode" {
 			t.Error("blacklisted node should not appear in nodes list")
 		}
 	}
@@ -104,8 +106,9 @@ func TestBlacklistFiltersHandleNodes(t *testing.T) {
 }
 
 func TestBlacklistFiltersNodeDetail(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('badnode', 'BadNode', 'companion', datetime('now'))")
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "badnode", Name: "BadNode", Role: "companion"})
 
 	cfg := &Config{
 		NodeBlacklist: []string{"badnode"},
@@ -123,9 +126,10 @@ func TestBlacklistFiltersNodeDetail(t *testing.T) {
 }
 
 func TestBlacklistFiltersNodeSearch(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('badnode', 'TrollNode', 'companion', datetime('now'))")
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('goodnode', 'GoodNode', 'companion', datetime('now'))")
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "badnode", Name: "TrollNode", Role: "companion"})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "goodnode", Name: "GoodNode", Role: "companion"})
 
 	cfg := &Config{
 		NodeBlacklist: []string{"badnode"},
@@ -147,15 +151,16 @@ func TestBlacklistFiltersNodeSearch(t *testing.T) {
 	}
 
 	for _, node := range resp.Nodes {
-		if pk, _ := node["public_key"].(string); pk == "badnode" {
+		if node.PublicKey == "badnode" {
 			t.Error("blacklisted node should not appear in search results")
 		}
 	}
 }
 
 func TestNoBlacklistPassesAll(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('somenode', 'SomeNode', 'companion', datetime('now'))")
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "somenode", Name: "SomeNode", Role: "companion"})
 
 	cfg := &Config{}
 	srv := NewServer(db, cfg, NewHub())
@@ -233,8 +238,9 @@ func TestBlacklistFiltersNeighborGraph(t *testing.T) {
 }
 
 func TestBlacklistFiltersResolveHops(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen) VALUES ('badnode', 'BadNode', 'companion', datetime('now'))")
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: "badnode", Name: "BadNode", Role: "companion"})
 
 	cfg := &Config{
 		NodeBlacklist: []string{"badnode"},

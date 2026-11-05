@@ -80,12 +80,15 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"math/bits"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // RetransmissionBucket is one time bucket of the series.
@@ -364,7 +367,7 @@ func (p *retransmissionPass) addEvent(ev []timedObs) {
 
 // computeRetransmissionPressure builds the series (see the file header for
 // flood events, the retention floor, the counting rule and region).
-func (s *PacketStore) computeRetransmissionPressure(region string, window TimeWindow, bucket time.Duration) RetransmissionResponse {
+func (s *PacketStore) computeRetransmissionPressure(ctx context.Context, region string, window TimeWindow, bucket time.Duration) RetransmissionResponse {
 	if bucket <= 0 {
 		bucket = retransmissionDefaultBucket
 	}
@@ -372,15 +375,11 @@ func (s *PacketStore) computeRetransmissionPressure(region string, window TimeWi
 		bucketSec: int64(bucket / time.Second),
 		aggs:      make(map[int64]*retransmissionBucketAgg),
 		obsIndex:  make(map[string]int),
+		since:     window.Since,
+		until:     window.Until,
 	}
 	if region != "" {
-		p.regionObs = s.resolveRegionObservers(region)
-	}
-	if window.Since != "" {
-		p.since, _ = parseAnyRFC3339(window.Since)
-	}
-	if window.Until != "" {
-		p.until, _ = parseAnyRFC3339(window.Until)
+		p.regionObs = s.resolveRegionObservers(ctx, region)
 	}
 
 	s.mu.RLock()
@@ -393,17 +392,15 @@ func (s *PacketStore) computeRetransmissionPressure(region string, window TimeWi
 	var timed []timedObs
 
 	for _, tx := range s.packets {
-		if tx.RouteType == nil || (*tx.RouteType != RouteFlood && *tx.RouteType != RouteTransportFlood) {
+		if tx.RouteType == nil || (*tx.RouteType != types.RouteFlood && *tx.RouteType != types.RouteTransportFlood) {
 			continue
 		}
-		if tx.PayloadType != nil && *tx.PayloadType == PayloadTRACE {
+		if tx.PayloadType != nil && *tx.PayloadType == types.PayloadTRACE {
 			continue
 		}
 		timed = timed[:0]
 		for _, obs := range tx.Observations {
-			if at, ok := obs.ParsedTime(); ok {
-				timed = append(timed, timedObs{at: at.UnixNano(), obs: obs})
-			}
+			timed = append(timed, timedObs{at: obs.Timestamp.UnixNano(), obs: obs})
 		}
 		slices.SortFunc(timed, func(a, b timedObs) int { return cmp.Compare(a.at, b.at) })
 		for start := 0; start < len(timed); {
@@ -440,7 +437,7 @@ func (s *PacketStore) computeRetransmissionPressure(region string, window TimeWi
 
 	label := window.Label
 	if label == "" && !window.IsZero() {
-		label = window.Since + "/" + window.Until
+		label = cacheKeyBound(window.Since) + "/" + cacheKeyBound(window.Until)
 	}
 	return RetransmissionResponse{
 		BucketSeconds: int(p.bucketSec),
@@ -467,7 +464,7 @@ func (s *PacketStore) retransCacheGet(key string) (RetransmissionResponse, bool)
 // GetRetransmissionPressure serves the default shape from the recomputer
 // snapshot and every other shape from the TTL cache (compute on miss,
 // concurrent misses on one key share the compute).
-func (s *PacketStore) GetRetransmissionPressure(region string, window TimeWindow, bucket time.Duration) RetransmissionResponse {
+func (s *PacketStore) GetRetransmissionPressure(ctx context.Context, region string, window TimeWindow, bucket time.Duration) RetransmissionResponse {
 	if isDefaultRetransmissionShape(region, window, bucket) {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompRetransmissions
@@ -500,7 +497,7 @@ func (s *PacketStore) GetRetransmissionPressure(region string, window TimeWindow
 		if ok {
 			return r, nil
 		}
-		result := s.computeRetransmissionPressure(region, window, bucket)
+		result := s.computeRetransmissionPressure(ctx, region, window, bucket)
 		s.cacheMu.Lock()
 		if s.retransCache == nil || len(s.retransCache) >= retransmissionCacheMax {
 			s.retransCache = make(map[string]*retransmissionCacheEntry)
@@ -513,6 +510,7 @@ func (s *PacketStore) GetRetransmissionPressure(region string, window TimeWindow
 }
 
 func (s *Server) handleAnalyticsRetransmissions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	region := r.URL.Query().Get("region")
 	window := ParseTimeWindow(r)
 	bucket := parseRetransmissionBucket(r.URL.Query().Get("bucket"))
@@ -530,5 +528,5 @@ func (s *Server) handleAnalyticsRetransmissions(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	writeJSON(w, s.store.GetRetransmissionPressure(region, window, bucket))
+	writeJSON(w, s.store.GetRetransmissionPressure(ctx, region, window, bucket))
 }

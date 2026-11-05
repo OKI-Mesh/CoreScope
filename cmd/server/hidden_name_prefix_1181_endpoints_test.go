@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // TestHiddenNamePrefix_1181_NodeHealth asserts that /api/nodes/{pk}/health
@@ -21,12 +23,10 @@ func TestHiddenNamePrefix_1181_NodeHealth(t *testing.T) {
 	srv, router := setupTestServer(t)
 
 	pk := "deadbeef00001184"
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		pk, "🚫 health me", "companion"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: pk, Name: "🚫 health me", Role: "companion",
+		RxTime: time.Now().UTC(), IngestNow: time.Now().UTC(),
+	})
 
 	get := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/health", nil)
@@ -55,12 +55,10 @@ func TestHiddenNamePrefix_1181_BulkHealth(t *testing.T) {
 	srv, router := setupTestServer(t)
 
 	pk := "deadbeef00001185"
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		pk, "🚫 bulk me", "companion"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: pk, Name: "🚫 bulk me", Role: "companion",
+		RxTime: time.Now().UTC(), IngestNow: time.Now().UTC(),
+	})
 
 	srv.cfg.SetHiddenNamePrefixes([]string{"🚫"})
 	srv.cfg.NodeBlacklist = []string{"force-filter-branch"} // force the existing blacklist branch on so results-array path is taken
@@ -89,12 +87,10 @@ func TestHiddenNamePrefix_1181_Paths(t *testing.T) {
 	srv, router := setupTestServer(t)
 
 	pk := "deadbeef00001186"
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		pk, "🚫 paths me", "companion"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: pk, Name: "🚫 paths me", Role: "companion",
+		RxTime: time.Now().UTC(), IngestNow: time.Now().UTC(),
+	})
 
 	srv.cfg.SetHiddenNamePrefixes([]string{"🚫"})
 	req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/paths", nil)
@@ -111,12 +107,10 @@ func TestHiddenNamePrefix_1181_Analytics(t *testing.T) {
 	srv, router := setupTestServer(t)
 
 	pk := "deadbeef00001187"
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		pk, "🚫 analytics me", "companion"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: pk, Name: "🚫 analytics me", Role: "companion",
+		RxTime: time.Now().UTC(), IngestNow: time.Now().UTC(),
+	})
 
 	srv.cfg.SetHiddenNamePrefixes([]string{"🚫"})
 	req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/analytics", nil)

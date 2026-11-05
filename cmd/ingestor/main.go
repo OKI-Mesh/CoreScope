@@ -78,13 +78,16 @@ func main() {
 	sources := cfg.ResolvedSources()
 
 	ctx := context.Background()
-	connStr := cfg.DB.ConnectionString
+	connStr := cfg.DB.DSN()
+	if connStr == "" {
+		log.Fatalf("db: no connection string: set db.connectionString in config.json or DATABASE_URL")
+	}
 
 	if err := database.Migrate(ctx, connStr); err != nil {
 		log.Fatalf("db: %v", err)
 	}
 
-	store, err := OpenStoreWithInterval(ctx, connStr, cfg.MetricsSampleInterval())
+	store, err := OpenStoreWithInterval(ctx, connStr, cfg.MetricsSampleInterval(), cfg.PruneQueuePath)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
@@ -995,13 +998,13 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 				}
 				log.Printf("MQTT [%s] DROPPED invalid signature: hash=%s name=%s observer=%s pubkey=%s",
 					tag, hash, sanitizeLogString(decoded.Payload.Name), sanitizeLogString(firstNonEmpty(mqttMsg.Origin, observerID)), truncPK)
-				store.InsertDroppedPacket(ctx, &types.DroppedPacket{
+				store.InsertDroppedPacket(ctx, &database.DroppedPacket{
 					Hash:         hash,
 					RawHex:       rawHex,
 					Reason:       "invalid signature",
 					ObserverID:   observerID,
 					ObserverName: mqttMsg.Origin,
-					NodePubKey:   decoded.Payload.PubKey,
+					NodePubkey:   decoded.Payload.PubKey,
 					NodeName:     decoded.Payload.Name,
 				})
 				return
@@ -1028,13 +1031,13 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 			}
 			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
 			pktData.Foreign = foreign
+			pktData.Advert = advertNode(&decoded.Payload, pktData.Timestamp)
+			if pktData.Advert == nil {
+				log.Printf("MQTT [%s] advert from %s has no valid role (flags %+v), node not recorded", tag, decoded.Payload.PubKey, decoded.Payload.Flags)
+			}
 			isNew, err := store.InsertTransmission(ctx, pktData)
 			if err != nil {
 				log.Printf("MQTT [%s] db insert error: %v", tag, err)
-			}
-			role := decoder.AdvertRole(decoded.Payload.Flags)
-			if err := store.UpsertNode(ctx, decoded.Payload.PubKey, decoded.Payload.Name, role, decoded.Payload.Lat, decoded.Payload.Lon, pktData.Timestamp); err != nil {
-				log.Printf("MQTT [%s] node upsert error: %v", tag, err)
 			}
 			if foreign {
 				if err := store.MarkNodeForeign(ctx, decoded.Payload.PubKey); err != nil {

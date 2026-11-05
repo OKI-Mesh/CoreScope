@@ -1,15 +1,105 @@
 package main
 
 import (
-	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+	"github.com/gorilla/mux"
 )
+
+func insertRelayPacket(t *testing.T, db *database.DB, observerIdx int64, p relayPacket) int64 {
+	t.Helper()
+	ctx := t.Context()
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        p.Hash,
+		RawHex:      "0100",
+		RouteType:   p.RouteType,
+		PayloadType: p.PayloadType,
+		DecodedJSON: "{}",
+	}, p.At)
+	if err != nil {
+		t.Fatalf("seed transmission %s: %v", p.Hash, err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(observerIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      p.At,
+	}, p.Hops, p.Resolved)
+	if err != nil {
+		t.Fatalf("seed observation %s: %v", p.Hash, err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+	return txID
+}
+
+func seedRepeater(t *testing.T, db *database.DB, pk string, at time.Time) {
+	t.Helper()
+	if err := db.CreateOrUpdateNode(t.Context(), database.NodeInput{
+		PublicKey: pk,
+		Name:      "repeater-" + pk[:8],
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    at,
+		IngestNow: at,
+	}); err != nil {
+		t.Fatalf("seed repeater %s: %v", pk[:8], err)
+	}
+}
+
+func newBareStore(db *database.DB) *PacketStore {
+	store := &PacketStore{
+		packets:              make([]*StoreTx, 0),
+		byHash:               make(map[string]*StoreTx),
+		byTxID:               make(map[int]*StoreTx),
+		byObsID:              make(map[int]*StoreObs),
+		byObserver:           make(map[string][]*StoreObs),
+		byNode:               make(map[string][]*StoreTx),
+		nodeHashes:           make(map[string]map[string]bool),
+		byPayloadType:        make(map[types.PayloadType][]*StoreTx),
+		byPathHop:            make(map[string][]*StoreTx),
+		spIndex:              make(map[string]int),
+		spTxIndex:            make(map[string][]*StoreTx),
+		distHops:             make([]distHopRecord, 0),
+		distPaths:            make([]distPathRecord, 0),
+		rfCache:              make(map[string]*cachedResult),
+		topoCache:            make(map[string]*cachedResult),
+		hashCache:            make(map[string]*cachedResult),
+		chanCache:            make(map[string]*cachedResult),
+		distCache:            make(map[string]*cachedResult),
+		subpathCache:         make(map[string]*cachedResult),
+		rfCacheTTL:           15 * time.Second,
+		db:                   db,
+		useResolvedPathIndex: true,
+	}
+	store.initResolvedPathIndex()
+	return store
+}
+
+func addEvictableToStore(store *PacketStore, txID int, hash string, firstSeen time.Time) *StoreTx {
+	tx := &StoreTx{ID: txID, Hash: hash, FirstSeen: firstSeen}
+	obs := &StoreObs{ID: txID, TransmissionID: txID, ObserverID: "obs0", Timestamp: firstSeen}
+	tx.Observations = []*StoreObs{obs}
+	store.packets = append(store.packets, tx)
+	store.byHash[hash] = tx
+	store.byTxID[txID] = tx
+	store.byObsID[txID] = obs
+	store.byObserver["obs0"] = append(store.byObserver["obs0"], obs)
+	return tx
+}
 
 // --- Unit tests ---
 
@@ -67,43 +157,66 @@ func TestResolvedPubkeyIndex_BuildFromLoad(t *testing.T) {
 
 // TestResolvedPubkeyIndex_HashCollision verifies that SQL safety filters false candidates
 // when two pubkeys produce a hash collision (simulated by inserting both under same hash).
-func TestResolvedPubkeyIndex_HashCollision(t *testing.T) {
+func TestNodePaths_HashCollisionFilteredBySQL(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
-	store := &PacketStore{
-		db:                   db,
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// Insert test data: tx 1 has pubkey "real_match", tx 2 has pubkey "false_match"
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, '', 'h1', '2026-01-01T00:00:00Z')")
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (2, '', 'h2', '2026-01-01T00:00:00Z')")
-	now := time.Now().Unix()
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (1, 1, 1, ?, ?, ?)",
-		`["aa"]`, now, `["real_match"]`)
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (2, 2, 1, ?, ?, ?)",
-		`["aa"]`, now, `["false_match"]`)
-
-	// Simulate collision: manually insert both txIDs under the same hash
-	collisionHash := resolvedPubkeyHash("real_match")
-	store.resolvedPubkeyIndex[collisionHash] = []int{1, 2}
-	store.resolvedPubkeyReverse[1] = []uint64{collisionHash}
-	store.resolvedPubkeyReverse[2] = []uint64{collisionHash}
-
-	// tx1 should match "real_match"
-	tx1 := &StoreTx{ID: 1}
-	if !store.nodeInResolvedPathViaIndex(tx1, "real_match") {
-		t.Error("tx1 should match real_match")
+	seenAt := time.Now().UTC().Add(-1 * time.Hour)
+	realPK := "aa" + strings.Repeat("1", 62)
+	falsePK := "aa" + strings.Repeat("2", 62)
+	seedRepeater(t, db, realPK, seenAt)
+	seedRepeater(t, db, falsePK, seenAt)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: scopeKey(90), Name: "Collision Observer", IATA: "SFO", Meta: nil, LastSeen: seenAt, IngestNow: seenAt,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
 
-	// tx2 should NOT match "real_match" (SQL safety check)
-	tx2 := &StoreTx{ID: 2}
-	if store.nodeInResolvedPathViaIndex(tx2, "real_match") {
-		t.Error("tx2 should not match real_match (collision filtered by SQL)")
+	tx1ID := insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: "c0170000000000a1", RouteType: 1, PayloadType: types.PayloadType(1), At: seenAt,
+		Hops: []string{"aa"}, Resolved: []*string{sptr(realPK)},
+	})
+	tx2ID := insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: "c0170000000000a2", RouteType: 1, PayloadType: types.PayloadType(1), At: seenAt,
+		Hops: []string{"aa"}, Resolved: []*string{sptr(falsePK)},
+	})
+
+	srv := NewServer(db, &Config{Port: 3000}, NewHub())
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
+	srv.store = store
+	router := mux.NewRouter()
+	srv.RegisterRoutes(router)
+
+	collisionHash := resolvedPubkeyHash(realPK)
+	store.mu.Lock()
+	if got := len(store.resolvedPubkeyIndex[collisionHash]); got != 1 {
+		store.mu.Unlock()
+		t.Fatalf("precondition: expected load to index 1 tx under the real pubkey, got %d", got)
+	}
+	store.resolvedPubkeyIndex[collisionHash] = append(store.resolvedPubkeyIndex[collisionHash], int(tx2ID))
+	store.resolvedPubkeyReverse[int(tx2ID)] = append(store.resolvedPubkeyReverse[int(tx2ID)], collisionHash)
+	store.mu.Unlock()
+
+	req := httptest.NewRequest("GET", "/api/nodes/"+realPK+"/paths", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /paths: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp NodePathsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.TotalTransmissions != 1 {
+		t.Errorf("expected only tx %d (real match), got %d transmissions — hash collision with tx %d was not filtered by the SQL confirmation",
+			tx1ID, resp.TotalTransmissions, tx2ID)
 	}
 }
 
@@ -237,103 +350,39 @@ func TestWebSocketBroadcast_IncludesResolvedPath(t *testing.T) {
 	}
 }
 
-// TestBackfill_InvalidatesLRU verifies LRU cache evicts obs after backfill UPDATE.
-func TestBackfill_InvalidatesLRU(t *testing.T) {
-	store := &PacketStore{
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// Pre-populate LRU
-	pk := "old_pk"
-	store.lruMu.Lock()
-	store.lruPut(42, []*string{&pk})
-	store.lruMu.Unlock()
-
-	// Verify it's cached
-	store.lruMu.RLock()
-	_, cached := store.apiResolvedPathLRU[42]
-	store.lruMu.RUnlock()
-	if !cached {
-		t.Fatal("expected obs 42 to be cached")
-	}
-
-	// Simulate backfill invalidation
-	store.lruMu.Lock()
-	store.lruDelete(42)
-	store.lruMu.Unlock()
-
-	store.lruMu.RLock()
-	_, cached = store.apiResolvedPathLRU[42]
-	store.lruMu.RUnlock()
-	if cached {
-		t.Error("expected obs 42 to be evicted from LRU after backfill")
-	}
-}
-
 // TestEviction_ByNodeCleanup_OnDemandSQL verifies eviction path SQL-fetches
 // resolved_path to clean byNode/nodeHashes.
 func TestEviction_ByNodeCleanup_OnDemandSQL(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	store := &PacketStore{
-		packets:              make([]*StoreTx, 0),
-		byHash:               make(map[string]*StoreTx),
-		byTxID:               make(map[int]*StoreTx),
-		byObsID:              make(map[int]*StoreObs),
-		byObserver:           make(map[string][]*StoreObs),
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		byPayloadType:        make(map[int][]*StoreTx),
-		spIndex:              make(map[string]int),
-		distHops:             make([]distHopRecord, 0),
-		distPaths:            make([]distPathRecord, 0),
-		rfCache:              make(map[string]*cachedResult),
-		topoCache:            make(map[string]*cachedResult),
-		hashCache:            make(map[string]*cachedResult),
-		chanCache:            make(map[string]*cachedResult),
-		distCache:            make(map[string]*cachedResult),
-		subpathCache:         make(map[string]*cachedResult),
-		rfCacheTTL:           15 * time.Second,
-		retentionHours:       24,
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
 
 	now := time.Now().UTC()
-	relayPK := "relay_evict_test"
-
-	// Insert DB data for on-demand SQL fetch during eviction
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, '', 'h1', ?)",
-		now.Add(-48*time.Hour).Format(time.RFC3339))
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (1, 1, 1, ?, ?, ?)",
-		`["aa"]`, now.Add(-48*time.Hour).Unix(), `["`+relayPK+`"]`)
-
-	tx := &StoreTx{
-		ID:        1,
-		Hash:      "h1",
-		FirstSeen: now.Add(-48 * time.Hour).Format(time.RFC3339),
+	staleAt := now.Add(-48 * time.Hour)
+	relayPK := strings.Repeat("e1", 32)
+	seedRepeater(t, db, relayPK, staleAt)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: scopeKey(81), Name: "Evict Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
-	obs := &StoreObs{ID: 1, TransmissionID: 1, ObserverID: "obs0", Timestamp: tx.FirstSeen}
-	tx.Observations = []*StoreObs{obs}
+	txID := insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: "c0120000000000a1", RouteType: 1, PayloadType: types.PayloadType(1), At: staleAt,
+		Hops: []string{"aa"}, Resolved: []*string{sptr(relayPK)},
+	})
 
-	store.packets = append(store.packets, tx)
-	store.byHash[tx.Hash] = tx
-	store.byTxID[1] = tx
-	store.byObsID[1] = obs
-	store.byObserver["obs0"] = []*StoreObs{obs}
+	store := newBareStore(db)
+	store.retentionHours = 24
+	tx := addEvictableToStore(store, int(txID), "c0120000000000a1", staleAt)
 
-	// Index via decode-window simulation
 	store.addToByNode(tx, relayPK)
-	store.addToResolvedPubkeyIndex(1, []string{relayPK})
+	store.addToResolvedPubkeyIndex(int(txID), []string{relayPK})
 
 	if len(store.byNode[relayPK]) != 1 {
 		t.Fatalf("expected relay in byNode")
 	}
 
-	evicted := store.RunEviction()
+	evicted := runEviction(t, store)
 	if evicted != 1 {
 		t.Fatalf("expected 1 evicted, got %d", evicted)
 	}
@@ -348,69 +397,39 @@ func TestEviction_ByNodeCleanup_OnDemandSQL(t *testing.T) {
 // mu.RLock within a tight deadline — if the lock were held during SQL, it would
 // time out.
 func TestRunEviction_NoLockDuringSQLFetch(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	store := &PacketStore{
-		packets:              make([]*StoreTx, 0),
-		byHash:               make(map[string]*StoreTx),
-		byTxID:               make(map[int]*StoreTx),
-		byObsID:              make(map[int]*StoreObs),
-		byObserver:           make(map[string][]*StoreObs),
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		byPayloadType:        make(map[int][]*StoreTx),
-		byPathHop:            make(map[string][]*StoreTx),
-		spIndex:              make(map[string]int),
-		distHops:             make([]distHopRecord, 0),
-		distPaths:            make([]distPathRecord, 0),
-		rfCache:              make(map[string]*cachedResult),
-		topoCache:            make(map[string]*cachedResult),
-		hashCache:            make(map[string]*cachedResult),
-		chanCache:            make(map[string]*cachedResult),
-		distCache:            make(map[string]*cachedResult),
-		subpathCache:         make(map[string]*cachedResult),
-		rfCacheTTL:           15 * time.Second,
-		retentionHours:       24,
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
 
 	now := time.Now().UTC()
-
-	// Create 10 stale packets with resolved_path data in DB
-	for i := 1; i <= 10; i++ {
-		staleTime := now.Add(-48 * time.Hour).Format(time.RFC3339)
-		db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, '', ?, ?)",
-			i, fmt.Sprintf("h%d", i), staleTime)
-		db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (?, ?, 1, ?, ?, ?)",
-			i, i, `["aa"]`, now.Add(-48*time.Hour).Unix(), `["pk`+fmt.Sprintf("%d", i)+`"]`)
-
-		tx := &StoreTx{
-			ID:        i,
-			Hash:      fmt.Sprintf("h%d", i),
-			FirstSeen: staleTime,
-		}
-		obs := &StoreObs{ID: i, TransmissionID: i, ObserverID: "obs0", Timestamp: staleTime}
-		tx.Observations = []*StoreObs{obs}
-		store.packets = append(store.packets, tx)
-		store.byHash[tx.Hash] = tx
-		store.byTxID[i] = tx
-		store.byObsID[i] = obs
-		store.byObserver["obs0"] = append(store.byObserver["obs0"], obs)
+	staleAt := now.Add(-48 * time.Hour)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: scopeKey(82), Name: "NoLock Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
 
-	// Run eviction in a goroutine
+	store := newBareStore(db)
+	store.retentionHours = 24
+
+	for i := 1; i <= 10; i++ {
+		pk := fmt.Sprintf("%064x", 0x1000+i)
+		hash := fmt.Sprintf("c3%014x", i)
+		seedRepeater(t, db, pk, staleAt)
+		txID := insertRelayPacket(t, db, obsIdx, relayPacket{
+			Hash: hash, RouteType: 1, PayloadType: types.PayloadType(1), At: staleAt,
+			Hops: []string{"aa"}, Resolved: []*string{sptr(pk)},
+		})
+		addEvictableToStore(store, int(txID), hash, staleAt)
+	}
+
 	evictDone := make(chan int, 1)
 	go func() {
-		evictDone <- store.RunEviction()
+		evictDone <- store.RunEviction(ctx)
 	}()
 
-	// Concurrently try to acquire RLock — should succeed quickly if SQL phase releases the lock
 	lockAcquired := make(chan bool, 1)
 	go func() {
-		// Give eviction a moment to start
 		time.Sleep(5 * time.Millisecond)
 		store.mu.RLock()
 		store.mu.RUnlock()
@@ -419,7 +438,6 @@ func TestRunEviction_NoLockDuringSQLFetch(t *testing.T) {
 
 	select {
 	case <-lockAcquired:
-		// Good — lock was available during SQL phase
 	case <-time.After(5 * time.Second):
 		t.Fatal("mu.RLock blocked for >5s — SQL likely running under write lock")
 	}
@@ -432,108 +450,13 @@ func TestRunEviction_NoLockDuringSQLFetch(t *testing.T) {
 
 // --- Endpoint tests ---
 
-// TestPathsThroughNode_NilResolvedPathFallback verifies packets with no resolved_path
-// data are still returned (conservative: can't disambiguate = keep).
-func TestPathsThroughNode_NilResolvedPathFallback(t *testing.T) {
-	store := &PacketStore{
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		byPathHop:            make(map[string][]*StoreTx),
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// tx with no resolved path data at all
-	tx := &StoreTx{ID: 1, PathJSON: `["aa"]`}
-	store.byPathHop["aa"] = []*StoreTx{tx}
-
-	// Should match because no resolved_path data = can't disambiguate
-	if !store.nodeInResolvedPathViaIndex(tx, "any_pk") {
-		t.Error("should keep tx with no resolved_path data")
-	}
-}
-
 // TestPathsThroughNode_CollisionSafety is tested in TestResolvedPubkeyIndex_HashCollision above.
-
-// TestPacketsAPI_OnDemandResolvedPath_Empty verifies NULL resolved_path returns nil/omitted.
-func TestPacketsAPI_OnDemandResolvedPath_Empty(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	store := &PacketStore{
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// No observation in DB — should return nil
-	rp := store.fetchResolvedPathForObs(999)
-	if rp != nil {
-		t.Error("expected nil for non-existent obs")
-	}
-}
-
-// TestPacketsAPI_OnDemandResolvedPath verifies on-demand SQL fetch works.
-func TestPacketsAPI_OnDemandResolvedPath(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	now := time.Now().Unix()
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, '', 'h1', '2026-01-01')")
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (1, 1, 1, ?, ?, ?)",
-		`["aa"]`, now, `["aabbccdd"]`)
-
-	store := &PacketStore{
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	rp := store.fetchResolvedPathForObs(1)
-	if rp == nil || len(rp) != 1 {
-		t.Fatal("expected resolved path from SQL")
-	}
-	if *rp[0] != "aabbccdd" {
-		t.Errorf("expected aabbccdd, got %s", *rp[0])
-	}
-}
-
-// TestPacketsAPI_OnDemandResolvedPath_LRUHit verifies second request hits cache.
-func TestPacketsAPI_OnDemandResolvedPath_LRUHit(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	now := time.Now().Unix()
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, '', 'h1', '2026-01-01')")
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (1, 1, 1, ?, ?, ?)",
-		`["aa"]`, now, `["aabbccdd"]`)
-
-	store := &PacketStore{
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// First fetch — goes to SQL
-	rp1 := store.fetchResolvedPathForObs(1)
-	if rp1 == nil {
-		t.Fatal("expected resolved path")
-	}
-
-	// Delete from DB to prove second fetch uses cache
-	db.conn.Exec("UPDATE observations SET resolved_path = NULL WHERE id = 1")
-
-	rp2 := store.fetchResolvedPathForObs(1)
-	if rp2 == nil || len(rp2) != 1 || *rp2[0] != "aabbccdd" {
-		t.Error("expected LRU cache hit")
-	}
-}
 
 // --- Feature flag tests ---
 
 // TestFeatureFlag_OffPath_PreservesOldBehavior verifies that with useResolvedPathIndex=false,
 // the index is not used and all candidates are kept (conservative behavior).
-func TestFeatureFlag_OffPath_PreservesOldBehavior(t *testing.T) {
+func TestFeatureFlag_OffPath_IndexIsNoOp(t *testing.T) {
 	store := &PacketStore{
 		byNode:               make(map[string][]*StoreTx),
 		nodeHashes:           make(map[string]map[string]bool),
@@ -541,46 +464,11 @@ func TestFeatureFlag_OffPath_PreservesOldBehavior(t *testing.T) {
 	}
 	store.initResolvedPathIndex()
 
-	tx := &StoreTx{ID: 1}
-	// With flag off, nodeInResolvedPathViaIndex always returns true
-	if !store.nodeInResolvedPathViaIndex(tx, "any_pk") {
-		t.Error("flag off should always return true (conservative)")
-	}
-
-	// addToResolvedPubkeyIndex should be a no-op
 	store.addToResolvedPubkeyIndex(1, []string{"pk1"})
 	if len(store.resolvedPubkeyIndex) != 0 {
 		t.Error("index should be empty when flag is off")
 	}
 }
-
-// TestFeatureFlag_Toggle_NoStateLeak documents that toggling requires restart.
-func TestFeatureFlag_Toggle_NoStateLeak(t *testing.T) {
-	// The feature flag is a simple bool checked at each call site.
-	// Toggling at runtime is safe: the index is simply ignored when off.
-	// State doesn't leak because the index is append-only during runtime;
-	// the off-path just stops reading/writing it.
-	store := &PacketStore{
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	store.addToResolvedPubkeyIndex(1, []string{"pk1"})
-	if len(store.resolvedPubkeyIndex) == 0 {
-		t.Fatal("expected index entries")
-	}
-
-	// Toggle off — index is still there but not consulted
-	store.useResolvedPathIndex = false
-	tx := &StoreTx{ID: 99}
-	if !store.nodeInResolvedPathViaIndex(tx, "nonexistent") {
-		t.Error("flag off should return true regardless")
-	}
-}
-
-// --- Concurrency tests ---
 
 // TestReverseMap_NoLeakOnPartialFailure verifies the reverse map stays consistent
 // when operations are interleaved.
@@ -835,102 +723,6 @@ func BenchmarkHopsSeen_Reuse(b *testing.B) {
 	})
 }
 
-// BenchmarkPathsThroughNode_Latency measures index lookup performance.
-func BenchmarkPathsThroughNode_Latency(b *testing.B) {
-	store := &PacketStore{
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// Build index with 5000 candidates
-	for i := 0; i < 5000; i++ {
-		store.addToResolvedPubkeyIndex(i, []string{"target_pk"})
-	}
-
-	tx := &StoreTx{ID: 2500} // mid-range
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		store.nodeInResolvedPathViaIndex(tx, "target_pk")
-	}
-}
-
-// BenchmarkLivePolling_UnderIngest measures LRU performance under concurrent access.
-func BenchmarkLivePolling_UnderIngest(b *testing.B) {
-	store := &PacketStore{
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// Pre-populate LRU
-	for i := 0; i < lruMaxSize; i++ {
-		pk := "pk"
-		store.lruMu.Lock()
-		store.lruPut(i, []*string{&pk})
-		store.lruMu.Unlock()
-	}
-
-	var wg sync.WaitGroup
-	b.ResetTimer()
-
-	// Concurrent reads
-	for i := 0; i < b.N; i++ {
-		wg.Add(2)
-		go func(id int) {
-			defer wg.Done()
-			store.lruMu.RLock()
-			_ = store.apiResolvedPathLRU[id%lruMaxSize]
-			store.lruMu.RUnlock()
-		}(i)
-		go func(id int) {
-			defer wg.Done()
-			pk := "new"
-			store.lruMu.Lock()
-			store.lruPut(lruMaxSize+id, []*string{&pk})
-			store.lruMu.Unlock()
-		}(i)
-	}
-	wg.Wait()
-}
-
-// TestLivePolling_LRUUnderConcurrentIngest tests 100 concurrent live polls + ingest writes.
-func TestLivePolling_LRUUnderConcurrentIngest(t *testing.T) {
-	store := &PacketStore{
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	var wg sync.WaitGroup
-	const numOps = 100
-
-	// Concurrent writes
-	for i := 0; i < numOps; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			pk := "pk"
-			store.lruMu.Lock()
-			store.lruPut(id, []*string{&pk})
-			store.lruMu.Unlock()
-		}(i)
-	}
-
-	// Concurrent reads
-	for i := 0; i < numOps; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			store.lruMu.RLock()
-			_ = store.apiResolvedPathLRU[id]
-			store.lruMu.RUnlock()
-		}(i)
-	}
-
-	wg.Wait()
-	// No panics or races = pass
-}
-
 // TestExtractResolvedPubkeys verifies the extraction helper.
 func TestExtractResolvedPubkeys(t *testing.T) {
 	pk1, pk2 := "aa", "bb"
@@ -967,38 +759,6 @@ func TestResolvedPubkeyHash_Deterministic(t *testing.T) {
 	h3 := resolvedPubkeyHash("TEST_PUBKEY")
 	if h1 != h3 {
 		t.Error("hash should be case-insensitive")
-	}
-}
-
-// TestLRU_EvictionOnFull verifies LRU evicts oldest entries.
-func TestLRU_EvictionOnFull(t *testing.T) {
-	store := &PacketStore{
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	pk := "pk"
-	// Fill to capacity
-	store.lruMu.Lock()
-	for i := 0; i < lruMaxSize; i++ {
-		store.lruPut(i, []*string{&pk})
-	}
-	store.lruMu.Unlock()
-
-	if len(store.apiResolvedPathLRU) != lruMaxSize {
-		t.Fatalf("expected %d entries, got %d", lruMaxSize, len(store.apiResolvedPathLRU))
-	}
-
-	// Add one more — should evict oldest (0)
-	store.lruMu.Lock()
-	store.lruPut(lruMaxSize, []*string{&pk})
-	store.lruMu.Unlock()
-
-	if _, exists := store.apiResolvedPathLRU[0]; exists {
-		t.Error("oldest entry should have been evicted")
-	}
-	if _, exists := store.apiResolvedPathLRU[lruMaxSize]; !exists {
-		t.Error("newest entry should exist")
 	}
 }
 
@@ -1052,156 +812,47 @@ func TestRemoveFromResolvedPubkeyIndex_RemovesAllOccurrences(t *testing.T) {
 	}
 }
 
-// TestLRU_CapacityAfterBulkDelete verifies that bulk lruDelete calls don't
-// permanently degrade effective cache capacity.
-func TestLRU_CapacityAfterBulkDelete(t *testing.T) {
-	store := &PacketStore{}
-	store.initResolvedPathIndex()
-
-	s := "x"
-	dummy := []*string{&s}
-
-	// Fill LRU to capacity
-	for i := 0; i < lruMaxSize; i++ {
-		store.lruPut(i, dummy)
-	}
-	if len(store.apiResolvedPathLRU) != lruMaxSize {
-		t.Fatalf("expected %d entries, got %d", lruMaxSize, len(store.apiResolvedPathLRU))
-	}
-
-	// Delete 90% of entries (simulates bulk backfill invalidation)
-	for i := 0; i < lruMaxSize*9/10; i++ {
-		store.lruDelete(i)
-	}
-	remaining := len(store.apiResolvedPathLRU)
-	if remaining != lruMaxSize/10 {
-		t.Fatalf("expected %d remaining, got %d", lruMaxSize/10, remaining)
-	}
-
-	// Add new entries — effective capacity should recover
-	for i := lruMaxSize; i < lruMaxSize+lruMaxSize/2; i++ {
-		store.lruPut(i, dummy)
-	}
-
-	// After adding lruMaxSize/2 new entries, total should be close to that
-	// (original 10% + new 50%), NOT stuck at O(1).
-	total := len(store.apiResolvedPathLRU)
-	if total < lruMaxSize/2 {
-		t.Errorf("effective capacity degraded: expected at least %d entries, got %d", lruMaxSize/2, total)
-	}
-}
-
-// TestConfirmResolvedPathContains_SpecialChars verifies that pubkeys containing
-// SQL LIKE wildcards (%, _) don't cause false positives with the INSTR approach.
-func TestConfirmResolvedPathContains_SpecialChars(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	_, err = db.Exec(`CREATE TABLE observations (
-		id INTEGER PRIMARY KEY,
-		transmission_id INTEGER,
-		resolved_path TEXT
-	)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Insert a row with a normal pubkey
-	_, err = db.Exec(`INSERT INTO observations (id, transmission_id, resolved_path)
-		VALUES (1, 100, '["abc123","def456"]')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	store := &PacketStore{
-		db: &DB{conn: db},
-	}
-
-	// Normal match should work
-	if !store.confirmResolvedPathContains(100, "abc123") {
-		t.Error("expected true for exact match")
-	}
-
-	// Wildcard-containing pubkey should NOT match
-	if store.confirmResolvedPathContains(100, "abc%23") {
-		t.Error("expected false for pubkey with % wildcard")
-	}
-	if store.confirmResolvedPathContains(100, "abc_23") {
-		t.Error("expected false for pubkey with _ wildcard")
-	}
-}
-
 // --- #807: Bounded growth tests ---
 
 func TestResolvedPubkeyIndex_BoundedByEviction(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	store := &PacketStore{
-		packets:              make([]*StoreTx, 0),
-		byHash:               make(map[string]*StoreTx),
-		byTxID:               make(map[int]*StoreTx),
-		byObsID:              make(map[int]*StoreObs),
-		byObserver:           make(map[string][]*StoreObs),
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		byPayloadType:        make(map[int][]*StoreTx),
-		byPathHop:            make(map[string][]*StoreTx),
-		spIndex:              make(map[string]int),
-		spTxIndex:            make(map[string][]*StoreTx),
-		distHops:             make([]distHopRecord, 0),
-		distPaths:            make([]distPathRecord, 0),
-		rfCache:              make(map[string]*cachedResult),
-		topoCache:            make(map[string]*cachedResult),
-		hashCache:            make(map[string]*cachedResult),
-		chanCache:            make(map[string]*cachedResult),
-		distCache:            make(map[string]*cachedResult),
-		subpathCache:         make(map[string]*cachedResult),
-		rfCacheTTL:           15 * time.Second,
-		retentionHours:       1, // 1 hour — everything older gets evicted
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
 
 	now := time.Now().UTC()
-	N := 50
-
-	for i := 1; i <= N; i++ {
-		hash := fmt.Sprintf("hash_%04d", i)
-		pk := fmt.Sprintf("pk_%04d", i)
-		firstSeen := now.Add(-2 * time.Hour).Format(time.RFC3339)
-
-		db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, '', ?, ?)",
-			i, hash, firstSeen)
-		db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (?, ?, 1, ?, ?, ?)",
-			i, i, `["aa"]`, now.Add(-2*time.Hour).Unix(), `["`+pk+`"]`)
-
-		tx := &StoreTx{ID: i, Hash: hash, FirstSeen: firstSeen}
-		obs := &StoreObs{ID: i, TransmissionID: i, ObserverID: "obs0", Timestamp: firstSeen}
-		tx.Observations = []*StoreObs{obs}
-
-		store.packets = append(store.packets, tx)
-		store.byHash[hash] = tx
-		store.byTxID[i] = tx
-		store.byObsID[i] = obs
-		store.byObserver["obs0"] = append(store.byObserver["obs0"], obs)
-		store.addToResolvedPubkeyIndex(i, []string{pk})
+	staleAt := now.Add(-2 * time.Hour)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: scopeKey(84), Name: "Bounded Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
 
-	if len(store.resolvedPubkeyIndex) != N {
-		t.Fatalf("forward index: expected %d entries, got %d", N, len(store.resolvedPubkeyIndex))
-	}
-	if len(store.resolvedPubkeyReverse) != N {
-		t.Fatalf("reverse index: expected %d entries, got %d", N, len(store.resolvedPubkeyReverse))
+	store := newBareStore(db)
+	store.retentionHours = 1
+
+	const n = 50
+	for i := 1; i <= n; i++ {
+		hash := fmt.Sprintf("c5%014x", i)
+		pk := fmt.Sprintf("%064x", 0x2000+i)
+		seedRepeater(t, db, pk, staleAt)
+		txID := insertRelayPacket(t, db, obsIdx, relayPacket{
+			Hash: hash, RouteType: 1, PayloadType: types.PayloadType(1), At: staleAt,
+			Hops: []string{"aa"}, Resolved: []*string{sptr(pk)},
+		})
+		addEvictableToStore(store, int(txID), hash, staleAt)
+		store.addToResolvedPubkeyIndex(int(txID), []string{pk})
 	}
 
-	evicted := store.RunEviction()
-	if evicted != N {
-		t.Fatalf("expected %d evicted, got %d", N, evicted)
+	if len(store.resolvedPubkeyIndex) != n {
+		t.Fatalf("forward index: expected %d entries, got %d", n, len(store.resolvedPubkeyIndex))
+	}
+	if len(store.resolvedPubkeyReverse) != n {
+		t.Fatalf("reverse index: expected %d entries, got %d", n, len(store.resolvedPubkeyReverse))
+	}
+
+	evicted := runEviction(t, store)
+	if evicted != n {
+		t.Fatalf("expected %d evicted, got %d", n, evicted)
 	}
 
 	if len(store.resolvedPubkeyIndex) != 0 {
@@ -1263,153 +914,91 @@ func TestCompactResolvedPubkeyIndex_ClipsOversizedSlices(t *testing.T) {
 }
 
 func TestRunEviction_TriggersCompaction(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	store := &PacketStore{
-		packets:              make([]*StoreTx, 0),
-		byHash:               make(map[string]*StoreTx),
-		byTxID:               make(map[int]*StoreTx),
-		byObsID:              make(map[int]*StoreObs),
-		byObserver:           make(map[string][]*StoreObs),
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		byPayloadType:        make(map[int][]*StoreTx),
-		byPathHop:            make(map[string][]*StoreTx),
-		spIndex:              make(map[string]int),
-		spTxIndex:            make(map[string][]*StoreTx),
-		distHops:             make([]distHopRecord, 0),
-		distPaths:            make([]distPathRecord, 0),
-		rfCache:              make(map[string]*cachedResult),
-		topoCache:            make(map[string]*cachedResult),
-		hashCache:            make(map[string]*cachedResult),
-		chanCache:            make(map[string]*cachedResult),
-		distCache:            make(map[string]*cachedResult),
-		subpathCache:         make(map[string]*cachedResult),
-		rfCacheTTL:           15 * time.Second,
-		retentionHours:       1,
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
 
 	now := time.Now().UTC()
-	// Add one old tx with a large-cap slice in the index
-	pk := "compaction_pk"
-	firstSeen := now.Add(-2 * time.Hour).Format(time.RFC3339)
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, '', 'h1', ?)", firstSeen)
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (1, 1, 1, ?, ?, ?)",
-		`["aa"]`, now.Add(-2*time.Hour).Unix(), `["`+pk+`"]`)
+	staleAt := now.Add(-2 * time.Hour)
+	pk := strings.Repeat("c1", 32)
+	pk2 := strings.Repeat("d2", 32)
+	seedRepeater(t, db, pk, staleAt)
+	seedRepeater(t, db, pk2, staleAt)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: scopeKey(85), Name: "Compaction Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
-	tx := &StoreTx{ID: 1, Hash: "h1", FirstSeen: firstSeen}
-	obs := &StoreObs{ID: 1, TransmissionID: 1, ObserverID: "obs0", Timestamp: firstSeen}
-	tx.Observations = []*StoreObs{obs}
+	store := newBareStore(db)
+	store.retentionHours = 1
 
-	store.packets = append(store.packets, tx)
-	store.byHash[tx.Hash] = tx
-	store.byTxID[1] = tx
-	store.byObsID[1] = obs
-	store.byObserver["obs0"] = []*StoreObs{obs}
+	oldHash := "c0160000000000a1"
+	oldID := insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: oldHash, RouteType: 1, PayloadType: types.PayloadType(1), At: staleAt,
+		Hops: []string{"c1", "d2"}, Resolved: []*string{sptr(pk), sptr(pk2)},
+	})
+	addEvictableToStore(store, int(oldID), oldHash, staleAt)
 
-	// Add a fresh tx (won't be evicted) with pk shared with old tx
-	pk2 := "shared_pk"
-	freshSeen := now.Format(time.RFC3339)
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (2, '', 'h2', ?)", freshSeen)
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (2, 2, 1, ?, ?, ?)",
-		`["bb"]`, now.Unix(), `["`+pk2+`"]`)
+	freshHash := "c0160000000000a2"
+	freshID := insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: freshHash, RouteType: 1, PayloadType: types.PayloadType(1), At: now,
+		Hops: []string{"d2"}, Resolved: []*string{sptr(pk2)},
+	})
+	addEvictableToStore(store, int(freshID), freshHash, now)
 
-	tx2 := &StoreTx{ID: 2, Hash: "h2", FirstSeen: freshSeen}
-	obs2 := &StoreObs{ID: 2, TransmissionID: 2, ObserverID: "obs0", Timestamp: freshSeen}
-	tx2.Observations = []*StoreObs{obs2}
+	store.addToResolvedPubkeyIndex(int(oldID), []string{pk, pk2})
+	store.addToResolvedPubkeyIndex(int(freshID), []string{pk2})
 
-	store.packets = append(store.packets, tx2)
-	store.byHash[tx2.Hash] = tx2
-	store.byTxID[2] = tx2
-	store.byObsID[2] = obs2
-	store.byObserver["obs0"] = append(store.byObserver["obs0"], obs2)
-
-	store.addToResolvedPubkeyIndex(1, []string{pk, pk2})
-	store.addToResolvedPubkeyIndex(2, []string{pk2})
-
-	evicted := store.RunEviction()
+	evicted := runEviction(t, store)
 	if evicted != 1 {
 		t.Fatalf("expected 1 evicted, got %d", evicted)
 	}
 
-	// pk should be gone (only had tx 1)
 	hPK := resolvedPubkeyHash(pk)
 	if _, exists := store.resolvedPubkeyIndex[hPK]; exists {
 		t.Error("pk entry should be removed after eviction")
 	}
 
-	// pk2 should still have tx 2
 	hPK2 := resolvedPubkeyHash(pk2)
 	ids := store.resolvedPubkeyIndex[hPK2]
-	if len(ids) != 1 || ids[0] != 2 {
-		t.Errorf("pk2 should only have tx 2, got %v", ids)
+	if len(ids) != 1 || ids[0] != int(freshID) {
+		t.Errorf("pk2 should only have tx %d, got %v", freshID, ids)
 	}
 }
 
 func TestResolvedPubkeyIndex_MemoryStableThroughEvictionCycles(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	store := &PacketStore{
-		packets:              make([]*StoreTx, 0),
-		byHash:               make(map[string]*StoreTx),
-		byTxID:               make(map[int]*StoreTx),
-		byObsID:              make(map[int]*StoreObs),
-		byObserver:           make(map[string][]*StoreObs),
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		byPayloadType:        make(map[int][]*StoreTx),
-		byPathHop:            make(map[string][]*StoreTx),
-		spIndex:              make(map[string]int),
-		spTxIndex:            make(map[string][]*StoreTx),
-		distHops:             make([]distHopRecord, 0),
-		distPaths:            make([]distPathRecord, 0),
-		rfCache:              make(map[string]*cachedResult),
-		topoCache:            make(map[string]*cachedResult),
-		hashCache:            make(map[string]*cachedResult),
-		chanCache:            make(map[string]*cachedResult),
-		distCache:            make(map[string]*cachedResult),
-		subpathCache:         make(map[string]*cachedResult),
-		rfCacheTTL:           15 * time.Second,
-		retentionHours:       1,
-		db:                   db,
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
 
 	now := time.Now().UTC()
-	txCounter := 0
+	staleAt := now.Add(-2 * time.Hour)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: scopeKey(86), Name: "Cycle Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
-	// Run 5 cycles: each adds 100 old txs, evicts them, checks maps are empty
+	store := newBareStore(db)
+	store.retentionHours = 1
+
+	txCounter := 0
 	for cycle := 0; cycle < 5; cycle++ {
 		for i := 0; i < 100; i++ {
 			txCounter++
-			hash := fmt.Sprintf("hash_%d", txCounter)
-			pk := fmt.Sprintf("pk_%d", txCounter)
-			firstSeen := now.Add(-2 * time.Hour).Format(time.RFC3339)
-
-			db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, '', ?, ?)",
-				txCounter, hash, firstSeen)
-			db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (?, ?, 1, ?, ?, ?)",
-				txCounter, txCounter, `["aa"]`, now.Add(-2*time.Hour).Unix(), `["`+pk+`"]`)
-
-			tx := &StoreTx{ID: txCounter, Hash: hash, FirstSeen: firstSeen}
-			obs := &StoreObs{ID: txCounter, TransmissionID: txCounter, ObserverID: "obs0", Timestamp: firstSeen}
-			tx.Observations = []*StoreObs{obs}
-
-			store.packets = append(store.packets, tx)
-			store.byHash[hash] = tx
-			store.byTxID[txCounter] = tx
-			store.byObsID[txCounter] = obs
-			store.byObserver["obs0"] = append(store.byObserver["obs0"], obs)
-			store.addToResolvedPubkeyIndex(txCounter, []string{pk})
+			hash := fmt.Sprintf("c7%014x", txCounter)
+			pk := fmt.Sprintf("%064x", 0x3000+txCounter)
+			seedRepeater(t, db, pk, staleAt)
+			txID := insertRelayPacket(t, db, obsIdx, relayPacket{
+				Hash: hash, RouteType: 1, PayloadType: types.PayloadType(1), At: staleAt,
+				Hops: []string{"aa"}, Resolved: []*string{sptr(pk)},
+			})
+			addEvictableToStore(store, int(txID), hash, staleAt)
+			store.addToResolvedPubkeyIndex(int(txID), []string{pk})
 		}
 
-		evicted := store.RunEviction()
+		evicted := runEviction(t, store)
 		if evicted != 100 {
 			t.Fatalf("cycle %d: expected 100 evicted, got %d", cycle, evicted)
 		}
@@ -1437,53 +1026,4 @@ func TestCheckResolvedPubkeyIndexSize_Warning(t *testing.T) {
 
 	// Just verify it doesn't panic — the warning is logged, not returned
 	store.CheckResolvedPubkeyIndexSize()
-}
-
-// TestConcurrentBackfillAndLRURead exercises the lock ordering contract:
-// one goroutine simulates backfill (takes s.mu.Lock then lruMu.Lock separately),
-// another simulates API reads (takes lruMu then s.mu.RLock separately).
-// Run with -race to detect ordering violations.
-func TestConcurrentBackfillAndLRURead(t *testing.T) {
-	store := &PacketStore{
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	var wg sync.WaitGroup
-	const iterations = 500
-
-	// Simulate backfill: mu.Lock → index ops → mu.Unlock → lruMu.Lock → lruDelete → lruMu.Unlock
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iterations; i++ {
-			store.mu.Lock()
-			store.addToResolvedPubkeyIndex(i, []string{fmt.Sprintf("pk-%d", i)})
-			store.mu.Unlock()
-
-			store.lruMu.Lock()
-			store.lruDelete(i)
-			store.lruMu.Unlock()
-			runtime.Gosched()
-		}
-	}()
-
-	// Simulate API reads: lruMu.RLock → cache check → lruMu.RUnlock, then s.mu.RLock → read → s.mu.RUnlock
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		pk := "test"
-		for i := 0; i < iterations; i++ {
-			store.lruMu.RLock()
-			_ = store.apiResolvedPathLRU[i]
-			store.lruMu.RUnlock()
-
-			store.mu.RLock()
-			_ = store.resolvedPubkeyIndex[resolvedPubkeyHash(pk)]
-			store.mu.RUnlock()
-			runtime.Gosched()
-		}
-	}()
-
-	wg.Wait()
 }

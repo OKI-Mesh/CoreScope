@@ -44,20 +44,21 @@ func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, obs
 	}
 
 	pd := &PacketData{
-		RawHex:         msg.Raw,
-		Timestamp:      time.Now().UTC(), // #1370 (counters #1233)
-		ObserverID:     observerID,
-		ObserverName:   msg.Origin,
-		SNR:            msg.SNR,
-		RSSI:           msg.RSSI,
-		Score:          msg.Score,
-		Direction:      msg.Direction,
-		Hash:           decoder.ComputeContentHash(msg.Raw),
-		RouteType:      decoded.Header.RouteType,
-		PayloadType:    decoded.Header.PayloadType,
-		PayloadVersion: decoded.Header.PayloadVersion,
-		PathJSON:       pathJSON,
-		DecodedJSON:    decoder.PayloadJSON(&decoded.Payload),
+		RawHex:           msg.Raw,
+		Timestamp:        time.Now().UTC(), // #1370 (counters #1233)
+		ObserverID:       observerID,
+		ObserverName:     msg.Origin,
+		SNR:              msg.SNR,
+		RSSI:             msg.RSSI,
+		Score:            msg.Score,
+		Direction:        msg.Direction,
+		Hash:             decoder.ComputeContentHash(msg.Raw),
+		RouteType:        decoded.Header.RouteType,
+		PayloadType:      decoded.Header.PayloadType,
+		PayloadVersion:   decoded.Header.PayloadVersion,
+		PathJSON:         pathJSON,
+		DecodedJSON:      decoder.PayloadJSON(&decoded.Payload),
+		ChannelEncrypted: false,
 	}
 
 	// Region priority: payload field > topic-derived parameter (#788)
@@ -69,11 +70,7 @@ func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, obs
 
 	// Populate channel_hash for fast channel queries (#762)
 	if decoded.Header.PayloadType == types.PayloadGRP_TXT {
-		if decoded.Payload.Type == "CHAN" && decoded.Payload.Channel != "" {
-			pd.ChannelHash = decoded.Payload.Channel
-		} else if decoded.Payload.Type == "GRP_TXT" && decoded.Payload.ChannelHashHex != "" {
-			pd.ChannelHash = "enc_" + decoded.Payload.ChannelHashHex
-		}
+		pd.ChannelHash, pd.ChannelEncrypted = decoded.Payload.ChannelReference()
 	}
 
 	if decoded.TransportCodes != nil {
@@ -96,7 +93,7 @@ func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, obs
 }
 
 // InsertDroppedPacket records a rejected packet in the dropped_packets table.
-func (s *Store) InsertDroppedPacket(ctx context.Context, dp *types.DroppedPacket) error {
+func (s *Store) InsertDroppedPacket(ctx context.Context, dp *database.DroppedPacket) error {
 	err := s.db.InsertDroppedPacket(ctx, *dp)
 	if err != nil {
 		s.Stats.WriteErrors.Add(1)
@@ -147,4 +144,5 @@ type PacketData struct {
 	Foreign           bool   // true when ADVERT GPS lies outside configured geofilter (#730)
 	FromPubkey        string // pubkey of the originating node, for exact-match attribution (#1143)
 	Advert            *database.NodeInput
+	ChannelEncrypted  bool
 }

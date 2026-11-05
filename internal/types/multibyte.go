@@ -34,3 +34,16 @@ func ParseMultibyteSupport(s string) (MultibyteSupport, bool) {
 	}
 
 }
+
+// MultibyteEvidence is how a node's multi-byte capability was established.
+type MultibyteEvidence string
+
+const (
+	EvidenceNone   MultibyteEvidence = ""
+	EvidenceAdvert MultibyteEvidence = "advert"
+	EvidencePath   MultibyteEvidence = "path"
+)
+
+func (e MultibyteEvidence) Valid() bool {
+	return e == EvidenceNone || e == EvidenceAdvert || e == EvidencePath
+}

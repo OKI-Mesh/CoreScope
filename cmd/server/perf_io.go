@@ -36,16 +36,6 @@ type PerfIOResponse struct {
 // drift between the publisher (ingestor) and the consumer (server) (#1167).
 type PerfIOSample = perfio.Sample
 
-// PerfSqliteResponse holds SQLite-specific perf metrics.
-type PerfSqliteResponse struct {
-	WalSizeMB    float64 `json:"walSizeMB"`
-	WalSize      int64   `json:"walSize"`
-	PageCount    int64   `json:"pageCount"`
-	PageSize     int64   `json:"pageSize"`
-	CacheSize    int64   `json:"cacheSize"`
-	CacheHitRate float64 `json:"cacheHitRate"`
-}
-
 // procIOSample is a snapshot of /proc/self/io counters.
 type procIOSample struct {
 	at             time.Time
@@ -246,40 +236,6 @@ func readIngestorIOSample() *PerfIOSample {
 	return st.ProcIO
 }
 
-// handlePerfSqlite returns SQLite WAL size + cache hit-rate stats.
-func (s *Server) handlePerfSqlite(w http.ResponseWriter, r *http.Request) {
-	resp := PerfSqliteResponse{}
-	if s.db != nil && s.db.conn != nil {
-		var pageCount, pageSize int64
-		_ = s.db.conn.QueryRow("PRAGMA page_count").Scan(&pageCount)
-		_ = s.db.conn.QueryRow("PRAGMA page_size").Scan(&pageSize)
-		var cacheSize int64
-		_ = s.db.conn.QueryRow("PRAGMA cache_size").Scan(&cacheSize)
-		resp.PageCount = pageCount
-		resp.PageSize = pageSize
-		resp.CacheSize = cacheSize
-
-		// Cache hit rate: derived from PacketStore cache (rw_cache). We don't
-		// have a direct SQLite cache counter through the driver, so we
-		// surface the closest available proxy — the in-process row cache.
-		if s.store != nil {
-			cs := s.store.GetCacheStatsTyped()
-			total := cs.Hits + cs.Misses
-			if total > 0 {
-				resp.CacheHitRate = float64(cs.Hits) / float64(total)
-			}
-		}
-
-		if s.db.path != "" && s.db.path != ":memory:" {
-			if info, err := os.Stat(s.db.path + "-wal"); err == nil {
-				resp.WalSize = info.Size()
-				resp.WalSizeMB = float64(info.Size()) / 1048576
-			}
-		}
-	}
-	writeJSON(w, resp)
-}
-
 // IngestorStats is the on-disk JSON shape the ingestor writes periodically
 // for the server to expose via /api/perf/write-sources.
 type IngestorStats struct {
@@ -297,11 +253,6 @@ type IngestorStats struct {
 	// ProcIO is the ingestor's own /proc/self/io rates (since its previous
 	// sample). Optional — older ingestor builds don't publish this. See #1120.
 	ProcIO *PerfIOSample `json:"procIO,omitempty"`
-	// WriterPerf is the per-component SQLite writer-lock latency
-	// snapshot (#1340). Optional — older ingestor builds don't
-	// publish this. Surfaced under .writer_perf by
-	// handlePerfWriteSources.
-	WriterPerf map[string]WriterStatsSnapshot `json:"writer_perf,omitempty"`
 	// SourceLiveness (PR #1609 M1) is the per-MQTT-source two-clock
 	// snapshot: lastReceiptUnix (broker liveness, stamped at receipt)
 	// vs lastMessageUnix (write-path liveness, stamped post-write).
@@ -316,22 +267,6 @@ type IngestorStats struct {
 type SourceLivenessSnapshot struct {
 	LastReceiptUnix int64 `json:"lastReceiptUnix"`
 	LastMessageUnix int64 `json:"lastMessageUnix"`
-}
-
-// WriterStatsSnapshot mirrors the ingestor's per-component writer-lock
-// latency snapshot (#1340). Times are milliseconds. Server-side decode
-// uses this type to keep the JSON contract stable across processes.
-type WriterStatsSnapshot struct {
-	Count           int64   `json:"count"`
-	ContentionTotal int64   `json:"contention_total"`
-	WaitMsP50       float64 `json:"wait_ms_p50"`
-	WaitMsP95       float64 `json:"wait_ms_p95"`
-	WaitMsP99       float64 `json:"wait_ms_p99"`
-	WaitMsMax       float64 `json:"wait_ms_max"`
-	HoldMsP50       float64 `json:"hold_ms_p50"`
-	HoldMsP95       float64 `json:"hold_ms_p95"`
-	HoldMsP99       float64 `json:"hold_ms_p99"`
-	HoldMsMax       float64 `json:"hold_ms_max"`
 }
 
 // IngestorStatsPath is the well-known location where the ingestor writes its
@@ -482,14 +417,5 @@ func (s *Server) handlePerfWriteSources(w http.ResponseWriter, r *http.Request) 
 	}
 	out["sources"] = sources
 	out["sampleAt"] = st.SampledAt
-	// Surface per-component SQLite writer-lock latency histograms
-	// (#1340) under .writer_perf so operators can see when a
-	// component (e.g. neighbor_builder) is starving the writer.
-	// Empty map when the ingestor is too old to publish this field.
-	if len(st.WriterPerf) > 0 {
-		out["writer_perf"] = st.WriterPerf
-	} else {
-		out["writer_perf"] = map[string]WriterStatsSnapshot{}
-	}
 	writeJSON(w, out)
 }
