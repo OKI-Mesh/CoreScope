@@ -1,0 +1,131 @@
+{
+  "node": {
+    "advert_count": 219,
+    "battery_mv": null,
+    "bridge_score": 0.0045442493518736745,
+    "configured_scope": "*,#alpha,#beta,#gamma",
+    "configured_scope_at": "2026-07-29T16:48:29Z",
+    "coverage_score": 0.764199339027867,
+    "declared_regions": [
+      "alpha",
+      "beta",
+      "gamma"
+    ],
+    "default_scope": null,
+    "first_seen": "2026-02-24T06:29:18Z",
+    "flood_advert_count_7d": 4,
+    "foreign": false,
+    "hash_size": 2,
+    "hash_size_inconsistent": false,
+    "last_heard": "2026-07-29T23:15:44Z",
+    "last_relayed": "2026-07-29T23:10:51Z",
+    "last_seen": "2026-07-29T23:15:44Z",
+    "lat": 37.63749,
+    "lon": -99.86404,
+    "multi_byte_evidence": "advert",
+    "multi_byte_max_hash_size": 2,
+    "multi_byte_status": "confirmed",
+    "name": "Fixture Repeater",
+    "public_key": "12470ac8003684594a0702f762bdd25d295cd6e7a161e146bd3f970c12be062f",
+    "redundancy_score": 0,
+    "relay_active": true,
+    "relay_count_1h": 87,
+    "relay_count_24h": 1460,
+    "relay_window_hours": 24,
+    "role": "repeater",
+    "scope_config_state": "full",
+    "temperature_c": null,
+    "traffic_share_score": 0.19279329326801678,
+    "unscoped_relay_count_24h": 1433,
+    "usefulness_grade": "D",
+    "usefulness_score": 0.23097176821613222
+  },
+  "recentAdverts": [
+    {
+      "decoded_json": "{\"type\":\"ADVERT\",\"pubKey\":\"12470ac8003684594a0702f762bdd25d295cd6e7a161e146bd3f970c12be062f\",\"timestamp\":1785303944,\"timestampISO\":\"2026-07-29T05:45:44.000Z\",\"signature\":\"cc4950b88bd6f15333ab59e0f64c3cba0b7f18ac52680254e110b223921e34b858ee1d3be7f9bdd1ed60f47298485d3b4ba768d06166f4132dfd8c441144a790\",\"signatureValid\":true,\"flags\":{\"raw\":146,\"type\":2,\"chat\":false,\"repeater\":true,\"room\":false,\"sensor\":false,\"hasLocation\":true,\"hasFeat1\":false,\"hasFeat2\":false,\"hasName\":true},\"lat\":37.63749,\"lon\":-99.86404,\"name\":\"Fixture Repeater\"}",
+      "direction": "rx",
+      "first_seen": "2026-07-29T05:41:21Z",
+      "hash": "8bbb90ce6389fbfb",
+      "id": 2063160,
+      "observation_count": 100,
+      "observations": [
+        {
+          "id": 14605467,
+          "observer_iata": "TST",
+          "observer_id": "6042A8C5DA2442D7A70A0C82D46F23DE028D2BC9F3650B94CEEF168EE174906A",
+          "observer_name": "Fixture Observer 2",
+          "path_json": "[\"270B\",\"14C6\",\"CF7D\",\"778E\"]",
+          "rssi": -46,
+          "snr": 11.5,
+          "timestamp": "2026-07-29T05:41:37.000Z",
+          "transmission_id": 2063160
+        },
+        {
+          "id": 10306819,
+          "observer_iata": "TST",
+          "observer_id": "867BAE5E7D6962B1B2C955672BA9B7E4E89A77BB46074646E9AD9E72B34EEDD0",
+          "observer_name": "Fixture Observer 3",
+          "path_json": "[\"270B\",\"14C6\",\"CF7D\",\"A9BF\"]",
+          "rssi": -107,
+          "snr": 7.75,
+          "timestamp": "2026-07-29T05:41:34.000Z",
+          "transmission_id": 2063160
+        }
+      ],
+      "observer_iata": "TST",
+      "observer_id": "052B047ABD003DE2AF630FB07C838BED937AFE44F27D296283C7E0A8225C8043",
+      "observer_name": "Fixture Observer 1",
+      "path_json": "[\"3858\",\"EAB8\",\"E7AB\",\"CBF7\",\"2FC7\",\"84A2\"]",
+      "payload_type": 4,
+      "raw_hex": "0ecb3b7b21b9ecefecd476dad5a4b28770a53102bbe994beff81df4f8dae65de598bf3a4b1a9ba9397462fb944392097e2bca5418e337f5775bebed7e9c7c4ccb46d8bc8fe3ab44e0c906dc39821b53ba4e5ba6e34f1d83d6b8d7c2552f03bbc99ed1fd3e0ff608977899a257a90aec18ffbe3cfe9235fbf72359ce57f",
+      "route_type": 1,
+      "rssi": -49,
+      "scope_name": null,
+      "snr": 12.5,
+      "timestamp": "2026-07-29T05:41:21Z"
+    },
+    {
+      "decoded_json": "{\"type\":\"ADVERT\",\"pubKey\":\"12470ac8003684594a0702f762bdd25d295cd6e7a161e146bd3f970c12be062f\",\"timestamp\":1785134744,\"timestampISO\":\"2026-07-27T06:45:44.000Z\",\"signature\":\"01a361acc5d5552aa74edf414bbbb63c63f3d90a3c3a48a87f263e8c0743c08b5038eeaf1f146ef97b28e86ec48ec0952d1a9f6663be72207d7635e1fa642703\",\"signatureValid\":true,\"flags\":{\"raw\":146,\"type\":2,\"chat\":false,\"repeater\":true,\"room\":false,\"sensor\":false,\"hasLocation\":true,\"hasFeat1\":false,\"hasFeat2\":false,\"hasName\":true},\"lat\":37.63749,\"lon\":-99.86404,\"name\":\"Fixture Repeater\"}",
+      "direction": "rx",
+      "first_seen": "2026-07-27T06:41:39Z",
+      "hash": "1f5e341f1667dbb3",
+      "id": 1261851,
+      "observation_count": 94,
+      "observations": [
+        {
+          "id": 27619915,
+          "observer_iata": "TST",
+          "observer_id": "3A8177A9DA96C046A5F1463DFB650C8AA0EFD1CA0CA0E60FDC2C8A4C9811F5EB",
+          "observer_name": "Fixture Observer 5",
+          "path_json": "[\"87CF\",\"3858\",\"29B8\",\"287F\",\"13C2\"]",
+          "rssi": -44,
+          "snr": 11.5,
+          "timestamp": "2026-07-27T06:41:52.000Z",
+          "transmission_id": 1261851
+        },
+        {
+          "id": 11909672,
+          "observer_iata": "TST",
+          "observer_id": "743CAB8537230A01FB4E9310A210517159D15176CE08064D2D6A39E1C0735B46",
+          "observer_name": "Fixture Observer 6",
+          "path_json": "[\"87CF\",\"3858\",\"CFCF\",\"DD55\"]",
+          "rssi": -37,
+          "snr": 12,
+          "timestamp": "2026-07-27T06:41:50.000Z",
+          "transmission_id": 1261851
+        }
+      ],
+      "observer_iata": "TST",
+      "observer_id": "221774F4F4B1F88BE16ED1551ADD9C9A1319D0B1E704050930BE50BF28CCE6A9",
+      "observer_name": "Fixture Observer 4",
+      "path_json": "[\"87CF\",\"3858\",\"7EB5\",\"A5B9\",\"2FC0\"]",
+      "payload_type": 4,
+      "raw_hex": "e97ec3cac72c44885d205184ebb8b2d658af2f59fbf95c4403be931089b1bd9adb3ec308ff3852dde5a19b612028676c06bdb12a4b1845f33556ad7b4c93c74edaa61f8f6d2f1c22bd0d0a6d9c6557c3da398b237f6df6d5dd28191dfe4779b8a55437a5e768e879809883e7feeb8ad5c7c998d9a745dbdaac781f74ea",
+      "route_type": 1,
+      "rssi": -73,
+      "scope_name": null,
+      "snr": 9.8,
+      "timestamp": "2026-07-27T06:41:39Z"
+    }
+  ]
+}

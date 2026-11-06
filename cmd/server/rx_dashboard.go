@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,40 +9,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-// scanCoverageRows reads (lat,lon,snr,rssi,heard_key,rx_at) rows into coverageRow values.
-func scanCoverageRows(rows *sql.Rows) ([]coverageRow, error) {
-	out := []coverageRow{}
-	for rows.Next() {
-		var lat, lon float64
-		var snr sql.NullFloat64
-		var rssi sql.NullInt64
-		var heardKey, rxAt sql.NullString
-		if err := rows.Scan(&lat, &lon, &snr, &rssi, &heardKey, &rxAt); err != nil {
-			return nil, err
-		}
-		cr := coverageRow{Lat: lat, Lon: lon, HeardKey: strings.ToLower(heardKey.String), RxAt: rxAt.String}
-		if snr.Valid {
-			v := snr.Float64
-			cr.SNR = &v
-		}
-		if rssi.Valid {
-			v := int(rssi.Int64)
-			cr.RSSI = &v
-		}
-		out = append(out, cr)
-	}
-	return out, rows.Err()
-}
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+)
 
 // heardKeyResolverFor builds a nodeResolver for exactly the distinct heard_keys
 // present in rows, resolving them all in one batched query instead of one query
 // per key (the previous per-key resolver was N+1 on the read connection). Maps a
 // heard_key to (pubkey, name) on a unique, non-hidden match; to (heardKey, "")
 // otherwise. nil when there's no DB.
-func (s *Server) heardKeyResolverFor(rows []coverageRow) nodeResolver {
-	if s.db == nil || s.db.conn == nil {
+func (s *Server) heardKeyResolverFor(ctx context.Context, rows []coverageRow) nodeResolver {
+	if s.db == nil {
 		return nil
 	}
 	keys := make([]string, 0, len(rows))
@@ -54,7 +30,7 @@ func (s *Server) heardKeyResolverFor(rows []coverageRow) nodeResolver {
 			keys = append(keys, r.HeardKey)
 		}
 	}
-	resolved := s.batchResolveHeardKeys(keys)
+	resolved := s.batchResolveHeardKeys(ctx, keys)
 	return func(heardKey string) (string, string) {
 		if v, ok := resolved[heardKey]; ok {
 			return v[0], v[1]
@@ -69,7 +45,7 @@ func (s *Server) heardKeyResolverFor(rows []coverageRow) nodeResolver {
 // (2 rows) and the whole set costs one query, not N. A unique match returns
 // [pubkey, name]; unknown / ambiguous / blacklisted / hidden-prefix keys (#15,
 // #1181) return [heardKey, ""].
-func (s *Server) batchResolveHeardKeys(keys []string) map[string][2]string {
+func (s *Server) batchResolveHeardKeys(ctx context.Context, keys []string) map[string][2]string {
 	res := make(map[string][2]string, len(keys))
 	valid := make([]string, 0, len(keys))
 	seen := map[string]bool{}
@@ -82,62 +58,33 @@ func (s *Server) batchResolveHeardKeys(keys []string) map[string][2]string {
 			res[k] = [2]string{k, ""}
 			continue
 		}
-		valid = append(valid, k)
+		valid = append(valid, strings.ToLower(k)) // LIKE is case-sensitive in Postgres
 	}
-	// SQLITE_MAX_COMPOUND_SELECT is 500 by default; chunk well under it.
-	const chunk = 200
-	for i := 0; i < len(valid); i += chunk {
-		end := i + chunk
-		if end > len(valid) {
-			end = len(valid)
-		}
-		batch := valid[i:end]
-		parts := make([]string, len(batch))
-		args := make([]interface{}, 0, len(batch)*2)
-		for j, k := range batch {
-			// Parameterized: the prefix flows in as bound args, never interpolated,
-			// so this stays injection-safe regardless of how hexPrefixRe later
-			// evolves. The per-prefix LIMIT 2 lives in a subquery because a bare
-			// LIMIT on a UNION ALL term is a SQLite syntax error.
-			parts[j] = "SELECT * FROM (SELECT ? AS pfx, public_key, COALESCE(name,'') AS nm FROM nodes WHERE public_key LIKE ? LIMIT 2)"
-			args = append(args, k, k+"%")
-		}
-		rows, err := s.db.conn.Query(strings.Join(parts, " UNION ALL "), args...)
-		if err != nil {
-			// Don't fail the request, but don't fail silently either: a swallowed
-			// error here presents as "every name is ambiguous" with no signal.
-			log.Printf("WARN batchResolveHeardKeys: %v", err)
-			for _, k := range batch {
+	if len(valid) == 0 {
+		return res
+	}
+
+	matches, err := s.db.MatchNodesByPrefix(ctx, valid)
+	if err != nil {
+		// Don't fail the request, but don't fail silently either: a swallowed
+		// error here presents as "every name is ambiguous" with no signal.
+		log.Printf("WARN batchResolveHeardKeys: %v", err)
+		for _, k := range keys {
+			if k != "" {
 				res[k] = [2]string{k, ""}
 			}
+		}
+		return res
+	}
+	for _, k := range keys {
+		if k == "" || res[k] != ([2]string{}) {
 			continue
 		}
-		type agg struct {
-			pk, name string
-			cnt      int
-		}
-		acc := map[string]*agg{}
-		for rows.Next() {
-			var pfx, pk, nm string
-			if err := rows.Scan(&pfx, &pk, &nm); err != nil {
-				continue
-			}
-			a := acc[pfx]
-			if a == nil {
-				a = &agg{}
-				acc[pfx] = a
-			}
-			a.cnt++
-			a.pk, a.name = pk, nm
-		}
-		rows.Close()
-		for _, k := range batch {
-			a := acc[k]
-			if a != nil && a.cnt == 1 && !s.cfg.IsBlacklisted(a.pk) && !s.cfg.IsNameHidden(a.name) {
-				res[k] = [2]string{a.pk, a.name}
-			} else {
-				res[k] = [2]string{k, ""}
-			}
+		m, ok := matches[strings.ToLower(k)]
+		if ok && m.Matches == 1 && !s.cfg.IsBlacklisted(m.Pubkey) && !s.cfg.IsNameHidden(m.Name) {
+			res[k] = [2]string{m.Pubkey, m.Name}
+		} else {
+			res[k] = [2]string{k, ""}
 		}
 	}
 	return res
@@ -146,44 +93,42 @@ func (s *Server) batchResolveHeardKeys(keys []string) map[string][2]string {
 // resolveHeardKey resolves a single heard_key (2-3 byte prefix or full pubkey)
 // to its canonical (pubkey, name), or (heardKey, "") when unknown / ambiguous /
 // hidden. Thin wrapper over batchResolveHeardKeys so there is one code path.
-func (s *Server) resolveHeardKey(heardKey string) (string, string) {
-	v := s.batchResolveHeardKeys([]string{heardKey})[heardKey]
+func (s *Server) resolveHeardKey(ctx context.Context, heardKey string) (string, string) {
+	v := s.batchResolveHeardKeys(ctx, []string{heardKey})[heardKey]
 	if v[0] == "" && v[1] == "" {
 		return heardKey, "" // empty/unresolved → echo the key
 	}
 	return v[0], v[1]
 }
 
-// queryCoverageFiltered returns coverage rows within a bbox, optionally filtered
-// by heard node (prefix/pubkey), contributing client (rx_pubkey), and time window
-// (days; 0 = all time). Powers the global and per-observer coverage maps.
-func (s *Server) queryCoverageFiltered(node, rx string, days int, b bbox) ([]coverageRow, error) {
-	where := []string{"lat BETWEEN ? AND ?", "lon BETWEEN ? AND ?"}
-	args := []interface{}{b.MinLat, b.MaxLat, b.MinLon, b.MaxLon}
-	if node != "" {
-		// Sargable heard_key IN-list (see coverageHeardKeyCandidates) so the
-		// (heard_key, …) composite index is used instead of a substr() scan (#5).
-		cands := coverageHeardKeyCandidates(node)
-		where = append(where, "heard_key IN ("+sqlPlaceholders(len(cands))+")")
-		for _, c := range cands {
-			args = append(args, c)
-		}
-	}
-	if rx != "" {
-		where = append(where, "rx_pubkey = ?")
-		args = append(args, strings.ToLower(rx))
-	}
-	if days > 0 {
-		since := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
-		where = append(where, "rx_at >= ?")
-		args = append(args, since)
-	}
-	rows, err := s.db.conn.Query("SELECT lat, lon, snr, rssi, heard_key, rx_at FROM client_receptions WHERE "+strings.Join(where, " AND "), args...)
+func (s *Server) coverageRows(ctx context.Context, q database.CoverageQuery) ([]coverageRow, error) {
+	rows, err := s.db.ListCoverageRows(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanCoverageRows(rows)
+	out := make([]coverageRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, coverageRow{Lat: r.Lat, Lon: r.Lon, SNR: r.SNR, RSSI: r.RSSI, HeardKey: r.HeardKey, RxAt: formatTS(r.RxAt)})
+	}
+	return out, nil
+}
+
+// queryCoverageFiltered returns coverage rows within a bbox, optionally filtered
+// by heard node (prefix/pubkey), contributing client (rx_pubkey), and time window
+// (days; 0 = all time). Powers the global and per-observer coverage maps.
+func (s *Server) queryCoverageFiltered(ctx context.Context, node, rx string, days int, b bbox) ([]coverageRow, error) {
+	q := database.CoverageQuery{MinLat: b.MinLat, MaxLat: b.MaxLat, MinLon: b.MinLon, MaxLon: b.MaxLon}
+	if node != "" {
+		q.HeardKeys = coverageHeardKeyCandidates(node)
+	}
+	if rx != "" {
+		q.RxPubkey = rx
+	}
+	if days > 0 {
+		t := time.Now().UTC().AddDate(0, 0, -days)
+		q.Since = &t
+	}
+	return s.coverageRows(ctx, q)
 }
 
 // handleRxCoverage serves global (or per-observer via ?rx=) coverage as GeoJSON
@@ -211,18 +156,14 @@ func (s *Server) handleRxCoverage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bbox required as minLat,minLon,maxLat,maxLon", http.StatusBadRequest)
 		return
 	}
-	if s.db == nil || s.db.conn == nil {
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
-		return
-	}
 	days := clampDays(atoiDefault(r.URL.Query().Get("days"), 7))
 	z, _ := strconv.Atoi(r.URL.Query().Get("z"))
-	rows, err := s.queryCoverageFiltered(r.URL.Query().Get("node"), r.URL.Query().Get("rx"), days, b)
+	rows, err := s.queryCoverageFiltered(r.Context(), r.URL.Query().Get("node"), r.URL.Query().Get("rx"), days, b)
 	if err != nil {
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(rows))
+	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(r.Context(), rows))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(fc)
 }
@@ -264,24 +205,7 @@ const leaderboardScanCap = 500000
 // receptions it logs. Bucketing + the rarity weight can't be expressed in SQL,
 // so we aggregate the window's rows in Go (bounded by leaderboardScanCap).
 func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderObserver, error) {
-	since := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
-	// Name preference: the node's advertised name, else the companion's
-	// self-reported name (client_observers), else empty (UI shows the prefix).
-	// Hard LIMIT bounds memory; ORDER BY rx_at DESC so a truncated window keeps
-	// the most recent receptions.
-	rows, err := s.db.conn.QueryContext(ctx, `
-		SELECT cr.rx_pubkey, COALESCE(NULLIF(n.name,''), NULLIF(co.name,''), ''),
-		       cr.lat, cr.lon, cr.heard_key
-		FROM client_receptions cr
-		LEFT JOIN nodes n ON n.public_key = cr.rx_pubkey
-		LEFT JOIN client_observers co ON co.pubkey = cr.rx_pubkey
-		WHERE cr.rx_at >= ?
-		ORDER BY cr.rx_at DESC
-		LIMIT ?`, since, leaderboardScanCap)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	since := time.Now().UTC().AddDate(0, 0, -days)
 
 	type agg struct {
 		name       string
@@ -292,40 +216,29 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 	obsAgg := map[string]*agg{}
 	cellObservers := map[string]map[string]struct{}{} // cell -> set of rx_pubkey
 
-	scanned := 0
-	for rows.Next() {
-		// Honour client cancellation/timeout on the long scan (checked in batches
-		// to avoid a per-row context mutex on up to 500k rows).
-		if scanned&2047 == 0 && ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		var pk, name, heardKey string
-		var lat, lon float64
-		if err := rows.Scan(&pk, &name, &lat, &lon, &heardKey); err != nil {
-			return nil, err
-		}
-		scanned++
-		a := obsAgg[pk]
+	samples, err := s.db.ListLeaderboardSamples(ctx, since, leaderboardScanCap)
+	if err != nil {
+		return nil, err
+	}
+	if len(samples) >= leaderboardScanCap {
+		log.Printf("[rx-leaderboard] scan hit cap %d over %dd window; ranking is partial (most-recent rows)", leaderboardScanCap, days)
+	}
+	for _, r := range samples {
+		a := obsAgg[r.RxPubkey]
 		if a == nil {
-			a = &agg{name: name, cells: map[string]struct{}{}, nodes: map[string]struct{}{}}
-			obsAgg[pk] = a
+			a = &agg{name: r.Name, cells: map[string]struct{}{}, nodes: map[string]struct{}{}}
+			obsAgg[r.RxPubkey] = a
 		}
 		a.receptions++
-		a.nodes[heardKey] = struct{}{}
-		cell := hexCellAt(lat, lon, leaderboardHexRes)
+		a.nodes[r.HeardKey] = struct{}{}
+		cell := hexCellAt(r.Lat, r.Lon, leaderboardHexRes)
 		a.cells[cell] = struct{}{}
 		set := cellObservers[cell]
 		if set == nil {
 			set = map[string]struct{}{}
 			cellObservers[cell] = set
 		}
-		set[pk] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if scanned >= leaderboardScanCap {
-		log.Printf("[rx-leaderboard] scan hit cap %d over %dd window; ranking is partial (most-recent rows)", leaderboardScanCap, days)
+		set[r.RxPubkey] = struct{}{}
 	}
 
 	// Per-cell observer counts EXCLUDING blacklisted contributors, so an operator
@@ -393,10 +306,6 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 
 func (s *Server) handleRxLeaderboard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireClientRxCoverage(w, r) {
-		return
-	}
-	if s.db == nil || s.db.conn == nil {
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	days := clampDays(atoiDefault(r.URL.Query().Get("days"), 7))

@@ -28,12 +28,14 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // ── txOriginatedBy ───────────────────────────────────────────────────────────
 
 func TestTxOriginatedBy(t *testing.T) {
-	pt := 4 // ADVERT
+	pt := types.PayloadADVERT
 	selfTx := &StoreTx{
 		Hash:        "self-1",
 		PayloadType: &pt,
@@ -81,21 +83,21 @@ func TestTxOriginatedBy(t *testing.T) {
 // sent is fine.
 func TestIssue1816_RelayDoesNotInheritOriginatorSkew(t *testing.T) {
 	ps := NewPacketStore(nil, nil)
-	pt := 4 // ADVERT
-	baseObs := int64(1700000000)
+	pt := types.PayloadADVERT
+	baseObs := time.Unix(1700000000, 0).UTC()
 
 	var relayTxs []*StoreTx
 
 	// RELAY001's own healthy adverts: skew ~0s.
 	for i := 0; i < 5; i++ {
-		obsTS := baseObs + int64(i)*300
-		advTS := obsTS - 2 // 2s behind, trivially healthy
+		obsTime := baseObs.Add(time.Duration(i) * 5 * time.Minute)
+		advTS := obsTime.Add(-2 * time.Second).Unix() // 2s behind, trivially healthy
 		tx := &StoreTx{
 			Hash:        "relay-self-" + formatInt64(int64(i)),
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"RELAY001"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTime},
 			},
 		}
 		relayTxs = append(relayTxs, tx)
@@ -106,14 +108,14 @@ func TestIssue1816_RelayDoesNotInheritOriginatorSkew(t *testing.T) {
 	// adding the transmission under the relay-hop pubkey), but their
 	// decoded pubKey is BROKENORIG, not RELAY001.
 	for i := 0; i < 5; i++ {
-		obsTS := baseObs + int64(100+i)*300
-		advTS := obsTS + 100500
+		obsTime := baseObs.Add(time.Duration(100+i) * 5 * time.Minute)
+		advTS := obsTime.Add(100500 * time.Second).Unix()
 		tx := &StoreTx{
 			Hash:        "relayed-foreign-" + formatInt64(int64(i)),
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"BROKENORIG"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTime},
 			},
 		}
 		relayTxs = append(relayTxs, tx)
@@ -155,19 +157,19 @@ func TestIssue1816_RelayDoesNotInheritOriginatorSkew(t *testing.T) {
 // since it never actually said anything about its own clock.
 func TestIssue1816_PureRelaysReportNoSkew_NoBitIdenticalCluster(t *testing.T) {
 	ps := NewPacketStore(nil, nil)
-	pt := 4 // ADVERT
-	baseObs := int64(1700000000)
+	pt := types.PayloadADVERT
+	baseObs := time.Unix(1700000000, 0).UTC()
 
 	const originator = "BROKENORIG2"
-	obsTS := baseObs
-	advTS := obsTS + 201000 // matches the #1816 report's +201k s band
+	obsTime := baseObs
+	advTS := obsTime.Add(201000 * time.Second).Unix() // matches the #1816 report's +201k s band
 
 	originatorTx := &StoreTx{
 		Hash:        "originator-advert-1",
 		PayloadType: &pt,
 		DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"` + originator + `"}`,
 		Observations: []*StoreObs{
-			{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+			{ObserverID: "obs1", Timestamp: obsTime},
 		},
 	}
 
@@ -219,22 +221,22 @@ func TestIssue1816_PureRelaysReportNoSkew_NoBitIdenticalCluster(t *testing.T) {
 // they must be excluded entirely since they aren't self-originated.
 func TestIssue1818_TwoForeignAdvertsDoNotPoisonIslandNode(t *testing.T) {
 	ps := NewPacketStore(nil, nil)
-	pt := 4 // ADVERT
-	baseObs := int64(1700000000)
+	pt := types.PayloadType(4) // ADVERT
+	baseObs := time.Unix(1700000000, 0).UTC()
 
 	const island = "ISLAND001"
 	var txs []*StoreTx
 
 	// Plenty of healthy self-adverts (island node mostly talks to itself).
 	for i := 0; i < 8; i++ {
-		obsTS := baseObs + int64(i)*300
-		advTS := obsTS - 1 // ~0s skew
+		obsTime := baseObs.Add(time.Duration(i) * 5 * time.Minute)
+		advTS := obsTime.Add(-1 * time.Second).Unix() // ~0s skew
 		tx := &StoreTx{
 			Hash:        "island-self-" + formatInt64(int64(i)),
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"` + island + `"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTime},
 			},
 		}
 		txs = append(txs, tx)
@@ -244,14 +246,14 @@ func TestIssue1818_TwoForeignAdvertsDoNotPoisonIslandNode(t *testing.T) {
 	// tail of the recent window (most recent timestamps), skew ~10 days —
 	// matching the report's "off by nearly ten days".
 	for i := 0; i < 2; i++ {
-		obsTS := baseObs + int64(100+i)*300
-		advTS := obsTS + 10*86400
+		obsTime := baseObs.Add(time.Duration(100+i) * 5 * time.Minute)
+		advTS := obsTime.Add(10 * 24 * time.Hour).Unix()
 		tx := &StoreTx{
 			Hash:        "island-foreign-" + formatInt64(int64(i)),
 			PayloadType: &pt,
 			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"OFFCLOCKORIG"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "obs1", Timestamp: time.Unix(obsTS, 0).UTC().Format(time.RFC3339)},
+				{ObserverID: "obs1", Timestamp: obsTime},
 			},
 		}
 		txs = append(txs, tx)

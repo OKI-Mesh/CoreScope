@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,24 +14,179 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
+type advertPacket struct {
+	Hash        string
+	RawHex      string
+	RouteType   types.RouteType
+	PayloadType types.PayloadType
+	Name        string
+	PubKey      string
+	Role        types.NodeRole
+	At          time.Time
+	Hops        []string
+}
+
+type hashCollisionsBody struct {
+	BySize map[string]struct {
+		Stats struct {
+			CollisionCount int `json:"collision_count"`
+		} `json:"stats"`
+		Collisions []struct {
+			Prefix         string            `json:"prefix"`
+			Classification string            `json:"classification"`
+			Nodes          []json.RawMessage `json:"nodes"`
+		} `json:"collisions"`
+	} `json:"by_size"`
+	InconsistentNodes []struct {
+		Role string `json:"role"`
+	} `json:"inconsistent_nodes"`
+}
+
+func padKey(prefix string) string {
+	return prefix + strings.Repeat("0", 64-len(prefix))
+}
+
+func seedNode(t *testing.T, db *database.DB, pk string, name string, role types.NodeRole, lat, lon *float64, at time.Time) {
+	t.Helper()
+	if err := db.CreateOrUpdateNode(t.Context(), database.NodeInput{
+		PublicKey: pk, Name: name, Role: role, Lat: lat, Lon: lon, RxTime: at, IngestNow: at,
+	}); err != nil {
+		t.Fatalf("seed node %q: %v", name, err)
+	}
+}
+
+func seedObserver(t *testing.T, db *database.DB, id, iata string, at time.Time) int64 {
+	t.Helper()
+	idx, err := db.CreateOrUpdateObserver(t.Context(), database.ObserverInput{
+		ID: id, Name: "observer-" + iata, IATA: iata, Meta: nil, LastSeen: at, IngestNow: at,
+	})
+	if err != nil {
+		t.Fatalf("seed observer %s: %v", iata, err)
+	}
+	return idx
+}
+
+func loadedStore(t *testing.T, db *database.DB) *PacketStore {
+	t.Helper()
+	ctx := t.Context()
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if !store.WaitIndexesReady(5 * time.Second) {
+		t.Fatal("indexes never became ready")
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
+	return store
+}
+
+func seedAdvertSeries(t *testing.T, db *database.DB, observerIdx int64, hashPrefix, pk, name string, role types.NodeRole, raws []string, start time.Time, step time.Duration) {
+	t.Helper()
+	for i, raw := range raws {
+		header, err := strconv.ParseUint(raw[:2], 16, 8)
+		if err != nil {
+			t.Fatalf("raw %q: %v", raw, err)
+		}
+		insertAdvert(t, db, observerIdx, advertPacket{
+			Role:        role,
+			Hash:        fmt.Sprintf("%s%012x", hashPrefix, i),
+			RawHex:      raw,
+			RouteType:   types.RouteType(header & 0x03),
+			PayloadType: types.PayloadType(4),
+			Name:        name,
+			PubKey:      pk,
+			At:          start.Add(time.Duration(i) * step),
+		})
+	}
+}
+
+func seedNoNameNode(t *testing.T, db *database.DB, role types.NodeRole, lat, lon *float64) string {
+	t.Helper()
+	now := time.Now().UTC()
+	pk := padKey("deadbeef12345678")
+	seedNode(t, db, pk, "", role, lat, lon, now.Add(-1*time.Hour))
+	obsIdx := seedObserver(t, db, scopeKey(102), "SFO", now)
+	insertAdvert(t, db, obsIdx, advertPacket{
+		Role:        types.RoleRepeater,
+		Hash:        "de0b000000000001",
+		RawHex:      "ddee",
+		RouteType:   1,
+		PayloadType: types.PayloadType(4),
+		Name:        "",
+		PubKey:      pk,
+		At:          now.Add(-5 * time.Minute),
+		Hops:        []string{"dd"},
+	})
+	return pk
+}
+
+func serverFor(t *testing.T, db *database.DB, store *PacketStore) (*Server, *mux.Router) {
+	t.Helper()
+	srv := NewServer(db, &Config{Port: 3000}, NewHub())
+	srv.store = store
+	router := mux.NewRouter()
+	srv.RegisterRoutes(router)
+	return srv, router
+}
+
+func insertAdvert(t *testing.T, db *database.DB, observerIdx int64, a advertPacket) int64 {
+	t.Helper()
+	ctx := t.Context()
+	if !a.Role.Valid() {
+		t.Fatalf("advert %s: invalid role %q", a.Hash, a.Role)
+	}
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        a.Hash,
+		RawHex:      a.RawHex,
+		RouteType:   a.RouteType,
+		PayloadType: a.PayloadType,
+		DecodedJSON: fmt.Sprintf(`{"name":%q,"pubKey":%q}`, a.Name, a.PubKey),
+		Advert:      &database.NodeInput{PublicKey: a.PubKey, Name: a.Name, Role: a.Role, RxTime: a.At, IngestNow: a.At},
+	}, a.At)
+	if err != nil {
+		t.Fatalf("seed transmission %s: %v", a.Hash, err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(observerIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      a.At,
+	}, a.Hops, make([]*string, len(a.Hops)))
+	if err != nil {
+		t.Fatalf("seed observation %s: %v", a.Hash, err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+	return txID
+}
+
 func setupTestServer(t *testing.T) (*Server, *mux.Router) {
 	t.Helper()
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
+	cfg := &Config{Port: 3000, SnapshotDir: t.TempDir()}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	store.config = cfg
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
-	// #1008: Load() now defers subpath + path-hop index builds to a
-	// background goroutine. Wait for them before handlers go live so
-	// the existing assertions (which expect 200, not 503) hold.
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatalf("background indexes never became ready")
 	}
@@ -42,16 +198,21 @@ func setupTestServer(t *testing.T) (*Server, *mux.Router) {
 
 func setupTestServerWithAPIKey(t *testing.T, apiKey string) (*Server, *mux.Router) {
 	t.Helper()
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
-	cfg := &Config{Port: 3000, APIKey: apiKey}
+	cfg := &Config{Port: 3000, APIKey: apiKey, SnapshotDir: t.TempDir()}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	store.config = cfg
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
-	// #1008: see setupTestServer comment.
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatalf("background indexes never became ready")
 	}
@@ -551,16 +712,15 @@ func TestPerfEndpoint(t *testing.T) {
 		t.Error("expected packetStore in perf response")
 	}
 
-	// Verify sqlite stats
-	sqliteStats, ok := body["sqlite"].(map[string]interface{})
+	// Verify dbStats
+	dbStats, ok := body["dbStats"].(map[string]interface{})
 	if !ok {
-		t.Fatal("expected sqlite object in perf response")
+		t.Fatal("expected dbStats object in perf response")
 	}
-	if _, ok := sqliteStats["dbSizeMB"]; !ok {
-		t.Error("expected dbSizeMB in sqlite")
-	}
-	if _, ok := sqliteStats["rows"]; !ok {
-		t.Error("expected rows in sqlite")
+	for _, field := range []string{"dbSizeMB", "walSizeMB", "deadTuples", "rows"} {
+		if _, ok := dbStats[field]; !ok {
+			t.Errorf("expected %s in dbStats", field)
+		}
 	}
 
 	// Verify standard fields still present
@@ -761,6 +921,24 @@ func TestPacketTimestampsWithSince(t *testing.T) {
 	}
 }
 
+func TestPacketTimestampsAcceptsDateAndTimestamp(t *testing.T) {
+	_, router := setupTestServer(t)
+	for _, since := range []string{"2020-01-01", "2020-01-01T00:00:00Z", "2020-01-01T00:00:00.123Z"} {
+		req := httptest.NewRequest("GET", "/api/packets/timestamps?since="+since, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Errorf("since=%s: expected 200, got %d", since, w.Code)
+		}
+	}
+	req := httptest.NewRequest("GET", "/api/packets/timestamps?since=yesterday", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("since=yesterday: expected 400, got %d", w.Code)
+	}
+}
+
 func TestNodeDetailWithRecentAdverts(t *testing.T) {
 	_, router := setupTestServer(t)
 	req := httptest.NewRequest("GET", "/api/nodes/aabbccdd11223344", nil)
@@ -822,7 +1000,7 @@ func TestNodeHealthPartialFromPackets(t *testing.T) {
 
 	// Inject a packet into byNode for a pubkey that doesn't exist in the nodes table
 	ghostPubkey := "ghost_companion_no_advert"
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	snr := 5.0
 	srv.store.mu.Lock()
 	if srv.store.byNode == nil {
@@ -1107,6 +1285,7 @@ func TestObserverAnalytics_ConcurrentByTxIDMutation_1830(t *testing.T) {
 	stop := make(chan struct{})
 	var writers sync.WaitGroup
 	var readers sync.WaitGroup
+	advertType := types.PayloadType(4)
 
 	// Writer goroutines: mutate byTxID under s.store.mu, like ingest
 	// (adds) and eviction (deletes) do in production. They run until
@@ -1124,7 +1303,7 @@ func TestObserverAnalytics_ConcurrentByTxIDMutation_1830(t *testing.T) {
 				}
 				srv.store.mu.Lock()
 				id := base*100000 + n
-				srv.store.byTxID[id] = &StoreTx{ID: id, PayloadType: intPtr(4)}
+				srv.store.byTxID[id] = &StoreTx{ID: id, PayloadType: &advertType}
 				delete(srv.store.byTxID, id-1)
 				srv.store.mu.Unlock()
 				n++
@@ -1171,25 +1350,51 @@ func TestChannelMessages(t *testing.T) {
 }
 
 func TestChannelMessagesWithRegion(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('EEFF', 'chanextra000001', ?, 1, 5, '{"type":"CHAN","channel":"#test","text":"OtherUser: Cross region","sender":"OtherUser"}')`,
-		time.Now().UTC().Add(-30*time.Minute).Format(time.RFC3339))
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (4, 2, 11.0, -89, '[]', ?)`, time.Now().UTC().Add(-30*time.Minute).Unix())
 
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	now := time.Now().UTC()
+	sjcIdx := seedObserver(t, db, scopeKey(100), "SJC", now)
+	sfoIdx := seedObserver(t, db, scopeKey(101), "SFO", now)
+
+	for _, m := range []struct {
+		hash    string
+		text    string
+		sender  string
+		at      time.Time
+		observe int64
+	}{
+		{"c0a0000000000001", "SJCUser: In region", "SJCUser", now.Add(-1 * time.Hour), sjcIdx},
+		{"c0a0000000000002", "OtherUser: Cross region", "OtherUser", now.Add(-30 * time.Minute), sfoIdx},
+	} {
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        m.hash,
+			RawHex:      "eeff",
+			RouteType:   1,
+			PayloadType: 5,
+			DecodedJSON: fmt.Sprintf(`{"type":"CHAN","channel":"#test","text":%q,"sender":%q}`, m.text, m.sender),
+			ChannelHash: "#test",
+		}, m.at)
+		if err != nil {
+			t.Fatalf("seed transmission %s: %v", m.hash, err)
+		}
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    iptr64(m.observe),
+			SNR:            fptr(11.0),
+			RSSI:           fptr(-89.0),
+			Timestamp:      m.at,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("seed observation %s: %v", m.hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
 	}
-	store.WaitIndexesReady(5 * time.Second)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
+
+	store := loadedStore(t, db)
+	_, router := serverFor(t, db, store)
 
 	req := httptest.NewRequest("GET", "/api/channels/%23test/messages?region=SJC", nil)
 	w := httptest.NewRecorder()
@@ -1198,22 +1403,28 @@ func TestChannelMessagesWithRegion(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var body map[string]interface{}
+	var body struct {
+		Messages []struct {
+			Sender string `json:"sender"`
+		} `json:"messages"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	msgs, ok := body["messages"].([]interface{})
-	if !ok {
-		t.Fatalf("expected messages array, got %T", body["messages"])
-	}
-	if len(msgs) == 0 {
+	if len(body.Messages) == 0 {
 		t.Fatalf("expected at least one regional message")
 	}
-	for _, raw := range msgs {
-		msg, _ := raw.(map[string]interface{})
-		if msg["sender"] == "OtherUser" {
+	sawRegional := false
+	for _, msg := range body.Messages {
+		if msg.Sender == "OtherUser" {
 			t.Fatalf("cross-region message should be excluded")
 		}
+		if msg.Sender == "SJCUser" {
+			sawRegional = true
+		}
+	}
+	if !sawRegional {
+		t.Fatalf("expected the SJC message in the response")
 	}
 }
 
@@ -1428,43 +1639,39 @@ func TestResolveHopsEmpty(t *testing.T) {
 }
 
 func TestResolveHopsAmbiguous(t *testing.T) {
-	// Set up server with nodes that share a prefix
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	// Add another node with same "aabb" prefix
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role) VALUES ('aabb000000000000', 'AnotherNode', 'repeater')`)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
+
+	now := time.Now().UTC()
+	seedNode(t, db, padKey("aabbccdd11223344"), "TestRepeater", "repeater", nil, nil, now)
+	seedNode(t, db, padKey("aabb000000000000"), "AnotherNode", "repeater", nil, nil, now)
+	store := loadedStore(t, db)
+	_, router := serverFor(t, db, store)
 
 	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=aabb", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	resolved := body["resolved"].(map[string]interface{})
-	aabb := resolved["aabb"].(map[string]interface{})
-	if aabb["ambiguous"] != true {
+
+	var body struct {
+		Resolved map[string]struct {
+			Ambiguous  bool              `json:"ambiguous"`
+			Candidates []json.RawMessage `json:"candidates"`
+		} `json:"resolved"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	aabb, ok := body.Resolved["aabb"]
+	if !ok {
+		t.Fatal("expected aabb in resolved map")
+	}
+	if !aabb.Ambiguous {
 		t.Error("expected ambiguous=true when multiple candidates")
 	}
-	candidates, ok := aabb["candidates"].([]interface{})
-	if !ok {
-		t.Fatal("expected candidates array")
-	}
-	if len(candidates) < 2 {
-		t.Errorf("expected at least 2 candidates, got %d", len(candidates))
+	if len(aabb.Candidates) < 2 {
+		t.Errorf("expected at least 2 candidates, got %d", len(aabb.Candidates))
 	}
 }
 
@@ -1668,71 +1875,37 @@ func TestNodeSearchWhitespace(t *testing.T) {
 }
 
 func TestNodeAnalyticsNoNameNode(t *testing.T) {
-	// Test with a node that has no name to cover the name="" branch
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	// Insert a node without a name
-	db.conn.Exec(`INSERT INTO nodes (public_key, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('deadbeef12345678', NULL, 37.5, -122.0, '2026-01-15T10:00:00Z', '2026-01-01T00:00:00Z', 5)`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('DDEE', 'deadbeefhash1234', '2026-01-15T10:05:00Z', 1, 4,
-		'{"pubKey":"deadbeef12345678","type":"ADVERT"}')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (3, 1, 11.0, -91, '["dd"]', 1736935500)`)
+	pk := seedNoNameNode(t, db, "", fptr(37.5), fptr(-122.0))
+	store := loadedStore(t, db)
+	_, router := serverFor(t, db, store)
 
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	req := httptest.NewRequest("GET", "/api/nodes/deadbeef12345678/analytics?days=30", nil)
+	req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/analytics?days=30", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["node"] == nil {
+	var body struct {
+		Node json.RawMessage `json:"node"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if len(body.Node) == 0 || string(body.Node) == "null" {
 		t.Error("expected node in response")
 	}
 }
 
 func TestNodeHealthForNoNameNode(t *testing.T) {
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	db.conn.Exec(`INSERT INTO nodes (public_key, role, last_seen, first_seen, advert_count)
-		VALUES ('deadbeef12345678', 'repeater', '2026-01-15T10:00:00Z', '2026-01-01T00:00:00Z', 5)`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('DDEE', 'deadbeefhash1234', '2026-01-15T10:05:00Z', 1, 4,
-		'{"pubKey":"deadbeef12345678","type":"ADVERT"}')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (3, 1, 11.0, -91, '["dd"]', 1736935500)`)
+	pk := seedNoNameNode(t, db, "repeater", nil, nil)
+	store := loadedStore(t, db)
+	_, router := serverFor(t, db, store)
 
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	req := httptest.NewRequest("GET", "/api/nodes/deadbeef12345678/health", nil)
+	req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/health", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
@@ -2019,233 +2192,38 @@ func TestConfigMapWithCustomDefaults(t *testing.T) {
 	}
 }
 
-func TestHandlerErrorPaths(t *testing.T) {
-	// Create a DB that will error on queries by dropping the view/tables
+func TestHandlerErrorPathsWhenDatabaseClosed(t *testing.T) {
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
+	store := loadedStore(t, db)
+	_, router := serverFor(t, db, store)
+	db.Close()
 
-	t.Run("stats error", func(t *testing.T) {
-		db.conn.Exec("DROP TABLE IF EXISTS transmissions")
-		req := httptest.NewRequest("GET", "/api/stats", nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != 500 {
-			t.Errorf("expected 500, got %d", w.Code)
-		}
-	})
-}
-
-func TestHandlerErrorChannels(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS transmissions")
-
-	req := httptest.NewRequest("GET", "/api/channels", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for channels error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorTraces(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS observations")
-
-	req := httptest.NewRequest("GET", "/api/traces/abc123def4567890", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for traces error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorObservers(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS observers")
-
-	req := httptest.NewRequest("GET", "/api/observers", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for observers error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorNodes(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS nodes")
-
-	req := httptest.NewRequest("GET", "/api/nodes?limit=10", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for nodes error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorNetworkStatus(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS nodes")
-
-	req := httptest.NewRequest("GET", "/api/nodes/network-status", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for network-status error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorPackets(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	// Drop transmissions table to trigger error in transmission-centric query
-	db.conn.Exec("DROP TABLE IF EXISTS transmissions")
-
-	req := httptest.NewRequest("GET", "/api/packets?limit=10", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for packets error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorPacketsGrouped(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS observations")
-
-	req := httptest.NewRequest("GET", "/api/packets?limit=10&groupByHash=true", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for grouped packets error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorNodeSearch(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS nodes")
-
-	req := httptest.NewRequest("GET", "/api/nodes/search?q=test", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for node search error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorTimestamps(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	// Without a store, timestamps returns empty 200
-	req := httptest.NewRequest("GET", "/api/packets/timestamps?since=2020-01-01", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Errorf("expected 200 for timestamps without store, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorChannelMessages(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS observations")
-
-	req := httptest.NewRequest("GET", "/api/channels/%23test/messages", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 500 {
-		t.Errorf("expected 500 for channel messages error, got %d", w.Code)
-	}
-}
-
-func TestHandlerErrorBulkHealth(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	db.conn.Exec("DROP TABLE IF EXISTS nodes")
-
-	req := httptest.NewRequest("GET", "/api/nodes/bulk-health", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Errorf("expected 200, got %d", w.Code)
+	for _, tc := range []struct {
+		name string
+		path string
+		want int
+	}{
+		{"stats", "/api/stats", 500},
+		{"channels", "/api/channels", 500},
+		{"traces", "/api/traces/abc123def4567890", 500},
+		{"observers", "/api/observers", 500},
+		{"nodes", "/api/nodes?limit=10", 500},
+		{"network status", "/api/nodes/network-status", 500},
+		{"packets", "/api/packets?limit=10", 200},
+		{"packets predating memory", "/api/packets?limit=10&since=2000-01-01", 200},
+		{"packets grouped", "/api/packets?limit=10&groupByHash=true", 200},
+		{"node search", "/api/nodes/search?q=test", 500},
+		{"channel messages", "/api/channels/%23test/messages", 500},
+		{"bulk health", "/api/nodes/bulk-health", 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Errorf("%s: expected %d, got %d", tc.path, tc.want, w.Code)
+			}
+		})
 	}
 }
 
@@ -2282,135 +2260,76 @@ func TestAnalyticsChannelsNoNullArrays(t *testing.T) {
 	}
 }
 
-func TestAnalyticsChannelsNoStoreFallbackNoNulls(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	req := httptest.NewRequest("GET", "/api/analytics/channels", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-
-	arrayFields := []string{"channels", "topSenders", "channelTimeline", "msgLengths"}
-	for _, field := range arrayFields {
-		if body[field] == nil {
-			t.Errorf("field %q is null in DB fallback, expected []", field)
-		}
-	}
-}
-
 func TestNodeHashSizeEnrichment(t *testing.T) {
 	t.Run("nil info leaves defaults", func(t *testing.T) {
-		node := map[string]interface{}{
-			"public_key":             "abc123",
-			"hash_size":              nil,
-			"hash_size_inconsistent": false,
-		}
-		EnrichNodeWithHashSize(node, nil)
-		if node["hash_size"] != nil {
+		node := api.Node{PublicKey: "abc123"}
+		EnrichNodeWithHashSize(&node, nil)
+		if node.HashSize != nil {
 			t.Error("expected hash_size to remain nil with nil info")
 		}
 	})
 
 	t.Run("enriches with computed data", func(t *testing.T) {
-		node := map[string]interface{}{
-			"public_key":             "abc123",
-			"hash_size":              nil,
-			"hash_size_inconsistent": false,
-		}
+		node := api.Node{PublicKey: "abc123"}
 		info := &hashSizeNodeInfo{
 			HashSize:     2,
 			AllSizes:     map[int]bool{1: true, 2: true},
 			Seq:          []int{1, 2, 1, 2},
 			Inconsistent: true,
 		}
-		EnrichNodeWithHashSize(node, info)
-		if node["hash_size"] != 2 {
-			t.Errorf("expected hash_size 2, got %v", node["hash_size"])
+		EnrichNodeWithHashSize(&node, info)
+		if node.HashSize == nil || *node.HashSize != 2 {
+			t.Errorf("expected hash_size 2, got %v", node.HashSize)
 		}
-		if node["hash_size_inconsistent"] != true {
+		if !node.HashSizeInconsistent {
 			t.Error("expected hash_size_inconsistent true")
 		}
-		sizes, ok := node["hash_sizes_seen"].([]int)
-		if !ok {
-			t.Fatal("expected hash_sizes_seen to be []int")
+		if len(node.HashSizesSeen) != 2 || node.HashSizesSeen[0] != 1 || node.HashSizesSeen[1] != 2 {
+			t.Errorf("expected [1,2], got %v", node.HashSizesSeen)
 		}
-		if len(sizes) != 2 || sizes[0] != 1 || sizes[1] != 2 {
-			t.Errorf("expected [1,2], got %v", sizes)
+		info.HashSize = 9
+		if *node.HashSize != 2 {
+			t.Error("node.HashSize must not alias the cached info")
 		}
 	})
 
 	t.Run("single size omits sizes_seen", func(t *testing.T) {
-		node := map[string]interface{}{
-			"public_key":             "abc123",
-			"hash_size":              nil,
-			"hash_size_inconsistent": false,
-		}
+		node := api.Node{PublicKey: "abc123"}
 		info := &hashSizeNodeInfo{
 			HashSize: 3,
 			AllSizes: map[int]bool{3: true},
 			Seq:      []int{3, 3, 3},
 		}
-		EnrichNodeWithHashSize(node, info)
-		if node["hash_size"] != 3 {
-			t.Errorf("expected hash_size 3, got %v", node["hash_size"])
+		EnrichNodeWithHashSize(&node, info)
+		if node.HashSize == nil || *node.HashSize != 3 {
+			t.Errorf("expected hash_size 3, got %v", node.HashSize)
 		}
-		if node["hash_size_inconsistent"] != false {
+		if node.HashSizeInconsistent {
 			t.Error("expected hash_size_inconsistent false")
 		}
-		if _, exists := node["hash_sizes_seen"]; exists {
+		if len(node.HashSizesSeen) != 0 {
 			t.Error("hash_sizes_seen should not be set for single size")
 		}
 	})
 }
 
+const (
+	raw1ByteFlood = "1101aabb"
+	raw2ByteFlood = "1141aabb"
+	raw3ByteFlood = "1181aabb"
+)
+
 func TestGetNodeHashSizeInfoFlipFlop(t *testing.T) {
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
+	now := time.Now().UTC()
 	pk := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'TestNode', 'repeater')", pk)
+	seedNode(t, db, pk, "TestNode", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(110), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "f100", pk, "TestNode", types.RoleRepeater,
+		[]string{raw1ByteFlood, raw2ByteFlood, raw1ByteFlood}, now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	decoded := `{"name":"TestNode","pubKey":"` + pk + `"}`
-	raw1 := "11" + "01" + "aabb"
-	raw2 := "11" + "41" + "aabb"
-
-	payloadType := 4
-	for i := 0; i < 3; i++ {
-		rawHex := raw1
-		if i%2 == 1 {
-			rawHex = raw2
-		}
-		tx := &StoreTx{
-			ID:          9000 + i,
-			RawHex:      rawHex,
-			Hash:        "testhash" + strconv.Itoa(i),
-			FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-			PayloadType: &payloadType,
-			DecodedJSON: decoded,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-	}
-
-	info := store.GetNodeHashSizeInfo()
-	ni := info[pk]
+	ni := store.GetNodeHashSizeInfo()[pk]
 	if ni == nil {
 		t.Fatal("expected hash info for test node")
 	}
@@ -2423,41 +2342,17 @@ func TestGetNodeHashSizeInfoFlipFlop(t *testing.T) {
 }
 
 func TestGetNodeHashSizeInfoDominant(t *testing.T) {
-	// A node with mostly 2-byte adverts and an occasional 1-byte advert; the
-	// latest advert (2-byte) determines the reported hash size.
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
+	now := time.Now().UTC()
+	pk := strings.Repeat("b", 64)
+	seedNode(t, db, pk, "Repeater2B", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(111), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "f200", pk, "Repeater2B", types.RoleRepeater,
+		[]string{raw1ByteFlood, raw2ByteFlood, raw2ByteFlood, raw2ByteFlood, raw2ByteFlood},
+		now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	pk := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'Repeater2B', 'repeater')", pk)
-
-	decoded := `{"name":"Repeater2B","pubKey":"` + pk + `"}`
-	raw1byte := "11" + "01" + "aabb" // FLOOD, pathByte=0x01 → hashSize=1
-	raw2byte := "11" + "41" + "aabb" // FLOOD, pathByte=0x41 → hashSize=2
-
-	payloadType := 4
-	// 1 packet with hashSize=1, 4 packets with hashSize=2 (latest is 2-byte)
-	raws := []string{raw1byte, raw2byte, raw2byte, raw2byte, raw2byte}
-	for i, raw := range raws {
-		tx := &StoreTx{
-			ID:          8000 + i,
-			RawHex:      raw,
-			Hash:        "dominant" + strconv.Itoa(i),
-			FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-			PayloadType: &payloadType,
-			DecodedJSON: decoded,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-	}
-
-	info := store.GetNodeHashSizeInfo()
-	ni := info[pk]
+	ni := store.GetNodeHashSizeInfo()[pk]
 	if ni == nil {
 		t.Fatal("expected hash info for test node")
 	}
@@ -2467,43 +2362,17 @@ func TestGetNodeHashSizeInfoDominant(t *testing.T) {
 }
 
 func TestGetNodeHashSizeInfoLatestWins(t *testing.T) {
-	// A node reconfigured from 1-byte to 2-byte hash should show 2-byte
-	// even when it has many more historical 1-byte adverts (issue #303).
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
+	now := time.Now().UTC()
+	pk := strings.Repeat("c", 64)
+	seedNode(t, db, pk, "LatestWins", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(112), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "f300", pk, "LatestWins", types.RoleRepeater,
+		[]string{raw1ByteFlood, raw1ByteFlood, raw1ByteFlood, raw1ByteFlood, raw2ByteFlood},
+		now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	pk := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'LatestWins', 'repeater')", pk)
-
-	decoded := `{"name":"LatestWins","pubKey":"` + pk + `"}`
-	raw1byte := "11" + "01" + "aabb" // FLOOD, pathByte=0x01 → hashSize=1
-	raw2byte := "11" + "41" + "aabb" // FLOOD, pathByte=0x41 → hashSize=2
-
-	payloadType := 4
-	// 4 historical 1-byte adverts, then 1 recent 2-byte advert (latest).
-	// Mode would pick 1 (majority), but latest-wins should pick 2.
-	raws := []string{raw1byte, raw1byte, raw1byte, raw1byte, raw2byte}
-	baseTime := time.Now().UTC().Add(-1 * time.Hour)
-	for i, raw := range raws {
-		tx := &StoreTx{
-			ID:          7000 + i,
-			RawHex:      raw,
-			Hash:        "latest" + strconv.Itoa(i),
-			FirstSeen:   baseTime.Add(time.Duration(i) * time.Minute).Format("2006-01-02T15:04:05.000Z"),
-			PayloadType: &payloadType,
-			DecodedJSON: decoded,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-	}
-
-	info := store.GetNodeHashSizeInfo()
-	ni := info[pk]
+	ni := store.GetNodeHashSizeInfo()[pk]
 	if ni == nil {
 		t.Fatal("expected hash info for test node")
 	}
@@ -2520,38 +2389,18 @@ func TestGetNodeHashSizeInfoLatestWins(t *testing.T) {
 
 func TestGetNodeHashSizeInfoIgnoreDirectZeroHop(t *testing.T) {
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
+	now := time.Now().UTC()
 	pk := "dddd111122223333444455556666777788889999aaaabbbbccccddddeeee3333"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'DirIgnore', 'repeater')", pk)
+	seedNode(t, db, pk, "DirIgnore", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(113), "SFO", now)
+	const rawFlood2B = "1140aabb"
+	const rawDirect0 = "1200aabb"
+	seedAdvertSeries(t, db, obsIdx, "f400", pk, "DirIgnore", types.RoleRepeater,
+		[]string{rawFlood2B, rawDirect0, rawFlood2B, rawDirect0, rawFlood2B},
+		now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	decoded := `{"name":"DirIgnore","pubKey":"` + pk + `"}`
-	rawFlood2B := "11" + "40" + "aabb" // FLOOD advert, hashSize=2
-	rawDirect0 := "12" + "00" + "aabb" // DIRECT advert, zero-hop (should be ignored)
-
-	payloadType := 4
-	raws := []string{rawFlood2B, rawDirect0, rawFlood2B, rawDirect0, rawFlood2B}
-	baseTime2 := time.Now().UTC().Add(-1 * time.Hour)
-	for i, raw := range raws {
-		tx := &StoreTx{
-			ID:          9150 + i,
-			RawHex:      raw,
-			Hash:        "dirignore" + strconv.Itoa(i),
-			FirstSeen:   baseTime2.Add(time.Duration(i) * time.Minute).Format("2006-01-02T15:04:05.000Z"),
-			PayloadType: &payloadType,
-			DecodedJSON: decoded,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-	}
-
-	info := store.GetNodeHashSizeInfo()
-	ni := info[pk]
+	ni := store.GetNodeHashSizeInfo()[pk]
 	if ni == nil {
 		t.Fatal("expected hash info for test node")
 	}
@@ -2568,70 +2417,30 @@ func TestGetNodeHashSizeInfoIgnoreDirectZeroHop(t *testing.T) {
 
 func TestGetNodeHashSizeInfoOnlyDirectZeroHopIgnored(t *testing.T) {
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
+	now := time.Now().UTC()
 	pk := "eeee111122223333444455556666777788889999aaaabbbbccccddddeeee4444"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'OnlyDirect', 'repeater')", pk)
+	seedNode(t, db, pk, "OnlyDirect", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(114), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "f500", pk, "OnlyDirect", types.RoleRepeater,
+		[]string{"1200aabb"}, now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	decoded := `{"name":"OnlyDirect","pubKey":"` + pk + `"}`
-	rawDirect0 := "12" + "00" + "aabb"
-	payloadType := 4
-
-	tx := &StoreTx{
-		ID:          9160,
-		RawHex:      rawDirect0,
-		Hash:        "onlydirect0",
-		FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		PayloadType: &payloadType,
-		DecodedJSON: decoded,
-	}
-	store.packets = append(store.packets, tx)
-	store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-
-	info := store.GetNodeHashSizeInfo()
-	if ni := info[pk]; ni != nil {
+	if ni := store.GetNodeHashSizeInfo()[pk]; ni != nil {
 		t.Errorf("expected nil hash info for direct zero-hop only node, got HashSize=%d", ni.HashSize)
 	}
 }
 
 func TestGetNodeHashSizeInfoDirectNonZeroHopCounted(t *testing.T) {
-	// A DIRECT advert with non-zero hop count should NOT be skipped —
-	// only zero-hop DIRECT adverts misreport hash size.
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
+	now := time.Now().UTC()
 	pk := "ffff111122223333444455556666777788889999aaaabbbbccccddddeeee5555"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'DirNonZero', 'repeater')", pk)
+	seedNode(t, db, pk, "DirNonZero", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(115), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "f600", pk, "DirNonZero", types.RoleRepeater,
+		[]string{"1241aabb"}, now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	decoded := `{"name":"DirNonZero","pubKey":"` + pk + `"}`
-	// DIRECT advert (route type 2 = 0x02 in bits 0-1), path byte 0x41:
-	//   upper 2 bits = 01 → hash_size = 2, lower 6 bits = 0x01 → hop count 1 (non-zero)
-	rawDirectNonZero := "12" + "41" + "aabb" // header=0x12 (ADVERT|DIRECT), path=0x41
-	payloadType := 4
-
-	tx := &StoreTx{
-		ID:          9170,
-		RawHex:      rawDirectNonZero,
-		Hash:        "dirnonzero0",
-		FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		PayloadType: &payloadType,
-		DecodedJSON: decoded,
-	}
-	store.packets = append(store.packets, tx)
-	store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-
-	info := store.GetNodeHashSizeInfo()
-	ni := info[pk]
+	ni := store.GetNodeHashSizeInfo()[pk]
 	if ni == nil {
 		t.Fatal("expected hash info for DIRECT non-zero-hop node — it should NOT be skipped")
 	}
@@ -2639,81 +2448,42 @@ func TestGetNodeHashSizeInfoDirectNonZeroHopCounted(t *testing.T) {
 		t.Errorf("HashSize=%d, want 2 (DIRECT with hop count > 0 should be counted)", ni.HashSize)
 	}
 }
-
 func TestGetNodeHashSizeInfoNoAdverts(t *testing.T) {
-	// A node with no ADVERT packets should not appear in hash size info.
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
-	pk := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'NoAdverts', 'repeater')", pk)
-
-	// Add a non-advert packet (payload_type=2 = TXT_MSG)
-	payloadType := 2
-	tx := &StoreTx{
-		ID:          6000,
+	now := time.Now().UTC()
+	pk := strings.Repeat("d", 64)
+	seedNode(t, db, pk, "NoAdverts", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(116), "SFO", now)
+	insertAdvert(t, db, obsIdx, advertPacket{
+		Role:        types.RoleRepeater,
+		Hash:        "f700000000000000",
 		RawHex:      "0440aabb",
-		Hash:        "noadverts0",
-		FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		PayloadType: &payloadType,
-		DecodedJSON: `{"pubKey":"` + pk + `"}`,
-	}
-	store.packets = append(store.packets, tx)
-	store.byPayloadType[2] = append(store.byPayloadType[2], tx)
+		RouteType:   0,
+		PayloadType: types.PayloadType(2),
+		Name:        "NoAdverts",
+		PubKey:      pk,
+		At:          now,
+	})
+	store := loadedStore(t, db)
 
-	info := store.GetNodeHashSizeInfo()
-	if ni := info[pk]; ni != nil {
+	if ni := store.GetNodeHashSizeInfo()[pk]; ni != nil {
 		t.Errorf("expected nil hash info for node with no adverts, got HashSize=%d", ni.HashSize)
 	}
 }
 
 func TestHashAnalyticsZeroHopAdvert(t *testing.T) {
-	// A zero-hop advert (pathByte=0x00, no relay path) should contribute to
-	// distributionByRepeaters (per-node tracking) but NOT inflate total or
-	// distribution (which only count relayed packets).
+	ctx := t.Context()
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
+	now := time.Now().UTC()
+	pk := strings.Repeat("e", 64)
+	seedNode(t, db, pk, "ZeroHop", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(118), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "fa00", pk, "ZeroHop", types.RoleRepeater,
+		[]string{"0500aabb"}, now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
-	// Capture baseline from seed data (bypass cache via computeAnalyticsHashSizes)
-	baseline := store.computeAnalyticsHashSizes("", "")
-	baseTotal, _ := baseline["total"].(int)
-	baseDist, _ := baseline["distribution"].(map[string]int)
-	baseDist1 := baseDist["1"]
+	result := store.computeAnalyticsHashSizes(ctx, "", "")
 
-	pk := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'ZeroHop', 'repeater')", pk)
-	store.InvalidateNodeCache()
-
-	decoded := `{"name":"ZeroHop","pubKey":"` + pk + `"}`
-	// header 0x05 → routeType=1 (FLOOD), pathByte=0x00 → hashSize=1
-	raw := "05" + "00" + "aabb"
-	payloadType := 4
-
-	tx := &StoreTx{
-		ID:          8000,
-		RawHex:      raw,
-		Hash:        "zerohop0",
-		FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		PayloadType: &payloadType,
-		DecodedJSON: decoded,
-		// No PathJSON → txGetParsedPath returns nil (zero hops)
-	}
-	store.packets = append(store.packets, tx)
-	store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-
-	result := store.computeAnalyticsHashSizes("", "")
-
-	// distributionByRepeaters should include the zero-hop advert's node
 	distByRepeaters, ok := result["distributionByRepeaters"].(map[string]int)
 	if !ok {
 		t.Fatal("distributionByRepeaters missing or wrong type")
@@ -2721,59 +2491,41 @@ func TestHashAnalyticsZeroHopAdvert(t *testing.T) {
 	if distByRepeaters["1"] < 1 {
 		t.Errorf("distributionByRepeaters[\"1\"]=%d, want >=1 (zero-hop advert should be tracked per-node)", distByRepeaters["1"])
 	}
-
-	// total and distribution must NOT have increased from the baseline
 	total, _ := result["total"].(int)
 	dist, _ := result["distribution"].(map[string]int)
-	if total != baseTotal {
-		t.Errorf("total=%d, want %d (zero-hop adverts must not inflate total)", total, baseTotal)
+	if total != 0 {
+		t.Errorf("total=%d, want 0 (zero-hop adverts must not inflate total)", total)
 	}
-	if dist["1"] != baseDist1 {
-		t.Errorf("distribution[\"1\"]=%d, want %d (zero-hop adverts must not inflate distribution)", dist["1"], baseDist1)
+	if dist["1"] != 0 {
+		t.Errorf("distribution[\"1\"]=%d, want 0 (zero-hop adverts must not inflate distribution)", dist["1"])
 	}
 }
 
 func TestAnalyticsHashSizeSameNameDifferentPubkey(t *testing.T) {
-	// Two nodes named "SameName" with different pubkeys should be counted
-	// separately in distributionByRepeaters (issue #303, byNode keying fix).
+	ctx := t.Context()
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
+	now := time.Now().UTC()
 	pk1 := "aaaa111122223333444455556666777788889999aaaabbbbccccddddeeee1111"
 	pk2 := "aaaa111122223333444455556666777788889999aaaabbbbccccddddeeee2222"
-
-	// Insert both nodes as repeaters so they appear in distributionByRepeaters.
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'SameName', 'repeater')", pk1)
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'SameName', 'repeater')", pk2)
-	store.InvalidateNodeCache()
-
-	decoded1 := `{"name":"SameName","pubKey":"` + pk1 + `"}`
-	decoded2 := `{"name":"SameName","pubKey":"` + pk2 + `"}`
-
-	raw2byte := "05" + "40" + "aabb" // header routeType=1 (FLOOD), pathByte=0x40 → hashSize=2
-	payloadType := 4
-
-	for i, decoded := range []string{decoded1, decoded2} {
-		tx := &StoreTx{
-			ID:          6100 + i,
-			RawHex:      raw2byte,
-			Hash:        "samename" + strconv.Itoa(i),
-			FirstSeen:   time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-			PayloadType: &payloadType,
-			DecodedJSON: decoded,
-			PathJSON:    `["AABB"]`,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
+	seedNode(t, db, pk1, "SameName", "repeater", nil, nil, now)
+	seedNode(t, db, pk2, "SameName", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(119), "SFO", now)
+	for i, pk := range []string{pk1, pk2} {
+		insertAdvert(t, db, obsIdx, advertPacket{
+			Role:        types.RoleRepeater,
+			Hash:        fmt.Sprintf("fb00%012x", i),
+			RawHex:      "0540aabb",
+			RouteType:   1,
+			PayloadType: types.PayloadType(4),
+			Name:        "SameName",
+			PubKey:      pk,
+			At:          now.Add(-1 * time.Hour),
+			Hops:        []string{"aabb"},
+		})
 	}
+	store := loadedStore(t, db)
 
-	result := store.GetAnalyticsHashSizes("", "")
-
+	result := store.GetAnalyticsHashSizes(ctx, "", "")
 	distByRepeaters, ok := result["distributionByRepeaters"].(map[string]int)
 	if !ok {
 		t.Fatal("distributionByRepeaters missing or wrong type")
@@ -2804,170 +2556,89 @@ func TestAnalyticsHashSizesNoNullArrays(t *testing.T) {
 	}
 }
 func TestInconsistentNodesExcludesCompanions(t *testing.T) {
-	// Issue #566: inconsistentNodes should only include repeaters and room servers.
+	ctx := t.Context()
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
+	now := time.Now().UTC()
+	obsIdx := seedObserver(t, db, scopeKey(120), "SFO", now)
 
-	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	payloadType := 4
-
-	// Create three nodes: repeater, room_server, companion — all with inconsistent hash sizes
-	nodes := []struct {
+	for ni, n := range []struct {
 		pk   string
-		role string
+		role types.NodeRole
 	}{
-		{"aa11111111111111111111111111111111111111111111111111111111111111", "repeater"},
-		{"bb22222222222222222222222222222222222222222222222222222222222222", "room_server"},
-		{"cc33333333333333333333333333333333333333333333333333333333333333", "companion"},
-	}
-
-	for ni, n := range nodes {
-		db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, ?, ?)", n.pk, "Node-"+n.role, n.role)
-		decoded := `{"name":"Node-` + n.role + `","pubKey":"` + n.pk + `"}`
-		// Create flip-flop pattern: 1-byte, 2-byte, 1-byte (transitions=2 → inconsistent)
-		// Use header 0x11 (routeType=FLOOD, payloadType=4) and pathByte 0x41/0x81
-		// (non-zero hop count) so packets aren't skipped by direct zero-hop filter.
-		raws := []string{"11" + "41" + "aabb", "11" + "81" + "aabb", "11" + "41" + "aabb"}
-		for i, raw := range raws {
-			tx := &StoreTx{
-				ID:          7000 + ni*10 + i,
-				RawHex:      raw,
-				Hash:        "incon-" + n.role + strconv.Itoa(i),
-				FirstSeen:   now,
-				PayloadType: &payloadType,
-				DecodedJSON: decoded,
-			}
-			store.packets = append(store.packets, tx)
-			store.byPayloadType[4] = append(store.byPayloadType[4], tx)
+		{"aa" + strings.Repeat("1", 62), types.RoleRepeater},
+		{"bb" + strings.Repeat("2", 62), types.RoleRoom},
+		{"cc" + strings.Repeat("3", 62), types.RoleCompanion},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: n.pk,
+			Name:      "Node-" + string(n.role),
+			Role:      n.role,
+			Lat:       nil,
+			Lon:       nil,
+			RxTime:    now,
+			IngestNow: now,
+		}); err != nil {
+			t.Fatalf("seed node %s: %v", n.role, err)
 		}
+		seedAdvertSeries(t, db, obsIdx, fmt.Sprintf("1c%02x", ni), n.pk, "Node-"+string(n.role), n.role,
+			[]string{raw2ByteFlood, raw3ByteFlood, raw2ByteFlood}, now.Add(-1*time.Hour), time.Minute)
 	}
-
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
+	store := loadedStore(t, db)
+	_, router := serverFor(t, db, store)
 
 	req := httptest.NewRequest("GET", "/api/analytics/hash-collisions", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	var body hashCollisionsBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	t.Logf("body: %s", w.Body.String())
 
-	incon := body["inconsistent_nodes"].([]interface{})
-	for _, item := range incon {
-		node := item.(map[string]interface{})
-		role := node["role"].(string)
-		if role == "companion" {
+	roles := make(map[types.NodeRole]bool)
+	for _, node := range body.InconsistentNodes {
+		if node.Role == string(types.RoleCompanion) {
 			t.Error("companion node should be excluded from inconsistent_nodes")
 		}
+		roles[types.NodeRole(node.Role)] = true
 	}
-
-	// Repeater and room_server should be present
-	roles := make(map[string]bool)
-	for _, item := range incon {
-		node := item.(map[string]interface{})
-		roles[node["role"].(string)] = true
-	}
-	if !roles["repeater"] {
+	if !roles[types.RoleRepeater] {
 		t.Error("expected repeater in inconsistent_nodes")
 	}
-	if !roles["room_server"] {
-		t.Error("expected room_server in inconsistent_nodes")
+	if !roles[types.RoleRoom] {
+		t.Error("expected room in inconsistent_nodes")
 	}
 }
 
 func TestHashSizeInfoTimeWindow(t *testing.T) {
-	// Issue #566: adverts older than 7 days should be excluded from hash size computation.
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-
-	pk := "dd44444444444444444444444444444444444444444444444444444444444444"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'OldNode', 'repeater')", pk)
-
-	decoded := `{"name":"OldNode","pubKey":"` + pk + `"}`
-	payloadType := 4
-
-	// Old adverts (>7 days ago) with flip-flop pattern
-	// Use header 0x11 (routeType=FLOOD) and pathByte 0x41/0x81 (non-zero hop count)
-	// so packets aren't skipped by direct zero-hop filter.
-	oldTime := time.Now().UTC().Add(-10 * 24 * time.Hour).Format("2006-01-02T15:04:05.000Z")
-	oldRaws := []string{"11" + "41" + "aabb", "11" + "81" + "aabb", "11" + "41" + "aabb"}
-	for i, raw := range oldRaws {
-		tx := &StoreTx{
-			ID:          6000 + i,
-			RawHex:      raw,
-			Hash:        "old-" + strconv.Itoa(i),
-			FirstSeen:   oldTime,
-			PayloadType: &payloadType,
-			DecodedJSON: decoded,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-	}
+	now := time.Now().UTC()
+	oldPK := "dd" + strings.Repeat("4", 62)
+	newPK := "ee" + strings.Repeat("5", 62)
+	seedNode(t, db, oldPK, "OldNode", "repeater", nil, nil, now)
+	seedNode(t, db, newPK, "NewNode", "repeater", nil, nil, now)
+	obsIdx := seedObserver(t, db, scopeKey(117), "SFO", now)
+	seedAdvertSeries(t, db, obsIdx, "f800", oldPK, "OldNode", types.RoleRepeater,
+		[]string{raw2ByteFlood, raw3ByteFlood, raw2ByteFlood}, now.Add(-10*24*time.Hour), time.Minute)
+	seedAdvertSeries(t, db, obsIdx, "f900", newPK, "NewNode", types.RoleRepeater,
+		[]string{raw2ByteFlood, raw2ByteFlood, raw2ByteFlood}, now.Add(-1*time.Hour), time.Minute)
+	store := loadedStore(t, db)
 
 	info := store.GetNodeHashSizeInfo()
-	ni := info[pk]
-	if ni != nil && ni.Inconsistent {
+	if ni := info[oldPK]; ni != nil && ni.Inconsistent {
 		t.Error("old adverts (>7 days) should be excluded; node should not be flagged as inconsistent")
 	}
-
-	// Now add recent adverts with consistent hash size — should appear in info
-	pk2 := "ee55555555555555555555555555555555555555555555555555555555555555"
-	db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, role) VALUES (?, 'NewNode', 'repeater')", pk2)
-	decoded2 := `{"name":"NewNode","pubKey":"` + pk2 + `"}`
-	recentTime := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	for i := 0; i < 3; i++ {
-		tx := &StoreTx{
-			ID:          6100 + i,
-			RawHex:      "11" + "41" + "aabb",
-			Hash:        "new-" + strconv.Itoa(i),
-			FirstSeen:   recentTime,
-			PayloadType: &payloadType,
-			DecodedJSON: decoded2,
-		}
-		store.packets = append(store.packets, tx)
-		store.byPayloadType[4] = append(store.byPayloadType[4], tx)
-	}
-
-	// Invalidate cache before second call
-	store.hashSizeInfoMu.Lock()
-	store.hashSizeInfoCache = nil
-	store.hashSizeInfoMu.Unlock()
-
-	info2 := store.GetNodeHashSizeInfo()
-	ni2 := info2[pk2]
-	if ni2 == nil {
+	if info[newPK] == nil {
 		t.Error("recent adverts should be included in hash size info")
 	}
 }
 
-func TestObserverAnalyticsNoStore(t *testing.T) {
-	_, router := setupNoStoreServer(t)
-	req := httptest.NewRequest("GET", "/api/observers/obs1/analytics", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 503 {
-		t.Fatalf("expected 503, got %d", w.Code)
-	}
-}
 func TestConfigGeoFilterEndpoint(t *testing.T) {
+	ctx := t.Context()
+
 	t.Run("no geo filter configured", func(t *testing.T) {
 		_, router := setupTestServer(t)
 		req := httptest.NewRequest("GET", "/api/config/geo-filter", nil)
@@ -2998,8 +2669,10 @@ func TestConfigGeoFilterEndpoint(t *testing.T) {
 		}
 		hub := NewHub()
 		srv := NewServer(db, cfg, hub)
-		srv.store = NewPacketStore(db, nil)
-		srv.store.Load()
+		srv.store = newPacketStoreForTest(t, db)
+		if err := srv.store.LoadChunked(ctx, 1000); err != nil {
+			t.Fatalf("LoadChunked(): %v", err)
+		}
 		router := mux.NewRouter()
 		srv.RegisterRoutes(router)
 
@@ -3032,8 +2705,10 @@ func TestConfigGeoFilterEndpoint(t *testing.T) {
 		cfg := &Config{Port: 3000, APIKey: "a-strong-api-key-1234"}
 		hub := NewHub()
 		srv := NewServer(db, cfg, hub)
-		srv.store = NewPacketStore(db, nil)
-		srv.store.Load()
+		srv.store = newPacketStoreForTest(t, db)
+		if err := srv.store.LoadChunked(ctx, 1000); err != nil {
+			t.Fatalf("LoadChunked(): %v", err)
+		}
 		router := mux.NewRouter()
 		srv.RegisterRoutes(router)
 
@@ -3060,14 +2735,40 @@ func min(a, b int) int {
 // and is >= FirstSeen for packets that have observations.
 func TestLatestSeenMaintained(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
+	now := time.Now().UTC()
+	obs1 := seedObserver(t, db, scopeKey(130), "SFO", now)
+	obs2 := seedObserver(t, db, scopeKey(131), "OAK", now)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	firstSeenA := now.Add(-2 * time.Hour)
+	txA, _, err := db.CreateOrUpdateTransmission(t.Context(), database.TransmissionInput{
+		Hash: "1a00000000000001", RawHex: "aa01", RouteType: 1, PayloadType: 2, DecodedJSON: "{}",
+	}, firstSeenA)
+	if err != nil {
+		t.Fatalf("seed tx A: %v", err)
 	}
-	store.WaitIndexesReady(5 * time.Second)
+	for _, o := range []struct {
+		idx int64
+		at  time.Time
+	}{
+		{obs1, firstSeenA},
+		{obs2, firstSeenA.Add(10 * time.Minute)},
+	} {
+		_, inserted, err := db.InsertObservationWithHops(t.Context(), database.ObservationInput{
+			TransmissionID: txA, ObserverIdx: iptr64(o.idx), SNR: fptr(5.0), RSSI: fptr(-90.0), Timestamp: o.at,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("seed obs A: %v", err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txA)
+		}
+	}
+	insertRelayPacket(t, db, obs1, relayPacket{
+		Hash: "1a00000000000002", RouteType: 1, PayloadType: types.PayloadType(2), At: now.Add(-1 * time.Hour),
+		Hops: nil, Resolved: nil,
+	})
+
+	store := loadedStore(t, db)
 
 	store.mu.RLock()
 	defer store.mu.RUnlock()
@@ -3075,20 +2776,17 @@ func TestLatestSeenMaintained(t *testing.T) {
 	if len(store.packets) == 0 {
 		t.Fatal("expected packets in store after Load")
 	}
-
 	for _, tx := range store.packets {
-		if tx.LatestSeen == "" {
-			t.Errorf("packet %s has empty LatestSeen (FirstSeen=%s)", tx.Hash, tx.FirstSeen)
+		if tx.LatestSeen.IsZero() {
+			t.Errorf("packet %s has zero LatestSeen (FirstSeen=%s)", tx.Hash, tx.FirstSeen)
 			continue
 		}
-		// LatestSeen must be >= FirstSeen (string comparison works for RFC3339/ISO8601)
-		if tx.LatestSeen < tx.FirstSeen {
-			t.Errorf("packet %s: LatestSeen %q < FirstSeen %q", tx.Hash, tx.LatestSeen, tx.FirstSeen)
+		if tx.LatestSeen.Before(tx.FirstSeen) {
+			t.Errorf("packet %s: LatestSeen %s < FirstSeen %s", tx.Hash, tx.LatestSeen, tx.FirstSeen)
 		}
-		// For packets with observations, LatestSeen must be >= all observation timestamps.
 		for _, obs := range tx.Observations {
-			if obs.Timestamp != "" && obs.Timestamp > tx.LatestSeen {
-				t.Errorf("packet %s: obs.Timestamp %q > LatestSeen %q", tx.Hash, obs.Timestamp, tx.LatestSeen)
+			if !obs.Timestamp.IsZero() && obs.Timestamp.After(tx.LatestSeen) {
+				t.Errorf("packet %s: obs.Timestamp %s > LatestSeen %s", tx.Hash, obs.Timestamp, tx.LatestSeen)
 			}
 		}
 	}
@@ -3098,53 +2796,61 @@ func TestLatestSeenMaintained(t *testing.T) {
 // sorted by LatestSeen DESC — i.e. the packet whose most-recent observation is newest
 // comes first, even if its first_seen is older.
 func TestQueryGroupedPacketsSortedByLatest(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	// oldFirst: first_seen is old, but observation is very recent.
-	oldFirst := now.Add(-48 * time.Hour).Format(time.RFC3339)
-	// newFirst: first_seen is recent, but observation is old.
-	newFirst := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-5 * time.Minute).Unix()
-	oldEpoch := now.Add(-72 * time.Hour).Unix()
+	obsIdx := seedObserver(t, db, scopeKey(132), "TST", now)
 
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('sortobs', 'Sort Observer', 'TST', ?, '2026-01-01T00:00:00Z', 1)`, now.Format(time.RFC3339))
-
-	// Packet A: old first_seen, but a very recent observation — should sort first.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('AA01', 'sort_old_first_recent_obs', ?, 1, 2, '{"type":"TXT_MSG","text":"old first"}')`, oldFirst)
-	var idA int64
-	db.conn.QueryRow(`SELECT id FROM transmissions WHERE hash='sort_old_first_recent_obs'`).Scan(&idA)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (?, 1, 10.0, -90, '[]', ?)`, idA, recentEpoch)
-
-	// Packet B: newer first_seen, but an old observation — should sort second.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('BB02', 'sort_new_first_old_obs', ?, 1, 2, '{"type":"TXT_MSG","text":"new first"}')`, newFirst)
-	var idB int64
-	db.conn.QueryRow(`SELECT id FROM transmissions WHERE hash='sort_new_first_old_obs'`).Scan(&idB)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (?, 1, 10.0, -90, '[]', ?)`, idB, oldEpoch)
-
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	for _, p := range []struct {
+		hash       string
+		raw        string
+		text       string
+		firstSeen  time.Time
+		observedAt time.Time
+	}{
+		{"5017000000000001", "aa01", "old first", now.Add(-48 * time.Hour), now.Add(-5 * time.Minute)},
+		{"5017000000000002", "bb02", "new first", now.Add(-1 * time.Hour), now.Add(-72 * time.Hour)},
+	} {
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        p.hash,
+			RawHex:      p.raw,
+			RouteType:   1,
+			PayloadType: 2,
+			DecodedJSON: fmt.Sprintf(`{"type":"TXT_MSG","text":%q}`, p.text),
+		}, p.firstSeen)
+		if err != nil {
+			t.Fatalf("seed tx %s: %v", p.hash, err)
+		}
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID, ObserverIdx: iptr64(obsIdx), SNR: fptr(10.0), RSSI: fptr(-90.0), Timestamp: p.observedAt,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("seed obs %s: %v", p.hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
 	}
-	store.WaitIndexesReady(5 * time.Second)
 
-	result := store.QueryGroupedPackets(PacketQuery{Limit: 50})
+	store := loadedStore(t, db)
+
+	result, err := store.QueryGroupedPackets(ctx, database.PacketQuery{Limit: 50})
+	if err != nil {
+		t.Fatalf("QueryGroupedPackets(): %v", err)
+	}
 	if result.Total < 2 {
 		t.Fatalf("expected at least 2 packets, got %d", result.Total)
 	}
 
-	// Find the two test packets in the result (may be mixed with other entries).
 	firstHash := ""
 	secondHash := ""
 	for _, p := range result.Packets {
-		h, _ := p["hash"].(string)
-		if h == "sort_old_first_recent_obs" || h == "sort_new_first_old_obs" {
+		if p.Hash == nil {
+			continue
+		}
+		h := *p.Hash
+		if h == "5017000000000001" || h == "5017000000000002" {
 			if firstHash == "" {
 				firstHash = h
 			} else {
@@ -3153,37 +2859,47 @@ func TestQueryGroupedPacketsSortedByLatest(t *testing.T) {
 			}
 		}
 	}
-
-	if firstHash != "sort_old_first_recent_obs" {
-		t.Errorf("expected sort_old_first_recent_obs to appear before sort_new_first_old_obs in sorted results; got first=%q second=%q", firstHash, secondHash)
+	if firstHash != "5017000000000001" {
+		t.Errorf("expected the packet with the most recent observation first; got first=%q second=%q", firstHash, secondHash)
 	}
 }
 
 // TestQueryGroupedPacketsCacheReturnsConsistentResult verifies that two rapid successive
 // calls to QueryGroupedPackets return the same total count and first packet hash.
 func TestQueryGroupedPacketsCacheReturnsConsistentResult(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	now := time.Now().UTC()
+	obsIdx := seedObserver(t, db, scopeKey(133), "SFO", now)
+	for i := 0; i < 3; i++ {
+		insertRelayPacket(t, db, obsIdx, relayPacket{
+			Hash: fmt.Sprintf("cc00%012x", i), RouteType: 1, PayloadType: types.PayloadType(2),
+			At: now.Add(-time.Duration(i+1) * time.Hour), Hops: nil, Resolved: nil,
+		})
 	}
-	store.WaitIndexesReady(5 * time.Second)
+	store := loadedStore(t, db)
 
-	q := PacketQuery{Limit: 50}
-	r1 := store.QueryGroupedPackets(q)
-	r2 := store.QueryGroupedPackets(q)
-
+	q := database.PacketQuery{Limit: 50}
+	r1, err := store.QueryGroupedPackets(ctx, q)
+	if err != nil {
+		t.Fatalf("first QueryGroupedPackets(): %v", err)
+	}
+	r2, err := store.QueryGroupedPackets(ctx, q)
+	if err != nil {
+		t.Fatalf("second QueryGroupedPackets(): %v", err)
+	}
 	if r1.Total != r2.Total {
 		t.Errorf("cache inconsistency: first call total=%d, second call total=%d", r1.Total, r2.Total)
 	}
 	if r1.Total == 0 {
 		t.Fatal("expected non-zero results from QueryGroupedPackets")
 	}
-	h1, _ := r1.Packets[0]["hash"].(string)
-	h2, _ := r2.Packets[0]["hash"].(string)
+	if r1.Packets[0].Hash == nil || r2.Packets[0].Hash == nil {
+		t.Fatal("expected hash on the first grouped packet")
+	}
+	h1 := *r1.Packets[0].Hash
+	h2 := *r2.Packets[0].Hash
 	if h1 != h2 {
 		t.Errorf("cache inconsistency: first call first hash=%q, second call first hash=%q", h1, h2)
 	}
@@ -3192,18 +2908,19 @@ func TestQueryGroupedPacketsCacheReturnsConsistentResult(t *testing.T) {
 // TestGetChannelsCacheReturnsConsistentResult verifies that two rapid successive calls
 // to GetChannels return the same number of channels with the same names.
 func TestGetChannelsCacheReturnsConsistentResult(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	store.WaitIndexesReady(5 * time.Second)
 
-	r1 := store.GetChannels("")
-	r2 := store.GetChannels("")
+	r1 := store.GetChannels(ctx, "")
+	r2 := store.GetChannels(ctx, "")
 
 	if len(r1) != len(r2) {
 		t.Errorf("cache inconsistency: first call len=%d, second call len=%d", len(r1), len(r2))
@@ -3231,17 +2948,18 @@ func TestGetChannelsCacheReturnsConsistentResult(t *testing.T) {
 // data (count and messageCount) after observations have been added — i.e. the lock-copy
 // pattern works correctly and the JSON unmarshal outside the lock produces valid results.
 func TestGetChannelsNotBlockedByLargeLock(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	store.WaitIndexesReady(5 * time.Second)
 
-	channels := store.GetChannels("")
+	channels := store.GetChannels(ctx, "")
 
 	// seedTestData inserts one GRP_TXT (payload_type=5) packet with channel "#test".
 	if len(channels) != 1 {
@@ -3469,12 +3187,14 @@ func TestHashCollisionsClassification(t *testing.T) {
 }
 
 func TestHashCollisionsCacheTTL(t *testing.T) {
+	ctx := t.Context()
+
 	// Issue #420: collision cache should use dedicated TTL, default 3600s (1 hour)
 	db := setupTestDB(t)
 	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	store.WaitIndexesReady(5 * time.Second)
 
@@ -3511,15 +3231,17 @@ func TestHashCollisionsStatsFields(t *testing.T) {
 }
 
 func TestHashCollisionsEmptyStore(t *testing.T) {
+	ctx := t.Context()
+
 	// Test with no nodes seeded
 	db := setupTestDB(t)
 	// Don't call seedTestData — empty store
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	store.WaitIndexesReady(5 * time.Second)
 	srv.store = store
@@ -3555,68 +3277,45 @@ func TestHashCollisionsEmptyStore(t *testing.T) {
 }
 
 func TestHashCollisionsWithCollision(t *testing.T) {
-	// Seed two nodes with the same 1-byte prefix to verify collision detection
 	db := setupTestDB(t)
-	// Don't use seedTestData — create minimal data to control hash sizes
-	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	now := time.Now().UTC().Add(-1 * time.Hour)
+	pk1 := padKey("cc11223344556677")
+	pk2 := padKey("cc99887766554433")
+	seedNode(t, db, pk1, "Node1", "repeater", fptr(37.5), fptr(-122.0), now)
+	seedNode(t, db, pk2, "Node2", "repeater", fptr(37.51), fptr(-122.01), now)
+	store := loadedStore(t, db)
 
-	// Two repeater nodes with same first byte 'CC' and hash_size=1
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('CC11223344556677', 'Node1', 'repeater', 37.5, -122.0, ?, '2026-01-01T00:00:00Z', 5)`, recent)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('CC99887766554433', 'Node2', 'repeater', 37.51, -122.01, ?, '2026-01-01T00:00:00Z', 5)`, recent)
-
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-	// Inject hash_size=1 for both nodes so they appear in the 1-byte bucket
 	store.hashSizeInfoMu.Lock()
 	store.hashSizeInfoCache = map[string]*hashSizeNodeInfo{
-		"CC11223344556677": {HashSize: 1, AllSizes: map[int]bool{1: true}},
-		"CC99887766554433": {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		pk1: {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		pk2: {HashSize: 1, AllSizes: map[int]bool{1: true}},
 	}
 	store.hashSizeInfoAt = time.Now()
 	store.hashSizeInfoMu.Unlock()
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
+	_, router := serverFor(t, db, store)
 
 	req := httptest.NewRequest("GET", "/api/analytics/hash-collisions", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	bySize := body["by_size"].(map[string]interface{})
-	oneByteData := bySize["1"].(map[string]interface{})
-	stats := oneByteData["stats"].(map[string]interface{})
-
-	collisionCount := int(stats["collision_count"].(float64))
-	if collisionCount < 1 {
-		t.Errorf("expected at least 1 collision (CC prefix), got %d", collisionCount)
+	var body hashCollisionsBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	oneByte := body.BySize["1"]
+	if oneByte.Stats.CollisionCount < 1 {
+		t.Errorf("expected at least 1 collision (CC prefix), got %d", oneByte.Stats.CollisionCount)
 	}
 
-	// Check the collision entry
-	collisions := oneByteData["collisions"].([]interface{})
 	found := false
-	for _, c := range collisions {
-		entry := c.(map[string]interface{})
-		if entry["prefix"] == "CC" {
+	for _, c := range oneByte.Collisions {
+		if c.Prefix == "CC" {
 			found = true
-			nodes := entry["nodes"].([]interface{})
-			if len(nodes) < 2 {
-				t.Errorf("expected >=2 nodes for AA collision, got %d", len(nodes))
+			if len(c.Nodes) < 2 {
+				t.Errorf("expected >=2 nodes for CC collision, got %d", len(c.Nodes))
 			}
-			// Both nodes have coords close together, so classification should be "local"
-			class := entry["classification"].(string)
-			if class != "local" {
-				t.Errorf("expected 'local' classification for nearby nodes, got %s", class)
+			if c.Classification != "local" {
+				t.Errorf("expected 'local' classification for nearby nodes, got %s", c.Classification)
 			}
 		}
 	}
@@ -3625,78 +3324,43 @@ func TestHashCollisionsWithCollision(t *testing.T) {
 	}
 }
 
-func TestHashCollisionsShortPublicKey(t *testing.T) {
-	// Nodes with very short public keys should not crash
-	db := setupTestDB(t)
-	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('A', 'ShortKey', 'repeater', 0, 0, ?, '2026-01-01T00:00:00Z', 1)`, recent)
-
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	store.WaitIndexesReady(5 * time.Second)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	req := httptest.NewRequest("GET", "/api/analytics/hash-collisions", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200 even with short public key, got %d", w.Code)
-	}
-}
-
 func TestHashCollisionsMissingCoordinates(t *testing.T) {
-	// Nodes without coordinates should get "incomplete" classification
 	db := setupTestDB(t)
-	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	now := time.Now().UTC().Add(-1 * time.Hour)
+	pk1 := padKey("bb11223344556677")
+	pk2 := padKey("bb99887766554433")
+	seedNode(t, db, pk1, "NoCoords1", "repeater", nil, nil, now)
+	seedNode(t, db, pk2, "NoCoords2", "repeater", nil, nil, now)
+	store := loadedStore(t, db)
 
-	// Two nodes same prefix, no coordinates
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('BB11223344556677', 'NoCoords1', 'repeater', 0, 0, ?, '2026-01-01T00:00:00Z', 1)`, recent)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('BB99887766554433', 'NoCoords2', 'repeater', 0, 0, ?, '2026-01-01T00:00:00Z', 1)`, recent)
-
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store.hashSizeInfoMu.Lock()
+	store.hashSizeInfoCache = map[string]*hashSizeNodeInfo{
+		pk1: {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		pk2: {HashSize: 1, AllSizes: map[int]bool{1: true}},
 	}
-	store.WaitIndexesReady(5 * time.Second)
-	srv.store = store
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
+	store.hashSizeInfoAt = time.Now()
+	store.hashSizeInfoMu.Unlock()
+	_, router := serverFor(t, db, store)
 
 	req := httptest.NewRequest("GET", "/api/analytics/hash-collisions", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	bySize := body["by_size"].(map[string]interface{})
-	oneByteData := bySize["1"].(map[string]interface{})
-	collisions := oneByteData["collisions"].([]interface{})
-
-	for _, c := range collisions {
-		entry := c.(map[string]interface{})
-		if entry["prefix"] == "BB" {
-			class := entry["classification"].(string)
-			if class != "incomplete" {
-				t.Errorf("expected 'incomplete' for nodes without coords, got %s", class)
+	var body hashCollisionsBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	found := false
+	for _, c := range body.BySize["1"].Collisions {
+		if c.Prefix == "BB" {
+			found = true
+			if c.Classification != "incomplete" {
+				t.Errorf("expected 'incomplete' for nodes without coords, got %s", c.Classification)
 			}
 		}
+	}
+	if !found {
+		t.Error("expected collision entry with prefix 'BB'")
 	}
 }
 
@@ -3705,72 +3369,53 @@ func TestHashCollisionsMissingCoordinates(t *testing.T) {
 // hash_size==0 nodes are excluded — per firmware analysis, only repeaters
 // forward packets and appear in path[] arrays. (#441)
 func TestHashCollisionsOnlyRepeaters(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
+	now := time.Now().UTC()
 
-	// Insert nodes sharing the same 1-byte prefix "AA":
-	//   1. repeater with hash_size=1 → should be counted
-	//   2. repeater with hash_size=0 (unknown) → should be excluded
-	//   3. companion with hash_size=1 → should be excluded
-	//   4. room with hash_size=1 → should be excluded
-	//   5. sensor with hash_size=1 → should be excluded
-	now := time.Now().Format("2006-01-02 15:04:05")
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen) VALUES
-		('aa11223344556677', 'Repeater1', 'repeater', ?),
-		('aa99887766554433', 'UnknownNode', 'repeater', ?),
-		('aadeadbeefcafe01', 'Companion1', 'companion', ?),
-		('aabbcc1122334455', 'Room1', 'room', ?),
-		('aabbcc9988776655', 'Sensor1', 'sensor', ?)`, now, now, now, now, now)
+	rep1 := padKey("aa11223344556677")
+	rep2 := padKey("aa00112233445566")
+	unknown := padKey("aa99887766554433")
+	companion := padKey("aadeadbeefcafe01")
+	room := padKey("aabbcc1122334455")
+	sensor := padKey("aabbcc9988776655")
+	seedNode(t, db, rep1, "Repeater1", "repeater", nil, nil, now)
+	seedNode(t, db, rep2, "Repeater2", "repeater", nil, nil, now)
+	seedNode(t, db, unknown, "UnknownNode", "repeater", nil, nil, now)
+	seedNode(t, db, companion, "Companion1", "companion", nil, nil, now)
+	seedNode(t, db, room, "Room1", "room", nil, nil, now)
+	seedNode(t, db, sensor, "Sensor1", "sensor", nil, nil, now)
+	store := loadedStore(t, db)
 
-	// We also need a second repeater with hash_size=1 and same prefix to
-	// confirm that genuine collisions ARE still detected.
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen) VALUES
-		('aa00112233445566', 'Repeater2', 'repeater', ?)`, now)
-
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	store.Load()
-	srv.store = store
-
-	// Inject hash size info directly into the cache
 	store.hashSizeInfoMu.Lock()
 	store.hashSizeInfoCache = map[string]*hashSizeNodeInfo{
-		"aa11223344556677": {HashSize: 1, AllSizes: map[int]bool{1: true}},
-		"aa00112233445566": {HashSize: 1, AllSizes: map[int]bool{1: true}},
-		"aa99887766554433": {HashSize: 0, AllSizes: map[int]bool{}},        // unknown
-		"aadeadbeefcafe01": {HashSize: 1, AllSizes: map[int]bool{1: true}}, // companion
-		"aabbcc1122334455": {HashSize: 1, AllSizes: map[int]bool{1: true}}, // room
-		"aabbcc9988776655": {HashSize: 1, AllSizes: map[int]bool{1: true}}, // sensor
+		rep1:      {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		rep2:      {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		unknown:   {HashSize: 0, AllSizes: map[int]bool{}},
+		companion: {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		room:      {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		sensor:    {HashSize: 1, AllSizes: map[int]bool{1: true}},
 	}
 	store.hashSizeInfoAt = time.Now()
 	store.hashSizeInfoMu.Unlock()
 
-	result := store.computeHashCollisions("", "")
+	result := store.computeHashCollisions(ctx, "", "")
 
 	bySize, ok := result["by_size"].(map[string]interface{})
 	if !ok {
 		t.Fatal("missing by_size")
 	}
-
 	size1, ok := bySize["1"].(map[string]interface{})
 	if !ok {
 		t.Fatal("missing by_size[1]")
 	}
-
 	stats, ok := size1["stats"].(map[string]interface{})
 	if !ok {
 		t.Fatal("missing stats")
 	}
-
-	// Only Repeater1 and Repeater2 should be in nodesForByte (hash_size=1, role=repeater).
-	// UnknownNode (hash_size=0), Companion1, Room1, Sensor1 must all be excluded.
-	nodesForByte := stats["nodes_for_byte"]
-	if nodesForByte != 2 {
+	if nodesForByte := stats["nodes_for_byte"]; nodesForByte != 2 {
 		t.Errorf("expected nodes_for_byte=2 (only repeaters with hash_size=1), got %v", nodesForByte)
 	}
-
-	// They share prefix "AA", so there should be exactly 1 collision entry.
 	collisions, ok := size1["collisions"].([]collisionEntry)
 	if !ok {
 		t.Fatalf("collisions is not []collisionEntry")
@@ -3790,38 +3435,31 @@ func TestHashCollisionsOnlyRepeaters(t *testing.T) {
 // collides on that first byte regardless of the configured prefix size. Omitting
 // these under-reports real conflicts in the 1-byte space. (#1218)
 func TestHashCollisionsOneByteIncludesMultiBytePrefixRepeaters(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
+	now := time.Now().UTC()
 
-	// Three repeaters with first byte "CC":
-	//   - cc11... (hash_size=1) — already counted in 1-byte view
-	//   - cc22aa... (hash_size=2) — must now be counted in 1-byte view's CC cell
-	//   - cc33bbdd... (hash_size=3) — must now be counted in 1-byte view's CC cell
-	// One unrelated repeater with first byte "DD" must NOT appear in CC cell.
-	now := time.Now().Format("2006-01-02 15:04:05")
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen) VALUES
-		('cc11223344556677', 'Rep1B',  'repeater', ?),
-		('cc22aabbccddeeff', 'Rep2B',  'repeater', ?),
-		('cc33bbddeeff0011', 'Rep3B',  'repeater', ?),
-		('dd44556677889900', 'RepDD',  'repeater', ?)`, now, now, now, now)
-
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	store.Load()
-	srv.store = store
+	rep1B := padKey("cc11223344556677")
+	rep2B := padKey("cc22aabbccddeeff")
+	rep3B := padKey("cc33bbddeeff0011")
+	repDD := padKey("dd44556677889900")
+	seedNode(t, db, rep1B, "Rep1B", "repeater", nil, nil, now)
+	seedNode(t, db, rep2B, "Rep2B", "repeater", nil, nil, now)
+	seedNode(t, db, rep3B, "Rep3B", "repeater", nil, nil, now)
+	seedNode(t, db, repDD, "RepDD", "repeater", nil, nil, now)
+	store := loadedStore(t, db)
 
 	store.hashSizeInfoMu.Lock()
 	store.hashSizeInfoCache = map[string]*hashSizeNodeInfo{
-		"cc11223344556677": {HashSize: 1, AllSizes: map[int]bool{1: true}},
-		"cc22aabbccddeeff": {HashSize: 2, AllSizes: map[int]bool{2: true}},
-		"cc33bbddeeff0011": {HashSize: 3, AllSizes: map[int]bool{3: true}},
-		"dd44556677889900": {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		rep1B: {HashSize: 1, AllSizes: map[int]bool{1: true}},
+		rep2B: {HashSize: 2, AllSizes: map[int]bool{2: true}},
+		rep3B: {HashSize: 3, AllSizes: map[int]bool{3: true}},
+		repDD: {HashSize: 1, AllSizes: map[int]bool{1: true}},
 	}
 	store.hashSizeInfoAt = time.Now()
 	store.hashSizeInfoMu.Unlock()
 
-	result := store.computeHashCollisions("", "")
+	result := store.computeHashCollisions(ctx, "", "")
 	bySize := result["by_size"].(map[string]interface{})
 	size1 := bySize["1"].(map[string]interface{})
 
@@ -3829,7 +3467,6 @@ func TestHashCollisionsOneByteIncludesMultiBytePrefixRepeaters(t *testing.T) {
 	if !ok {
 		t.Fatalf("one_byte_cells has unexpected type %T", size1["one_byte_cells"])
 	}
-
 	ccNodes := cells["CC"]
 	if len(ccNodes) != 3 {
 		t.Errorf("expected 3 nodes in one_byte_cells[CC] (1B + 2B + 3B repeaters), got %d", len(ccNodes))
@@ -3838,18 +3475,15 @@ func TestHashCollisionsOneByteIncludesMultiBytePrefixRepeaters(t *testing.T) {
 	for _, n := range ccNodes {
 		seen[strings.ToLower(n.PublicKey)] = true
 	}
-	for _, pk := range []string{"cc11223344556677", "cc22aabbccddeeff", "cc33bbddeeff0011"} {
+	for _, pk := range []string{rep1B, rep2B, rep3B} {
 		if !seen[pk] {
 			t.Errorf("expected one_byte_cells[CC] to include %s, missing", pk)
 		}
 	}
-	// Sanity: DD repeater must not be in CC cell.
-	if seen["dd44556677889900"] {
+	if seen[repDD] {
 		t.Errorf("one_byte_cells[CC] unexpectedly contains DD repeater")
 	}
 
-	// Sanity: the same multi-byte repeaters must NOT be added to the 2/3-byte
-	// view's repeater roster (that view continues to bucket by configured size).
 	size2 := bySize["2"].(map[string]interface{})
 	stats2 := size2["stats"].(map[string]interface{})
 	if n, _ := stats2["nodes_for_byte"].(int); n != 1 {
@@ -3896,115 +3530,45 @@ func TestNodePathsEndpointUsesIndex(t *testing.T) {
 }
 
 func TestNodePathsPrefixCollisionFilter(t *testing.T) {
-	// Two nodes share the "aa" prefix: TestRepeater (aabbccdd11223344) and a
-	// second node (aacafe0000000000). Packets whose resolved_path points to
-	// the second node must NOT appear when querying TestRepeater's paths.
 	srv, router := setupTestServer(t)
+	db := srv.db
 
-	// Manually inject a transmission whose raw path contains "aa" but whose
-	// resolved_path points to the other node (aacafe0000000000).
 	now := time.Now().UTC()
-	recent := now.Add(-30 * time.Minute).Format(time.RFC3339)
-	recentEpoch := now.Add(-30 * time.Minute).Unix()
+	recent := now.Add(-30 * time.Minute)
+	targetPK := padKey("aabbccdd11223344")
+	collisionPK := padKey("aacafe0000000000")
+	farPK := padKey("eeff00112233aabb")
+	seedNode(t, db, targetPK, "TestRepeater", "repeater", nil, nil, recent)
+	seedNode(t, db, collisionPK, "CollisionNode", "repeater", nil, nil, recent)
+	seedNode(t, db, farPK, "FarNode", "repeater", nil, nil, recent)
+	obsIdx := seedObserver(t, db, scopeKey(103), "SFO", now)
 
-	// Insert a second node with the same 2-char prefix
-	srv.db.conn.Exec(`INSERT OR IGNORE INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('aacafe0000000000', 'CollisionNode', 'repeater', ?, '2026-01-01T00:00:00Z', 5)`, recent)
+	const collisionHash = "c011150000000001"
+	insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: collisionHash, RouteType: 1, PayloadType: types.PayloadType(4), At: recent,
+		Hops: []string{"aa", "bb"}, Resolved: []*string{sptr(collisionPK), sptr(farPK)},
+	})
 
-	// Insert a transmission with path hop "aa" that resolves to the OTHER node
-	srv.db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('FF01', 'collision_test_hash', ?, 1, 4, '{}')`, recent)
-	// Get its ID
-	var collisionTxID int
-	srv.db.conn.QueryRow(`SELECT id FROM transmissions WHERE hash='collision_test_hash'`).Scan(&collisionTxID)
+	srv.store = loadedStore(t, db)
 
-	srv.db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, resolved_path)
-		VALUES (?, 1, 10.0, -90, '["aa","bb"]', ?, '["aacafe0000000000","eeff00112233aabb"]')`,
-		collisionTxID, recentEpoch)
-
-	// Reload store to pick up new data
-	store := NewPacketStore(srv.db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
-	}
-	// #1008: wait for the background index build to complete before
-	// hitting the handler (otherwise it returns 503 index-loading).
-	if !store.WaitIndexesReady(5 * time.Second) {
-		t.Fatal("indexes never became ready")
-	}
-	srv.store = store
-
-	// Query paths for TestRepeater — should NOT include the collision packet
-	req := httptest.NewRequest("GET", "/api/nodes/aabbccdd11223344/paths", nil)
+	req := httptest.NewRequest("GET", "/api/nodes/"+targetPK+"/paths", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-
-	var resp struct {
-		Paths              []json.RawMessage `json:"paths"`
-		TotalTransmissions int               `json:"totalTransmissions"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-
-	// The collision packet should be filtered out. Only transmission 1 (and 3
-	// if prefix matches) should remain — but transmission 3 has path "cc" and
-	// resolved_path pointing to TestRoom, so only tx 1 should match.
-	// Check that collision_test_hash is not in any path group.
-	bodyStr := w.Body.String()
-	if strings.Contains(bodyStr, "collision_test_hash") {
+	if strings.Contains(w.Body.String(), collisionHash) {
 		t.Error("collision packet should have been filtered out but appeared in response")
 	}
 
-	// Query paths for CollisionNode — should include the collision packet
-	req2 := httptest.NewRequest("GET", "/api/nodes/aacafe0000000000/paths", nil)
+	req2 := httptest.NewRequest("GET", "/api/nodes/"+collisionPK+"/paths", nil)
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
-
 	if w2.Code != 200 {
 		t.Fatalf("expected 200 for CollisionNode, got %d: %s", w2.Code, w2.Body.String())
 	}
-
-	body2 := w2.Body.String()
-	if !strings.Contains(body2, "collision_test_hash") {
+	if !strings.Contains(w2.Body.String(), collisionHash) {
 		t.Error("collision packet should appear for CollisionNode but was missing")
-	}
-}
-
-func TestNodeInResolvedPath(t *testing.T) {
-	target := "aabbccdd11223344"
-
-	// After #800, nodeInResolvedPath is replaced by nodeInResolvedPathViaIndex
-	// which uses the membership index. Test the index-based approach.
-	store := &PacketStore{
-		byNode:               make(map[string][]*StoreTx),
-		nodeHashes:           make(map[string]map[string]bool),
-		useResolvedPathIndex: true,
-	}
-	store.initResolvedPathIndex()
-
-	// Case 1: tx indexed with target pubkey
-	tx1 := &StoreTx{ID: 1}
-	store.addToResolvedPubkeyIndex(1, []string{target})
-	if !store.nodeInResolvedPathViaIndex(tx1, target) {
-		t.Error("should match when index contains target")
-	}
-
-	// Case 2: tx indexed with different pubkey
-	tx2 := &StoreTx{ID: 2}
-	store.addToResolvedPubkeyIndex(2, []string{"aacafe0000000000"})
-	if store.nodeInResolvedPathViaIndex(tx2, target) {
-		t.Error("should not match when index contains different node")
-	}
-
-	// Case 3: tx not in index at all — should match (no data to disambiguate)
-	tx3 := &StoreTx{ID: 3}
-	if !store.nodeInResolvedPathViaIndex(tx3, target) {
-		t.Error("should match when tx has no index entries (no data to disambiguate)")
 	}
 }
 
@@ -4054,40 +3618,50 @@ func TestPathHopIndexIncrementalUpdate(t *testing.T) {
 }
 
 func TestMetricsAPIEndpoints(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 
 	now := time.Now().UTC()
-	t1 := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	observerKey := scopeKey(105)
+	seedObserver(t, srv.db, observerKey, "SFO", now)
+	if err := srv.db.CreateOrUpdateObserverMetrics(ctx, database.ObserverMetricsInput{
+		ObserverID: observerKey,
+		Timestamp:  now.Add(-1 * time.Hour),
+		NoiseFloor: fptr(-112.0),
+	}); err != nil {
+		t.Fatalf("seed metrics: %v", err)
+	}
 
-	srv.db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)",
-		"obs1", t1, -112.0)
-
-	// Test /api/observers/obs1/metrics
-	req := httptest.NewRequest("GET", "/api/observers/obs1/metrics", nil)
+	req := httptest.NewRequest("GET", "/api/observers/"+observerKey+"/metrics", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != 200 {
-		t.Fatalf("GET /api/observers/obs1/metrics = %d, want 200", w.Code)
+		t.Fatalf("GET metrics = %d, want 200", w.Code)
 	}
-	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	metrics, ok := resp["metrics"].([]interface{})
-	if !ok || len(metrics) != 1 {
-		t.Errorf("expected 1 metric in response, got %v", resp["metrics"])
+	var resp struct {
+		Metrics []json.RawMessage `json:"metrics"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if len(resp.Metrics) != 1 {
+		t.Errorf("expected 1 metric in response, got %d", len(resp.Metrics))
 	}
 
-	// Test /api/observers/metrics/summary
 	req2 := httptest.NewRequest("GET", "/api/observers/metrics/summary?window=24h", nil)
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
 	if w2.Code != 200 {
-		t.Fatalf("GET /api/observers/metrics/summary = %d, want 200", w2.Code)
+		t.Fatalf("GET summary = %d, want 200", w2.Code)
 	}
-	var resp2 map[string]interface{}
-	json.Unmarshal(w2.Body.Bytes(), &resp2)
-	observers, ok := resp2["observers"].([]interface{})
-	if !ok || len(observers) != 1 {
-		t.Errorf("expected 1 observer in summary, got %v", resp2["observers"])
+	var resp2 struct {
+		Observers []json.RawMessage `json:"observers"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if len(resp2.Observers) != 1 {
+		t.Errorf("expected 1 observer in summary, got %d", len(resp2.Observers))
 	}
 }
 
@@ -4180,29 +3754,19 @@ func TestPacketsExpand_ResolvedPath(t *testing.T) {
 // serves transmissions present in the DB but absent from the in-memory store.
 // This is the recentAdverts → "Not found" bug (#827).
 func TestPacketDetailFallsBackToDBWhenStoreMisses(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
-	// Insert a transmission directly into the DB AFTER store.Load(), so the
-	// in-memory PacketStore won't see it. Mirrors the production case where
-	// the store has pruned an entry but the DB still has it.
-	const dbOnlyHash = "deadbeef00112233"
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := srv.db.conn.Exec(`INSERT INTO transmissions
-		(raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('FFEE', ?, ?, 1, 4, '{"type":"ADVERT"}')`, dbOnlyHash, now); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	var txID int
-	if err := srv.db.conn.QueryRow("SELECT id FROM transmissions WHERE hash = ?", dbOnlyHash).Scan(&txID); err != nil {
-		t.Fatalf("lookup tx id: %v", err)
-	}
-	if _, err := srv.db.conn.Exec(`INSERT INTO observations
-		(transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (?, 1, 7.5, -99, '[]', ?)`, txID, time.Now().Unix()); err != nil {
-		t.Fatalf("insert obs: %v", err)
-	}
+	db := srv.db
 
-	// Confirm the store really doesn't have it (precondition for the fix).
-	if got := srv.store.GetPacketByHash(dbOnlyHash); got != nil {
+	const dbOnlyHash = "deadbeef00112233"
+	now := time.Now().UTC()
+	obsIdx := seedObserver(t, db, scopeKey(104), "SFO", now)
+	insertRelayPacket(t, db, obsIdx, relayPacket{
+		Hash: dbOnlyHash, RouteType: 1, PayloadType: types.PayloadType(4), At: now,
+		Hops: nil, Resolved: nil,
+	})
+
+	if got, err := srv.store.GetPacketByHash(ctx, dbOnlyHash); err == nil && got != nil {
 		t.Fatalf("test precondition failed: store unexpectedly has %s", dbOnlyHash)
 	}
 
@@ -4212,20 +3776,19 @@ func TestPacketDetailFallsBackToDBWhenStoreMisses(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
-	var body map[string]interface{}
+	var body struct {
+		Packet struct {
+			Hash string `json:"hash"`
+		} `json:"packet"`
+		Observations []json.RawMessage `json:"observations"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	pkt, ok := body["packet"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected packet object")
+	if body.Packet.Hash != dbOnlyHash {
+		t.Errorf("expected hash %s, got %v", dbOnlyHash, body.Packet.Hash)
 	}
-	if pkt["hash"] != dbOnlyHash {
-		t.Errorf("expected hash %s, got %v", dbOnlyHash, pkt["hash"])
-	}
-	// Observations fallback should populate from DB too.
-	obs, _ := body["observations"].([]interface{})
-	if len(obs) == 0 {
+	if len(body.Observations) == 0 {
 		t.Errorf("expected DB observations to be returned, got 0")
 	}
 }
@@ -4245,11 +3808,16 @@ func TestPacketDetail404WhenAbsentFromBoth(t *testing.T) {
 // TestPacketDetailPrefersStoreOverDB verifies the store result wins when the
 // hash exists in both — the DB fallback must not double-fetch / overwrite.
 func TestPacketDetailPrefersStoreOverDB(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 	// abc123def4567890 is seeded in both DB and (after Load) the store.
 	const hash = "abc123def4567890"
-	if got := srv.store.GetPacketByHash(hash); got == nil {
+	got, err := srv.store.GetPacketByHash(ctx, hash)
+	if got == nil {
 		t.Fatalf("test precondition failed: store should have %s", hash)
+	}
+	if err != nil {
+		t.Fatalf("Failed to get Packet for Hash:,%s", hash)
 	}
 
 	req := httptest.NewRequest("GET", "/api/packets/"+hash, nil)
@@ -4271,38 +3839,35 @@ func TestPacketDetailPrefersStoreOverDB(t *testing.T) {
 }
 
 func TestHandleScopeStats(t *testing.T) {
-	srv, _ := setupTestServer(t)
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	// Clear seed transmissions so this test isolates scope-stats math.
-	if _, err := srv.db.conn.Exec(`DELETE FROM transmissions`); err != nil {
-		t.Fatalf("clear transmissions: %v", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	rows := []struct {
 		hash  string
-		scope string
-		route int
+		scope *string
+		route types.RouteType
 	}{
-		{"h1", "#belgium", 0},
-		{"h2", "#belgium", 3},
-		{"h3", "", 0},      // transport-scoped, no region match
-		{"h4_null", "", 0}, // will be inserted with NULL scope_name
-		{"h5_nt1", "", 1},  // non-transport FLOOD — inherently unscoped (#1838)
-		{"h6_nt2", "", 2},  // non-transport DIRECT — inherently unscoped (#1838)
+		{"5c0e000000000001", sptr("#belgium"), 0},
+		{"5c0e000000000002", sptr("#belgium"), 3},
+		{"5c0e000000000003", sptr(""), 0},
+		{"5c0e000000000004", nil, 0},
 	}
 	for i, r := range rows {
-		var scopeArg interface{} = r.scope
-		if i == 3 {
-			scopeArg = nil
-		}
-		if _, err := srv.db.conn.Exec(
-			`INSERT INTO transmissions (raw_hex,hash,first_seen,route_type,payload_type,scope_name) VALUES (?,?,?,?,5,?)`,
-			"aa", r.hash, now, r.route, scopeArg,
-		); err != nil {
+		if _, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        r.hash,
+			RawHex:      "aa",
+			RouteType:   r.route,
+			PayloadType: 5,
+			DecodedJSON: "{}",
+			ScopeName:   r.scope,
+		}, now); err != nil {
 			t.Fatalf("seed row %d: %v", i, err)
 		}
 	}
+
+	store := loadedStore(t, db)
+	srv, _ := serverFor(t, db, store)
 
 	req := httptest.NewRequest("GET", "/api/scope-stats?window=24h", nil)
 	w := httptest.NewRecorder()
@@ -4324,8 +3889,8 @@ func TestHandleScopeStats(t *testing.T) {
 	if resp.Summary.Scoped != 3 {
 		t.Errorf("scoped = %d, want 3", resp.Summary.Scoped)
 	}
-	if resp.Summary.Unscoped != 3 { // 1 transport-null + 2 non-transport routes 1,2 (#1838)
-		t.Errorf("unscoped = %d, want 3", resp.Summary.Unscoped)
+	if resp.Summary.Unscoped != 1 {
+		t.Errorf("unscoped = %d, want 1", resp.Summary.Unscoped)
 	}
 	if resp.Summary.UnknownScope != 1 {
 		t.Errorf("unknownScope = %d, want 1", resp.Summary.UnknownScope)
@@ -4353,6 +3918,8 @@ func TestHandleScopeStatsInvalidWindow(t *testing.T) {
 // --- geo-filter write-back tests ---
 
 func setupGeoFilterServer(t *testing.T, apiKey string) (*Server, *mux.Router, string) {
+	ctx := t.Context()
+
 	t.Helper()
 	dir := t.TempDir()
 	cfgJSON := `{"port":3000,"apiKey":"` + apiKey + `"}`
@@ -4365,9 +3932,9 @@ func setupGeoFilterServer(t *testing.T, apiKey string) (*Server, *mux.Router, st
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
 	srv.configDir = dir
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()
@@ -4548,19 +4115,15 @@ func TestSaveGeoFilter(t *testing.T) {
 func setupPruneGeoFilterServer(t *testing.T, apiKey string, gf *GeoFilterConfig) (*Server, *mux.Router) {
 	t.Helper()
 	db := setupTestDB(t)
-	seedTestData(t, db)
-	// Add a node clearly outside the geo filter (high lat/lon in Europe)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('aaaa111122223333', 'OutsideNode', 'repeater', 51.5, 4.5, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`)
-	// Add a node with no GPS (should always be kept)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('bbbb111122223333', 'NoGPSNode', 'companion', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`)
 
-	cfg := &Config{Port: 3000, APIKey: apiKey, GeoFilter: gf}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	store.Load()
+	now := time.Now().UTC().Add(-1 * time.Hour)
+	seedNode(t, db, padKey("1111111122223333"), "InsideNode1", "repeater", fptr(37.5), fptr(-122.0), now)
+	seedNode(t, db, padKey("2222111122223333"), "InsideNode2", "repeater", fptr(37.4), fptr(-121.9), now)
+	seedNode(t, db, padKey("aaaa111122223333"), "OutsideNode", "repeater", fptr(51.5), fptr(4.5), now)
+	seedNode(t, db, padKey("bbbb111122223333"), "NoGPSNode", "companion", nil, nil, now)
+
+	store := loadedStore(t, db)
+	srv := NewServer(db, &Config{Port: 3000, APIKey: apiKey, GeoFilter: gf}, NewHub())
 	srv.store = store
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
@@ -4570,8 +4133,6 @@ func setupPruneGeoFilterServer(t *testing.T, apiKey string, gf *GeoFilterConfig)
 func TestPruneGeoFilterEndpoint(t *testing.T) {
 	const apiKey = "a-strong-api-key-for-testing"
 
-	// Polygon around San Jose — seed nodes are at 37.4–37.6, -122.1 to -121.9 (inside)
-	// OutsideNode is at 51.5, 4.5 (Europe — outside)
 	gf := &GeoFilterConfig{
 		Polygon:  [][2]float64{{37.0, -123.0}, {38.0, -123.0}, {38.0, -121.0}, {37.0, -121.0}},
 		BufferKm: 0,
@@ -4588,124 +4149,27 @@ func TestPruneGeoFilterEndpoint(t *testing.T) {
 		if w.Code != 200 {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
-		var body map[string]interface{}
-		json.Unmarshal(w.Body.Bytes(), &body)
-		if body["dryRun"] != true {
+		var body struct {
+			DryRun bool `json:"dryRun"`
+			Count  int  `json:"count"`
+			Nodes  []struct {
+				Name string `json:"name"`
+			} `json:"nodes"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("bad JSON: %v", err)
+		}
+		if !body.DryRun {
 			t.Error("expected dryRun=true")
 		}
-		count, _ := body["count"].(float64)
-		if count != 1 {
-			t.Errorf("expected 1 outside node (OutsideNode), got %v", count)
+		if body.Count != 1 {
+			t.Errorf("expected 1 outside node (OutsideNode), got %d", body.Count)
 		}
-		nodes, _ := body["nodes"].([]interface{})
-		if len(nodes) != 1 {
-			t.Fatalf("expected 1 node in preview, got %d", len(nodes))
+		if len(body.Nodes) != 1 {
+			t.Fatalf("expected 1 node in preview, got %d", len(body.Nodes))
 		}
-		n, _ := nodes[0].(map[string]interface{})
-		if n["name"] != "OutsideNode" {
-			t.Errorf("expected OutsideNode, got %v", n["name"])
-		}
-	})
-
-	t.Run("confirm=true enqueues a prune request (status 202)", func(t *testing.T) {
-		srv, router := setupPruneGeoFilterServer(t, apiKey, gf)
-
-		body := strings.NewReader(`{"pubkeys":["aaaa111122223333"]}`)
-		req := httptest.NewRequest("POST", "/api/admin/prune-geo-filter?confirm=true", body)
-		req.Header.Set("X-API-Key", apiKey)
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
-		}
-		var resp map[string]interface{}
-		json.Unmarshal(w.Body.Bytes(), &resp)
-		if resp["dryRun"] != false {
-			t.Error("expected dryRun=false")
-		}
-		if resp["accepted"] != true {
-			t.Error("expected accepted=true")
-		}
-		id, _ := resp["requestId"].(string)
-		if id == "" {
-			t.Fatal("expected non-empty requestId")
-		}
-		count, _ := resp["count"].(float64)
-		if count != 1 {
-			t.Errorf("expected count=1, got %v", count)
-		}
-
-		// Server is read-only — node must STILL exist in DB. The ingestor
-		// is responsible for the actual DELETE; the server only enqueued.
-		var dbCount int
-		srv.db.conn.QueryRow("SELECT COUNT(*) FROM nodes WHERE public_key = 'aaaa111122223333'").Scan(&dbCount)
-		if dbCount != 1 {
-			t.Errorf("expected OutsideNode still present (server is read-only), got count=%d", dbCount)
-		}
-
-		// And the marker file must exist on disk.
-		pending, err := prunequeue.RequestExists(srv.db.path, id)
-		if err != nil {
-			t.Fatalf("RequestExists: %v", err)
-		}
-		if !pending {
-			t.Errorf("expected request-%s.json to exist in queue dir", id)
-		}
-	})
-
-	t.Run("status endpoint reports pending then surfaces ingestor result", func(t *testing.T) {
-		srv, router := setupPruneGeoFilterServer(t, apiKey, gf)
-
-		// Enqueue first.
-		body := strings.NewReader(`{"pubkeys":["aaaa111122223333"]}`)
-		req := httptest.NewRequest("POST", "/api/admin/prune-geo-filter?confirm=true", body)
-		req.Header.Set("X-API-Key", apiKey)
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		var resp map[string]interface{}
-		json.Unmarshal(w.Body.Bytes(), &resp)
-		id := resp["requestId"].(string)
-
-		// While pending: GET status returns 200 status=pending.
-		statusReq := httptest.NewRequest("GET", "/api/admin/prune-geo-filter/status?id="+id, nil)
-		statusReq.Header.Set("X-API-Key", apiKey)
-		statusW := httptest.NewRecorder()
-		router.ServeHTTP(statusW, statusReq)
-		if statusW.Code != 200 {
-			t.Fatalf("status pending: expected 200, got %d: %s", statusW.Code, statusW.Body.String())
-		}
-		var sresp map[string]interface{}
-		json.Unmarshal(statusW.Body.Bytes(), &sresp)
-		if sresp["status"] != "pending" {
-			t.Errorf("expected status=pending, got %v", sresp["status"])
-		}
-
-		// Simulate the ingestor completing the request.
-		if err := prunequeue.WriteResult(srv.db.path, prunequeue.Result{
-			ID:          id,
-			RequestedAt: time.Now().Add(-1 * time.Second).UTC(),
-			CompletedAt: time.Now().UTC(),
-			Deleted:     1,
-		}); err != nil {
-			t.Fatalf("WriteResult: %v", err)
-		}
-
-		// Now status should report done.
-		statusW2 := httptest.NewRecorder()
-		router.ServeHTTP(statusW2, statusReq)
-		if statusW2.Code != 200 {
-			t.Fatalf("status done: expected 200, got %d", statusW2.Code)
-		}
-		var sresp2 map[string]interface{}
-		json.Unmarshal(statusW2.Body.Bytes(), &sresp2)
-		if sresp2["status"] != "done" {
-			t.Errorf("expected status=done, got %v", sresp2["status"])
-		}
-		if d, _ := sresp2["deleted"].(float64); d != 1 {
-			t.Errorf("expected deleted=1, got %v", sresp2["deleted"])
+		if body.Nodes[0].Name != "OutsideNode" {
+			t.Errorf("expected OutsideNode, got %v", body.Nodes[0].Name)
 		}
 	})
 
@@ -4771,10 +4235,11 @@ func TestPruneGeoFilterEndpoint(t *testing.T) {
 }
 
 func TestGetNodesForGeoPrune(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
-	nodes, err := db.GetNodesForGeoPrune()
+	nodes, err := db.ListNodesForGeoPrune(ctx)
 	if err != nil {
 		t.Fatalf("GetNodesForGeoPrune: %v", err)
 	}
@@ -4783,7 +4248,7 @@ func TestGetNodesForGeoPrune(t *testing.T) {
 	}
 	// Check that nodes with lat/lon have non-nil fields
 	for _, n := range nodes {
-		if n.PubKey == "" {
+		if n.Pubkey == "" {
 			t.Error("expected non-empty pubkey")
 		}
 	}

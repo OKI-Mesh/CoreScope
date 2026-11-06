@@ -6,47 +6,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 // ngTestStore creates a minimal PacketStore with injected nodes and packets.
-func ngTestStore(nodes []nodeInfo, packets []*StoreTx) *PacketStore {
-	if nodes == nil {
-		nodes = []nodeInfo{}
+func ngTestStore(t testing.TB, nodes []nodeInfo, packets []*StoreTx) *PacketStore {
+	t.Helper()
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+
+	for _, n := range nodes {
+		rx := now
+		if !n.LastSeen.IsZero() {
+			rx = n.LastSeen
+		}
+		in := database.NodeInput{
+			PublicKey: n.PublicKey, Name: n.Name, Role: n.Role,
+			RxTime: rx, IngestNow: now,
+		}
+		if n.HasGPS {
+			lat, lon := n.Lat, n.Lon
+			in.Lat = &lat
+			in.Lon = &lon
+		}
+		mustCreateTestNode(t, ctx, db, in)
 	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+
 	if packets == nil {
 		packets = []*StoreTx{}
 	}
-	ps := &PacketStore{
-		packets:        packets,
-		byHash:         make(map[string]*StoreTx),
-		byTxID:         make(map[int]*StoreTx),
-		byObsID:        make(map[int]*StoreObs),
-		byObserver:     make(map[string][]*StoreObs),
-		byNode:         make(map[string][]*StoreTx),
-		nodeHashes:     make(map[string]map[string]bool),
-		byPayloadType:  make(map[int][]*StoreTx),
-		rfCache:        make(map[string]*cachedResult),
-		topoCache:      make(map[string]*cachedResult),
-		hashCache:      make(map[string]*cachedResult),
-		collisionCache: make(map[string]*cachedResult),
-		chanCache:      make(map[string]*cachedResult),
-		distCache:      make(map[string]*cachedResult),
-		subpathCache:   make(map[string]*cachedResult),
-		spIndex:        make(map[string]int),
-	}
-	ps.nodeCache = nodes
-	ps.nodePM = buildPrefixMap(nodes)
-	ps.nodeCacheTime = time.Now().Add(1 * time.Hour)
-	return ps
+	store.mu.Lock()
+	store.packets = packets
+	store.mu.Unlock()
+	return store
 }
 
-func ngIntPtr(v int) *int           { return &v }
-func ngFloatPtr(v float64) *float64 { return &v }
+func ngIntPtr(v types.PayloadType) *types.PayloadType { return &v }
+func ngFloatPtr(v float64) *float64                   { return &v }
 
-func ngMakeTx(id int, payloadType int, decodedJSON string, obs []*StoreObs) *StoreTx {
+func ngMakeTx(id int, payloadType types.PayloadType, decodedJSON string, obs []*StoreObs) *StoreTx {
 	tx := &StoreTx{
 		ID:           id,
 		PayloadType:  ngIntPtr(payloadType),
@@ -56,7 +64,7 @@ func ngMakeTx(id int, payloadType int, decodedJSON string, obs []*StoreObs) *Sto
 	return tx
 }
 
-func ngMakeObs(observerID, pathJSON, timestamp string, snr *float64) *StoreObs {
+func ngMakeObs(observerID string, pathJSON string, timestamp time.Time, snr *float64) *StoreObs {
 	return &StoreObs{
 		ObserverID: observerID,
 		PathJSON:   pathJSON,
@@ -71,14 +79,12 @@ func ngFromNodeJSON(pubkey string) string {
 }
 
 var now = time.Now()
-var nowStr = now.UTC().Format(time.RFC3339)
-var weekAgoStr = now.Add(-7 * 24 * time.Hour).UTC().Format(time.RFC3339)
-var monthAgoStr = now.Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+var monthAgo = now.Add(-30 * 24 * time.Hour).UTC()
 
 // ─── Tests ─────────────────────────────────────────────────────────────────────
 
 func TestBuildNeighborGraph_EmptyStore(t *testing.T) {
-	store := ngTestStore(nil, nil)
+	store := ngTestStore(t, nil, nil)
 	g := BuildFromStore(store)
 	if len(g.edges) != 0 {
 		t.Errorf("expected 0 edges, got %d", len(g.edges))
@@ -93,9 +99,9 @@ func TestBuildNeighborGraph_AdvertSingleHopPath(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa"]`, nowStr, ngFloatPtr(-10)),
+		ngMakeObs("obs00001", `["r1aa"]`, now, ngFloatPtr(-10)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	// Should have 2 edges: X↔R1 and Observer↔R1
@@ -140,9 +146,9 @@ func TestBuildNeighborGraph_AdvertMultiHopPath(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa","r2dd"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["r1aa","r2dd"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	edges := g.AllEdges()
@@ -176,9 +182,9 @@ func TestBuildNeighborGraph_AdvertZeroHop(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `[]`, nowStr, nil),
+		ngMakeObs("obs00001", `[]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	edges := g.AllEdges()
@@ -201,9 +207,9 @@ func TestBuildNeighborGraph_NonAdvertEmptyPath(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 2, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `[]`, nowStr, nil),
+		ngMakeObs("obs00001", `[]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	if len(g.edges) != 0 {
@@ -220,9 +226,9 @@ func TestBuildNeighborGraph_NonAdvertOnlyObserverEdge(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 2, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa","r2dd"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["r1aa","r2dd"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	edges := g.AllEdges()
@@ -243,9 +249,9 @@ func TestBuildNeighborGraph_NonAdvertSingleHop(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 2, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["r1aa"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	edges := g.AllEdges()
@@ -267,9 +273,9 @@ func TestBuildNeighborGraph_HashCollision(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["a3bb"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["a3bb"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	// Should have ambiguous edges
@@ -327,7 +333,7 @@ func TestBuildNeighborGraph_ConfidenceAutoResolve(t *testing.T) {
 	// X sends ADVERTs through N1, N2, N3
 	for _, nhop := range []string{"n111", "n222", "n333"} {
 		txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("obs00001", `["`+nhop+`"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["`+nhop+`"]`, now, nil),
 		}))
 		txID++
 	}
@@ -335,7 +341,7 @@ func TestBuildNeighborGraph_ConfidenceAutoResolve(t *testing.T) {
 	// CandidateA sends ADVERTs through N1, N2, N3
 	for _, nhop := range []string{"n111", "n222", "n333"} {
 		txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("a3001111"), []*StoreObs{
-			ngMakeObs("obs00001", `["`+nhop+`"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["`+nhop+`"]`, now, nil),
 		}))
 		txID++
 	}
@@ -344,12 +350,12 @@ func TestBuildNeighborGraph_ConfidenceAutoResolve(t *testing.T) {
 	// Need 3+ observations for confidence threshold.
 	for i := 0; i < 3; i++ {
 		txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("obs00001", `["a300"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["a300"]`, now, nil),
 		}))
 		txID++
 	}
 
-	store := ngTestStore(nodes, txs)
+	store := ngTestStore(t, nodes, txs)
 	g := BuildFromStore(store)
 
 	// The ambiguous edge X↔a300 should have been resolved to CandidateA
@@ -387,29 +393,29 @@ func TestBuildNeighborGraph_EqualScoresAmbiguous(t *testing.T) {
 
 	// X↔N1
 	txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["n111"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["n111"]`, now, nil),
 	}))
 	txID++
 
 	// Both candidates have same neighbor (N1)
 	txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("a3001111"), []*StoreObs{
-		ngMakeObs("obs00001", `["n111"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["n111"]`, now, nil),
 	}))
 	txID++
 	txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("a3002222"), []*StoreObs{
-		ngMakeObs("obs00001", `["n111"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["n111"]`, now, nil),
 	}))
 	txID++
 
 	// Ambiguous edge with 3+ observations
 	for i := 0; i < 3; i++ {
 		txs = append(txs, ngMakeTx(txID, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("obs00001", `["a300"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["a300"]`, now, nil),
 		}))
 		txID++
 	}
 
-	store := ngTestStore(nodes, txs)
+	store := ngTestStore(t, nodes, txs)
 	g := BuildFromStore(store)
 
 	// Should remain ambiguous
@@ -431,9 +437,9 @@ func TestBuildNeighborGraph_ObserverSelfEdgeGuard(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["obs0"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["obs0"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	// Check no self-edge for observer
@@ -451,9 +457,9 @@ func TestBuildNeighborGraph_OrphanPrefix(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["ff99"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["ff99"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	// Should have ambiguous edges with empty candidates.
@@ -516,11 +522,11 @@ func TestBuildNeighborGraph_CountAccumulation(t *testing.T) {
 	var txs []*StoreTx
 	for i := 0; i < 5; i++ {
 		txs = append(txs, ngMakeTx(i+1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("obs00001", `["r1aa"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["r1aa"]`, now, nil),
 		}))
 	}
 
-	store := ngTestStore(nodes, txs)
+	store := ngTestStore(t, nodes, txs)
 	g := BuildFromStore(store)
 
 	// Check count on X↔R1 edge
@@ -544,11 +550,11 @@ func TestBuildNeighborGraph_MultipleObservers(t *testing.T) {
 	}
 
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa"]`, nowStr, nil),
-		ngMakeObs("obs00002", `["r1aa"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["r1aa"]`, now, nil),
+		ngMakeObs("obs00002", `["r1aa"]`, now, nil),
 	})
 
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	for _, e := range g.AllEdges() {
@@ -573,10 +579,10 @@ func TestBuildNeighborGraph_TimeDecayOldObservations(t *testing.T) {
 	}
 
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa"]`, monthAgoStr, nil),
+		ngMakeObs("obs00001", `["r1aa"]`, monthAgo, nil),
 	})
 
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	for _, e := range g.AllEdges() {
@@ -600,9 +606,9 @@ func TestBuildNeighborGraph_ADVERTOnlyConstraint(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 2, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa","r2dd"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["r1aa","r2dd"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	for _, e := range g.AllEdges() {
@@ -642,9 +648,9 @@ func TestBuildNeighborGraph_AnonReqSingleHopPath(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 7, ngEphemeralPubKeyJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa"]`, nowStr, ngFloatPtr(-10)),
+		ngMakeObs("obs00001", `["r1aa"]`, now, ngFloatPtr(-10)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	edges := g.AllEdges()
@@ -688,9 +694,9 @@ func TestBuildNeighborGraph_ReqRespStillExcluded(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 2, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["r1aa"]`, nowStr, ngFloatPtr(-10)),
+		ngMakeObs("obs00001", `["r1aa"]`, now, ngFloatPtr(-10)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	for _, e := range g.AllEdges() {
@@ -715,9 +721,9 @@ func TestBuildNeighborGraph_AdvertPubKeyField(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs0000100112233445566778899001122334455667788990011223344556677", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngPubKeyJSON("99bf37abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234"), []*StoreObs{
-		ngMakeObs("obs0000100112233445566778899001122334455667788990011223344556677", `["r1"]`, nowStr, ngFloatPtr(-8.5)),
+		ngMakeObs("obs0000100112233445566778899001122334455667788990011223344556677", `["r1"]`, now, ngFloatPtr(-8.5)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStoreWithOptions(store, BuildOptions{
 		PathTrust: &packetpath.TrustConfig{MinHashBytesForMapping: 1},
 		MaxEdgeKm: DefaultMaxEdgeKm,
@@ -755,9 +761,9 @@ func TestBuildNeighborGraph_OneByteHashPrefixes(t *testing.T) {
 	}
 	// ADVERT from Originator with 1-byte path hop "c0"
 	tx := ngMakeTx(1, 4, ngPubKeyJSON("a3bbccdd00000000000000000000000000000000000000000000000000000003"), []*StoreObs{
-		ngMakeObs("obs1234500000000000000000000000000000000000000000000000000000004", `["c0"]`, nowStr, ngFloatPtr(-12)),
+		ngMakeObs("obs1234500000000000000000000000000000000000000000000000000000004", `["c0"]`, now, ngFloatPtr(-12)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStoreWithOptions(store, BuildOptions{
 		PathTrust: &packetpath.TrustConfig{MinHashBytesForMapping: 1},
 		MaxEdgeKm: DefaultMaxEdgeKm,
@@ -902,17 +908,17 @@ func BenchmarkBuildFromStore(b *testing.B) {
 	const numPackets = 1000
 	packets := make([]*StoreTx, 0, numPackets)
 	for i := 0; i < numPackets; i++ {
-		pt := 4 // ADVERT
+		pt := types.PayloadType(4) // ADVERT
 		packets = append(packets, &StoreTx{
 			ID:          i,
 			PayloadType: &pt,
 			DecodedJSON: `{"pubKey":"aaaa1111"}`,
 			Observations: []*StoreObs{
-				{ObserverID: "bbbb2222", PathJSON: `["cccc"]`, Timestamp: nowStr, SNR: ngFloatPtr(-5.0)},
+				{ObserverID: "bbbb2222", PathJSON: `["cccc"]`, Timestamp: now, SNR: ngFloatPtr(-5.0)},
 			},
 		})
 	}
-	store := ngTestStore(nodes, packets)
+	store := ngTestStore(b, nodes, packets)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -935,9 +941,9 @@ func TestBuildNeighborGraph_PathTrustExcludes1ByteHops(t *testing.T) {
 	}
 	// ADVERT with 1-byte path hop "cc" (hex length 2 = 1 byte).
 	tx := ngMakeTx(1, 4, ngPubKeyJSON("aaa0000100000000000000000000000000000000000000000000000000000003"), []*StoreObs{
-		ngMakeObs("obs00001000000000000000000000000000000000000000000000000000000004", `["cc"]`, nowStr, ngFloatPtr(-12)),
+		ngMakeObs("obs00001000000000000000000000000000000000000000000000000000000004", `["cc"]`, now, ngFloatPtr(-12)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 
 	// Threshold=2: 1-byte "cc" prefix excluded → no edges.
 	g := BuildFromStoreWithOptions(store, BuildOptions{
@@ -973,16 +979,16 @@ func TestBuildNeighborGraph_CountsByMode(t *testing.T) {
 	// Three ADVERTs from X observed at varying hash modes hitting R1.
 	txs := []*StoreTx{
 		ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("cccc3333", `["bb"]`, nowStr, nil), // 1-byte
+			ngMakeObs("cccc3333", `["bb"]`, now, nil), // 1-byte
 		}),
 		ngMakeTx(2, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("cccc3333", `["bbbb"]`, nowStr, nil), // 2-byte
+			ngMakeObs("cccc3333", `["bbbb"]`, now, nil), // 2-byte
 		}),
 		ngMakeTx(3, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("cccc3333", `["bbbb22"]`, nowStr, nil), // 3-byte
+			ngMakeObs("cccc3333", `["bbbb22"]`, now, nil), // 3-byte
 		}),
 	}
-	store := ngTestStore(nodes, txs)
+	store := ngTestStore(t, nodes, txs)
 	g := BuildFromStoreWithOptions(store, BuildOptions{
 		PathTrust: &packetpath.TrustConfig{MinHashBytesForMapping: 1},
 		MaxEdgeKm: DefaultMaxEdgeKm,

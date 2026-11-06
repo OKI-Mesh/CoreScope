@@ -9,12 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
-func mustExecDB(t *testing.T, db *DB, q string) {
+func mustExecDB(t *testing.T, db *database.DB, q string, args ...any) {
 	t.Helper()
-	if _, err := db.conn.Exec(q); err != nil {
+	if _, err := db.SQL().ExecContext(t.Context(), q, args...); err != nil {
 		t.Fatalf("exec %q: %v", q, err)
 	}
 }
@@ -54,7 +57,9 @@ func TestAreaEntryParsing(t *testing.T) {
 }
 
 func TestGetNodePubkeysInArea_Polygon(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	s := &Server{db: db}
+	t.Cleanup(func() { db.Close() })
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-inside', 50.85, 4.35)`)
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-outside', 48.0, 4.35)`)
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-nogps', NULL, NULL)`)
@@ -64,7 +69,7 @@ func TestGetNodePubkeysInArea_Polygon(t *testing.T) {
 		Label:   "Belgium",
 		Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}},
 	}
-	pks, err := db.GetNodePubkeysInArea(entry)
+	pks, err := s.nodePubkeysInArea(t.Context(), entry)
 	if err != nil {
 		t.Fatalf("GetNodePubkeysInArea: %v", err)
 	}
@@ -74,48 +79,45 @@ func TestGetNodePubkeysInArea_Polygon(t *testing.T) {
 }
 
 // newTestStoreWithDB builds a minimal PacketStore wired to the given DB and config.
-func newTestStoreWithDB(t *testing.T, db *DB, cfg *Config) *PacketStore {
+func newTestStoreWithDB(t *testing.T, db *database.DB, cfg *Config) *PacketStore {
 	t.Helper()
-	return &PacketStore{
-		db:                 db,
-		config:             cfg,
-		byNode:             make(map[string][]*StoreTx),
-		byTxID:             make(map[int]*StoreTx),
-		byObsID:            make(map[int]*StoreObs),
-		byObserver:         make(map[string][]*StoreObs),
-		byHash:             make(map[string]*StoreTx),
-		byPayloadType:      make(map[int][]*StoreTx),
-		nodeHashes:         make(map[string]map[string]bool),
-		byPathHop:          make(map[string][]*StoreTx),
-		advertPubkeys:      make(map[string]int),
-		rfCache:            make(map[string]*cachedResult),
-		topoCache:          make(map[string]*cachedResult),
-		hashCache:          make(map[string]*cachedResult),
-		collisionCache:     make(map[string]*cachedResult),
-		chanCache:          make(map[string]*cachedResult),
-		distCache:          make(map[string]*cachedResult),
-		subpathCache:       make(map[string]*cachedResult),
-		regionObsCache:     make(map[string]map[string]bool),
-		areaNodeCache:      make(map[string]map[string]bool),
-		areaNodeCacheTimes: make(map[string]time.Time),
-		rfCacheTTL:         15 * time.Second,
+	ctx := t.Context()
+
+	store := newPacketStoreForTest(t, db)
+	if cfg != nil {
+		if cfg.SnapshotDir == "" {
+			cfg.SnapshotDir = t.TempDir()
+		}
+		store.config = cfg
 	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+
+	return store
 }
 
 func TestResolveAreaNodes_UnknownKey(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	t.Cleanup(func() { db.Close() })
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
 	}}
 	s := newTestStoreWithDB(t, db, cfg)
-	result := s.resolveAreaNodes("UNKNOWN")
+	result := s.resolveAreaNodes(ctx, "UNKNOWN")
 	if result != nil {
 		t.Errorf("want nil for unknown area, got %v", result)
 	}
 }
 
 func TestResolveAreaNodes_CacheHit(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	t.Cleanup(func() { db.Close() })
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk1', 50.85, 4.35)`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
@@ -123,7 +125,7 @@ func TestResolveAreaNodes_CacheHit(t *testing.T) {
 	}}
 	s := newTestStoreWithDB(t, db, cfg)
 
-	r1 := s.resolveAreaNodes("BEL")
+	r1 := s.resolveAreaNodes(ctx, "BEL")
 	if !r1["pk1"] {
 		t.Fatal("pk1 should be in area BEL on first call")
 	}
@@ -131,7 +133,7 @@ func TestResolveAreaNodes_CacheHit(t *testing.T) {
 	// Delete node so a live DB query would return nothing — second call must use cache.
 	mustExecDB(t, db, `DELETE FROM nodes WHERE public_key = 'pk1'`)
 
-	r2 := s.resolveAreaNodes("BEL")
+	r2 := s.resolveAreaNodes(ctx, "BEL")
 	if !r2["pk1"] {
 		t.Fatal("cache hit should still return pk1 after DB delete")
 	}
@@ -140,24 +142,25 @@ func TestResolveAreaNodes_CacheHit(t *testing.T) {
 // ingestAdvert adds a synthetic ADVERT packet to the store's in-memory packet list.
 func ingestAdvert(t *testing.T, s *PacketStore, hash, decodedJSON string) {
 	t.Helper()
-	pt := PayloadADVERT
+	pt := types.PayloadADVERT
 	tx := &StoreTx{
 		Hash:        hash,
-		FirstSeen:   "2026-01-01T00:00:00Z",
+		FirstSeen:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		PayloadType: &pt,
 		DecodedJSON: decodedJSON,
 	}
 	s.mu.Lock()
 	s.packets = append(s.packets, tx)
 	s.byHash[hash] = tx
-	s.byPayloadType[PayloadADVERT] = append(s.byPayloadType[PayloadADVERT], tx)
+	s.byPayloadType[pt] = append(s.byPayloadType[pt], tx)
 	s.mu.Unlock()
 }
 
 func TestFilterPacketsByArea(t *testing.T) {
-	db := setupTestDBv2(t)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('inside-node', 50.85, 4.35)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('outside-node', 48.0, 4.35)`)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	dbtest.NodeAt(t, db, "inside-node", 50.85, 4.35)
+	dbtest.NodeAt(t, db, "outside-node", 48.0, 4.35)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -167,14 +170,19 @@ func TestFilterPacketsByArea(t *testing.T) {
 	ingestAdvert(t, s, "hash-in", `{"public_key":"inside-node","name":"Inside"}`)
 	ingestAdvert(t, s, "hash-out", `{"public_key":"outside-node","name":"Outside"}`)
 
-	result := s.QueryPackets(PacketQuery{Limit: 50, Area: "BEL"})
+	result, err := s.QueryPackets(ctx, database.PacketQuery{Limit: 50, Area: "BEL"})
+	if err != nil {
+		t.Fatalf("QueryPackets(): %v", err)
+	}
 	if result.Total != 1 {
 		t.Fatalf("want 1 packet in area BEL, got %d (packets: %v)", result.Total, result.Packets)
 	}
 }
 
 func TestAnalyticsRFAreaFilter(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	t.Cleanup(func() { db.Close() })
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('inside-node', 50.85, 4.35)`)
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('outside-node', 48.0, 4.35)`)
 
@@ -186,7 +194,7 @@ func TestAnalyticsRFAreaFilter(t *testing.T) {
 	ingestAdvert(t, s, "hash-rf-in", `{"public_key":"inside-node","name":"Inside"}`)
 	ingestAdvert(t, s, "hash-rf-out", `{"public_key":"outside-node","name":"Outside"}`)
 
-	result := s.GetAnalyticsRF("", "BEL")
+	result := s.GetAnalyticsRF(ctx, "", "BEL")
 	if result == nil {
 		t.Fatal("GetAnalyticsRF returned nil")
 	}
@@ -199,23 +207,25 @@ func TestAnalyticsRFAreaFilter(t *testing.T) {
 // ingestChanMsg adds a synthetic GRP_TXT packet with the given sender pubkey and channel hash.
 func ingestChanMsg(t *testing.T, s *PacketStore, hash, senderPK string, chanHash int) {
 	t.Helper()
-	pt := PayloadGRP_TXT
+	pt := types.PayloadGRP_TXT
 	decodedJSON := fmt.Sprintf(`{"public_key":%q,"channelHash":%d}`, senderPK, chanHash)
 	tx := &StoreTx{
 		Hash:        hash,
-		FirstSeen:   "2026-01-01T00:00:00Z",
+		FirstSeen:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		PayloadType: &pt,
 		DecodedJSON: decodedJSON,
 	}
 	s.mu.Lock()
 	s.packets = append(s.packets, tx)
 	s.byHash[hash] = tx
-	s.byPayloadType[PayloadGRP_TXT] = append(s.byPayloadType[PayloadGRP_TXT], tx)
+	s.byPayloadType[pt] = append(s.byPayloadType[pt], tx)
 	s.mu.Unlock()
 }
 
 func TestAnalyticsChannelsAreaFilter(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	t.Cleanup(func() { db.Close() })
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('inside-node', 50.85, 4.35)`)
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('outside-node', 48.0, 4.35)`)
 
@@ -228,8 +238,8 @@ func TestAnalyticsChannelsAreaFilter(t *testing.T) {
 	ingestChanMsg(t, s, "ch-in", "inside-node", 42)
 	ingestChanMsg(t, s, "ch-out", "outside-node", 99)
 
-	unfiltered := s.GetAnalyticsChannels("", "")
-	filtered := s.GetAnalyticsChannels("", "BEL")
+	unfiltered := s.GetAnalyticsChannels(ctx, "", "")
+	filtered := s.GetAnalyticsChannels(ctx, "", "BEL")
 	if filtered == nil {
 		t.Fatal("GetAnalyticsChannels returned nil")
 	}
@@ -244,13 +254,15 @@ func TestAnalyticsChannelsAreaFilter(t *testing.T) {
 }
 
 func TestGetNodePubkeysInArea_BoundingBox(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	s := &Server{db: db}
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('in', 50.5, 5.0)`)
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('out', 52.0, 5.0)`)
 
 	minLat, maxLat, minLon, maxLon := 50.0, 51.5, 2.5, 6.4
 	entry := AreaEntry{LatMin: &minLat, LatMax: &maxLat, LonMin: &minLon, LonMax: &maxLon}
-	pks, err := db.GetNodePubkeysInArea(entry)
+	pks, err := s.nodePubkeysInArea(t.Context(), entry)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
@@ -260,7 +272,8 @@ func TestGetNodePubkeysInArea_BoundingBox(t *testing.T) {
 }
 
 func TestHandleConfigAreas(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
 		"MST": {Label: "Maastricht"},
@@ -297,7 +310,8 @@ func TestHandleConfigAreas(t *testing.T) {
 }
 
 func TestHandleConfigAreasEmpty(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
 	cfg := &Config{}
 
 	r := mux.NewRouter()
@@ -321,7 +335,9 @@ func TestResolveAreaNodes_CalledBeforeRLock(t *testing.T) {
 	// Verify resolveAreaNodes doesn't deadlock when called concurrently with writes.
 	// This test catches the anti-pattern where resolveAreaNodes (which does a DB
 	// query) is called while holding s.mu.RLock().
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	t.Cleanup(func() { db.Close() })
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('n1', 50.85, 4.35)`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
@@ -335,14 +351,16 @@ func TestResolveAreaNodes_CalledBeforeRLock(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.GetBulkHealth(10, "", "BEL")
+			s.GetBulkHealth(ctx, 10, "", "BEL")
 		}()
 	}
 	wg.Wait() // must not deadlock
 }
 
 func TestResolveAreaNodes_PerKeyTTL(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	t.Cleanup(func() { db.Close() })
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('bel-node', 50.85, 4.35)`)
 	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('nl-node', 52.4, 4.9)`)
 
@@ -353,11 +371,11 @@ func TestResolveAreaNodes_PerKeyTTL(t *testing.T) {
 	s := newTestStoreWithDB(t, db, cfg)
 
 	// Populate both keys into cache.
-	r1 := s.resolveAreaNodes("BEL")
+	r1 := s.resolveAreaNodes(ctx, "BEL")
 	if !r1["bel-node"] {
 		t.Fatal("bel-node should be in BEL")
 	}
-	r2 := s.resolveAreaNodes("NL")
+	r2 := s.resolveAreaNodes(ctx, "NL")
 	if !r2["nl-node"] {
 		t.Fatal("nl-node should be in NL")
 	}
@@ -366,34 +384,43 @@ func TestResolveAreaNodes_PerKeyTTL(t *testing.T) {
 	mustExecDB(t, db, `DELETE FROM nodes`)
 
 	// BEL cache should still be warm (not evicted by NL query).
-	r3 := s.resolveAreaNodes("BEL")
+	r3 := s.resolveAreaNodes(ctx, "BEL")
 	if !r3["bel-node"] {
 		t.Error("BEL cache was evicted by NL query (global TTL bug)")
 	}
 	// NL cache should still be warm too.
-	r4 := s.resolveAreaNodes("NL")
+	r4 := s.resolveAreaNodes(ctx, "NL")
 	if !r4["nl-node"] {
 		t.Error("NL cache was evicted unexpectedly")
 	}
 }
 
 func TestGetBulkHealth_AreaBypassesCap(t *testing.T) {
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
 
-	// Insert 510 nodes inside BEL — all at 50.85, 4.35.
 	for i := 0; i < 510; i++ {
-		mustExecDB(t, db, fmt.Sprintf(
-			`INSERT INTO nodes (public_key, lat, lon) VALUES ('node-%d', 50.85, 4.35)`, i,
-		))
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: fmt.Sprintf("%064x", i+1),
+			Name:      fmt.Sprintf("node-%d", i),
+			Role:      "repeater",
+			Lat:       fptr(50.85),
+			Lon:       fptr(4.35),
+			RxTime:    now,
+			IngestNow: now,
+		}); err != nil {
+			t.Fatalf("seed node %d: %v", i, err)
+		}
 	}
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
 	}}
-	s := newTestStoreWithDB(t, db, cfg)
+	s := loadedStore(t, db)
+	s.config = cfg
 
-	// With limit=10 but area filter active, all 510 in-area nodes must be returned.
-	result := s.GetBulkHealth(10, "", "BEL")
+	result := s.GetBulkHealth(ctx, 10, "", "BEL")
 	if len(result) != 510 {
 		t.Errorf("want 510 nodes from area BEL, got %d", len(result))
 	}

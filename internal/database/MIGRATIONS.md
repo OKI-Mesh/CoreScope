@@ -67,7 +67,6 @@ Separate from goose entirely. Tracks long-running, one-shot **background jobs** 
 
 - `internal/database`'s own test files (`*_test.go`, `package database`) use small local unexported helpers (`newMemoryDB`, `execRaw`, etc.) defined in `testhelpers_test.go`. They must never import `internal/testfixtures` — since `testfixtures` imports `database`, that would be a cycle.
 - `internal/testfixtures` is for `cmd/ingestor` and `cmd/server` tests only. It provides `NewDB`, `Observer`, `Transmission`, `Observation`, `InsertNode` — each takes a plain path string and opens its own short-lived connection, so callers don't need to juggle a shared `*sql.DB`.
-- `database.SeedUnstampedSchema(db, version)` applies real migration SQL up to and including `version`, without touching `goose_db_version` — simulating a pre-existing raw-SQL database for baseline-detection tests. It filters the embedded migrations filesystem to only files at or below `version` before running, since goose's `Up`/`UpTo` do not respect a version ceiling when `WithDisableVersioning` is set (with no tracking table to consult, it has no way to know what's "already applied," so it runs every file it finds unless the filesystem itself is filtered).
 
 ## Troubleshooting
 

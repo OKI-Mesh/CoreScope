@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -35,7 +36,7 @@ import (
 type analyticsRecomputer struct {
 	name     string
 	interval time.Duration
-	compute  func() interface{}
+	compute  func(context.Context) interface{}
 
 	cache        atomic.Value // holds interface{} — the latest snapshot
 	stop         chan struct{}
@@ -60,7 +61,7 @@ type analyticsRecomputer struct {
 
 // newAnalyticsRecomputer constructs an unstarted recomputer.
 // interval must be > 0; compute must be non-nil.
-func newAnalyticsRecomputer(name string, interval time.Duration, compute func() interface{}) *analyticsRecomputer {
+func newAnalyticsRecomputer(ctx context.Context, name string, interval time.Duration, compute func(ctx context.Context) interface{}) *analyticsRecomputer {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -79,7 +80,7 @@ func newAnalyticsRecomputer(name string, interval time.Duration, compute func() 
 // a background goroutine to periodically recompute.
 //
 // Calling Start multiple times is a no-op after the first call.
-func (r *analyticsRecomputer) Start() {
+func (r *analyticsRecomputer) Start(ctx context.Context) {
 	r.startOnce.Do(func() {
 		// Issue #1659 (#1688 munger #2): record warmup-start before
 		// the first compute, so IsWarmingUp_1659's fallback timeout
@@ -88,21 +89,21 @@ func (r *analyticsRecomputer) Start() {
 		r.noteWarmupStart_1659()
 		// Initial synchronous compute — first read must NOT see empty
 		// or uninitialized data (acceptance criterion #1240).
-		r.runOnce()
-		go r.loop()
+		r.runOnce(ctx)
+		go r.loop(ctx)
 	})
 }
 
-func (r *analyticsRecomputer) loop() {
+func (r *analyticsRecomputer) loop(ctx context.Context) {
 	defer close(r.done)
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-t.C:
-			r.runOnce()
+			r.runOnce(ctx)
 		case ack := <-r.recomputeReq:
-			r.runOnce()
+			r.runOnce(ctx)
 			t.Reset(r.interval)
 			close(ack)
 		case <-r.stop:
@@ -111,7 +112,7 @@ func (r *analyticsRecomputer) loop() {
 	}
 }
 
-func (r *analyticsRecomputer) runOnce() {
+func (r *analyticsRecomputer) runOnce(ctx context.Context) {
 	if r.compute == nil {
 		return
 	}
@@ -128,7 +129,7 @@ func (r *analyticsRecomputer) runOnce() {
 	// even if the load finishes while it runs.
 	ready := r.warmupReadyGateOpen_1659()
 	t0 := time.Now()
-	result := r.compute()
+	result := r.compute(ctx)
 	r.lastComputeNs.Store(int64(time.Since(t0)))
 	r.computeRuns.Add(1)
 	if result != nil {
@@ -278,7 +279,7 @@ func (s *PacketStore) analyticsRecomputersLocked() []*analyticsRecomputer {
 // Returns a stop closure that signals all goroutines and blocks until
 // they exit. Safe to call once per PacketStore. Idempotent if called
 // multiple times (subsequent calls return the first stop closure).
-func (s *PacketStore) StartAnalyticsRecomputers(defaultInterval time.Duration, overrides ...AnalyticsRecomputeIntervals) func() {
+func (s *PacketStore) StartAnalyticsRecomputers(ctx context.Context, defaultInterval time.Duration, overrides ...AnalyticsRecomputeIntervals) func() {
 	if defaultInterval <= 0 {
 		defaultInterval = 5 * time.Minute
 	}
@@ -297,55 +298,55 @@ func (s *PacketStore) StartAnalyticsRecomputers(defaultInterval time.Duration, o
 	// Each recomputer wraps the underlying compute* function with the
 	// default arguments. We use computeAnalytics* (not GetAnalytics*) to
 	// bypass the legacy TTL cache layer — the recomputer IS the cache.
-	s.recompTopology = newAnalyticsRecomputer(
+	s.recompTopology = newAnalyticsRecomputer(ctx,
 		"topology", pickInterval(ov.Topology, defaultInterval),
-		func() interface{} { return s.computeAnalyticsTopology("", "", TimeWindow{}) },
+		func(context.Context) interface{} { return s.computeAnalyticsTopology(ctx, "", "", TimeWindow{}) },
 	)
-	s.recompRF = newAnalyticsRecomputer(
+	s.recompRF = newAnalyticsRecomputer(ctx,
 		"rf", pickInterval(ov.RF, defaultInterval),
-		func() interface{} { return s.computeAnalyticsRF("", "", TimeWindow{}) },
+		func(context.Context) interface{} { return s.computeAnalyticsRF(ctx, "", "", TimeWindow{}) },
 	)
-	s.recompDistance = newAnalyticsRecomputer(
+	s.recompDistance = newAnalyticsRecomputer(ctx,
 		"distance", pickInterval(ov.Distance, defaultInterval),
-		func() interface{} { return s.computeAnalyticsDistance("", "") },
+		func(context.Context) interface{} { return s.computeAnalyticsDistance(ctx, "", "") },
 	)
-	s.recompChannels = newAnalyticsRecomputer(
+	s.recompChannels = newAnalyticsRecomputer(ctx,
 		"channels", pickInterval(ov.Channels, defaultInterval),
-		func() interface{} { return s.computeAnalyticsChannels("", "", TimeWindow{}) },
+		func(context.Context) interface{} { return s.computeAnalyticsChannels(ctx, "", "", TimeWindow{}) },
 	)
-	s.recompHashCollisions = newAnalyticsRecomputer(
+	s.recompHashCollisions = newAnalyticsRecomputer(ctx,
 		"hash-collisions", pickInterval(ov.HashCollisions, defaultInterval),
-		func() interface{} { return s.computeHashCollisions("", "") },
+		func(context.Context) interface{} { return s.computeHashCollisions(ctx, "", "") },
 	)
-	s.recompHashSizes = newAnalyticsRecomputer(
+	s.recompHashSizes = newAnalyticsRecomputer(ctx,
 		"hash-sizes", pickInterval(ov.HashSizes, defaultInterval),
-		func() interface{} { return s.computeAnalyticsHashSizesWithCapability("", "") },
+		func(context.Context) interface{} { return s.computeAnalyticsHashSizesWithCapability(ctx, "", "") },
 	)
-	s.recompRoles = newAnalyticsRecomputer(
+	s.recompRoles = newAnalyticsRecomputer(ctx,
 		"roles", pickInterval(ov.Roles, defaultInterval),
-		func() interface{} { return s.computeAnalyticsRoles() },
+		func(context.Context) interface{} { return s.computeAnalyticsRoles(ctx) },
 	)
-	s.recompObserversClockSkew = newAnalyticsRecomputer(
+	s.recompObserversClockSkew = newAnalyticsRecomputer(ctx,
 		"observers-clock-skew", pickInterval(ov.ObserversClockSkew, defaultInterval),
-		func() interface{} { return s.computeObserverCalibrations() },
+		func(context.Context) interface{} { return s.computeObserverCalibrations() },
 	)
-	s.recompNodesClockSkew = newAnalyticsRecomputer(
+	s.recompNodesClockSkew = newAnalyticsRecomputer(ctx,
 		"nodes-clock-skew", pickInterval(ov.NodesClockSkew, defaultInterval),
-		func() interface{} { return s.computeFleetClockSkew() },
+		func(context.Context) interface{} { return s.computeFleetClockSkew(ctx) },
 	)
-	s.recompRetransmissions = newAnalyticsRecomputer(
+	s.recompRetransmissions = newAnalyticsRecomputer(ctx,
 		"retransmissions", defaultInterval,
-		func() interface{} {
-			return s.computeRetransmissionPressure("", TimeWindow{}, retransmissionDefaultBucket)
+		func(context.Context) interface{} {
+			return s.computeRetransmissionPressure(ctx, "", TimeWindow{}, retransmissionDefaultBucket)
 		},
 	)
 	// Feeds the node-health "Heard By" card. Not an analytics endpoint,
 	// but it has the same shape: one full pass over the store that no
 	// request can afford, served from an atomic snapshot. See
 	// direct_heard.go.
-	s.recompDirectHeard = newAnalyticsRecomputer(
+	s.recompDirectHeard = newAnalyticsRecomputer(ctx,
 		"direct-heard", defaultInterval,
-		func() interface{} {
+		func(context.Context) interface{} {
 			idx := s.computeDirectHeard()
 			s.publishDirectHeard(idx)
 			return idx
@@ -375,7 +376,7 @@ func (s *PacketStore) StartAnalyticsRecomputers(defaultInterval time.Duration, o
 	s.recompRetransmissions.setWarmupReadyGate_1659(loadedGate)
 
 	for _, rc := range all {
-		rc.Start()
+		rc.Start(ctx)
 	}
 
 	// main.go starts the recomputers at the first load chunk, so the

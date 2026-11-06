@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestRunMultibyteCapPersist_AppliesSnapshot enforces the architectural
@@ -21,44 +22,37 @@ import (
 // asserts the relocated path: snapshot in → UPDATEs out, from the
 // ingestor side.
 func TestRunMultibyteCapPersist_AppliesSnapshot(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
+	store := newTestStore(t) // registers cleanup; no defer store.Close()
+	ctx := t.Context()
+	snapdir := filepath.Join(t.TempDir(), "queue")
+	store.snapshotDir = snapdir
 
-	// Seed two nodes: one active, one inactive.
-	if _, err := store.db.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('aa11', 'Alpha', 'repeater', '2026-01-01T00:00:00Z', 0, NULL)`); err != nil {
-		t.Fatalf("seed nodes: %v", err)
+	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
+	             VALUES ($1, $2, 'repeater', $3, $4, $5, $6)`
+	seed := func(key, name, lastSeen string, sup types.MultibyteSupport, evid *string, inactive bool) {
+		t.Helper()
+		if n := testExec(t, store, ins, key, name, lastSeen, int(sup), evid, inactive); n != 1 {
+			t.Fatalf("seed %s: inserted %d rows, want 1", key, n)
+		}
 	}
-	if _, err := store.db.Exec(`INSERT INTO inactive_nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('bb22', 'Bravo', 'repeater', '2025-01-01T00:00:00Z', 0, NULL)`); err != nil {
-		t.Fatalf("seed inactive_nodes: %v", err)
-	}
-	// Seed a third node already confirmed, then send "unknown" for it —
-	// the data-destruction guard must keep its DB value.
-	if _, err := store.db.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('cc33', 'Charlie', 'repeater', '2026-01-01T00:00:00Z', 2, 'advert')`); err != nil {
-		t.Fatalf("seed cc33: %v", err)
-	}
+	advert := "advert"
+	seed("aa11", "Alpha", "2026-01-01T00:00:00Z", types.MultibyteUnknown, nil, false)
+	seed("bb22", "Bravo", "2025-01-01T00:00:00Z", types.MultibyteUnknown, nil, true) // inactive flag, same table
+	seed("cc33", "Charlie", "2026-01-01T00:00:00Z", types.MultibyteConfirmed, &advert, false)
 
 	snap := mbcapqueue.Snapshot{Entries: []mbcapqueue.Entry{
 		{PublicKey: "aa11", Status: "confirmed", Evidence: "advert"},
 		{PublicKey: "bb22", Status: "suspected", Evidence: "path"},
-		{PublicKey: "cc33", Status: "unknown"}, // must NOT overwrite
+		{PublicKey: "cc33", Status: "unknown"}, // must be skipped, cc33 stays confirmed
 	}}
-	if err := mbcapqueue.WriteSnapshot(dbPath, snap); err != nil {
+	if err := mbcapqueue.WriteSnapshot(snapdir, snap); err != nil {
 		t.Fatalf("WriteSnapshot: %v", err)
 	}
-	// Sanity: snapshot file landed where we expect.
-	if _, err := os.Stat(filepath.Join(filepath.Dir(dbPath), mbcapqueue.QueueDirName, mbcapqueue.SnapshotFileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(snapdir, mbcapqueue.SnapshotFileName)); err != nil {
 		t.Fatalf("snapshot not on disk: %v", err)
 	}
 
-	stats, err := store.RunMultibyteCapPersist()
+	stats, err := store.RunMultibyteCapPersist(ctx)
 	if err != nil {
 		t.Fatalf("RunMultibyteCapPersist: %v", err)
 	}
@@ -68,50 +62,34 @@ func TestRunMultibyteCapPersist_AppliesSnapshot(t *testing.T) {
 	if stats.Skipped != 1 {
 		t.Errorf("Skipped = %d, want 1 (the unknown entry)", stats.Skipped)
 	}
-	if stats.UpdatedActive == 0 {
-		t.Errorf("UpdatedActive = 0; expected aa11 to be updated in nodes")
-	}
-	if stats.UpdatedInactive == 0 {
-		t.Errorf("UpdatedInactive = 0; expected bb22 to be updated in inactive_nodes")
+	if stats.Updated != 2 {
+		t.Errorf("Updated = %d, want 2 (aa11 and bb22; the inactive flag does not matter)", stats.Updated)
 	}
 
-	// Verify DB state.
-	var sup int
-	var evid string
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='aa11'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read aa11: %v", err)
+	check := func(key string, wantSup types.MultibyteSupport, wantEvid string) {
+		t.Helper()
+		var sup int
+		var evid string
+		mustScan(t, testRow(t, store,
+			"SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key=$1", key), &sup, &evid)
+		if sup != int(wantSup) || evid != wantEvid {
+			t.Errorf("%s: sup=%d evid=%q, want sup=%d evid=%q", key, sup, evid, wantSup, wantEvid)
+		}
 	}
-	if sup != 2 || evid != "advert" {
-		t.Errorf("aa11 after persist: sup=%d evid=%q, want sup=2 evid=advert", sup, evid)
-	}
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM inactive_nodes WHERE public_key='bb22'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read bb22: %v", err)
-	}
-	if sup != 1 || evid != "path" {
-		t.Errorf("bb22 after persist: sup=%d evid=%q, want sup=1 evid=path", sup, evid)
-	}
-	// Data-destruction guard: cc33 must still be confirmed=2/'advert'.
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='cc33'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read cc33: %v", err)
-	}
-	if sup != 2 || evid != "advert" {
-		t.Errorf("cc33 was overwritten by unknown entry: sup=%d evid=%q, want sup=2 evid=advert", sup, evid)
-	}
+	check("aa11", types.MultibyteConfirmed, "advert")
+	check("bb22", types.MultibyteSuspected, "path")
+	check("cc33", types.MultibyteConfirmed, "advert") // data-destruction guard
 }
 
 // TestRunMultibyteCapPersist_NoSnapshot_NoOp verifies that the persist
 // step is a clean no-op when the server hasn't written a snapshot yet
 // (cold start; the analytics cycle takes ~15s after server boot).
 func TestRunMultibyteCapPersist_NoSnapshot_NoOp(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
 
-	stats, err := store.RunMultibyteCapPersist()
+	store := newTestStore(t)
+	defer store.Close()
+	ctx := t.Context()
+	stats, err := store.RunMultibyteCapPersist(ctx)
 	if err != nil {
 		t.Fatalf("RunMultibyteCapPersist (no snapshot): %v", err)
 	}
@@ -131,72 +109,52 @@ func TestRunMultibyteCapPersist_NoSnapshot_NoOp(t *testing.T) {
 // can later consume — so a column-rename or snapshot-version drift
 // would slip past.
 func TestRunMultibyteCapPersist_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	store := newTestStore(t)
+	ctx := t.Context()
+	store.snapshotDir = filepath.Join(t.TempDir(), "queue")
 
-	// --- Phase 1: open store, seed, persist snapshot ---
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	if _, err := store.db.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('dd44', 'Delta', 'repeater', '2026-01-01T00:00:00Z', 0, NULL)`); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := store.db.Exec(`INSERT INTO inactive_nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('ee55', 'Echo', 'companion', '2025-12-01T00:00:00Z', 0, NULL)`); err != nil {
-		t.Fatalf("seed inactive: %v", err)
-	}
+	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
+	             VALUES ($1, $2, $3, $4, 0, NULL, $5)`
+	testExec(t, store, ins, "dd44", "Delta", "repeater", "2026-01-01T00:00:00Z", false)
+	testExec(t, store, ins, "ee55", "Echo", "companion", "2025-12-01T00:00:00Z", true)
+
 	snap := mbcapqueue.Snapshot{Entries: []mbcapqueue.Entry{
 		{PublicKey: "dd44", Status: "confirmed", Evidence: "advert"},
 		{PublicKey: "ee55", Status: "suspected", Evidence: "path"},
 	}}
-	if err := mbcapqueue.WriteSnapshot(dbPath, snap); err != nil {
+	if err := mbcapqueue.WriteSnapshot(store.snapshotDir, snap); err != nil {
 		t.Fatalf("WriteSnapshot: %v", err)
 	}
-	if _, err := store.RunMultibyteCapPersist(); err != nil {
+	if _, err := store.RunMultibyteCapPersist(ctx); err != nil {
 		t.Fatalf("RunMultibyteCapPersist: %v", err)
 	}
-	// Capture original state for round-trip comparison.
-	var origActiveSup, origInactiveSup int
-	var origActiveEvid, origInactiveEvid string
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='dd44'`).Scan(&origActiveSup, &origActiveEvid); err != nil {
-		t.Fatalf("read dd44 (phase1): %v", err)
-	}
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM inactive_nodes WHERE public_key='ee55'`).Scan(&origInactiveSup, &origInactiveEvid); err != nil {
-		t.Fatalf("read ee55 (phase1): %v", err)
-	}
-	// Simulate restart: drop the in-memory Store entirely.
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
 
-	// --- Phase 2: fresh Store, verify persisted state survived ---
-	store2, err := OpenStore(dbPath)
+	check := func(key string, wantSup types.MultibyteSupport, wantEvid string, wantInactive bool) {
+		t.Helper()
+		var sup int
+		var evid string
+		var inactive bool
+		mustScan(t, testRow(t, store,
+			`SELECT multibyte_sup, COALESCE(multibyte_evidence,''), inactive FROM nodes WHERE public_key=$1`, key),
+			&sup, &evid, &inactive)
+		if sup != int(wantSup) || evid != wantEvid || inactive != wantInactive {
+			t.Errorf("%s: sup=%d evid=%q inactive=%v, want sup=%d evid=%q inactive=%v",
+				key, sup, evid, inactive, wantSup, wantEvid, wantInactive)
+		}
+	}
+	check("dd44", types.MultibyteConfirmed, "advert", false)
+	check("ee55", types.MultibyteSuspected, "path", true) // persist must not touch the inactive flag
+
+	// Second run with the same snapshot changes nothing (idempotent).
+	stats, err := store.RunMultibyteCapPersist(ctx)
 	if err != nil {
-		t.Fatalf("OpenStore (reopen): %v", err)
+		t.Fatalf("second run: %v", err)
 	}
-	defer store2.Close()
-	var sup int
-	var evid string
-	if err := store2.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='dd44'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read dd44 after reopen: %v", err)
+	if stats.Updated != 0 {
+		t.Errorf("second run Updated = %d, want 0", stats.Updated)
 	}
-	if sup != origActiveSup || evid != origActiveEvid {
-		t.Errorf("dd44 after restart: sup=%d evid=%q, want sup=%d evid=%q", sup, evid, origActiveSup, origActiveEvid)
-	}
-	if sup != 2 || evid != "advert" {
-		t.Errorf("dd44 after restart: sup=%d evid=%q, want sup=2 evid=advert", sup, evid)
-	}
-	if err := store2.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM inactive_nodes WHERE public_key='ee55'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read ee55 after reopen: %v", err)
-	}
-	if sup != origInactiveSup || evid != origInactiveEvid {
-		t.Errorf("ee55 after restart: sup=%d evid=%q, want sup=%d evid=%q", sup, evid, origInactiveSup, origInactiveEvid)
-	}
-	if sup != 1 || evid != "path" {
-		t.Errorf("ee55 after restart: sup=%d evid=%q, want sup=1 evid=path", sup, evid)
-	}
+	check("dd44", types.MultibyteConfirmed, "advert", false)
+	check("ee55", types.MultibyteSuspected, "path", true)
 }
 
 // TestRunMultibyteCapPersist_MalformedSnapshot verifies the persist
@@ -209,19 +167,17 @@ func TestRunMultibyteCapPersist_RoundTrip(t *testing.T) {
 // truncated / wrong-version — RunMultibyteCapPersist error vs.
 // silent-skip behavior is unspecified by any test."
 func TestRunMultibyteCapPersist_MalformedSnapshot(t *testing.T) {
+	store := newTestStore(t)
+	ctx := t.Context()
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store.snapshotDir = filepath.Join(dir, "queue")
 	defer store.Close()
 
 	// Write malformed JSON directly to the snapshot path.
-	if err := mbcapqueue.EnsureDir(dbPath); err != nil {
+	if err := mbcapqueue.EnsureDir(store.snapshotDir); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
 	}
-	if err := os.WriteFile(mbcapqueue.SnapshotPath(dbPath), []byte("not-json{{{garbage"), 0o644); err != nil {
+	if err := os.WriteFile(mbcapqueue.SnapshotPath(store.snapshotDir), []byte("not-json{{{garbage"), 0o644); err != nil {
 		t.Fatalf("write malformed: %v", err)
 	}
 
@@ -234,7 +190,7 @@ func TestRunMultibyteCapPersist_MalformedSnapshot(t *testing.T) {
 			t.Fatalf("RunMultibyteCapPersist panicked on malformed snapshot: %v", r)
 		}
 	}()
-	stats, err := store.RunMultibyteCapPersist()
+	stats, err := store.RunMultibyteCapPersist(ctx)
 	if err != nil {
 		t.Errorf("RunMultibyteCapPersist on malformed snapshot returned error %v; expected silent no-op", err)
 	}
@@ -246,66 +202,6 @@ func TestRunMultibyteCapPersist_MalformedSnapshot(t *testing.T) {
 	}
 }
 
-// TestRunMultibyteCapPersist_MissingSchemaColumns verifies the persist
-// path is a clean no-op on a legacy DB that doesn't yet have the
-// multibyte_sup / multibyte_evidence columns. Currently the persist
-// would fail at tx.Prepare with a SQL error; the audit requires it
-// skip cleanly instead.
-//
-// We simulate a legacy DB by DROPping the columns post-migration
-// (SQLite ≥ 3.35 supports ALTER TABLE DROP COLUMN).
-func TestRunMultibyteCapPersist_MissingSchemaColumns(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
-
-	// Drop the multibyte columns from both tables to simulate a legacy DB.
-	for _, stmt := range []string{
-		`ALTER TABLE nodes DROP COLUMN multibyte_sup`,
-		`ALTER TABLE nodes DROP COLUMN multibyte_evidence`,
-		`ALTER TABLE inactive_nodes DROP COLUMN multibyte_sup`,
-		`ALTER TABLE inactive_nodes DROP COLUMN multibyte_evidence`,
-	} {
-		if _, err := store.db.Exec(stmt); err != nil {
-			t.Fatalf("simulate legacy DB (%q): %v", stmt, err)
-		}
-	}
-	// Confirm columns are gone.
-	if columnExists(t, store.db, "nodes", "multibyte_sup") {
-		t.Fatalf("setup failed: nodes.multibyte_sup still present after DROP")
-	}
-
-	snap := mbcapqueue.Snapshot{Entries: []mbcapqueue.Entry{
-		{PublicKey: "ff66", Status: "confirmed", Evidence: "advert"},
-	}}
-	if err := mbcapqueue.WriteSnapshot(dbPath, snap); err != nil {
-		t.Fatalf("WriteSnapshot: %v", err)
-	}
-
-	logBuf := captureLogs(t)
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("RunMultibyteCapPersist panicked on legacy DB: %v", r)
-		}
-	}()
-	stats, err := store.RunMultibyteCapPersist()
-	if err != nil {
-		t.Errorf("RunMultibyteCapPersist on legacy DB returned error %v; expected clean skip", err)
-	}
-	if stats.UpdatedActive != 0 || stats.UpdatedInactive != 0 {
-		t.Errorf("expected zero writes on legacy DB, got %+v", stats)
-	}
-	// Must explicitly detect + log the skip — otherwise the "clean skip"
-	// is silent UPDATE-affected-zero accident, not defensive code.
-	if !logContains(logBuf, "legacy") && !logContains(logBuf, "schema") && !logContains(logBuf, "multibyte_sup") {
-		t.Errorf("expected explicit log on missing schema columns; got: %s", logBuf.String())
-	}
-}
-
 // TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown is the
 // data-destruction guard the PR claims to enforce: a snapshot Entry
 // with status="unknown" must NEVER overwrite an existing "confirmed"
@@ -313,22 +209,21 @@ func TestRunMultibyteCapPersist_MissingSchemaColumns(t *testing.T) {
 // `if sup == 0 { continue }` guard in multibyte_persist.go — this
 // test must fail.
 func TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown(t *testing.T) {
+	store := newTestStore(t)
+	ctx := t.Context()
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	store, err := OpenStore(dbPath)
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store.snapshotDir = filepath.Join(dir, "queue")
 	defer store.Close()
 
-	// Seed a confirmed active node and a suspected inactive node.
-	if _, err := store.db.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('gg77', 'Golf', 'repeater', '2026-01-01T00:00:00Z', 2, 'advert')`); err != nil {
-		t.Fatalf("seed gg77: %v", err)
+	activeNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
+		VALUES ('gg77', 'Golf', 'repeater', '2026-01-01T00:00:00Z', 2, 'advert', FALSE)`)
+	if activeNodeCount != 1 {
+		t.Fatalf("expected 1 active node, got %d", activeNodeCount)
 	}
-	if _, err := store.db.Exec(`INSERT INTO inactive_nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('hh88', 'Hotel', 'companion', '2025-12-01T00:00:00Z', 1, 'path')`); err != nil {
-		t.Fatalf("seed hh88: %v", err)
+	inactiveNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
+		VALUES ('hh88', 'Hotel', 'companion', '2025-12-01T00:00:00Z', 1, 'path', TRUE)`)
+	if inactiveNodeCount != 1 {
+		t.Fatalf("expected 1 inactive node, got %d", inactiveNodeCount)
 	}
 
 	// Snapshot has only "unknown" entries for both — must skip both.
@@ -336,11 +231,11 @@ func TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown(t *testing.T) {
 		{PublicKey: "gg77", Status: "unknown"},
 		{PublicKey: "hh88", Status: "unknown"},
 	}}
-	if err := mbcapqueue.WriteSnapshot(dbPath, snap); err != nil {
+	if err := mbcapqueue.WriteSnapshot(store.snapshotDir, snap); err != nil {
 		t.Fatalf("WriteSnapshot: %v", err)
 	}
 
-	stats, err := store.RunMultibyteCapPersist()
+	stats, err := store.RunMultibyteCapPersist(ctx)
 	if err != nil {
 		t.Fatalf("RunMultibyteCapPersist: %v", err)
 	}
@@ -354,15 +249,12 @@ func TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown(t *testing.T) {
 	// Verify the existing values were NOT clobbered.
 	var sup int
 	var evid string
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='gg77'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read gg77: %v", err)
-	}
+	mustScan(t, testRow(t, store, `SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='gg77'`), &sup, &evid)
 	if sup != 2 || evid != "advert" {
 		t.Errorf("gg77 was clobbered by unknown snapshot: sup=%d evid=%q, want sup=2 evid=advert", sup, evid)
 	}
-	if err := store.db.QueryRow(`SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM inactive_nodes WHERE public_key='hh88'`).Scan(&sup, &evid); err != nil {
-		t.Fatalf("read hh88: %v", err)
-	}
+
+	mustScan(t, testRow(t, store, `SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='hh88'`), &sup, &evid)
 	if sup != 1 || evid != "path" {
 		t.Errorf("hh88 was clobbered by unknown snapshot: sup=%d evid=%q, want sup=1 evid=path", sup, evid)
 	}

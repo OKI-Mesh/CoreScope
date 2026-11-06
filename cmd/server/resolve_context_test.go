@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // ─── resolveWithContext unit tests ─────────────────────────────────────────────
@@ -160,15 +163,28 @@ func TestGeoDistApprox_Ordering(t *testing.T) {
 // ─── handleResolveHops enhanced response (API tests) ───────────────────────────
 
 func TestResolveHopsAPI_UniquePrefix(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
-	_ = srv
 
-	// Insert a unique node
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"ff11223344", "UniqueNode", 37.0, -122.0, "repeater")
-	srv.store.InvalidateNodeCache()
+	now := time.Now().UTC()
+	uniquePK := "ff1122" + strings.Repeat("0", 58)
 
-	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=ff11223344", nil)
+	if err := srv.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: uniquePK,
+		Name:      "UniqueNode",
+		Role:      "repeater",
+		Lat:       fptr(37.0),
+		Lon:       fptr(-122.0),
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if err := srv.store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=ff1122", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -177,7 +193,7 @@ func TestResolveHopsAPI_UniquePrefix(t *testing.T) {
 		t.Fatalf("bad JSON: %v", err)
 	}
 
-	hr, ok := result.Resolved["ff11223344"]
+	hr, ok := result.Resolved["ff1122"]
 	if !ok {
 		t.Fatal("expected hop in resolved map")
 	}
@@ -187,27 +203,47 @@ func TestResolveHopsAPI_UniquePrefix(t *testing.T) {
 }
 
 func TestResolveHopsAPI_AmbiguousNoContext(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"ee1aaaaaaa", "Node-E1", 37.0, -122.0, "repeater")
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"ee1bbbbbbb", "Node-E2", 38.0, -121.0, "repeater")
-	srv.store.InvalidateNodeCache()
+	now := time.Now().UTC()
+	for _, n := range []struct {
+		pk       string
+		name     string
+		lat, lon float64
+	}{
+		{"ee1aaaaaaa" + strings.Repeat("0", 54), "Node-E1", 37.0, -122.0},
+		{"ee1bbbbbbb" + strings.Repeat("0", 54), "Node-E2", 38.0, -121.0},
+	} {
+		if err := srv.db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: n.pk,
+			Name:      n.name,
+			Role:      "repeater",
+			Lat:       fptr(n.lat),
+			Lon:       fptr(n.lon),
+			RxTime:    now,
+			IngestNow: now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", n.name, err)
+		}
+	}
+	if err := srv.store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=ee1", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
 	var result ResolveHopsResponse
-	json.Unmarshal(rr.Body.Bytes(), &result)
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
 
 	hr := result.Resolved["ee1"]
 	if hr == nil {
 		t.Fatal("expected hop in resolved map")
 	}
-	// With both candidates having GPS and no affinity context, the resolver
-	// picks the GPS-preferred candidate → confidence is "gps_preference".
 	if hr.Confidence != "gps_preference" {
 		t.Fatalf("expected gps_preference, got %s", hr.Confidence)
 	}
@@ -222,36 +258,56 @@ func TestResolveHopsAPI_AmbiguousNoContext(t *testing.T) {
 }
 
 func TestResolveHopsAPI_WithAffinityContext(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"dd1aaaaaaa", "Node-D1", 37.0, -122.0, "repeater")
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"dd1bbbbbbb", "Node-D2", 38.0, -121.0, "repeater")
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"c0c0c0c0c0", "Context", 37.1, -122.1, "repeater")
+	now := time.Now().UTC()
+	d1PK := "dd1aaaaaaa" + strings.Repeat("0", 54)
+	d2PK := "dd1bbbbbbb" + strings.Repeat("0", 54)
+	contextPK := "c0c0c0c0c0" + strings.Repeat("0", 54)
 
-	// Invalidate node cache so the PM includes newly inserted nodes.
-	srv.store.cacheMu.Lock()
-	srv.store.nodeCacheTime = time.Time{}
-	srv.store.cacheMu.Unlock()
+	for _, n := range []struct {
+		pk       string
+		name     string
+		lat, lon float64
+	}{
+		{d1PK, "Node-D1", 37.0, -122.0},
+		{d2PK, "Node-D2", 38.0, -121.0},
+		{contextPK, "Context", 37.1, -122.1},
+	} {
+		if err := srv.db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: n.pk,
+			Name:      n.name,
+			Role:      "repeater",
+			Lat:       fptr(n.lat),
+			Lon:       fptr(n.lon),
+			RxTime:    now,
+			IngestNow: now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", n.name, err)
+		}
+	}
+	if err := srv.store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
-	// Build graph with strong affinity
 	graph := NewNeighborGraph()
 	for i := 0; i < 100; i++ {
-		graph.upsertEdge("c0c0c0c0c0", "dd1aaaaaaa", "dd1", "obs1", nil, time.Now())
+		graph.upsertEdge(contextPK, d1PK, "dd1", scopeKey(72), nil, time.Now())
 	}
 	graph.builtAt = time.Now()
 	srv.neighborMu.Lock()
 	srv.neighborGraph = graph
 	srv.neighborMu.Unlock()
 
-	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=dd1&from_node=c0c0c0c0c0", nil)
+	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=dd1&from_node="+contextPK, nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
 	var result ResolveHopsResponse
-	json.Unmarshal(rr.Body.Bytes(), &result)
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
 
 	hr := result.Resolved["dd1"]
 	if hr == nil {
@@ -260,11 +316,10 @@ func TestResolveHopsAPI_WithAffinityContext(t *testing.T) {
 	if hr.Confidence != "neighbor_affinity" {
 		t.Fatalf("expected neighbor_affinity, got %s", hr.Confidence)
 	}
-	if hr.BestCandidate == nil || *hr.BestCandidate != "dd1aaaaaaa" {
-		t.Fatalf("expected bestCandidate dd1aaaaaaa, got %v", hr.BestCandidate)
+	if hr.BestCandidate == nil || *hr.BestCandidate != d1PK {
+		t.Fatalf("expected bestCandidate %s, got %v", d1PK, hr.BestCandidate)
 	}
 
-	// Verify affinity scores present
 	hasScore := false
 	for _, c := range hr.Candidates {
 		if c.AffinityScore != nil && *c.AffinityScore > 0 {
@@ -277,24 +332,44 @@ func TestResolveHopsAPI_WithAffinityContext(t *testing.T) {
 }
 
 func TestResolveHopsAPI_ResponseShape(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 
-	srv.db.conn.Exec("INSERT OR IGNORE INTO nodes (public_key, name, lat, lon, role) VALUES (?, ?, ?, ?, ?)",
-		"bb1aaaaaaa", "Node-B1", 37.0, -122.0, "repeater")
+	now := time.Now().UTC()
+	if err := srv.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: "bb1aaaaaaa" + strings.Repeat("0", 54),
+		Name:      "Node-B1",
+		Role:      "repeater",
+		Lat:       fptr(37.0),
+		Lon:       fptr(-122.0),
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if err := srv.store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	req := httptest.NewRequest("GET", "/api/resolve-hops?hops=bb1a", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
 	var raw map[string]json.RawMessage
-	json.Unmarshal(rr.Body.Bytes(), &raw)
-
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
 	if _, ok := raw["resolved"]; !ok {
 		t.Fatal("missing 'resolved' key")
 	}
 
-	var resolved map[string]map[string]interface{}
-	json.Unmarshal(raw["resolved"], &resolved)
+	var resolved map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(raw["resolved"], &resolved); err != nil {
+		t.Fatalf("bad resolved JSON: %v", err)
+	}
+	if len(resolved) == 0 {
+		t.Fatal("expected at least one resolved hop")
+	}
 
 	for _, hr := range resolved {
 		if _, ok := hr["confidence"]; !ok {
@@ -305,5 +380,3 @@ func TestResolveHopsAPI_ResponseShape(t *testing.T) {
 		}
 	}
 }
-
-// ─── Helpers used only in this test file ───────────────────────────────────────

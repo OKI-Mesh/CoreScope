@@ -19,80 +19,54 @@ package main
 // transmissions, not the FirstSeen of the first row in s.packets.
 
 import (
-	"database/sql"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// createTestDBReverseTime builds numTx transmissions whose ids run
-// 1..numTx ASC while first_seen runs newest..oldest (id=1 = newest).
-// This mirrors the freshen-fixture-shifted e2e DB exactly.
-func createTestDBReverseTime(tb testing.TB, dbPath string, numTx int) {
+// createTestDBReverseTime returns the connection string of a fresh migrated
+// database with numTx transmissions whose ids run 1..numTx ascending while
+// first_seen runs newest..oldest (id 1 = newest). Insertion order by id is the
+// reverse of time order: this proves Load() sorts by time, not by id.
+func createTestDBReverseTime(tb testing.TB, numTx int) string {
 	tb.Helper()
+	dsn := pgtest.NewDatabase(tb)
 
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	migrateConn, err := sql.Open("sqlite", dbPath)
+	db, err := database.OpenReadWrite(tb.Context(), dsn)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		tb.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
+	defer db.Close()
 
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		tb.Fatal(err)
-	}
-	defer conn.Close()
-
-	txStmt, err := conn.Prepare(`INSERT INTO transmissions
-		(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		tb.Fatalf("prepare transmissions insert: %v", err)
-	}
-	obsStmt, err := conn.Prepare(`INSERT INTO observations
-		(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		tb.Fatalf("prepare observations insert: %v", err)
-	}
-	defer txStmt.Close()
-	defer obsStmt.Close()
-
-	// id=1 is the NEWEST (now); id=numTx is the OLDEST (numTx minutes ago).
-	// Insertion order (by id) is deliberately the REVERSE of time order —
-	// this fixture exists to prove Load() sorts by last_seen/time, not by
-	// id or insertion order.
 	now := time.Now().UTC().Truncate(time.Second)
+	observerID := dbtest.EnsureObserver(tb, db, "obs1")
 	for i := 1; i <= numTx; i++ {
-		txTime := now.Add(-time.Duration(i-1) * time.Minute)
-		ts := txTime.Format(time.RFC3339)
-		unixTs := txTime.Unix()
-		hash := fmt.Sprintf("h%04d", i)
-		txStmt.Exec(i, "aabb", hash, ts, 0, 4, 1, fmt.Sprintf(`{"pubKey":"pk%04d"}`, i), unixTs)
-		obsStmt.Exec(i, i, 1, "RX", -10.0, -80.0, 5, `["aa","bb"]`, unixTs)
+		dbtest.TxWithObservation(tb, db, observerID, database.TransmissionInput{
+			RawHex:         "aabb",
+			Hash:           fmt.Sprintf("h%04d", i),
+			RouteType:      types.RouteType(0),
+			PayloadType:    types.PayloadType(4),
+			PayloadVersion: 1,
+			DecodedJSON:    fmt.Sprintf(`{"pubKey":"pk%04d"}`, i),
+		}, now.Add(-time.Duration(i-1)*time.Minute), -10.0, -80.0, "aa", "bb")
 	}
+	return dsn
 }
-
 func openReverseTimeStore(t *testing.T, numTx int) *PacketStore {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "rev.db")
-	createTestDBReverseTime(t, dbPath, numTx)
+	dsn := createTestDBReverseTime(t, numTx) // ids ascend while first_seen descends
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	cfg := &PacketStoreConfig{}
-	return NewPacketStore(db, cfg)
+	t.Cleanup(func() { db.Close() })
+	return NewPacketStore(db, &PacketStoreConfig{})
 }
 
 // TestLoadChunked_OldestLoadedIsActualOldest: when LoadChunked walks
@@ -102,10 +76,10 @@ func openReverseTimeStore(t *testing.T, numTx int) *PacketStore {
 // FirstSeen. Otherwise QueryPackets routes "since=15min ago" to SQL
 // fallback, hiding fresh rows.
 func TestLoadChunked_OldestLoadedIsActualOldest(t *testing.T) {
+	ctx := t.Context()
 	store := openReverseTimeStore(t, 50)
-	defer store.db.conn.Close()
 
-	if err := store.LoadChunked(20); err != nil {
+	if err := store.LoadChunked(ctx, 20); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 
@@ -115,7 +89,7 @@ func TestLoadChunked_OldestLoadedIsActualOldest(t *testing.T) {
 	}
 	actualOldest := store.packets[0].FirstSeen
 	for _, p := range store.packets {
-		if p.FirstSeen < actualOldest {
+		if p.FirstSeen.Before(actualOldest) {
 			actualOldest = p.FirstSeen
 		}
 	}
@@ -137,14 +111,14 @@ func TestLoadChunked_OldestLoadedIsActualOldest(t *testing.T) {
 // are correlated — not true after fixture freshen, not true after
 // any out-of-order ingest. Assert the invariant directly.
 func TestLoadChunked_PacketsSortedByFirstSeenASC(t *testing.T) {
+	ctx := t.Context()
 	store := openReverseTimeStore(t, 25)
-	defer store.db.conn.Close()
 
-	if err := store.LoadChunked(10); err != nil {
+	if err := store.LoadChunked(ctx, 10); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 	for i := 1; i < len(store.packets); i++ {
-		if store.packets[i-1].FirstSeen > store.packets[i].FirstSeen {
+		if store.packets[i-1].FirstSeen.After(store.packets[i].FirstSeen) {
 			t.Fatalf("s.packets must be sorted by FirstSeen ASC; "+
 				"packets[%d].FirstSeen=%q > packets[%d].FirstSeen=%q",
 				i-1, store.packets[i-1].FirstSeen,

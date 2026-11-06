@@ -44,13 +44,6 @@ type IngestorStatsSnapshot struct {
 	// the server's /api/perf/io endpoint under .ingestor (#1120 — "Both
 	// ingestor and server"). Optional; absent on non-Linux hosts.
 	ProcIO *PerfIOSample `json:"procIO,omitempty"`
-	// WriterPerf is the per-component SQLite writer-lock latency
-	// snapshot (#1340) — wait_ms / hold_ms / contention_total tagged
-	// by component (neighbor_builder, mqtt_handler, prune_packets,
-	// prune_observers, prune_metrics, vacuum). Surfaced by the server
-	// via /api/perf/write-sources under .writer_perf. Optional —
-	// older ingestor builds don't publish this field.
-	WriterPerf map[string]WriterStatsSnapshot `json:"writer_perf,omitempty"`
 	// SourceLiveness (PR #1609 M1) is the per-MQTT-source receipt vs
 	// write-path liveness snapshot. Keyed by source Tag. Surfaced by
 	// the server via /api/healthz under .ingest_liveness so operators
@@ -295,7 +288,6 @@ func StartStatsFileWriter(s *Store, interval time.Duration) (stop func()) {
 				GroupCommitFlushes:   0, // group commit reverted (refs #1129)
 				BackfillUpdates:      s.Stats.SnapshotBackfills(),
 				ProcIO:               ioRate,
-				WriterPerf:           s.WriterStatsSnapshot(),
 				SourceLiveness:       SnapshotLivenessClocks(),
 				SourceStatuses:       SnapshotSourceStatuses(tickAt),
 				WatchdogLastTickUnix: WatchdogLastTickUnix(),

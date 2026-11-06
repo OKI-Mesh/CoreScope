@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -54,45 +55,81 @@ func resetReachState(t *testing.T, servers ...*Server) {
 // node N, two neighbours A/B, and one observation on obsPath so the HTTP handler
 // exercises real directional attribution. Pass a path that omits N's token to
 // build the zero-reach case (identifiable node, no matching observations).
-func newReachIntegrationDB(t *testing.T, obsPath string) (*DB, string) {
+func newReachIntegrationDB(t *testing.T, obsHops []string) (*database.DB, string) {
 	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := pk64("01fa") // target — unique 2-byte token "01fa"
-	a := pk64("aabb") // predecessor → we hear A
-	b := pk64("ccdd") // successor → B hears us
-	now := time.Now().Unix()
-	stmts := []string{
-		`CREATE TABLE nodes (public_key TEXT, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, first_seen TEXT, advert_count INTEGER)`,
-		`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, from_pubkey TEXT, payload_type INTEGER)`,
-		`CREATE TABLE observers (id TEXT, inactive INTEGER)`,
-		`CREATE TABLE observations (id INTEGER PRIMARY KEY, transmission_id INTEGER, observer_idx INTEGER, snr REAL, path_json TEXT, timestamp INTEGER)`,
-		`CREATE TABLE neighbor_edges (node_a TEXT, node_b TEXT, count INTEGER)`,
-	}
-	for _, s := range stmts {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ins := []struct {
-		q    string
-		args []interface{}
+	ctx := t.Context()
+	db := setupTestDB(t)
+
+	n := pk64("01fa")
+	a := pk64("aabb")
+	b := pk64("ccdd")
+	now := time.Now().UTC()
+	firstSeen := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	lastSeen := time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC)
+
+	for _, node := range []struct {
+		pubkey  string
+		name    string
+		lat     float64
+		lon     float64
+		adverts int
 	}{
-		{`INSERT INTO nodes VALUES (?, 'N', 'repeater', 50.9, 5.4, ?, '2026-06-01T00:00:00Z', 3)`, []interface{}{n, "2026-06-07T00:00:00Z"}},
-		{`INSERT INTO nodes VALUES (?, 'A', 'repeater', 51.0, 5.5, ?, '2026-06-01T00:00:00Z', 1)`, []interface{}{a, "2026-06-07T00:00:00Z"}},
-		{`INSERT INTO nodes VALUES (?, 'B', 'repeater', 51.1, 5.6, ?, '2026-06-01T00:00:00Z', 1)`, []interface{}{b, "2026-06-07T00:00:00Z"}},
-		{`INSERT INTO observers (id) VALUES ('OBS1')`, nil},
-		{`INSERT INTO transmissions (id, from_pubkey, payload_type) VALUES (1, '', 5)`, nil},
-		{`INSERT INTO observations (id, transmission_id, observer_idx, snr, path_json, timestamp) VALUES (1,1,1,-7.0,?,?)`, []interface{}{obsPath, now}},
-	}
-	for _, in := range ins {
-		if _, err := conn.Exec(in.q, in.args...); err != nil {
-			t.Fatal(err)
+		{n, "N", 50.9, 5.4, 3},
+		{a, "A", 51.0, 5.5, 1},
+		{b, "B", 51.1, 5.6, 1},
+	} {
+		for i := 0; i < node.adverts; i++ {
+			rx := firstSeen
+			if i == node.adverts-1 {
+				rx = lastSeen
+			}
+			if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+				PublicKey: node.pubkey,
+				Name:      node.name,
+				Role:      "repeater",
+				Lat:       fptr(node.lat),
+				Lon:       fptr(node.lon),
+				RxTime:    rx,
+				IngestNow: now,
+			}); err != nil {
+				t.Fatalf("seed node %s (advert %d): %v", node.name, i+1, err)
+			}
 		}
 	}
-	return &DB{conn: conn, isV3: true}, n
+
+	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "obs1",
+		Name:      "OBS1",
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "reach-integration-tx",
+		RawHex:      "AA",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(5),
+	}, now)
+	if err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    ptr(observerIdx),
+		Direction:      ptr("RX"),
+		SNR:            ptr(-7.0),
+		Timestamp:      now,
+	}, obsHops, nil)
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+	return db, n
 }
 
 func TestClampDays(t *testing.T) {
@@ -124,10 +161,9 @@ func TestNodeReach_InvalidPubkey(t *testing.T) {
 
 func TestNodeReach_ValidPubkeyNotInNodes(t *testing.T) {
 	resetReachState(t)
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
 	cfg := &Config{}
 	srv := &Server{store: newTestStoreWithDB(t, db, cfg), db: db, cfg: cfg, perfStats: NewPerfStats()}
-	// Syntactically valid pubkey that was never inserted → real 404 path.
 	rr := serveReach(srv, "/api/nodes/"+pk64("beef")+"/reach")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status=%d want 404 (body=%s)", rr.Code, rr.Body.String())
@@ -146,8 +182,7 @@ func TestNodeReach_BlacklistedReturns404(t *testing.T) {
 
 func TestNodeReach_AttributionAndCacheHit(t *testing.T) {
 	resetReachState(t)
-	db, n := newReachIntegrationDB(t, `["AABB","01FA","CCDD"]`)
-	defer db.conn.Close()
+	db, n := newReachIntegrationDB(t, []string{"aabb", "01fa", "ccdd"})
 	cfg := &Config{}
 	srv := &Server{store: newTestStoreWithDB(t, db, cfg), db: db, cfg: cfg, perfStats: NewPerfStats()}
 
@@ -196,10 +231,13 @@ func TestNodeReach_AttributionAndCacheHit(t *testing.T) {
 // test. (docs/api-spec.md contract.)
 func TestNodeReach_ZeroReach(t *testing.T) {
 	resetReachState(t)
-	db, n := newReachIntegrationDB(t, `["AABB","CCDD"]`) // path omits N's "01FA" token
-	defer db.conn.Close()
+	db, n := newReachIntegrationDB(t, []string{"aabb", "ccdd"}) // path omits N's "01fa" token
 	cfg := &Config{}
 	srv := &Server{store: newTestStoreWithDB(t, db, cfg), db: db, cfg: cfg, perfStats: NewPerfStats()}
+
+	nodeMap := srv.buildNodeInfoMap(t.Context())
+	_, inMap := nodeMap[n]
+	t.Logf("n=%s inMap=%v hidden=%v blacklisted=%v", n, inMap, srv.isPubkeyHidden(t.Context(), n), cfg.IsBlacklisted(n))
 
 	rr := serveReach(srv, "/api/nodes/"+n+"/reach?days=30")
 	if rr.Code != http.StatusOK {
@@ -219,26 +257,29 @@ func TestNodeReach_ZeroReach(t *testing.T) {
 }
 
 func TestNodeReach_ShapeAndClamp(t *testing.T) {
+	ctx := t.Context()
 	resetReachState(t)
-	db := setupTestDBv2(t)
+	db := setupTestDB(t)
 	const pk = "01fa326b475800a31105abcb9e4cac000b3e5d9e2b5ba0739981ce8d5f3a6754"
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('`+pk+`', 'BE-Test', 'repeater', 50.9, 5.4, '2026-06-07T00:00:00Z', '2026-06-01T00:00:00Z', 3)`)
-	// scanReachRows joins observations on observer_idx; the v2 schema's
-	// observations table lacks that column. Previously the scan error was
-	// swallowed (issue #1631) and the test still saw empty arrays. With the
-	// fix that returns 500, we rebuild observations to the observer_idx
-	// shape (empty — no rows needed for shape/clamp assertions).
-	mustExecDB(t, db, `DROP TABLE observations`)
-	// PREFLIGHT: async=true reason="test-only in-memory schema rebuild; not a production migration"
-	mustExecDB(t, db, `CREATE TABLE observations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		transmission_id INTEGER,
-		observer_idx INTEGER,
-		snr REAL,
-		path_json TEXT,
-		timestamp INTEGER
-	)`)
+	now := time.Now().UTC()
+
+	for i, rx := range []time.Time{
+		time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC),
+	} {
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: pk,
+			Name:      "BE-Test",
+			Role:      "repeater",
+			Lat:       fptr(50.9),
+			Lon:       fptr(5.4),
+			RxTime:    rx,
+			IngestNow: now,
+		}); err != nil {
+			t.Fatalf("seed node (advert %d): %v", i+1, err)
+		}
+	}
 
 	cfg := &Config{}
 	srv := &Server{store: newTestStoreWithDB(t, db, cfg), db: db, cfg: cfg, perfStats: NewPerfStats()}
@@ -260,7 +301,7 @@ func TestNodeReach_ShapeAndClamp(t *testing.T) {
 	if !contains(resp.ReliableTokens, "01FA") {
 		t.Fatalf("expected 01FA reliable token, got %v", resp.ReliableTokens)
 	}
-	if resp.Node.FirstSeen != "2026-06-01T00:00:00Z" {
+	if resp.Node.FirstSeen != time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) {
 		t.Fatalf("first_seen not sourced from nodes table: %q", resp.Node.FirstSeen)
 	}
 }
@@ -273,14 +314,10 @@ func TestNodeReach_ShapeAndClamp(t *testing.T) {
 // error and returns nil).
 func TestNodeReach_ScanDBErrorReturns500(t *testing.T) {
 	resetReachState(t)
-	db, n := newReachIntegrationDB(t, `["AABB","01FA","CCDD"]`)
-	defer db.conn.Close()
+	db, n := newReachIntegrationDB(t, []string{"aabb", "01fa", "ccdd"})
 	cfg := &Config{}
 	srv := &Server{store: newTestStoreWithDB(t, db, cfg), db: db, cfg: cfg, perfStats: NewPerfStats()}
 
-	// Warm the store's node cache (so buildNodeInfoMap on the failing call
-	// still finds the target node). One healthy call also primes the
-	// reach response cache — clear it below so the next call recomputes.
 	if rr := serveReach(srv, "/api/nodes/"+n+"/reach?days=30"); rr.Code != http.StatusOK {
 		t.Fatalf("warm-up call: status=%d want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
@@ -288,12 +325,7 @@ func TestNodeReach_ScanDBErrorReturns500(t *testing.T) {
 	srv.reach.cache = map[string]reachCacheEntry{}
 	srv.reach.cacheMu.Unlock()
 
-	// Break the table that scanReachRows reads from. nodes / observers /
-	// neighbor_edges remain intact so the failure is isolated to the
-	// scanReachRows QueryContext path.
-	if _, err := db.conn.Exec("DROP TABLE observations"); err != nil {
-		t.Fatalf("drop observations: %v", err)
-	}
+	db.Close()
 
 	rr := serveReach(srv, "/api/nodes/"+n+"/reach?days=30")
 	if rr.Code != http.StatusInternalServerError {

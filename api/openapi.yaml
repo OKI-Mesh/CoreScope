@@ -1,0 +1,845 @@
+# Schema naming convention
+#   Entities get bare names:                Node, NodeAdvert, NeighborEntry, PacketCore
+#   Envelopes that wrap entities get a
+#   "Response" suffix:                      NodeListResponse, NodeDetailResponse, ...
+# A name ending in Response is the whole body of an endpoint. A bare name is
+# a thing that appears inside one.
+
+openapi: 3.0.3
+info:
+  title: CoreScope API
+  description: MeshCore network analyzer — packet capture, node tracking, and mesh analytics.
+  version: 1.0.0
+  license:
+    name: MIT
+tags:
+  - name: nodes
+    description: Mesh node operations
+  - name: analytics
+    description: Network analytics and statistics
+paths:
+  /api/nodes/{pubkey}/neighbors:
+    get:
+      tags: [nodes]
+      operationId: getNodeNeighbors
+      summary: Get node neighbors
+      description: >-
+        Returns the queried node's first-hop neighbors with affinity scores and
+        observation metadata (count, SNR, distance, observers). Ambiguous edges
+        carry candidate pubkeys. Entries are sorted by score, highest first.
+      parameters:
+        - name: pubkey
+          in: path
+          required: true
+          description: Public key of the node (hex). Matched case-insensitively.
+          schema:
+            type: string
+        - name: min_count
+          in: query
+          required: false
+          description: Drop neighbors with fewer observations than this. Values below 1 are ignored.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: min_score
+          in: query
+          required: false
+          description: Drop neighbors whose affinity score is below this.
+          schema:
+            type: number
+            format: double
+            default: 0
+        - name: include_ambiguous
+          in: query
+          required: false
+          description: Set to false to drop edges that could not be resolved to a single node. Any other value keeps them.
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeNeighborsResponse"
+        "404":
+          description: The node is blacklisted or hidden.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/analytics/neighbor-graph:
+    get:
+      tags: [analytics]
+      operationId: getNeighborGraph
+      summary: Neighbor graph
+      description: >-
+        The full neighbor affinity graph, for visualization. The default query
+        (min_count=5, min_score=0.1, no region, no role) and the analytics-tab
+        query (min_count=1, min_score=0) are served from a snapshot rebuilt in
+        the background; every other combination is computed per request.
+      parameters:
+        - name: min_count
+          in: query
+          required: false
+          description: Drop edges with fewer observations than this. Values below 1 are ignored.
+          schema:
+            type: integer
+            minimum: 1
+            default: 5
+        - name: min_score
+          in: query
+          required: false
+          description: Drop edges whose affinity score is below this.
+          schema:
+            type: number
+            format: double
+            default: 0.1
+        - name: region
+          in: query
+          required: false
+          description: Keep only edges seen by at least one observer in this region.
+          schema:
+            type: string
+        - name: role
+          in: query
+          required: false
+          description: Keep only edges where at least one endpoint has this role. Matched case-insensitively.
+          schema:
+            $ref: "#/components/schemas/FilterableRole"
+      responses:
+        "200":
+          description: Success
+          headers:
+            X-Cache-Age-Seconds:
+              description: Age of the snapshot in whole seconds. Present only when the response was served from the background snapshot.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NeighborGraphResponse"
+        "400":
+          description: The role filter is not a recognized role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/nodes:
+    get:
+      tags: [nodes]
+      operationId: listNodes
+      summary: List nodes
+      description: >-
+        Returns known mesh nodes with status and metadata, one page at a time.
+        Repeater and room rows also carry relay activity, the usefulness scores,
+        and the declared-region state. Paginate until has_more is false: the
+        geo-filter and area passes drop rows after the page is cut, so neither
+        the page length nor total says whether another page exists.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Clamped to the server's configured maximum.
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: role
+          in: query
+          required: false
+          description: Keep only nodes with this role.
+          schema:
+            $ref: "#/components/schemas/FilterableRole"
+        - name: search
+          in: query
+          required: false
+          description: Case-insensitive substring of the node name.
+          schema:
+            type: string
+        - name: region
+          in: query
+          required: false
+          description: Comma-separated region codes. Keep only nodes heard in these regions.
+          schema:
+            type: string
+        - name: area
+          in: query
+          required: false
+          description: Name of a configured area. Keep only nodes inside it.
+          schema:
+            type: string
+        - name: sortBy
+          in: query
+          required: false
+          description: Sort order.
+          schema:
+            type: string
+            enum: [lastSeen, name, packetCount]
+            default: lastSeen
+        - name: lastHeard
+          in: query
+          required: false
+          description: Keep only nodes heard within this window. Any other value is ignored.
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d, 30d]
+        - name: before
+          in: query
+          required: false
+          description: Keep only nodes first seen at or before this time. RFC 3339 or YYYY-MM-DD.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeListResponse"
+        "400":
+          description: A query parameter could not be parsed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: The node query failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/nodes/search:
+    get:
+      tags: [nodes]
+      operationId: searchNodes
+      summary: Search nodes
+      description: Search nodes by name or public key prefix. Returns at most 10 nodes. An empty query returns an empty list.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Search text.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeSearchResponse"
+        "500":
+          description: The search failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/nodes/{pubkey}:
+    get:
+      operationId: getNode
+      summary: One node, with its recent adverts
+      description: >
+        pubkey is a full 64-character public key or a hex prefix of 8 to 63
+        characters. A prefix that matches exactly one node resolves to it;
+        a prefix that matches several returns 409.
+      parameters:
+        - name: pubkey
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The node and its recent adverts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeDetailResponse' }
+        "404":
+          description: Unknown, blacklisted or hidden node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "409":
+          description: The prefix matches more than one node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/network-status:
+    get:
+      operationId: getNetworkStatus
+      summary: Fleet-wide node activity summary
+      responses:
+        "200":
+          description: Counts of nodes by activity bucket and by role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NetworkStatusResponse' }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+components:
+  schemas:
+    NodeRole:
+      type: string
+      description: >-
+        MeshCore node role. observer marks a standalone observer; unknown marks
+        a pubkey seen only in packets and is not a real MeshCore role.
+      enum: [repeater, companion, room, sensor, observer, unknown]
+      x-go-type: types.NodeRole
+      x-go-type-import:
+        path: github.com/OKI-Mesh/CoreScope/internal/types
+    FilterableRole:
+      type: string
+      description: A role the API accepts as a filter. Unlike NodeRole, it does not include unknown.
+      enum: [repeater, companion, room, sensor, observer]
+      x-go-type: types.NodeRole
+      x-go-type-import:
+        path: github.com/OKI-Mesh/CoreScope/internal/types
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    NodeNeighborsResponse:
+      type: object
+      required: [node, neighbors, total_observations]
+      properties:
+        node:
+          type: string
+          description: The queried node's public key, lowercased.
+        neighbors:
+          type: array
+          items:
+            $ref: "#/components/schemas/NeighborEntry"
+        total_observations:
+          type: integer
+          description: Sum of count over the neighbors returned, before duplicate-prefix merging.
+    NeighborEntry:
+      type: object
+      description: One neighbor of the queried node, with affinity score and observation metadata.
+      required:
+        - pubkey
+        - prefix
+        - name
+        - role
+        - count
+        - score
+        - first_seen
+        - last_seen
+        - avg_snr
+        - observers
+        - ambiguous
+      properties:
+        pubkey:
+          type: string
+          nullable: true
+          description: Resolved neighbor public key, or null when only a hop prefix is known.
+        prefix:
+          type: string
+          description: Raw hop hash prefix that established this edge.
+        name:
+          type: string
+          nullable: true
+        role:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/NodeRole"
+        count:
+          type: integer
+          description: Total observations supporting this neighborship.
+        counts_by_mode:
+          type: object
+          x-go-type-skip-optional-pointer: true
+          description: Observation counts keyed by hash-prefix size in bytes (1, 2, 3). Key 0 is legacy or unknown. Absent when empty.
+          additionalProperties:
+            type: integer
+        score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: "Affinity score: count saturation × recency decay × observer-diversity confidence."
+        first_seen:
+          $ref: "#/components/schemas/TimestampSeconds"
+        last_seen:
+          $ref: "#/components/schemas/TimestampSeconds"
+        avg_snr:
+          type: number
+          format: double
+          nullable: true
+        distance_km:
+          type: number
+          format: double
+          description: Great-circle distance to the queried node. Absent unless both nodes have a position.
+        observers:
+          type: array
+          items:
+            type: string
+        ambiguous:
+          type: boolean
+        unresolved:
+          type: boolean
+          x-go-type-skip-optional-pointer: true
+          description: Present and true when the edge is ambiguous and has no candidates.
+        candidates:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Present on ambiguous edges that have candidate nodes.
+          items:
+            $ref: "#/components/schemas/CandidateEntry"
+    CandidateEntry:
+      type: object
+      description: A candidate node offered when a neighbor edge is ambiguous.
+      required: [pubkey, name, role]
+      properties:
+        pubkey:
+          type: string
+        name:
+          type: string
+          description: Empty when the node is not known.
+        role:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/NodeRole"
+    NeighborGraphResponse:
+      type: object
+      required: [nodes, edges, stats]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdge"
+        stats:
+          $ref: "#/components/schemas/GraphStats"
+    GraphNode:
+      type: object
+      required: [pubkey, name, role, neighbor_count]
+      properties:
+        pubkey:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: Null when the node is not known.
+        role:
+          nullable: true
+          description: Null when the node is not known.
+          allOf:
+            - $ref: "#/components/schemas/NodeRole"
+        neighbor_count:
+          type: integer
+          description: Number of returned edges that touch this node.
+    GraphEdge:
+      type: object
+      required: [source, target, weight, score, bidirectional, avg_snr, ambiguous]
+      properties:
+        source:
+          type: string
+          description: Public key of one endpoint.
+        target:
+          type: string
+          description: Public key of the other endpoint, or "prefix:" followed by the hop prefix when the edge is ambiguous and unresolved.
+        weight:
+          type: integer
+          description: Observations supporting this edge.
+        score:
+          type: number
+          format: double
+        bidirectional:
+          type: boolean
+        avg_snr:
+          type: number
+          format: double
+          nullable: true
+        ambiguous:
+          type: boolean
+    GraphStats:
+      type: object
+      required: [total_nodes, total_edges, ambiguous_edges, avg_cluster_size, rejected_edges_geo_far]
+      properties:
+        total_nodes:
+          type: integer
+        total_edges:
+          type: integer
+        ambiguous_edges:
+          type: integer
+        avg_cluster_size:
+          type: number
+          format: double
+        rejected_edges_geo_far:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Edges dropped at build time because the two nodes are implausibly far apart.
+    TimestampMillis:
+      type: string
+      description: >
+        UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z).
+        Used where the server formats with formatTS (observation timestamps).
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
+      x-go-type: types.WireTimeMillis
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+    TimestampSeconds:
+      type: string
+      description: >
+        UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z).
+        Used for node, neighbor and packet-level times.
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+      x-go-type: types.WireTimeSeconds
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+    UsefulnessGrade:
+      type: string
+      description: Letter grade derived from usefulness_score.
+      enum: [A, B, C, D, F]
+    ScopeConfigState:
+      type: string
+      description: >-
+        How a repeater's region configuration reads. full: named regions and
+        the * wildcard. no-scopes: * only. no-unscoped: named regions, no *.
+        no-flood: neither. observed: no declared answer, but scoped traffic was
+        seen through it. none: no declared answer and no scoped traffic seen;
+        this means "not told", not a fault.
+      enum: [full, no-scopes, no-unscoped, no-flood, observed, none]
+    RoleCounts:
+      type: object
+      description: All-time node counts per role.
+      required: [repeaters, rooms, companions, sensors]
+      properties:
+        repeaters:
+          type: integer
+        rooms:
+          type: integer
+        companions:
+          type: integer
+        sensors:
+          type: integer
+    NodeListResponse:
+      type: object
+      required: [nodes, total, counts, has_more]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        total:
+          type: integer
+          description: Total nodes matching the query after filtering.
+        counts:
+          $ref: "#/components/schemas/RoleCounts"
+        has_more:
+          type: boolean
+          description: True when rows exist past this page. Paginate until this is false.
+    NodeSearchResponse:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+    Node:
+      type: object
+      additionalProperties: false
+      description: >-
+        A mesh node. Fields marked repeater/room only are absent on other
+        roles. A field that is absent is not the same as null: null means the
+        server looked and has no value.
+      required:
+        - public_key
+        - name
+        - role
+        - lat
+        - lon
+        - last_seen
+        - first_seen
+        - advert_count
+        - last_heard
+        - hash_size
+        - hash_size_inconsistent
+        - foreign
+        - battery_mv
+        - temperature_c
+        - default_scope
+        - configured_scope
+        - configured_scope_at
+      properties:
+        public_key:
+          type: string
+          description: Node public key (hex).
+        name:
+          type: string
+          nullable: true
+          description: Most recent advert name.
+        role:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/NodeRole"
+        lat:
+          type: number
+          format: double
+          nullable: true
+        lon:
+          type: number
+          format: double
+          nullable: true
+        last_seen:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/TimestampSeconds"
+        first_seen:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/TimestampSeconds"
+        advert_count:
+          type: integer
+        last_heard:
+          nullable: true
+          description: Same value as last_seen.
+          allOf:
+            - $ref: "#/components/schemas/TimestampSeconds"
+        hash_size:
+          type: integer
+          nullable: true
+          description: Null until the node's hash size is known.
+        hash_size_inconsistent:
+          type: boolean
+        foreign:
+          type: boolean
+          description: Flagged by the ingestor's geo filter as bridged or leaked from outside the configured area.
+        battery_mv:
+          type: integer
+          nullable: true
+        temperature_c:
+          type: number
+          format: double
+          nullable: true
+        default_scope:
+          type: string
+          nullable: true
+        configured_scope:
+          type: string
+          nullable: true
+        configured_scope_at:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/TimestampSeconds"
+        hash_sizes_seen:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Present only when the node has advertised more than one hash size.
+          items:
+            type: integer
+        flood_advert_count_7d:
+          type: integer
+          description: Distinct flood adverts originated in the last 7 days. Present on the node detail endpoint.
+        multi_byte_status:
+          type: string
+          description: Present on any node with a multi-byte capability entry.
+        multi_byte_evidence:
+          type: string
+        multi_byte_max_hash_size:
+          type: integer
+        last_relayed:
+          description: Repeater/room only. Time this node last appeared as a relay hop. Absent if it never has.
+          allOf:
+            - $ref: "#/components/schemas/TimestampSeconds"
+        relay_active:
+          type: boolean
+          description: Repeater/room only. Relayed traffic within the active window.
+        relay_window_hours:
+          type: number
+          format: double
+          description: Repeater/room only. Width of the active window in hours.
+        relay_count_1h:
+          type: integer
+          description: Repeater/room only. Relay-hop appearances in the last hour.
+        relay_count_24h:
+          type: integer
+          description: Repeater/room only. Relay-hop appearances in the last 24 hours.
+        unscoped_relay_count_24h:
+          type: integer
+          description: Repeater/room only. Subset of relay_count_24h that were unscoped floods. A well-configured repeater should show zero.
+        transported_scopes:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Repeater/room only. Region scopes of traffic that named this node as a hop, over the in-memory window. Absent when none.
+          items:
+            type: string
+        traffic_share_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. Share of non-advert traffic relayed through this repeater.
+        bridge_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. Normalized betweenness centrality (chokepoint importance).
+        coverage_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. Normalized harmonic reach centrality.
+        redundancy_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. 1 means removing the node fragments the mesh; 0 means alternate paths exist.
+        usefulness_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: "Repeater/room only. Composite: 0.30 bridge + 0.25 coverage + 0.25 redundancy + 0.20 traffic."
+        usefulness_grade:
+          $ref: "#/components/schemas/UsefulnessGrade"
+        scope_config_state:
+          $ref: "#/components/schemas/ScopeConfigState"
+        declared_regions:
+          type: array
+          description: >-
+            Repeater/room only. Regions from the node's newest declared-regions
+            answer, without a leading # and without the * wildcard. An empty
+            array means it answered and named none. Absent means it never
+            answered, or the lookup failed; absence is not evidence the node
+            has no region.
+          items:
+            type: string
+        declared_regions_truncated:
+          type: boolean
+          description: Present, and true, only when the answer behind declared_regions was flagged as cut off.
+    NodeDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [node, recentAdverts]
+      properties:
+        node: { $ref: '#/components/schemas/Node' }
+        recentAdverts:
+          type: array
+          items: { $ref: '#/components/schemas/NodeAdvert' }
+    PacketCore:
+      type: object
+      required:
+        - id
+        - raw_hex
+        - hash
+        - first_seen
+        - timestamp
+        - route_type
+        - payload_type
+        - decoded_json
+        - observation_count
+        - observer_id
+        - observer_name
+        - observer_iata
+        - snr
+        - rssi
+        - path_json
+        - direction
+        - scope_name
+      properties:
+        id: { type: integer }
+        raw_hex: { type: string, nullable: true }
+        hash: { type: string, nullable: true }
+        first_seen:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        timestamp:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        route_type:
+          type: integer
+          nullable: true
+          x-go-type: types.RouteType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        payload_type:
+          type: integer
+          nullable: true
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        decoded_json: { type: string, nullable: true }
+        observation_count: { type: integer }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string, nullable: true }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        score: { type: number, format: double }
+        path_json: { type: string, nullable: true }
+        direction: { type: string, nullable: true }
+        scope_name: { type: string, nullable: true }
+        _parsedPath:
+          type: array
+          items: { type: string }
+        resolved_path:
+          type: array
+          items: { type: string, nullable: true }
+
+    NodeAdvertObservation:
+      type: object
+      additionalProperties: false
+      required:
+        [id, transmission_id, observer_id, observer_name, observer_iata, snr, rssi, path_json, timestamp]
+      properties:
+        id: { type: integer, format: int64 }
+        transmission_id: { type: integer, format: int64 }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        score: { type: number, format: double }
+        direction: { type: string }
+        path_json: { type: string }
+        timestamp: { $ref: '#/components/schemas/TimestampMillis' }
+
+    NodeAdvert:
+      allOf:
+        - $ref: '#/components/schemas/PacketCore'
+        - type: object
+          required: [observations]
+          properties:
+            observations:
+              type: array
+              items: { $ref: '#/components/schemas/NodeAdvertObservation' }
+    NetworkStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [active, degraded, silent, total, roleCounts]
+      properties:
+        active: { type: integer }
+        degraded: { type: integer }
+        silent: { type: integer }
+        total: { type: integer }
+        roleCounts:
+          type: object
+          description: >
+            Node count per role as stored. Keys are role names and can include
+            values outside NodeRole (for example "type-7").
+          additionalProperties: { type: integer }
+          

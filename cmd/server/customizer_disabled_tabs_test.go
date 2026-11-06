@@ -16,6 +16,8 @@ import (
 // tabs to hide, so the customize-v2 frontend can filter them out of
 // _renderTabs(). Issue #1508.
 func TestConfigClientExposesCustomizerDisabledTabs(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
 	cfg := &Config{
@@ -26,9 +28,9 @@ func TestConfigClientExposesCustomizerDisabledTabs(t *testing.T) {
 	}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()

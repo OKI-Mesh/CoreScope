@@ -11,6 +11,8 @@
 package main
 
 import (
+	"context"
+	"log"
 	"sync"
 	"time"
 )
@@ -34,7 +36,7 @@ var (
 // writes per #1287. This recomputer is the ONLY thing that updates
 // s.graph at steady state (the initial startup load in main.go is the
 // other writer to s.graph, only at boot).
-func (s *PacketStore) StartNeighborGraphRecomputer(interval time.Duration) func() {
+func (s *PacketStore) StartNeighborGraphRecomputer(ctx context.Context, interval time.Duration) func() {
 	if interval <= 0 {
 		interval = NeighborGraphRecomputerDefaultInterval
 	}
@@ -57,7 +59,7 @@ func (s *PacketStore) StartNeighborGraphRecomputer(interval time.Duration) func(
 		for {
 			select {
 			case <-t.C:
-				s.refreshNeighborGraphFromSnapshot()
+				s.refreshNeighborGraphFromSnapshot(ctx)
 			case <-stop:
 				return
 			}
@@ -77,21 +79,20 @@ func (s *PacketStore) StartNeighborGraphRecomputer(interval time.Duration) func(
 // the read-only DB handle and atomic-swaps a freshly built graph.
 // Panics are swallowed defensively — the previous snapshot remains
 // valid if a read fails.
-func (s *PacketStore) refreshNeighborGraphFromSnapshot() {
-	defer func() { _ = recover() }()
-	if s.db == nil || s.db.conn == nil {
+func (s *PacketStore) refreshNeighborGraphFromSnapshot(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[neighbor] snapshot refresh panic recovered: %v", r)
+		}
+	}()
+	if s.db == nil {
 		return
 	}
-	g := loadNeighborEdgesFromDB(s.db.conn)
-	if g != nil {
-		s.graph.Store(g)
+	g, err := loadNeighborEdgesFromDB(ctx, s.db)
+	if err != nil {
+		// Keep serving the previous graph.
+		log.Printf("[neighbor] snapshot refresh failed: %v", err)
+		return
 	}
-}
-
-// resetNeighborRecomputerForTest is a test helper — production code
-// MUST NOT call this.
-func resetNeighborRecomputerForTest() {
-	neighborRecompStartedMu.Lock()
-	neighborRecompStarted = false
-	neighborRecompStartedMu.Unlock()
+	s.graph.Store(g)
 }

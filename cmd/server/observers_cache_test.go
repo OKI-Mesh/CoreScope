@@ -15,7 +15,7 @@ import (
 func TestObserversCacheServesFromAtomicPointer(t *testing.T) {
 	s := &Server{}
 	resp := ObserverListResponse{
-		Observers:  []ObserverResp{{ID: "abc", Name: "test"}},
+		Observers:  []ObserverResponse{{ID: "abc", Name: sptr("test")}},
 		ServerTime: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: resp, at: time.Now()})
@@ -58,7 +58,7 @@ func TestObserversCacheTTLBoundary(t *testing.T) {
 
 	// Handler integration: fresh entry → served from cache.
 	fresh := ObserverListResponse{
-		Observers:  []ObserverResp{{ID: "fresh-sentinel"}},
+		Observers:  []ObserverResponse{{ID: "fresh-sentinel"}},
 		ServerTime: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: fresh, at: time.Now()})
@@ -74,7 +74,7 @@ func TestObserversCacheTTLBoundary(t *testing.T) {
 	// did NOT short-circuit by checking the response is not the stale
 	// sentinel: either 500 or panic-recover. Use defer recover().
 	stale := ObserverListResponse{
-		Observers:  []ObserverResp{{ID: "stale-sentinel"}},
+		Observers:  []ObserverResponse{{ID: "stale-sentinel"}},
 		ServerTime: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: stale, at: time.Now().Add(-31 * time.Second)})
@@ -128,7 +128,7 @@ func TestObserversCacheSingleflightCollapsesStampede(t *testing.T) {
 func TestObserversCacheConcurrentReadersDuringRecompute(t *testing.T) {
 	s := &Server{}
 	initial := ObserverListResponse{
-		Observers: []ObserverResp{{ID: "v1"}},
+		Observers: []ObserverResponse{{ID: "v1"}},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: initial, at: time.Now()})
 
@@ -163,7 +163,7 @@ func TestObserversCacheConcurrentReadersDuringRecompute(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	// Swap in v2 while readers are running.
 	updated := ObserverListResponse{
-		Observers: []ObserverResp{{ID: "v2"}},
+		Observers: []ObserverResponse{{ID: "v2"}},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: updated, at: time.Now()})
 	time.Sleep(5 * time.Millisecond)

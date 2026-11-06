@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // ─── Phase 1.5: resolveAmbiguousEdges tests ───────────────────────────────────
@@ -218,8 +221,8 @@ func TestPhase1EdgeCollection_Unchanged(t *testing.T) {
 	nodeA := nodeInfo{Role: "repeater", PublicKey: "aaaa1111", Name: "NodeA", HasGPS: true, Lat: 45.0, Lon: -122.0}
 	nodeB := nodeInfo{Role: "repeater", PublicKey: "bbbb2222", Name: "NodeB", HasGPS: true, Lat: 45.1, Lon: -122.1}
 
-	ts := time.Now().UTC().Format(time.RFC3339)
-	payloadType := 4
+	ts := time.Now().UTC()
+	payloadType := types.PayloadType(4)
 	obs := []*StoreObs{{
 		ObserverID: "cccc3333",
 		PathJSON:   `["bbbb2222"]`,
@@ -232,7 +235,7 @@ func TestPhase1EdgeCollection_Unchanged(t *testing.T) {
 		Observations: obs,
 	}
 
-	store := ngTestStore([]nodeInfo{nodeA, nodeB, {Role: "repeater", PublicKey: "cccc3333", Name: "Observer"}}, []*StoreTx{tx})
+	store := ngTestStore(t, []nodeInfo{nodeA, nodeB, {Role: "repeater", PublicKey: "cccc3333", Name: "Observer"}}, []*StoreTx{tx})
 	graph := BuildFromStore(store)
 
 	edges := graph.Neighbors("aaaa1111")
@@ -312,8 +315,8 @@ func TestIntegration_DualPrefixSingleNeighbor(t *testing.T) {
 	nodeB2 := nodeInfo{Role: "repeater", PublicKey: "b0c2ffffb0c2ffff", Name: "NodeB2", HasGPS: true, Lat: 10.0, Lon: 10.0}
 	observer := nodeInfo{Role: "repeater", PublicKey: "cccc3333cccc3333", Name: "Observer"}
 
-	ts := time.Now().UTC().Format(time.RFC3339)
-	pt := 4
+	ts := time.Now().UTC()
+	pt := types.PayloadType(4)
 
 	// Observation 1: 1-byte prefix "b0" (ambiguous — matches both B and B2).
 	obs1 := []*StoreObs{{ObserverID: "cccc3333cccc3333", PathJSON: `["b0"]`, Timestamp: ts}}
@@ -323,7 +326,7 @@ func TestIntegration_DualPrefixSingleNeighbor(t *testing.T) {
 	obs2 := []*StoreObs{{ObserverID: "cccc3333cccc3333", PathJSON: `["b0b1"]`, Timestamp: ts}}
 	tx2 := &StoreTx{ID: 2, PayloadType: &pt, DecodedJSON: `{"pubKey":"aaaa1111aaaa1111"}`, Observations: obs2}
 
-	store := ngTestStore([]nodeInfo{nodeA, nodeB, nodeB2, observer}, []*StoreTx{tx1, tx2})
+	store := ngTestStore(t, []nodeInfo{nodeA, nodeB, nodeB2, observer}, []*StoreTx{tx1, tx2})
 	graph := BuildFromStore(store)
 
 	edges := graph.Neighbors("aaaa1111aaaa1111")
@@ -358,12 +361,12 @@ func TestIntegration_DualPrefixSingleNeighbor(t *testing.T) {
 func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 	pk := "b0b1eeeeb0b1eeee"
 	name := "NodeB"
-	entries := []NeighborEntry{
+	entries := []api.NeighborEntry{
 		{
 			Pubkey:    nil, // unresolved
 			Prefix:    "b0",
 			Count:     207,
-			LastSeen:  "2026-04-10T12:00:00Z",
+			LastSeen:  types.WireTimeSeconds{Time: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs1"},
 			Ambiguous: true,
 		},
@@ -372,7 +375,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 			Prefix:    "b0b1",
 			Name:      &name,
 			Count:     1,
-			LastSeen:  "2026-04-09T12:00:00Z",
+			LastSeen:  types.WireTimeSeconds{Time: time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs2"},
 		},
 	}
@@ -388,8 +391,9 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 	if result[0].Count != 208 { // 1 + 207
 		t.Errorf("expected merged count 208, got %d", result[0].Count)
 	}
-	if result[0].LastSeen != "2026-04-10T12:00:00Z" {
-		t.Errorf("expected higher LastSeen, got %s", result[0].LastSeen)
+	want := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	if !result[0].LastSeen.Equal(want) {
+		t.Errorf("expected higher LastSeen %s, got %s", want, result[0].LastSeen)
 	}
 	// Both observers should be present.
 	obsMap := make(map[string]bool)
@@ -403,7 +407,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 
 func TestDedupPrefixEntries_NoMatchNoChange(t *testing.T) {
 	pk := "dddd4444"
-	entries := []NeighborEntry{
+	entries := []api.NeighborEntry{
 		{Pubkey: nil, Prefix: "b0", Count: 5, Ambiguous: true, Observers: []string{}},
 		{Pubkey: &pk, Prefix: "dd", Count: 10, Observers: []string{}},
 	}
@@ -483,12 +487,12 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 	pk2 := "b0c2ffffb0c2ffff"
 	name1 := "NodeB1"
 	name2 := "NodeB2"
-	entries := []NeighborEntry{
+	entries := []api.NeighborEntry{
 		{
 			Pubkey:    nil, // unresolved
 			Prefix:    "b0",
 			Count:     100,
-			LastSeen:  "2026-04-10T12:00:00Z",
+			LastSeen:  types.WireTimeSeconds{Time: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs1"},
 			Ambiguous: true,
 		},
@@ -497,7 +501,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Prefix:    "b0b1",
 			Name:      &name1,
 			Count:     5,
-			LastSeen:  "2026-04-09T12:00:00Z",
+			LastSeen:  types.WireTimeSeconds{Time: time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs2"},
 		},
 		{
@@ -505,7 +509,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Prefix:    "b0c2",
 			Name:      &name2,
 			Count:     3,
-			LastSeen:  "2026-04-08T12:00:00Z",
+			LastSeen:  types.WireTimeSeconds{Time: time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs3"},
 		},
 	}

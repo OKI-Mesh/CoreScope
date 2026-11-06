@@ -1,40 +1,20 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // recentTS returns a timestamp string N hours ago, ensuring test data
 // stays within the 7-day advert window used by computeNodeHashSizeInfo.
-func recentTS(hoursAgo int) string {
-	return time.Now().UTC().Add(-time.Duration(hoursAgo) * time.Hour).Format("2006-01-02T15:04:05.000Z")
-}
-
-// setupCapabilityTestDB creates a minimal in-memory DB with nodes table.
-func setupCapabilityTestDB(t *testing.T) *DB {
-	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.SetMaxOpenConns(1)
-	conn.Exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT,
-		lat REAL, lon REAL, last_seen TEXT, first_seen TEXT,
-		advert_count INTEGER DEFAULT 0, battery_mv INTEGER, temperature_c REAL
-	)`)
-	conn.Exec(`CREATE TABLE observers (
-		id TEXT PRIMARY KEY, name TEXT, iata TEXT, last_seen TEXT,
-		first_seen TEXT, packet_count INTEGER DEFAULT 0, model TEXT,
-		firmware TEXT, client_version TEXT, radio TEXT, battery_mv INTEGER,
-		uptime_secs INTEGER
-	)`)
-	return &DB{conn: conn}
+func recentTS(hoursAgo int) time.Time {
+	return time.Now().UTC().Add(-time.Duration(hoursAgo) * time.Hour)
 }
 
 // addTestPacket adds a StoreTx to the store's internal structures including
@@ -65,7 +45,7 @@ func buildPathByte(hashSize, hopCount int) string {
 // makeTestAdvert creates a StoreTx representing a flood advert packet.
 func makeTestAdvert(pubkey string, hashSize int) *StoreTx {
 	decoded, _ := json.Marshal(map[string]interface{}{"pubKey": pubkey, "name": pubkey[:8]})
-	pt := 4
+	pt := types.PayloadType(4)
 	pathByte := buildPathByte(hashSize, 1)
 	prefix := strings.ToLower(pubkey[:hashSize*2])
 	rawHex := "01" + pathByte + prefix // flood header + path byte + hop prefix
@@ -74,20 +54,27 @@ func makeTestAdvert(pubkey string, hashSize int) *StoreTx {
 		PayloadType: &pt,
 		DecodedJSON: string(decoded),
 		PathJSON:    `["` + prefix + `"]`,
-		FirstSeen:   recentTS(24),
+		FirstSeen:   time.Now().UTC().Add(-24 * time.Hour),
 	}
 }
 
 // TestMultiByteCapability_Confirmed tests that a repeater advertising
 // with hash_size >= 2 is classified as "confirmed".
 func TestMultiByteCapability_Confirmed(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepA", "repeater", recentTS(24))
+	if err := db.CreateOrUpdateNode(t.Context(), database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepA",
+		Role:      "repeater",
+		RxTime:    recentTS(24),
+		IngestNow: recentTS(24),
+	}); err != nil {
+		t.Fatalf("seed RepA: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(t.Context())
 	addTestPacket(store, makeTestAdvert("aabbccdd11223344", 2))
 
 	caps := store.computeMultiByteCapability(nil)
@@ -108,23 +95,29 @@ func TestMultiByteCapability_Confirmed(t *testing.T) {
 // TestMultiByteCapability_Suspected tests that a repeater whose prefix
 // appears in a multi-byte path is classified as "suspected".
 func TestMultiByteCapability_Suspected(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepB", "repeater", recentTS(48))
+	if err := db.CreateOrUpdateNode(t.Context(), database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepA",
+		Role:      "repeater",
+		RxTime:    recentTS(48),
+		IngestNow: recentTS(48),
+	}); err != nil {
+		t.Fatalf("seed RepA: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
-
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(t.Context())
 	// Non-advert packet with 2-byte hash in path, hop prefix matching node
 	pathByte := buildPathByte(2, 1)
 	rawHex := "01" + pathByte + "aabb"
-	pt := 1
+	pt := types.PayloadType(1)
 	pkt := &StoreTx{
 		RawHex:      rawHex,
 		PayloadType: &pt,
 		PathJSON:    `["aabb"]`,
-		FirstSeen:   recentTS(48),
+		FirstSeen:   time.Now().UTC().Add(-48 * time.Hour),
 	}
 	addTestPacket(store, pkt)
 
@@ -146,14 +139,20 @@ func TestMultiByteCapability_Suspected(t *testing.T) {
 // TestMultiByteCapability_Unknown tests that a repeater with only 1-byte
 // adverts and no multi-byte path appearances is classified as "unknown".
 func TestMultiByteCapability_Unknown(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepC", "repeater", recentTS(72))
+	if err := db.CreateOrUpdateNode(t.Context(), database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepA",
+		Role:      "repeater",
+		RxTime:    recentTS(72),
+		IngestNow: recentTS(72),
+	}); err != nil {
+		t.Fatalf("seed RepA: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
-
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(t.Context())
 	// Advert with 1-byte hash only
 	addTestPacket(store, makeTestAdvert("aabbccdd11223344", 1))
 
@@ -173,16 +172,22 @@ func TestMultiByteCapability_Unknown(t *testing.T) {
 // share the same prefix, one confirmed via advert, the other gets
 // suspected (not confirmed) from path data alone.
 func TestMultiByteCapability_PrefixCollision(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
 
 	// Two repeaters sharing 1-byte prefix "aa"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabb000000000001", "RepConfirmed", "repeater", recentTS(24))
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aacc000000000002", "RepOther", "repeater", recentTS(24))
+	for _, n := range []database.NodeInput{
+		{PublicKey: "aabb000000000001", Name: "RepConfirmed", Role: "repeater", RxTime: recentTS(24), IngestNow: now},
+		{PublicKey: "aacc000000000002", Name: "RepOther", Role: "repeater", RxTime: recentTS(24), IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(ctx)
 
 	// RepConfirmed has a 2-byte advert
 	addTestPacket(store, makeTestAdvert("aabb000000000001", 2))
@@ -190,12 +195,12 @@ func TestMultiByteCapability_PrefixCollision(t *testing.T) {
 	// A packet with 2-byte path containing 1-byte hop "aa" — both share this prefix
 	pathByte := buildPathByte(2, 1)
 	rawHex := "01" + pathByte + "aa"
-	pt := 1
+	pt := types.PayloadType(1)
 	pkt := &StoreTx{
 		RawHex:      rawHex,
 		PayloadType: &pt,
 		PathJSON:    `["aa"]`,
-		FirstSeen:   recentTS(48),
+		FirstSeen:   time.Now().UTC().Add(-48 * time.Hour),
 	}
 	addTestPacket(store, pkt)
 
@@ -217,28 +222,33 @@ func TestMultiByteCapability_PrefixCollision(t *testing.T) {
 	}
 }
 
-// TestMultiByteCapability_TraceExcluded tests that TRACE packets (payload_type 8)
-// do NOT contribute to "suspected" multi-byte capability. TRACE packets carry
-// hash size in their own flags, so pre-1.14 repeaters can forward multi-byte
-// TRACEs without actually supporting multi-byte hashes. See #714.
 func TestMultiByteCapability_TraceExcluded(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepTrace", "repeater", recentTS(48))
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepTrace",
+		Role:      "repeater",
+		RxTime:    recentTS(48),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed RepTrace: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
 
-	// TRACE packet (payload_type 8) with 2-byte hash in path
 	pathByte := buildPathByte(2, 1)
 	rawHex := "01" + pathByte + "aabb"
-	pt := 8
+	pt := types.PayloadTRACE
 	pkt := &StoreTx{
 		RawHex:      rawHex,
 		PayloadType: &pt,
 		PathJSON:    `["aabb"]`,
-		FirstSeen:   recentTS(48),
+		FirstSeen:   time.Now().UTC().Add(-48 * time.Hour),
 	}
 	addTestPacket(store, pkt)
 
@@ -251,26 +261,32 @@ func TestMultiByteCapability_TraceExcluded(t *testing.T) {
 	}
 }
 
-// TestMultiByteCapability_NonTraceStillSuspected verifies that non-TRACE packets
-// with 2-byte paths still correctly mark a repeater as "suspected".
 func TestMultiByteCapability_NonTraceStillSuspected(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepNonTrace", "repeater", recentTS(48))
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepNonTrace",
+		Role:      "repeater",
+		RxTime:    recentTS(48),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed RepNonTrace: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(ctx)
 
 	// GRP_TXT packet (payload_type 1) with 2-byte hash in path
 	pathByte := buildPathByte(2, 1)
 	rawHex := "01" + pathByte + "aabb"
-	pt := 1
+	pt := types.PayloadType(1)
 	pkt := &StoreTx{
 		RawHex:      rawHex,
 		PayloadType: &pt,
 		PathJSON:    `["aabb"]`,
-		FirstSeen:   recentTS(48),
+		FirstSeen:   time.Now().UTC().Add(-48 * time.Hour),
 	}
 	addTestPacket(store, pkt)
 
@@ -283,29 +299,35 @@ func TestMultiByteCapability_NonTraceStillSuspected(t *testing.T) {
 	}
 }
 
-// TestMultiByteCapability_ConfirmedUnaffectedByTraceExclusion verifies that
-// "confirmed" status from adverts is not affected by the TRACE exclusion.
 func TestMultiByteCapability_ConfirmedUnaffectedByTraceExclusion(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepConfirmedTrace", "repeater", recentTS(24))
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepConfirmedTrace",
+		Role:      "repeater",
+		RxTime:    recentTS(24),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed RepConfirmedTrace: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
 
-	// Advert with 2-byte hash (confirms capability)
 	addTestPacket(store, makeTestAdvert("aabbccdd11223344", 2))
 
-	// TRACE packet also present — should not downgrade confirmed status
 	pathByte := buildPathByte(2, 1)
 	rawHex := "01" + pathByte + "aabb"
-	pt := 8
+	pt := types.PayloadTRACE
 	pkt := &StoreTx{
 		RawHex:      rawHex,
 		PayloadType: &pt,
 		PathJSON:    `["aabb"]`,
-		FirstSeen:   recentTS(48),
+		FirstSeen:   time.Now().UTC().Add(-48 * time.Hour),
 	}
 	addTestPacket(store, pkt)
 
@@ -318,16 +340,22 @@ func TestMultiByteCapability_ConfirmedUnaffectedByTraceExclusion(t *testing.T) {
 	}
 }
 
-// TestMultiByteCapability_CompanionConfirmed tests that a companion with
-// multi-byte advert is classified as "confirmed", not "unknown" (Bug 1, #754).
 func TestMultiByteCapability_CompanionConfirmed(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "CompA", "companion", recentTS(24))
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "CompA",
+		Role:      "companion",
+		RxTime:    recentTS(24),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed CompA: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(ctx)
 	addTestPacket(store, makeTestAdvert("aabbccdd11223344", 2))
 
 	caps := store.computeMultiByteCapability(nil)
@@ -345,20 +373,23 @@ func TestMultiByteCapability_CompanionConfirmed(t *testing.T) {
 	}
 }
 
-// TestMultiByteCapability_RoleColumnPopulated tests that the Role field is
-// populated for all node types (Bug 2, #754).
 func TestMultiByteCapability_RoleColumnPopulated(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabb000000000001", "Rep1", "repeater", recentTS(24))
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"ccdd000000000002", "Comp1", "companion", recentTS(24))
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"eeff000000000003", "Room1", "room_server", recentTS(24))
+	for _, n := range []database.NodeInput{
+		{PublicKey: "aabb000000000001", Name: "Rep1", Role: "repeater", RxTime: recentTS(24), IngestNow: now},
+		{PublicKey: "ccdd000000000002", Name: "Comp1", Role: "companion", RxTime: recentTS(24), IngestNow: now},
+		{PublicKey: "eeff000000000003", Name: "Room1", Role: "room", RxTime: recentTS(24), IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(ctx)
 	addTestPacket(store, makeTestAdvert("aabb000000000001", 2))
 	addTestPacket(store, makeTestAdvert("ccdd000000000002", 2))
 	addTestPacket(store, makeTestAdvert("eeff000000000003", 1))
@@ -368,42 +399,47 @@ func TestMultiByteCapability_RoleColumnPopulated(t *testing.T) {
 		t.Fatalf("expected 3 entries, got %d", len(caps))
 	}
 
-	roleByName := map[string]string{}
+	roleByName := map[string]types.NodeRole{}
 	for _, c := range caps {
 		roleByName[c.Name] = c.Role
 	}
-	if roleByName["Rep1"] != "repeater" {
+	if roleByName["Rep1"] != types.RoleRepeater {
 		t.Errorf("Rep1 role: expected repeater, got %s", roleByName["Rep1"])
 	}
-	if roleByName["Comp1"] != "companion" {
+	if roleByName["Comp1"] != types.RoleCompanion {
 		t.Errorf("Comp1 role: expected companion, got %s", roleByName["Comp1"])
 	}
-	if roleByName["Room1"] != "room_server" {
+	if roleByName["Room1"] != types.RoleRoom {
 		t.Errorf("Room1 role: expected room_server, got %s", roleByName["Room1"])
 	}
 }
 
-// TestMultiByteCapability_AdopterEvidenceTakesPrecedence tests that when
-// adopter data shows hashSize >= 2 but path evidence says "suspected",
-// the node is upgraded to "confirmed" (Bug 3, #754).
 func TestMultiByteCapability_AdopterEvidenceTakesPrecedence(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		"aabbccdd11223344", "RepAdopter", "repeater", recentTS(24))
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "RepAdopter",
+		Role:      "repeater",
+		RxTime:    recentTS(24),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed RepAdopter: %v", err)
+	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(ctx)
 
 	// Only a path-based packet (no advert) — would normally be "suspected"
 	pathByte := buildPathByte(2, 1)
 	rawHex := "01" + pathByte + "aabb"
-	pt := 1
+	pt := types.PayloadType(1)
 	pkt := &StoreTx{
 		RawHex:      rawHex,
 		PayloadType: &pt,
 		PathJSON:    `["aabb"]`,
-		FirstSeen:   recentTS(48),
+		FirstSeen:   time.Now().UTC().Add(-48 * time.Hour),
 	}
 	addTestPacket(store, pkt)
 
@@ -432,45 +468,9 @@ func TestMultiByteCapability_AdopterEvidenceTakesPrecedence(t *testing.T) {
 	}
 }
 
-// --- Persistence layer tests (#903, relocated #1324 follow-up) ---
-//
-// The actual DB persistence now lives in cmd/ingestor (see
-// cmd/ingestor/multibyte_persist_test.go). What the server is responsible
-// for is publishing the snapshot file that the ingestor consumes. The
-// data-destruction guard ("never overwrite confirmed with unknown") is
-// enforced by the ingestor, not the server — the snapshot can legitimately
-// carry "unknown" entries; the ingestor filters them.
-
-// setupPersistTestDB creates an in-memory DB with multibyte_sup/multibyte_evidence columns.
-func setupPersistTestDB(t *testing.T) *DB {
-	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.SetMaxOpenConns(1)
-	conn.Exec(`CREATE TABLE nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT,
-		lat REAL, lon REAL, last_seen TEXT, first_seen TEXT,
-		advert_count INTEGER DEFAULT 0, battery_mv INTEGER, temperature_c REAL,
-		foreign_advert INTEGER DEFAULT 0, default_scope TEXT,
-		multibyte_sup INTEGER NOT NULL DEFAULT 0, multibyte_evidence TEXT
-	)`)
-	conn.Exec(`CREATE TABLE inactive_nodes (
-		public_key TEXT PRIMARY KEY, name TEXT, role TEXT,
-		lat REAL, lon REAL, last_seen TEXT, first_seen TEXT,
-		advert_count INTEGER DEFAULT 0, battery_mv INTEGER, temperature_c REAL,
-		foreign_advert INTEGER DEFAULT 0, default_scope TEXT,
-		multibyte_sup INTEGER NOT NULL DEFAULT 0, multibyte_evidence TEXT
-	)`)
-	return &DB{conn: conn, hasMultibyteSupCols: true}
-}
-
-// TestMultibyteCapGetMultibyteCapForO1 verifies that GetMultibyteCapFor returns
-// the correct entry via the O(1) mbCapIndex map.
 func TestMultibyteCapGetMultibyteCapForO1(t *testing.T) {
-	db := setupPersistTestDB(t)
-	store := NewPacketStore(db, nil)
+	db := setupTestDB(t)
+	store := newPacketStoreForTest(t, db)
 
 	// Directly populate the index as the analytics cycle would.
 	store.cacheMu.Lock()
@@ -494,19 +494,45 @@ func TestMultibyteCapGetMultibyteCapForO1(t *testing.T) {
 	}
 }
 
-// TestMultibyteCapLoadFromDB verifies that loadMultibyteCapFromDB skips nodes
-// with multibyte_sup == 0 and only loads confirmed/suspected entries.
 func TestMultibyteCapLoadFromDB(t *testing.T) {
-	db := setupPersistTestDB(t)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('aa11', 'A', 'repeater', '2026-01-01T00:00:00Z', 2, 'advert')`)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence)
-		VALUES ('bb22', 'B', 'repeater', '2026-01-01T00:00:00Z', 1, 'path')`)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup)
-		VALUES ('cc33', 'C', 'repeater', '2026-01-01T00:00:00Z', 0)`) // unknown — must be skipped
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+	rx := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	store := NewPacketStore(db, nil)
-	store.loadMultibyteCapFromDB()
+	for _, n := range []database.NodeInput{
+		{PublicKey: "aa11000000000001", Name: "A", Role: "repeater", RxTime: rx, IngestNow: now},
+		{PublicKey: "bb22000000000002", Name: "B", Role: "repeater", RxTime: rx, IngestNow: now},
+		{PublicKey: "cc33000000000003", Name: "C", Role: "repeater", RxTime: rx, IngestNow: now}, // unknown: must be skipped
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
+	}
+	// C is left at the column default (0 = unknown).
+	caps := []database.NodeMultibyteCap{
+		{PublicKey: "aa11000000000001", Sup: 2, Evidence: "advert"},
+		{PublicKey: "bb22000000000002", Sup: 1, Evidence: "path"},
+	}
+	changed, err := db.UpdateNodeMultibyteCaps(ctx, caps)
+	if err != nil {
+		t.Fatalf("set multibyte caps: %v", err)
+	}
+	if changed != 2 {
+		t.Fatalf("UpdateNodeMultibyteCaps changed %d rows, want 2 (a missing node is skipped silently)", changed)
+	}
+
+	// Applying the same values again must not rewrite anything.
+	again, err := db.UpdateNodeMultibyteCaps(ctx, caps)
+	if err != nil {
+		t.Fatalf("repeat update: %v", err)
+	}
+	if again != 0 {
+		t.Fatalf("repeat update changed %d rows, want 0 (stored values already match)", again)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	store.loadMultibyteCapFromDB(ctx)
 
 	store.cacheMu.Lock()
 	snap := store.mbCapSnapshot
@@ -516,13 +542,13 @@ func TestMultibyteCapLoadFromDB(t *testing.T) {
 	if len(snap) != 2 {
 		t.Fatalf("expected 2 entries (confirmed+suspected), got %d", len(snap))
 	}
-	if e, ok := idx["aa11"]; !ok || e.Status != "confirmed" {
+	if e, ok := idx["aa11000000000001"]; !ok || e.Status != "confirmed" {
 		t.Errorf("aa11: expected confirmed, got %+v", e)
 	}
-	if e, ok := idx["bb22"]; !ok || e.Status != "suspected" {
+	if e, ok := idx["bb22000000000002"]; !ok || e.Status != "suspected" {
 		t.Errorf("bb22: expected suspected, got %+v", e)
 	}
-	if _, ok := idx["cc33"]; ok {
+	if _, ok := idx["cc33000000000003"]; ok {
 		t.Error("cc33 with sup=0 should not be in the index")
 	}
 }

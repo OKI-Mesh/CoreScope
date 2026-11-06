@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -249,51 +252,25 @@ func prefixOrEmpty(s string, n int) string {
 	return ""
 }
 
-// sqlPlaceholders returns "?,?,…" with n placeholders (n >= 1).
-func sqlPlaceholders(n int) string {
-	if n <= 1 {
-		return "?"
-	}
-	return strings.Repeat("?,", n-1) + "?"
-}
-
-// queryCoverageRows returns raw coverage rows where the directly-heard node
-// matches the target pubkey by its 2-3 byte prefix (or full pubkey), within the
-// bbox. Read-only (server RO connection).
-func (s *Server) queryCoverageRows(pubkey string, b bbox) ([]coverageRow, error) {
-	cands := coverageHeardKeyCandidates(pubkey)
-	args := make([]interface{}, 0, len(cands)+4)
-	for _, c := range cands {
-		args = append(args, c)
-	}
-	args = append(args, b.MinLat, b.MaxLat, b.MinLon, b.MaxLon)
-	rows, err := s.db.conn.Query(`
-		SELECT lat, lon, snr, rssi, heard_key, rx_at
-		FROM client_receptions
-		WHERE heard_key IN (`+sqlPlaceholders(len(cands))+`)
-		  AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?`, args...)
+func (s *Server) queryCoverageRows(ctx context.Context, pubkey string, b bbox) ([]coverageRow, error) {
+	rows, err := s.db.ListCoverageRows(ctx, database.CoverageQuery{
+		HeardKeys: coverageHeardKeyCandidates(pubkey),
+		MinLat:    b.MinLat, MaxLat: b.MaxLat, MinLon: b.MinLon, MaxLon: b.MaxLon,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanCoverageRows(rows)
+	out := make([]coverageRow, 0, len(rows))
+	for _, r := range rows {
+		// formatTS keeps the fixed-width UTC string the aggregation compares.
+		out = append(out, coverageRow{Lat: r.Lat, Lon: r.Lon, SNR: r.SNR, RSSI: r.RSSI, HeardKey: r.HeardKey, RxAt: formatTS(r.RxAt)})
+	}
+	return out, nil
 }
 
-// mobileRxStats returns the total mobile-client receptions of a node (by its
-// 2-3 byte prefix or full pubkey) and the number of distinct contributing clients.
-func (s *Server) mobileRxStats(pubkey string) (count, clients int) {
-	if s.db == nil || s.db.conn == nil {
-		return 0, 0
-	}
-	cands := coverageHeardKeyCandidates(pubkey)
-	args := make([]interface{}, len(cands))
-	for i, c := range cands {
-		args[i] = c
-	}
-	s.db.conn.QueryRow(`
-		SELECT COUNT(*), COUNT(DISTINCT rx_pubkey) FROM client_receptions
-		WHERE heard_key IN (`+sqlPlaceholders(len(cands))+`)`, args...).Scan(&count, &clients)
-	return count, clients
+// mobileRxStats returns the node-wide reception and distinct-client totals.
+func (s *Server) mobileRxStats(ctx context.Context, pubkey string) (count, clients int, err error) {
+	return s.db.CountMobileReceptions(ctx, coverageHeardKeyCandidates(pubkey))
 }
 
 // zoomToHexRes maps a Leaflet zoom level to the display resolution used for hex
@@ -329,6 +306,7 @@ func parseBBox(s string) (bbox, bool) {
 
 // handleNodeRxCoverage serves per-node mobile RX coverage as a GeoJSON hex grid.
 func (s *Server) handleNodeRxCoverage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if !s.requireClientRxCoverage(w, r) {
 		return
 	}
@@ -341,7 +319,7 @@ func (s *Server) handleNodeRxCoverage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid pubkey: expected 64 hex chars", http.StatusBadRequest)
 		return
 	}
-	if (s.cfg != nil && s.cfg.IsBlacklisted(pubkey)) || s.isPubkeyHidden(pubkey) {
+	if (s.cfg != nil && s.cfg.IsBlacklisted(pubkey)) || s.isPubkeyHidden(ctx, pubkey) {
 		http.NotFound(w, r)
 		return
 	}
@@ -350,21 +328,25 @@ func (s *Server) handleNodeRxCoverage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bbox required as minLat,minLon,maxLat,maxLon", http.StatusBadRequest)
 		return
 	}
-	if s.db == nil || s.db.conn == nil {
+	if s.db == nil {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	z, _ := strconv.Atoi(r.URL.Query().Get("z"))
-	rows, err := s.queryCoverageRows(pubkey, b)
+	rows, err := s.queryCoverageRows(ctx, pubkey, b)
 	if err != nil {
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(rows))
+	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(ctx, rows))
 	// Attach the node-wide reception/contributor totals (#3): the bbox limits the
 	// hex features to the current view, but these summarise all of this node's
 	// mobile coverage so the UI can show "heard by N clients" regardless of pan.
-	fc.MobileReceptions, fc.MobileClients = s.mobileRxStats(pubkey)
+	count, clients, err := s.mobileRxStats(r.Context(), pubkey)
+	if err != nil {
+		log.Printf("[coverage] mobile stats for %s: %v", pubkey, err)
+	}
+	fc.MobileReceptions, fc.MobileClients = count, clients
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(fc)
 }

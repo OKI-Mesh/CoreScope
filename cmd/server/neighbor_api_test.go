@@ -1,16 +1,15 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -98,7 +97,7 @@ func TestNeighborAPI_EmptyGraph(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
@@ -123,7 +122,7 @@ func TestNeighborAPI_SingleNeighbor(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -151,7 +150,7 @@ func TestNeighborAPI_MultipleNeighbors(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 2 {
@@ -172,7 +171,7 @@ func TestNeighborAPI_AmbiguousCandidates(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -196,7 +195,7 @@ func TestNeighborAPI_UnresolvedPrefix(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -218,7 +217,7 @@ func TestNeighborAPI_MinCountFilter(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors?min_count=10")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -236,7 +235,7 @@ func TestNeighborAPI_MinScoreFilter(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors?min_score=0.5")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -251,7 +250,7 @@ func TestNeighborAPI_ExcludeAmbiguous(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors?include_ambiguous=false")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -269,7 +268,7 @@ func TestNeighborAPI_UnknownNode(t *testing.T) {
 		t.Fatalf("expected 200 for unknown node, got %d", rr.Code)
 	}
 
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 	if len(resp.Neighbors) != 0 {
 		t.Errorf("expected 0 neighbors for unknown node, got %d", len(resp.Neighbors))
@@ -286,7 +285,7 @@ func TestNeighborGraphAPI_EmptyGraph(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Edges) != 0 {
@@ -307,7 +306,7 @@ func TestNeighborGraphAPI_WithEdges(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph?min_count=1&min_score=0")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Edges) != 2 {
@@ -328,7 +327,7 @@ func TestNeighborGraphAPI_MinCountDefault(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Edges) != 1 {
@@ -343,7 +342,7 @@ func TestNeighborGraphAPI_AmbiguousEdgesCount(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph?min_count=1&min_score=0")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if resp.Stats.AmbiguousEdges != 1 {
@@ -352,25 +351,39 @@ func TestNeighborGraphAPI_AmbiguousEdgesCount(t *testing.T) {
 }
 
 func TestNeighborAPI_DistanceKm_WithGPS(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
-		VALUES ('aaaa', 'NodeA', 'repeater', 51.5074, -0.1278, '2026-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
-		VALUES ('bbbb', 'NodeB', 'repeater', 51.5200, -0.1200, '2026-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`)
+	seen := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	latA, lonA := 51.5074, -0.1278
+	latB, lonB := 51.5200, -0.1200
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "aaaa", Name: "NodeA", Role: "repeater", Lat: &latA, Lon: &lonA, RxTime: seen, IngestNow: seen,
+	})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "bbbb", Name: "NodeB", Role: "repeater", Lat: &latB, Lon: &lonB, RxTime: seen, IngestNow: seen,
+	})
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	srv.store = NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	srv.store = store
 
 	now := time.Now()
 	srv.neighborGraph = makeTestGraph(newEdge("aaaa", "bbbb", "bb", 50, now))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
-	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp api.NodeNeighborsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 
 	if len(resp.Neighbors) != 1 {
 		t.Fatalf("expected 1 neighbor, got %d", len(resp.Neighbors))
@@ -385,25 +398,29 @@ func TestNeighborAPI_DistanceKm_WithGPS(t *testing.T) {
 }
 
 func TestNeighborAPI_DistanceKm_NoGPS(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	// Nodes with 0,0 coords → HasGPS=false
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
-		VALUES ('aaaa', 'NodeA', 'repeater', 0, 0, '2026-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
-		VALUES ('bbbb', 'NodeB', 'repeater', 0, 0, '2026-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`)
+	seen := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	lat, lon := 0.0, 0.0
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "aaaa", Name: "NodeA", Role: "repeater", Lat: &lat, Lon: &lon, RxTime: seen, IngestNow: seen,
+	})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "bbbb", Name: "NodeB", Role: "repeater", Lat: &lat, Lon: &lon, RxTime: seen, IngestNow: seen,
+	})
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	srv.store = NewPacketStore(db, nil)
+	srv.store = newPacketStoreForTest(t, db)
 
 	now := time.Now()
 	srv.neighborGraph = makeTestGraph(newEdge("aaaa", "bbbb", "bb", 50, now))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -422,7 +439,7 @@ func TestNeighborGraphAPI_RegionFilter(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1))
 	// No store → region filter has no observers → filters everything out.
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph?region=SJC&min_count=1&min_score=0")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	// With no store, regionObs is nil so filter is skipped → all edges returned.
@@ -465,49 +482,22 @@ func TestNeighborGraphAPI_ResponseShape(t *testing.T) {
 // ─── Tests: buildNodeInfoMap observer enrichment (#753) ────────────────────────
 
 func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
-
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	conn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Seed real nodes/observers rows (real schema — no manual CREATE TABLE needed).
-	for _, stmt := range []string{
-		"INSERT INTO nodes (public_key, name, role, lat, lon) VALUES ('AAAA1111', 'Repeater-1', 'repeater', 0, 0)",
-		"INSERT INTO observers (id, name, iata) VALUES ('BBBB2222', 'Observer-Alpha', '')",
-		"INSERT INTO observers (id, name, iata) VALUES ('AAAA1111', 'Obs-also-repeater', '')",
-	} {
-		if _, err := conn.Exec(stmt); err != nil {
-			t.Fatalf("exec %q: %v", stmt, err)
-		}
-	}
-	ensurePreparable(t, conn)
-	conn.Close()
-
-	// Open via our DB wrapper
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "aaaa1111", Name: "Repeater-1", Role: "repeater", RxTime: now, IngestNow: now,
+	})
+	mustCreateTestObserver(t, ctx, db, "bbbb2222", "Observer-Alpha", "", now)
+	mustCreateTestObserver(t, ctx, db, "aaaa1111", "Obs-also-repeater", "", now)
 
 	// Build a PacketStore with this DB (minimal — just need getCachedNodesAndPM)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	srv := &Server{
@@ -516,7 +506,7 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 		perfStats: NewPerfStats(),
 	}
 
-	m := srv.buildNodeInfoMap()
+	m := srv.buildNodeInfoMap(ctx)
 
 	// AAAA1111 should be from nodes table (repeater), NOT overwritten by observer
 	if info, ok := m["aaaa1111"]; !ok {
@@ -529,7 +519,7 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 	if info, ok := m["bbbb2222"]; !ok {
 		t.Error("expected bbbb2222 in map (observer-only node)")
 	} else {
-		if info.Role != "observer" {
+		if info.Role != types.RoleObserver {
 			t.Errorf("expected role=observer for bbbb2222, got %q", info.Role)
 		}
 		if info.Name != "Observer-Alpha" {
@@ -550,31 +540,18 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 // existing 30s node cache, both calls return the original value — same as
 // every other nodeInfo field that comes from getAllNodes().
 func TestBuildNodeInfoMap_FirstSeenIsCached(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-
-	testfixtures.NewDB(t, dbPath)
-	testfixtures.InsertNode(t, dbPath, testfixtures.Node{
-		PublicKey: "AAAA1111",
-		Name:      "Repeater-1",
-		Role:      "repeater",
-		FirstSeen: "2024-01-01T00:00:00Z",
+	ctx := t.Context()
+	db := setupTestDB(t)
+	firstSeen := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "aaaa1111", Name: "Repeater-1", Role: "repeater",
+		RxTime: firstSeen, IngestNow: firstSeen,
 	})
 
-	// Seed via rw connection.
-	rw, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
 	}
-	defer rw.Close()
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.conn.Close()
-
-	store := NewPacketStore(db, nil)
-	store.Load()
 
 	srv := &Server{
 		db:        db,
@@ -582,84 +559,30 @@ func TestBuildNodeInfoMap_FirstSeenIsCached(t *testing.T) {
 		perfStats: NewPerfStats(),
 	}
 
-	// Call 1: warm cache and record observed first_seen.
-	m1 := srv.buildNodeInfoMap()
+	m1 := srv.buildNodeInfoMap(ctx)
 	first1 := m1["aaaa1111"].FirstSeen
-	if first1 != "2024-01-01T00:00:00Z" {
-		t.Fatalf("setup: expected first_seen=2024-01-01T00:00:00Z, got %q", first1)
+	if !first1.Equal(firstSeen) {
+		t.Fatalf("setup: expected first_seen=%v, got %v", firstSeen, first1)
 	}
 
-	// Mutate first_seen out-of-band via the rw connection. Any code path
-	// that re-reads first_seen from disk (uncached) will see this new
-	// value; a path that folds first_seen into the 30s node cache will
-	// not, because the cache is well under 30s old.
-	if _, err := rw.Exec("UPDATE nodes SET first_seen='2099-12-31T23:59:59Z' WHERE public_key='AAAA1111'"); err != nil {
+	mutated := time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
+	if _, err := db.SQL().ExecContext(ctx, "UPDATE nodes SET first_seen=$1 WHERE public_key='aaaa1111'", mutated); err != nil {
 		t.Fatalf("mutate: %v", err)
 	}
 
-	// Call 2: should match call 1 if first_seen is cached.
-	m2 := srv.buildNodeInfoMap()
+	m2 := srv.buildNodeInfoMap(ctx)
 	first2 := m2["aaaa1111"].FirstSeen
-	if first2 != first1 {
+	if !first2.Equal(first1) {
 		t.Errorf("buildNodeInfoMap re-scanned nodes.first_seen uncached (#1627 r3 regression): "+
-			"call 1 saw %q, call 2 saw %q after out-of-band UPDATE; expected both calls to return "+
-			"the cached value because getCachedNodesAndPM has a 30s TTL",
-			first1, first2)
+			"call 1 saw %v, call 2 saw %v after out-of-band UPDATE; expected both calls to return "+
+			"the snapshot value", first1, first2)
 	}
-}
 
-// TestGetAllNodes_FirstSeenSchemaFallback exercises the schema-probe rung that
-// fires when nodes.first_seen is missing. The richest SELECT errors out, the
-// loop falls through to the next-richest query, and the resulting nodeInfo
-// values must have empty FirstSeen with no panic. Regression coverage for the
-// existing fallback branch (#1632 review loop 1).
-func TestGetAllNodes_FirstSeenSchemaFallback(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
-
-	// This test exercises getAllNodes' 4-rung schema-degradation
-	// fallback (see #1197) for a missing nodes.first_seen column — a
-	// real, still-live code path. OpenDB can no longer produce this
-	// state on a live database, since AssertReady requires the full
-	// goose chain (which unconditionally adds first_seen via
-	// migration 1). We construct *DB directly instead, bypassing
-	// OpenDB's readiness gate on purpose, to keep exercising the
-	// fallback logic itself in isolation.
-	rw, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache after mutate: %v", err)
 	}
-	for _, stmt := range []string{
-		"CREATE TABLE nodes (public_key TEXT PRIMARY KEY, name TEXT, role TEXT, lat REAL, lon REAL, last_seen TEXT, advert_count INTEGER)",
-		"CREATE TABLE observers (id TEXT, name TEXT, iata TEXT, inactive INTEGER)",
-		"INSERT INTO nodes VALUES ('BBBB2222', 'Repeater-2', 'repeater', 0, 0, '2024-02-02T00:00:00Z', 3)",
-	} {
-		if _, err := rw.Exec(stmt); err != nil {
-			t.Fatalf("seed exec %q: %v", stmt, err)
-		}
-	}
-	rw.Close()
-
-	conn, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	db := &DB{conn: conn, path: dbPath}
-
-	store := NewPacketStore(db, nil)
-	nodes := store.getAllNodes()
-	if len(nodes) != 1 {
-		t.Fatalf("expected 1 row from fallback rung, got %d", len(nodes))
-	}
-	n := nodes[0]
-	if n.PublicKey != "BBBB2222" {
-		t.Errorf("PublicKey mismatch: got %q", n.PublicKey)
-	}
-	if n.FirstSeen != "" {
-		t.Errorf("FirstSeen should be empty when nodes.first_seen column is missing, got %q", n.FirstSeen)
-	}
-	if n.ObservationCount != 3 {
-		t.Errorf("ObservationCount should still populate from advert_count fallback, got %d", n.ObservationCount)
+	m3 := srv.buildNodeInfoMap(ctx)
+	if first3 := m3["aaaa1111"].FirstSeen; !first3.Equal(mutated) {
+		t.Errorf("after RefreshNodeCache expected first_seen=%v, got %v — the UPDATE did not take effect, so the cached-value assertion above proved nothing", mutated, first3)
 	}
 }

@@ -5,38 +5,34 @@ import (
 	"time"
 )
 
-// staleObserver inserts an observer already soft-deleted (inactive = 1) with
-// last_seen ageDays in the past, and returns its rowid.
-func staleObserver(t *testing.T, s *Store, id string) int64 {
+// staleObserver inserts an observer already soft-deleted (inactive = TRUE) with
+// last_seen 90 days in the past, and returns its id.
+func staleObserver(t *testing.T, s *Store, pubkey string) int64 {
 	t.Helper()
-	if err := s.UpsertObserver(id, id, "LAX", nil); err != nil {
+	ctx := t.Context()
+	if err := s.UpsertObserver(ctx, pubkey, pubkey, "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().UTC().AddDate(0, 0, -90).Format(time.RFC3339)
-	if _, err := s.db.Exec(`UPDATE observers SET last_seen = ?, inactive = 1 WHERE id = ?`, old, id); err != nil {
-		t.Fatal(err)
+	old := time.Now().UTC().AddDate(0, 0, -90)
+	if n := testExec(t, s, `UPDATE observers SET last_seen = $1, inactive = TRUE WHERE pubkey = $2`, old, pubkey); n != 1 {
+		t.Fatalf("stale update touched %d rows, want 1", n)
 	}
-	var rowid int64
-	if err := s.db.QueryRow(`SELECT rowid FROM observers WHERE id = ?`, id).Scan(&rowid); err != nil {
-		t.Fatal(err)
-	}
-	return rowid
+	var id int64
+	mustScan(t, testRow(t, s, `SELECT id FROM observers WHERE pubkey = $1`, pubkey), &id)
+	return id
 }
 
-func observerExists(t *testing.T, s *Store, id string) bool {
+func observerExists(t *testing.T, s *Store, pubkey string) bool {
 	t.Helper()
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, id).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n > 0
+	return countWhere(t, s, "observers", "pubkey = $1", pubkey) > 0
 }
 
 func TestPurgeStaleObserversDeletesUnreferencedRow(t *testing.T) {
 	store := newTestStore(t)
 	staleObserver(t, store, "obs-gone")
+	ctx := t.Context()
 
-	purged, err := store.PurgeStaleObservers(30)
+	purged, err := store.PurgeStaleObservers(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,21 +49,20 @@ func TestPurgeStaleObserversDeletesUnreferencedRow(t *testing.T) {
 // breaks the packets_v join and mis-attributes historical packets.
 func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 	store := newTestStore(t)
-	rowid := staleObserver(t, store, "obs-referenced")
+	ctx := t.Context()
+	obsID := staleObserver(t, store, "obs-referenced")
+	now := time.Now().UTC()
 
-	if _, err := store.db.Exec(
-		`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (1, 'AA', 'h1', ?)`,
-		time.Now().UTC().Format(time.RFC3339),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(
-		`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES (1, ?, 0)`, rowid,
-	); err != nil {
-		t.Fatal(err)
+	var txID int64
+	mustScan(t, testRow(t, store,
+		`INSERT INTO transmissions (raw_hex, hash, first_seen) VALUES (decode('aa','hex'), 'h1', $1) RETURNING id`, now), &txID)
+	if n := testExec(t, store,
+		`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES ($1, $2, $3)`,
+		txID, obsID, now); n != 1 {
+		t.Fatalf("inserted %d observations, want 1", n)
 	}
 
-	purged, err := store.PurgeStaleObservers(30)
+	purged, err := store.PurgeStaleObservers(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,13 +73,8 @@ func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 		t.Error("obs-referenced was deleted, want kept")
 	}
 
-	var orphans int
-	if err := store.db.QueryRow(
-		`SELECT COUNT(*) FROM observations WHERE observer_idx IS NOT NULL
-		 AND observer_idx NOT IN (SELECT rowid FROM observers)`,
-	).Scan(&orphans); err != nil {
-		t.Fatal(err)
-	}
+	orphans := countWhere(t, store, "observations",
+		"observer_idx IS NOT NULL AND observer_idx NOT IN (SELECT id FROM observers)")
 	if orphans != 0 {
 		t.Errorf("orphaned observations=%d, want 0", orphans)
 	}
@@ -93,15 +83,13 @@ func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 func TestPurgeStaleObserversKeepsObserverWithMetrics(t *testing.T) {
 	store := newTestStore(t)
 	staleObserver(t, store, "obs-metrics")
-
-	if _, err := store.db.Exec(
-		`INSERT INTO observer_metrics (observer_id, timestamp) VALUES ('obs-metrics', ?)`,
-		time.Now().UTC().Format(time.RFC3339),
-	); err != nil {
-		t.Fatal(err)
+	ctx := t.Context()
+	count := testExec(t, store, `INSERT INTO observer_metrics (observer_id, timestamp) VALUES ('obs-metrics', $1)`, time.Now().UTC())
+	if count != 1 {
+		t.Fatal("failed to insert observer metric")
 	}
 
-	purged, err := store.PurgeStaleObservers(30)
+	purged, err := store.PurgeStaleObservers(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,23 +103,28 @@ func TestPurgeStaleObserversKeepsObserverWithMetrics(t *testing.T) {
 
 func TestPurgeStaleObserversKeepsObserverWithDroppedPackets(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	staleObserver(t, store, "obs-dropped")
+	staleObserver(t, store, "obs-unreferenced") // purged, proves the referenced one didn't block it
 
-	if _, err := store.db.Exec(
-		`INSERT INTO dropped_packets (reason, observer_id) VALUES ('bad-sig', 'obs-dropped')`,
-	); err != nil {
-		t.Fatal(err)
+	if n := testExec(t, store,
+		`INSERT INTO dropped_packets (reason, observer_id, dropped_at) VALUES ('bad-sig', $1, $2)`,
+		"obs-dropped", time.Now().UTC()); n != 1 {
+		t.Fatalf("inserted %d dropped packets, want 1", n)
 	}
 
-	purged, err := store.PurgeStaleObservers(30)
+	purged, err := store.PurgeStaleObservers(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if purged != 0 {
-		t.Errorf("purged=%d, want 0 (row is referenced by dropped_packets)", purged)
+	if purged != 1 {
+		t.Errorf("purged=%d, want 1 (only obs-unreferenced)", purged)
 	}
 	if !observerExists(t, store, "obs-dropped") {
-		t.Error("obs-dropped was deleted, want kept")
+		t.Error("obs-dropped was deleted, want kept (referenced by dropped_packets)")
+	}
+	if observerExists(t, store, "obs-unreferenced") {
+		t.Error("obs-unreferenced was kept, want purged")
 	}
 }
 
@@ -139,15 +132,17 @@ func TestPurgeStaleObserversKeepsObserverWithDroppedPackets(t *testing.T) {
 // RemoveStaleObservers — the hard purge only ever finalises an inactive row.
 func TestPurgeStaleObserversKeepsActiveObserver(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.UpsertObserver("obs-active", "Active", "LAX", nil); err != nil {
+	ctx := t.Context()
+	if err := store.UpsertObserver(ctx, "obs-active", "Active", "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().UTC().AddDate(0, 0, -90).Format(time.RFC3339)
-	if _, err := store.db.Exec(`UPDATE observers SET last_seen = ? WHERE id = ?`, old, "obs-active"); err != nil {
-		t.Fatal(err)
+	old := time.Now().UTC().AddDate(0, 0, -90)
+	count := testExec(t, store, `UPDATE observers SET last_seen = $1 WHERE pubkey = $2`, old, "obs-active")
+	if count != 1 {
+		t.Fatal("failed to update observer")
 	}
 
-	purged, err := store.PurgeStaleObservers(30)
+	purged, err := store.PurgeStaleObservers(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,17 +156,17 @@ func TestPurgeStaleObserversKeepsActiveObserver(t *testing.T) {
 
 func TestPurgeStaleObserversKeepsObserverInsideWindow(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.UpsertObserver("obs-recent", "Recent", "LAX", nil); err != nil {
+	ctx := t.Context()
+	if err := store.UpsertObserver(ctx, "obs-recent", "Recent", "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
-	recent := time.Now().UTC().AddDate(0, 0, -20).Format(time.RFC3339)
-	if _, err := store.db.Exec(
-		`UPDATE observers SET last_seen = ?, inactive = 1 WHERE id = ?`, recent, "obs-recent",
-	); err != nil {
-		t.Fatal(err)
+	recent := time.Now().UTC().AddDate(0, 0, -20)
+	count := testExec(t, store, `UPDATE observers SET last_seen = $1, inactive = TRUE WHERE pubkey = $2`, recent, "obs-recent")
+	if count != 1 {
+		t.Fatal("failed to update observer")
 	}
 
-	purged, err := store.PurgeStaleObservers(30)
+	purged, err := store.PurgeStaleObservers(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +182,9 @@ func TestPurgeStaleObserversDisabled(t *testing.T) {
 	store := newTestStore(t)
 	staleObserver(t, store, "obs-kept")
 
+	ctx := t.Context()
 	for _, days := range []int{0, -1} {
-		purged, err := store.PurgeStaleObservers(days)
+		purged, err := store.PurgeStaleObservers(ctx, days)
 		if err != nil {
 			t.Fatal(err)
 		}

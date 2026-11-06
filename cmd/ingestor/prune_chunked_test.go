@@ -1,195 +1,211 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// seedAgedTransmissions inserts n transmissions stamped `age` days in the
-// past, each with obsPerTx child observations, and returns nothing — the
-// caller asserts against the store. Kept local to this file so the batching
-// tests own their fixture shape.
-func seedAgedTransmissions(t *testing.T, store *Store, n, obsPerTx, ageDays int) {
+func fptr(v float64) *float64 { return &v }
+
+// seedAgedTransmissions seeds n transmissions stamped ageDays in the past, each
+// with obsPerTx observations that each carry one hop row. It goes through
+// CreateOrUpdateObserver, CreateOrUpdateTransmission and InsertObservationWithHops
+// so the schema's CHECKs and foreign keys validate the fixture. Each observation
+// slot gets its own observer, which keeps the (transmission, observer, path)
+// dedup key distinct. Kept local to this file so the batching tests own their
+// fixture shape.
+func seedAgedTransmissions(t *testing.T, s *Store, n, obsPerTx, ageDays int) {
 	t.Helper()
-	ts := time.Now().UTC().AddDate(0, 0, -ageDays).Format(time.RFC3339)
-	for i := 0; i < n; i++ {
-		res, err := store.db.Exec(
-			`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json)
-			 VALUES (?, ?, ?, 0, 1, 1, '{}')`,
-			"AA", fmt.Sprintf("h%d-%d", ageDays, i), ts,
-		)
+	ctx := t.Context()
+	at := time.Now().UTC().AddDate(0, 0, -ageDays)
+
+	observerIdx := make([]int64, obsPerTx)
+	for j := 0; j < obsPerTx; j++ {
+		idx, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+			ID:        fmt.Sprintf("%064x", 0x0b00+j),
+			Name:      fmt.Sprintf("prune-obs-%d", j),
+			IATA:      "BRU",
+			Meta:      nil,
+			LastSeen:  at,
+			IngestNow: at,
+		})
 		if err != nil {
-			t.Fatalf("seed tx %d: %v", i, err)
+			t.Fatalf("seed observer %d: %v", j, err)
 		}
-		txID, err := res.LastInsertId()
+		observerIdx[j] = idx
+	}
+
+	for i := 1; i <= n; i++ {
+		txID, _, err := s.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        fmt.Sprintf("%08x%08x", ageDays, i),
+			RawHex:      "AA",
+			RouteType:   types.RouteType(0),
+			PayloadType: types.PayloadType(1),
+			DecodedJSON: "{}",
+		}, at)
 		if err != nil {
-			t.Fatalf("seed tx %d LastInsertId: %v", i, err)
+			t.Fatalf("seed transmission %d: %v", i, err)
 		}
 		for j := 0; j < obsPerTx; j++ {
-			if _, err := store.db.Exec(
-				`INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-				 VALUES (?, ?, 'rx', 1.0, -100, 0, '[]', ?)`,
-				txID, j, time.Now().Unix(),
-			); err != nil {
-				t.Fatalf("seed obs %d/%d: %v", i, j, err)
+			idx := observerIdx[j]
+			_, inserted, err := s.db.InsertObservationWithHops(ctx, database.ObservationInput{
+				TransmissionID: txID,
+				ObserverIdx:    &idx,
+				SNR:            fptr(1.0),
+				RSSI:           fptr(-100),
+				Timestamp:      at,
+			}, []string{"aa"}, []*string{nil})
+			if err != nil {
+				t.Fatalf("seed observation %d/%d: %v", i, j, err)
+			}
+			if !inserted {
+				t.Fatalf("expected observation to be inserted for %d/%d", i, j)
 			}
 		}
 	}
 }
 
-func countRows(t *testing.T, store *Store, table string) int {
-	t.Helper()
-	var n int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
-		t.Fatalf("count %s: %v", table, err)
+// ---- The batching loop, with no database ----
+
+// TestPruneInBatches pins the loop's contract. Batching still matters on
+// Postgres: it bounds transaction size and WAL volume, and how long vacuum
+// waits to reclaim the rows. The number of calls is the deterministic proxy:
+// N calls means no single statement ever deleted more than one batch.
+func TestPruneInBatches(t *testing.T) {
+	const batch = 100
+
+	// fake simulates a table holding `rows` aged rows: each call removes up to limit.
+	fake := func(rows int64, calls *int) pruneBatchFn {
+		return func(_ context.Context, _ time.Time, limit int32) (int64, error) {
+			*calls++
+			n := min(rows, int64(limit))
+			rows -= n
+			return n, nil
+		}
 	}
-	return n
+
+	for _, c := range []struct {
+		name        string
+		rows        int64
+		wantBatches int
+	}{
+		{"nothing aged: one empty batch", 0, 1},
+		{"less than a batch: one short batch ends the loop", 37, 1},
+		{"exactly one batch: a second, empty batch proves nothing is left", batch, 2},
+		{"two full batches plus a partial: no terminating empty batch", 2*batch + 37, 3},
+		{"exact multiple: the last batch is full, so one more runs empty", 2 * batch, 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			calls := 0
+			total, batches, err := pruneInBatches(t.Context(), time.Now(), batch, fake(c.rows, &calls))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if total != c.rows {
+				t.Errorf("total = %d, want %d", total, c.rows)
+			}
+			if batches != c.wantBatches || calls != c.wantBatches {
+				t.Errorf("batches = %d (calls %d), want %d", batches, calls, c.wantBatches)
+			}
+		})
+	}
+
+	t.Run("an error returns what the earlier batches already deleted", func(t *testing.T) {
+		calls := 0
+		total, batches, err := pruneInBatches(t.Context(), time.Now(), batch,
+			func(context.Context, time.Time, int32) (int64, error) {
+				calls++
+				if calls == 2 {
+					return 0, errors.New("boom")
+				}
+				return batch, nil
+			})
+		// Those rows are gone, so reporting 0 would be wrong.
+		if err == nil || total != batch || batches != 1 {
+			t.Fatalf("total/batches/err = %d/%d/%v, want %d/1/boom", total, batches, err, batch)
+		}
+	})
 }
 
-func openPruneStore(t *testing.T, name string) *Store {
-	t.Helper()
-	store, err := OpenStore(filepath.Join(t.TempDir(), name))
+// ---- The real SQL ----
+
+// TestPruneBatchesRunAgainstRealSQL runs the loop with the real batch statement
+// and a small batch, so a fixture of a few hundred rows crosses several batches.
+func TestPruneBatchesRunAgainstRealSQL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := testCtx(t)
+	const batch = 50
+	const aged = batch*2 + 37
+	seedAgedTransmissions(t, s, aged, 2, 10)
+
+	calls := 0
+	total, batches, err := pruneInBatches(ctx, time.Now().UTC().AddDate(0, 0, -5), batch,
+		func(ctx context.Context, cutoff time.Time, limit int32) (int64, error) {
+			calls++
+			return s.db.PruneTransmissionsBatch(ctx, cutoff, limit)
+		})
 	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
-	return store
-}
-
-// TestPruneOldPacketsDeletesInBoundedBatches is the perf assertion for the
-// chunked prune: it enforces that a retention day is deleted across many
-// bounded transactions rather than one long-held writer lock.
-//
-// The old implementation issued exactly ONE WriterTx regardless of row
-// count, holding writerMu — and therefore blocking MQTT ingest — for the
-// whole delete. Measured on a production instance doing ~260k
-// observations/day that was prune_packets hold_ms_p50 = 33905, with
-// mqtt_handler wait_ms_max = 35797.
-//
-// Counting prune_packets transactions is the deterministic proxy for that
-// characteristic: N transactions means the lock was released N-1 times, so
-// the worst-case ingest stall is one batch rather than the full day.
-func TestPruneOldPacketsDeletesInBoundedBatches(t *testing.T) {
-	store := openPruneStore(t, "prune-batched.db")
-
-	// Two full batches plus a partial one. The partial batch is what ends the
-	// loop, so no terminating empty batch should run.
-	const aged = pruneBatchTransmissions*2 + 37
-	seedAgedTransmissions(t, store, aged, 2, 10)
-
-	ResetWriterStatsForTest()
-
-	n, err := store.PruneOldPackets(5)
-	if err != nil {
-		t.Fatalf("PruneOldPackets: %v", err)
+	if total != aged || batches != 3 || calls != 3 {
+		t.Fatalf("total/batches = %d/%d, want %d/3 (the delete must be chunked)", total, batches, aged)
 	}
-	if n != aged {
-		t.Fatalf("expected %d transmissions pruned, got %d", aged, n)
-	}
-
-	// 2 full batches + 1 partial batch, which proves nothing is left.
-	wantTx := int64(3)
-	got := store.WriterStatsSnapshot()["prune_packets"]
-	if got.Count != wantTx {
-		t.Fatalf("expected %d prune_packets transactions for %d rows at batch size %d, got %d "+
-			"(1 means the delete was not chunked and holds the writer lock for the whole retention day)",
-			wantTx, aged, pruneBatchTransmissions, got.Count)
-	}
-
-	if remaining := countRows(t, store, "transmissions"); remaining != 0 {
-		t.Fatalf("expected all aged transmissions gone, %d remain", remaining)
-	}
-	if remaining := countRows(t, store, "observations"); remaining != 0 {
-		t.Fatalf("expected all child observations gone, %d remain", remaining)
+	for _, tbl := range []string{"transmissions", "observations", "observation_frames"} {
+		if n := countRows(t, s, tbl); n != 0 {
+			t.Errorf("%s has %d rows left, want 0", tbl, n)
+		}
 	}
 }
 
-// TestPruneOldPacketsExactMultipleTerminates covers the one case the
-// short-batch exit cannot catch on its own: when the aged rows are an exact
-// multiple of the batch size, the last batch comes back full, so the loop
-// must run one more — empty — batch to learn that nothing is left.
-func TestPruneOldPacketsExactMultipleTerminates(t *testing.T) {
-	store := openPruneStore(t, "prune-exact.db")
-
-	const aged = pruneBatchTransmissions * 2
-	seedAgedTransmissions(t, store, aged, 1, 10)
-
-	ResetWriterStatsForTest()
-
-	n, err := store.PruneOldPackets(5)
-	if err != nil {
-		t.Fatalf("PruneOldPackets: %v", err)
-	}
-	if n != aged {
-		t.Fatalf("expected %d pruned, got %d", aged, n)
-	}
-
-	// 2 full batches + 1 empty batch that finds nothing and ends the loop.
-	if got := store.WriterStatsSnapshot()["prune_packets"].Count; got != 3 {
-		t.Fatalf("expected 3 prune_packets transactions for an exact multiple of the batch size, got %d", got)
-	}
-	if remaining := countRows(t, store, "transmissions"); remaining != 0 {
-		t.Fatalf("expected all aged transmissions gone, %d remain", remaining)
-	}
-	if remaining := countRows(t, store, "observations"); remaining != 0 {
-		t.Fatalf("expected all child observations gone, %d remain", remaining)
-	}
-}
-
-// TestPruneOldPacketsSpansBatchesAndKeepsFreshRows covers the correctness
-// risk the batching introduces: with a LIMIT on both statements, a cutoff
-// that straddles several batches must still delete every aged row and no
-// fresh one, and must not orphan observations.
+// TestPruneOldPacketsSpansBatchesAndKeepsFreshRows covers the correctness risk
+// the batching introduces: with a LIMIT on the batch, a cutoff that straddles
+// several batches must still delete every aged row and no fresh one.
 func TestPruneOldPacketsSpansBatchesAndKeepsFreshRows(t *testing.T) {
-	store := openPruneStore(t, "prune-mixed.db")
-
-	const aged = pruneBatchTransmissions + 11
+	s := newTestStore(t)
+	ctx := testCtx(t)
+	const batch = 50
+	const aged = batch + 11
 	const fresh = 17
 	const obsPerTx = 3
-	seedAgedTransmissions(t, store, aged, obsPerTx, 10)
-	seedAgedTransmissions(t, store, fresh, obsPerTx, 0)
+	seedAgedTransmissions(t, s, aged, obsPerTx, 10)
+	seedAgedTransmissions(t, s, fresh, obsPerTx, 0)
 
-	n, err := store.PruneOldPackets(5)
+	n, err := s.pruneOldPackets(ctx, 5, batch)
 	if err != nil {
-		t.Fatalf("PruneOldPackets: %v", err)
+		t.Fatal(err)
 	}
 	if n != aged {
-		t.Fatalf("expected %d pruned, got %d", aged, n)
+		t.Fatalf("pruned %d, want %d", n, aged)
 	}
-
-	if remaining := countRows(t, store, "transmissions"); remaining != fresh {
-		t.Fatalf("expected %d fresh transmissions kept, got %d", fresh, remaining)
+	if got := countRows(t, s, "transmissions"); got != fresh {
+		t.Errorf("transmissions = %d, want %d fresh kept", got, fresh)
 	}
-	if remaining := countRows(t, store, "observations"); remaining != fresh*obsPerTx {
-		t.Fatalf("expected %d observations kept, got %d", fresh*obsPerTx, remaining)
+	if got := countRows(t, s, "observations"); got != fresh*obsPerTx {
+		t.Errorf("observations = %d, want %d", got, fresh*obsPerTx)
 	}
-
-	// No observation may reference a transmission that is gone.
-	var orphans int
-	if err := store.db.QueryRow(`
-		SELECT COUNT(*) FROM observations o
-		LEFT JOIN transmissions t ON t.id = o.transmission_id
-		WHERE t.id IS NULL`).Scan(&orphans); err != nil {
-		t.Fatalf("orphan check: %v", err)
-	}
-	if orphans != 0 {
-		t.Fatalf("expected no orphaned observations, got %d", orphans)
+	var hops int
+	mustScan(t, testRow(t, s, `SELECT COALESCE(SUM(cardinality(hop_prefixes)), 0)::int FROM observations`), &hops)
+	if hops != fresh*obsPerTx {
+		t.Errorf("hops on surviving observations = %d, want %d", hops, fresh*obsPerTx)
 	}
 }
 
-// TestPruneOldPacketsDisabledTakesNoWriterLock pins the 0/negative
-// short-circuit: retention disabled must not open a transaction at all.
-func TestPruneOldPacketsDisabledTakesNoWriterLock(t *testing.T) {
-	store := openPruneStore(t, "prune-disabled.db")
-	seedAgedTransmissions(t, store, 5, 1, 10)
-
-	ResetWriterStatsForTest()
+// TestPruneOldPacketsDisabledDeletesNothing pins the 0/negative short-circuit.
+// The rows are 10 days old: without the short-circuit, days=0 means a cutoff of
+// now and days=-1 a cutoff in the future, so either would delete them.
+func TestPruneOldPacketsDisabledDeletesNothing(t *testing.T) {
+	s := newTestStore(t)
+	seedAgedTransmissions(t, s, 5, 1, 10)
 
 	for _, days := range []int{0, -1} {
-		n, err := store.PruneOldPackets(days)
+		n, err := s.PruneOldPackets(testCtx(t), days)
 		if err != nil {
 			t.Fatalf("PruneOldPackets(%d): %v", days, err)
 		}
@@ -197,88 +213,49 @@ func TestPruneOldPacketsDisabledTakesNoWriterLock(t *testing.T) {
 			t.Fatalf("PruneOldPackets(%d) = %d, want 0", days, n)
 		}
 	}
-
-	if got := store.WriterStatsSnapshot()["prune_packets"].Count; got != 0 {
-		t.Fatalf("expected no prune_packets transactions when retention is disabled, got %d", got)
-	}
-	if remaining := countRows(t, store, "transmissions"); remaining != 5 {
-		t.Fatalf("expected 5 transmissions untouched, got %d", remaining)
+	if got := countRows(t, s, "transmissions"); got != 5 {
+		t.Fatalf("transmissions = %d, want 5 untouched", got)
 	}
 }
 
-// TestPruneOldPacketsNothingToDeleteRunsOneEmptyBatch documents the
-// steady-state cost when nothing has aged out yet: a single empty batch, then
-// the loop exits. That batch is only cheap because the subquery is walked off
-// idx_transmissions_first_seen — see
-// TestPruneAgedTransmissionIDsUsesFirstSeenIndex.
-func TestPruneOldPacketsNothingToDeleteRunsOneEmptyBatch(t *testing.T) {
-	store := openPruneStore(t, "prune-noop.db")
-	seedAgedTransmissions(t, store, 9, 2, 0)
+// TestPruneOldPacketsNothingAgedKeepsEverything is the steady state when
+// nothing has aged out yet: one empty batch, then the loop exits.
+func TestPruneOldPacketsNothingAgedKeepsEverything(t *testing.T) {
+	s := newTestStore(t)
+	seedAgedTransmissions(t, s, 9, 2, 0)
 
-	ResetWriterStatsForTest()
-
-	n, err := store.PruneOldPackets(5)
+	n, err := s.PruneOldPackets(testCtx(t), 5)
 	if err != nil {
-		t.Fatalf("PruneOldPackets: %v", err)
+		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatalf("expected 0 pruned, got %d", n)
+		t.Fatalf("pruned %d, want 0", n)
 	}
-	if got := store.WriterStatsSnapshot()["prune_packets"].Count; got != 1 {
-		t.Fatalf("expected exactly 1 empty prune_packets transaction, got %d", got)
-	}
-	if remaining := countRows(t, store, "transmissions"); remaining != 9 {
-		t.Fatalf("expected 9 transmissions kept, got %d", remaining)
+	if got := countRows(t, s, "transmissions"); got != 9 {
+		t.Fatalf("transmissions = %d, want 9 kept", got)
 	}
 }
 
-// TestPruneAgedTransmissionIDsUsesFirstSeenIndex pins the query plan of the
-// batch subquery and of both statements that embed it.
+// TestPruneBatchSelectCanUseFirstSeenIndex pins the plan of the batch select.
+// The steady-state, nothing-left batch is cheap only if it walks
+// idx_transmissions_first_seen instead of scanning the table. The ORDER BY
+// includes id as a tiebreaker, so Postgres may add an incremental sort over the
+// index for rows sharing a first_seen. That is expected and cheap with a LIMIT.
+// A composite (first_seen, id) index would remove it, if a real plan ever
+// shows a large sort.
 //
-// Ordering the batch by id instead of first_seen makes SQLite drop
-// idx_transmissions_first_seen for a rowid SCAN. On a 1M-row table that took
-// the terminating, nothing-left batch from ~10µs to ~73ms — once per statement,
-// under writerMu, in the state an instance is in whenever nothing has aged out.
-// Transaction counts cannot see that regression, so the plan is the assertion.
-func TestPruneAgedTransmissionIDsUsesFirstSeenIndex(t *testing.T) {
-	store := openPruneStore(t, "prune-plan.db")
-	seedAgedTransmissions(t, store, 20, 2, 10)
-
-	cutoff := time.Now().UTC().AddDate(0, 0, -5).Format(time.RFC3339)
-	for name, q := range map[string]string{
-		"batch subquery":       pruneAgedTransmissionIDs,
-		"observations delete":  pruneObservationsBatch,
-		"transmissions delete": pruneTransmissionsBatch,
-	} {
-		rows, err := store.db.Query("EXPLAIN QUERY PLAN "+q, cutoff, pruneBatchTransmissions)
-		if err != nil {
-			t.Fatalf("%s: EXPLAIN QUERY PLAN: %v", name, err)
-		}
-		var steps []string
-		for rows.Next() {
-			var id, parent, notused int
-			var detail string
-			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-				rows.Close()
-				t.Fatalf("%s: scan plan row: %v", name, err)
-			}
-			steps = append(steps, detail)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			t.Fatalf("%s: plan rows: %v", name, err)
-		}
-		rows.Close()
-		plan := strings.Join(steps, " | ")
-
-		if !strings.Contains(plan, "idx_transmissions_first_seen") {
-			t.Errorf("%s: plan does not use idx_transmissions_first_seen: %s", name, plan)
-		}
-		if strings.Contains(plan, "SCAN transmissions") {
-			t.Errorf("%s: plan scans transmissions, so the empty terminating batch walks the whole table under writerMu: %s", name, plan)
-		}
-		if strings.Contains(plan, "TEMP B-TREE") {
-			t.Errorf("%s: plan sorts in a temp b-tree instead of walking the index in order: %s", name, plan)
-		}
+// The SQL is a copy of the batch CTE's select in the .sql file, so keep the two
+// in step. This proves the index CAN serve the query, not that the planner
+// chooses it on production data (the post-cutover EXPLAIN ANALYZE covers that).
+func TestPruneBatchSelectCanUseFirstSeenIndex(t *testing.T) {
+	s := newTestStore(t)
+	plan := explainPlan(t, s, `SELECT id FROM transmissions
+		WHERE first_seen < '2026-01-01T00:00:00Z'::timestamptz
+		ORDER BY first_seen, id LIMIT 10000`)
+	if !strings.Contains(plan, "idx_transmissions_first_seen") {
+		t.Errorf("batch select should be able to use idx_transmissions_first_seen, plan was:\n%s", plan)
+	}
+	if strings.Contains(plan, "Seq Scan on transmissions") {
+		t.Errorf("batch select should not need a full scan, plan was:\n%s", plan)
 	}
 }

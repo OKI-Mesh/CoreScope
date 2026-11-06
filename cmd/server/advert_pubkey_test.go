@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestAdvertPubkeyTracking verifies that advertPubkeys is maintained
@@ -14,7 +16,7 @@ func TestAdvertPubkeyTracking(t *testing.T) {
 	ps.mu.Lock()
 
 	// Helper to create an ADVERT StoreTx with a given pubkey.
-	pt4 := 4
+	pt4 := types.PayloadType(4)
 	mkAdvert := func(id int, pubkey string) *StoreTx {
 		d := map[string]interface{}{"pubKey": pubkey}
 		j, _ := json.Marshal(d)
@@ -92,7 +94,7 @@ func TestAdvertPubkeyTracking(t *testing.T) {
 func TestAdvertPubkeyPublicKeyField(t *testing.T) {
 	ps := NewPacketStore(nil, nil)
 	ps.mu.Lock()
-	pt4 := 4
+	pt4 := types.PayloadType(4)
 	d, _ := json.Marshal(map[string]interface{}{"public_key": "pk_legacy"})
 	tx := &StoreTx{ID: 1, Hash: "h1", PayloadType: &pt4, DecodedJSON: string(d)}
 	ps.trackAdvertPubkey(tx)
@@ -109,7 +111,7 @@ func TestAdvertPubkeyPublicKeyField(t *testing.T) {
 func TestAdvertPubkeyNonAdvert(t *testing.T) {
 	ps := NewPacketStore(nil, nil)
 	ps.mu.Lock()
-	pt2 := 2
+	pt2 := types.PayloadType(2)
 	d, _ := json.Marshal(map[string]interface{}{"pubKey": "pk_text"})
 	tx := &StoreTx{ID: 1, Hash: "h1", PayloadType: &pt2, DecodedJSON: string(d)}
 	ps.trackAdvertPubkey(tx)
@@ -128,7 +130,7 @@ func TestAdvertPubkeyNonAdvert(t *testing.T) {
 func BenchmarkGetPerfStoreStats(b *testing.B) {
 	ps := NewPacketStore(nil, nil)
 	ps.mu.Lock()
-	pt4 := 4
+	pt4 := types.PayloadType(4)
 	for i := 0; i < 5000; i++ {
 		pk := fmt.Sprintf("pk_%04d", i%200) // 200 distinct pubkeys
 		d, _ := json.Marshal(map[string]interface{}{"pubKey": pk})
@@ -156,7 +158,7 @@ func BenchmarkGetPerfStoreStats(b *testing.B) {
 func BenchmarkGetPerfStoreStatsTyped(b *testing.B) {
 	ps := NewPacketStore(nil, nil)
 	ps.mu.Lock()
-	pt4 := 4
+	pt4 := types.PayloadType(4)
 	for i := 0; i < 5000; i++ {
 		pk := fmt.Sprintf("pk_%04d", i%200)
 		d, _ := json.Marshal(map[string]interface{}{"pubKey": pk})

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // DecodePathFromRawHex extracts the header path hops directly from raw hex bytes.
@@ -24,7 +26,7 @@ func DecodePathFromRawHex(rawHex string) ([]string, error) {
 
 	headerByte := buf[0]
 	offset := 1
-	if IsTransportRoute(int(headerByte & 0x03)) {
+	if IsTransportRoute(types.RouteType(headerByte & 0x03)) {
 		if len(buf) < offset+4 {
 			return nil, fmt.Errorf("too short for transport codes")
 		}
@@ -58,7 +60,7 @@ func DecodePathFromRawHex(rawHex string) ([]string, error) {
 // forced to source hops from the decoded payload instead.
 //
 // Prefer this over DecodePathFromRawHex when the payload type is known.
-func DecodeHopsForPayload(rawHex string, payloadType byte) ([]string, error) {
+func DecodeHopsForPayload(rawHex string, payloadType types.PayloadType) ([]string, error) {
 	if !PathBytesAreHops(payloadType) {
 		return nil, ErrPayloadHasNoHeaderHops
 	}

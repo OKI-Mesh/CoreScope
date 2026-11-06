@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -33,45 +35,17 @@ func (c *Config) CriticalBatteryMv() int {
 	return 3000
 }
 
-// NodeBatterySample is a single (timestamp, battery_mv) point.
-type NodeBatterySample struct {
+type NodeBatterySampleResponse struct {
 	Timestamp string `json:"timestamp"`
 	BatteryMv int    `json:"battery_mv"`
 }
 
-// GetNodeBatteryHistory returns time-ordered battery_mv samples for a node,
-// pulled from observer_metrics by joining observers.id (uppercase pubkey)
-// against the node's public_key (lowercase). Rows with NULL battery are skipped.
-//
-// The match is case-insensitive on observer_id to tolerate historical
-// variation in pubkey casing.
-func (db *DB) GetNodeBatteryHistory(pubkey, since string) ([]NodeBatterySample, error) {
-	if pubkey == "" {
-		return nil, nil
+func nodeBatteryToResponse(rows []database.NodeBatterySample) []NodeBatterySampleResponse {
+	out := make([]NodeBatterySampleResponse, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, NodeBatterySampleResponse{Timestamp: formatTS(r.Timestamp), BatteryMv: r.BatteryMv})
 	}
-	pk := strings.ToLower(pubkey)
-	rows, err := db.conn.Query(`
-		SELECT timestamp, battery_mv
-		FROM observer_metrics
-		WHERE LOWER(observer_id) = ?
-		  AND battery_mv IS NOT NULL
-		  AND timestamp >= ?
-		ORDER BY timestamp ASC`, pk, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []NodeBatterySample
-	for rows.Next() {
-		var ts string
-		var mv int
-		if err := rows.Scan(&ts, &mv); err != nil {
-			return nil, err
-		}
-		out = append(out, NodeBatterySample{Timestamp: ts, BatteryMv: mv})
-	}
-	return out, rows.Err()
+	return out
 }
 
 // handleNodeBattery serves GET /api/nodes/{pubkey}/battery?days=N (#663).
@@ -83,6 +57,7 @@ func (db *DB) GetNodeBatteryHistory(pubkey, since string) ([]NodeBatterySample, 
 //   - "ok"       : latest_mv >= LowBatteryMv
 //   - "unknown"  : no samples in window
 func (s *Server) handleNodeBattery(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	pubkey := mux.Vars(r)["pubkey"]
 	if pubkey == "" {
 		writeError(w, 400, "missing pubkey")
@@ -90,13 +65,13 @@ func (s *Server) handleNodeBattery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 404 if node unknown — keeps URL space tidy and matches /health behavior.
-	node, err := s.db.GetNodeByPubkey(pubkey)
-	if err != nil {
-		writeError(w, 500, err.Error())
+	_, err := s.db.GetNodeByPubkey(ctx, pubkey)
+	if errors.Is(err, database.ErrNotFound) {
+		writeError(w, 404, "node not found")
 		return
 	}
-	if node == nil {
-		writeError(w, 404, "node not found")
+	if err != nil {
+		writeError(w, 500, err.Error())
 		return
 	}
 
@@ -104,16 +79,14 @@ func (s *Server) handleNodeBattery(w http.ResponseWriter, r *http.Request) {
 	if d, _ := strconv.Atoi(r.URL.Query().Get("days")); d > 0 && d <= 365 {
 		days = d
 	}
-	since := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+	since := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
 
-	samples, err := s.db.GetNodeBatteryHistory(pubkey, since)
+	rows, err := s.db.GetNodeBatteryHistory(ctx, pubkey, since)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
-	if samples == nil {
-		samples = []NodeBatterySample{}
-	}
+	samples := nodeBatteryToResponse(rows)
 
 	low := s.cfg.LowBatteryMv()
 	crit := s.cfg.CriticalBatteryMv()

@@ -14,6 +14,7 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // AreaEntry defines a geographic area by polygon or bounding box.
@@ -37,10 +38,11 @@ type ListLimitsConfig struct {
 
 // Config mirrors the Node.js config.json structure (read-only fields).
 type Config struct {
-	Port       int               `json:"port"`
-	APIKey     string            `json:"apiKey"`
-	DBPath     string            `json:"dbPath"`
-	ListLimits *ListLimitsConfig `json:"listLimits"`
+	Port           int               `json:"port"`
+	APIKey         string            `json:"apiKey"`
+	ListLimits     *ListLimitsConfig `json:"listLimits"`
+	PruneQueuePath string            `json:"pruneQueuePath"`
+	SnapshotDir    string            `json:"snapshotDir"`
 
 	// NodeBlacklist is a list of public keys to exclude from all API responses.
 	// Blacklisted nodes are hidden from node lists, search, detail, map, and stats.
@@ -336,14 +338,6 @@ type RetentionConfig struct {
 
 // DBConfig is the shared SQLite vacuum/maintenance config (#919, #921).
 type DBConfig = dbconfig.DBConfig
-
-// IncrementalVacuumPages returns the configured pages per vacuum or 1024 default.
-func (c *Config) IncrementalVacuumPages() int {
-	if c.DB != nil && c.DB.IncrementalVacuumPages > 0 {
-		return c.DB.IncrementalVacuumPages
-	}
-	return 1024
-}
 
 // MetricsRetentionDays returns configured metrics retention or 30 days default.
 func (c *Config) MetricsRetentionDays() int {
@@ -678,9 +672,9 @@ func (c *Config) GetPathTrust() PathTrustConfig {
 }
 
 // GetHealthMs returns degraded/silent thresholds in ms for a given role.
-func (h HealthThresholds) GetHealthMs(role string) (degradedMs, silentMs int) {
+func (h HealthThresholds) GetHealthMs(role types.NodeRole) (degradedMs, silentMs int) {
 	const hourMs = 3600000
-	if role == "repeater" || role == "room" {
+	if role.RelaysTraffic() {
 		return int(h.InfraDegradedHours * hourMs), int(h.InfraSilentHours * hourMs)
 	}
 	return int(h.NodeDegradedHours * hourMs), int(h.NodeSilentHours * hourMs)
@@ -700,15 +694,16 @@ func (h HealthThresholds) ToClientMs() map[string]int {
 	}
 }
 
-func (c *Config) ResolveDBPath(baseDir string) string {
-	if c.DBPath != "" {
-		return c.DBPath
-	}
-	if v := os.Getenv("DB_PATH"); v != "" {
-		return v
-	}
-	return filepath.Join(baseDir, "data", "meshcore.db")
-}
+//TODO: ValidateDSN
+// func (c *Config) ResolveDBPath(baseDir string) string {
+// 	if c.DBPath != "" {
+// 		return c.DBPath
+// 	}
+// 	if v := os.Getenv("DB_PATH"); v != "" {
+// 		return v
+// 	}
+// 	return filepath.Join(baseDir, "data", "meshcore.db")
+// }
 
 func (c *Config) NormalizeTimestampConfig() {
 	defaults := defaultTimestampConfig()

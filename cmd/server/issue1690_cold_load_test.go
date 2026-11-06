@@ -14,31 +14,48 @@ package main
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 )
 
-// createTestDBWithLastSeen seeds a DB with the post-fix schema (last_seen
-// column on transmissions). nowSec is the unix-second reference; fixture
-// rows are placed relative to it.
-//
-// numTx transmissions, each with first_seen = nowSec - firstSeenAgo, and
-// last_seen = nowSec - lastSeenAgo. Each tx has obsPerTx observations whose
-// timestamps are within the last 20 minutes.
-//
-// Thin wrapper over seedTestDBRows (PR #1811 adv #2 — DRY). The schema
-// DDL and the block-level PREFLIGHT async-migration annotation live
-// there; this helper only supplies the row-time policy used by the
-// #1690 fixture (fixed first_seen, fixed last_seen).
-func createTestDBWithLastSeen(t *testing.T, dbPath string, numTx, obsPerTx int, nowSec int64, firstSeenAgo, lastSeenAgo time.Duration) {
+// createTestDBWithLastSeen seeds rows with distinct first_seen and last_seen
+// timestamps. Bulk SQL keeps the 5,000-row memory-budget test practical.
+func createTestDBWithLastSeen(t *testing.T, numTx, obsPerTx int, nowSec int64, firstSeenAgo, lastSeenAgo time.Duration) string {
 	t.Helper()
-	firstSeenTime := time.Unix(nowSec, 0).UTC().Add(-firstSeenAgo).Format(time.RFC3339)
-	lastSeenUnix := nowSec - int64(lastSeenAgo.Seconds())
-	seedTestDBRows(t, dbPath, numTx, obsPerTx, func(i int) (string, int64) {
-		return firstSeenTime, lastSeenUnix
-	})
+	dsn := pgtest.NewDatabase(t)
+	ctx := t.Context()
+	db, err := database.OpenReadWrite(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Unix(nowSec, 0).UTC()
+	firstSeen := now.Add(-firstSeenAgo)
+	lastSeen := now.Add(-lastSeenAgo)
+	observerID := mustCreateTestObserver(t, ctx, db, "obs1", "Obs1", "", now)
+	if _, err := db.SQL().ExecContext(ctx, `
+		INSERT INTO transmissions
+			(raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
+		SELECT 'aabb', 'cold' || lpad(i::text, 8, '0'), $1, 0, 4, 1, '{}', $2
+		FROM generate_series(1, $3::int) AS i`, firstSeen, lastSeen, numTx); err != nil {
+		t.Fatalf("seed transmissions: %v", err)
+	}
+	if _, err := db.SQL().ExecContext(ctx, `
+		INSERT INTO observations
+			(transmission_id, observer_idx, direction, snr, rssi, score, timestamp)
+		SELECT tx.id, $1, 'RX', -10.0, -80.0, 5,
+		       tx.last_seen - (obs.n * interval '1 minute')
+		FROM transmissions tx
+		CROSS JOIN generate_series(0, $2::int - 1) AS obs(n)
+		WHERE tx.hash LIKE 'cold%'`, observerID, obsPerTx); err != nil {
+		t.Fatalf("seed observations: %v", err)
+	}
+	return dsn
 }
 
 // Test1690_ColdLoad_TimeAxis seeds 1000 transmissions whose hash *first
@@ -47,26 +64,25 @@ func createTestDBWithLastSeen(t *testing.T, dbPath string, numTx, obsPerTx int, 
 // loads zero rows; the post-fix code (filtering on last_seen) must load
 // all 1000.
 func Test1690_ColdLoad_TimeAxis(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
 
 	nowSec := time.Now().UTC().Unix()
-	createTestDBWithLastSeen(t, dbPath, 1000, 1, nowSec,
+	dbPath := createTestDBWithLastSeen(t, 1000, 1, nowSec,
 		30*24*time.Hour, // first_seen = 30d ago
 		30*time.Minute)  // last_seen = 30min ago
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 	})
 
-	if err := store.LoadChunked(0); err != nil {
+	if err := store.LoadChunked(ctx, 0); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 
@@ -84,31 +100,30 @@ func Test1690_ColdLoad_TimeAxis(t *testing.T) {
 // loadBackgroundChunks runs, backgroundLoadDone must be FALSE and
 // backgroundLoadFailed must be TRUE because actual coverage is < 90%.
 func Test1690_BackgroundLoadHonesty(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
 
 	nowSec := time.Now().UTC().Unix()
 	// 5000 rows; chunkSize=500 + maxMemoryMB=1 (→ maxPackets ≈ 1000) so
 	// the load breaks at the end of the chunk that crosses the cap and
 	// totalLoaded ≪ 5000.
-	createTestDBWithLastSeen(t, dbPath, 5000, 1, nowSec,
+	dbPath := createTestDBWithLastSeen(t, 5000, 1, nowSec,
 		30*time.Minute, 30*time.Minute)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 		MaxMemoryMB:     1, // forces bounded load ≪ 5000 rows
 	})
-	if err := store.LoadChunked(500); err != nil {
+	if err := store.LoadChunked(ctx, 500); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
-	store.loadBackgroundChunks()
+	store.loadBackgroundChunks(ctx)
 
 	if store.backgroundLoadDone.Load() {
 		t.Errorf("backgroundLoadDone=true with only %d/5000 packets loaded; "+
@@ -130,24 +145,23 @@ func Test1690_BackgroundLoadHonesty(t *testing.T) {
 // Test1690_PerfStats_NewFields asserts the typed perf payload exposes the
 // retention/coverage fields needed for prod observability.
 func Test1690_PerfStats_NewFields(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
 
 	nowSec := time.Now().UTC().Unix()
-	createTestDBWithLastSeen(t, dbPath, 10, 1, nowSec,
+	dbPath := createTestDBWithLastSeen(t, 10, 1, nowSec,
 		30*time.Minute, 30*time.Minute)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  168,
 		HotStartupHours: 1,
 	})
-	if err := store.LoadChunked(0); err != nil {
+	if err := store.LoadChunked(ctx, 0); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 

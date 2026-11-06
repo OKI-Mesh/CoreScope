@@ -8,8 +8,10 @@ import (
 // ADVERT comes from a node whose GPS is OUTSIDE the configured geofilter,
 // the ingestor (in default "flag" mode) stores the node and marks it foreign,
 // instead of silently dropping it (#730).
+
 func TestHandleMessageAdvertForeign_FlagModeStoresWithFlag(t *testing.T) {
 	store, source := newTestContext(t)
+	ctx := t.Context()
 
 	// Real ADVERT raw hex from existing TestHandleMessageAdvertGeoFiltered.
 	// Decoder will produce a node with a known GPS — the test below just
@@ -29,22 +31,17 @@ func TestHandleMessageAdvertForeign_FlagModeStoresWithFlag(t *testing.T) {
 		payload: []byte(`{"raw":"` + rawHex + `"}`),
 	}
 	// Default mode (no ForeignAdverts.Mode set) MUST be "flag", per #730 design.
-	handleMessage(store, "test", source, msg, nil, nil, &Config{GeoFilter: gf})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{GeoFilter: gf})
 
-	var nodeCount int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&nodeCount); err != nil {
-		t.Fatal(err)
-	}
+	nodeCount := countRows(t, store, "nodes")
 	if nodeCount != 1 {
 		t.Fatalf("nodes=%d, want 1 (foreign advert should be stored, not dropped, in flag mode)", nodeCount)
 	}
 
-	var foreign int
-	if err := store.db.QueryRow("SELECT foreign_advert FROM nodes").Scan(&foreign); err != nil {
-		t.Fatalf("foreign_advert column missing or unreadable: %v", err)
-	}
-	if foreign != 1 {
-		t.Errorf("foreign_advert=%d, want 1", foreign)
+	var foreign bool
+	mustScan(t, testRow(t, store, "SELECT foreign_advert FROM nodes"), &foreign)
+	if !foreign {
+		t.Errorf("foreign_advert=%v, want true", foreign)
 	}
 }
 
@@ -52,6 +49,7 @@ func TestHandleMessageAdvertForeign_FlagModeStoresWithFlag(t *testing.T) {
 // drop-on-foreign behavior is preserved when ForeignAdverts.Mode = "drop".
 func TestHandleMessageAdvertForeign_DropModeStillDrops(t *testing.T) {
 	store, source := newTestContext(t)
+	ctx := t.Context()
 
 	rawHex := "120046D62DE27D4C5194D7821FC5A34A45565DCC2537B300B9AB6275255CEFB65D840CE5C169C94C9AED39E8BCB6CB6EB0335497A198B33A1A610CD3B03D8DCFC160900E5244280323EE0B44CACAB8F02B5B38B91CFA18BD067B0B5E63E94CFC85F758A8530B9240933402E0E6B8F84D5252322D52"
 
@@ -70,12 +68,9 @@ func TestHandleMessageAdvertForeign_DropModeStillDrops(t *testing.T) {
 		GeoFilter:      gf,
 		ForeignAdverts: &ForeignAdvertConfig{Mode: "drop"},
 	}
-	handleMessage(store, "test", source, msg, nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
-	var nodeCount int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&nodeCount); err != nil {
-		t.Fatal(err)
-	}
+	nodeCount := countRows(t, store, "nodes")
 	if nodeCount != 0 {
 		t.Errorf("nodes=%d, want 0 (drop mode preserves legacy silent-drop behavior)", nodeCount)
 	}
@@ -85,6 +80,7 @@ func TestHandleMessageAdvertForeign_DropModeStillDrops(t *testing.T) {
 // adverts are NOT marked foreign.
 func TestHandleMessageAdvertInRegion_NotFlaggedForeign(t *testing.T) {
 	store, source := newTestContext(t)
+	ctx := t.Context()
 
 	rawHex := "120046D62DE27D4C5194D7821FC5A34A45565DCC2537B300B9AB6275255CEFB65D840CE5C169C94C9AED39E8BCB6CB6EB0335497A198B33A1A610CD3B03D8DCFC160900E5244280323EE0B44CACAB8F02B5B38B91CFA18BD067B0B5E63E94CFC85F758A8530B9240933402E0E6B8F84D5252322D52"
 
@@ -99,14 +95,11 @@ func TestHandleMessageAdvertInRegion_NotFlaggedForeign(t *testing.T) {
 		topic:   "meshcore/SJC/obs1/packets",
 		payload: []byte(`{"raw":"` + rawHex + `"}`),
 	}
-	handleMessage(store, "test", source, msg, nil, nil, &Config{GeoFilter: gf})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{GeoFilter: gf})
 
-	var foreign int
-	err := store.db.QueryRow("SELECT foreign_advert FROM nodes").Scan(&foreign)
-	if err != nil {
-		t.Fatalf("query foreign_advert: %v", err)
-	}
-	if foreign != 0 {
-		t.Errorf("foreign_advert=%d, want 0 (in-region node)", foreign)
+	var foreign bool
+	mustScan(t, testRow(t, store, "SELECT foreign_advert FROM nodes"), &foreign)
+	if foreign {
+		t.Errorf("foreign_advert=%v, want false (in-region node)", foreign)
 	}
 }

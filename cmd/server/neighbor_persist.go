@@ -16,11 +16,13 @@
 package main
 
 import (
-	"database/sql"
-	"encoding/json"
+	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // ─── neighbor_edges loader (read-only) ─────────────────────────────────────────
@@ -28,30 +30,22 @@ import (
 // loadNeighborEdgesFromDB loads all edges from the neighbor_edges table
 // and builds an in-memory NeighborGraph. Called on server startup and
 // from the recompNeighborGraph background recomputer (#1287).
-func loadNeighborEdgesFromDB(conn *sql.DB) *NeighborGraph {
-	g := NewNeighborGraph()
-
-	rows, err := conn.Query("SELECT node_a, node_b, count, last_seen FROM neighbor_edges")
+// loadNeighborEdgesFromDB loads all edges from neighbor_edges and builds an
+// in-memory NeighborGraph. Called on server startup and from the
+// recompNeighborGraph background recomputer (#1287). On error it returns
+// no graph, so the recomputer keeps serving the previous one.
+func loadNeighborEdgesFromDB(ctx context.Context, db *database.DB) (*NeighborGraph, error) {
+	rows, err := db.ListNeighborEdges(ctx)
 	if err != nil {
-		log.Printf("[neighbor] failed to load neighbor_edges: %v", err)
-		return g
+		return nil, fmt.Errorf("load neighbor_edges: %w", err)
 	}
-	defer rows.Close()
 
-	count := 0
-	for rows.Next() {
-		var a, b string
-		var cnt int
-		var lastSeen sql.NullString
-		if err := rows.Scan(&a, &b, &cnt, &lastSeen); err != nil {
-			continue
-		}
-		ts := time.Time{}
-		if lastSeen.Valid {
-			ts = parseTimestamp(lastSeen.String)
-		}
-		key := makeEdgeKey(a, b)
-		g.mu.Lock()
+	g := NewNeighborGraph()
+	g.mu.Lock() // the graph is not shared yet; one lock for the whole build
+	for _, row := range rows {
+		cnt := int(row.Count)
+		ts := row.LastSeen
+		key := makeEdgeKey(row.NodeA, row.NodeB)
 		e, exists := g.edges[key]
 		if !exists {
 			// Persisted snapshot stores only the flat Count — no per-mode
@@ -75,42 +69,28 @@ func loadNeighborEdgesFromDB(conn *sql.DB) *NeighborGraph {
 			g.edges[key] = e
 			g.byNode[key.A] = append(g.byNode[key.A], e)
 			g.byNode[key.B] = append(g.byNode[key.B], e)
-		} else {
-			e.Count += cnt
-			if e.CountsByMode == nil {
-				e.CountsByMode = make(map[int]int)
-			}
-			if cnt > 0 {
-				e.CountsByMode[0] += cnt
-			}
-			if ts.After(e.LastSeen) {
-				e.LastSeen = ts
-			}
+			continue
 		}
-		g.mu.Unlock()
-		count++
+		e.Count += cnt
+		if e.CountsByMode == nil {
+			e.CountsByMode = make(map[int]int)
+		}
+		if cnt > 0 {
+			e.CountsByMode[0] += cnt
+		}
+		if ts.After(e.LastSeen) {
+			e.LastSeen = ts
+		}
 	}
-
-	if count > 0 {
-		g.mu.Lock()
+	if len(rows) > 0 {
 		g.builtAt = time.Now()
-		g.mu.Unlock()
-		log.Printf("[neighbor] loaded %d edges from neighbor_edges table", count)
 	}
+	g.mu.Unlock()
 
-	return g
-}
-
-// neighborEdgesTableExists returns true when neighbor_edges contains at
-// least one row. Used by main.go to decide between "load snapshot" and
-// "start with empty graph and wait for the ingestor to populate it".
-func neighborEdgesTableExists(conn *sql.DB) bool {
-	var cnt int
-	err := conn.QueryRow("SELECT COUNT(*) FROM neighbor_edges").Scan(&cnt)
-	if err != nil {
-		return false
+	if len(rows) > 0 {
+		log.Printf("[neighbor] loaded %d edges from neighbor_edges table", len(rows))
 	}
-	return cnt > 0
+	return g, nil
 }
 
 // ─── resolved_path helpers (read-only / in-memory only) ────────────────────────
@@ -196,28 +176,4 @@ func resolvePathForObsColdLoad(pathJSON, observerID string, tx *StoreTx, pm *pre
 		// resolved[i] stays nil; extractResolvedPubkeys filters it out.
 	}
 	return resolved
-}
-
-// marshalResolvedPath converts []*string to JSON for in-memory caching.
-func marshalResolvedPath(rp []*string) string {
-	if len(rp) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(rp)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// unmarshalResolvedPath parses a resolved_path JSON string.
-func unmarshalResolvedPath(s string) []*string {
-	if s == "" {
-		return nil
-	}
-	var result []*string
-	if json.Unmarshal([]byte(s), &result) != nil {
-		return nil
-	}
-	return result
 }

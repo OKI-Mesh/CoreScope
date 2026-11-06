@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -25,60 +27,98 @@ import (
 // Expected sort: B (newest) → C (middle) → A (oldest)
 // Also covers: when LastSeen is equal, Count descending is the tiebreaker.
 func TestHandleNodePaths_SortByRecency_1145(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 
-	targetPK := "aabbccdd11111111"
-	relay1PK := "1111111100000000"
-	relay2PK := "2222222200000000"
+	targetPK := "aabbccdd" + strings.Repeat("1", 56)
+	relay1PK := "11" + strings.Repeat("0", 62)
+	relay2PK := "22" + strings.Repeat("0", 62)
+	observerKey := scopeKey(30)
 
-	epoch := func(ts string) int64 {
-		v, _ := time.Parse(time.RFC3339, ts)
-		return v.Unix()
-	}
-
-	// Only the target node needs to be in the nodes table.
-	// Relay pubkeys appear only in resolved_path; they don't need a nodes row.
-	mustExec(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'Target', 'repeater', 0, 0, '2026-05-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`, targetPK)
-
-	// -- Path A (via relay1): 3 txs, last seen 2026-01-03 → group sig "relay1PK→targetPK" --
-	for txID, ts := range map[int]string{
-		1: "2026-01-01T00:00:00Z",
-		2: "2026-01-02T00:00:00Z",
-		3: "2026-01-03T00:00:00Z",
+	seenAt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	for _, n := range []struct {
+		pk   string
+		name string
+	}{
+		{targetPK, "Target"},
+		{relay1PK, "Relay One"},
+		{relay2PK, "Relay Two"},
 	} {
-		mustExec(t, db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, 'AA', ?, ?)`,
-			txID, "hashA"+string(rune('0'+txID)), ts)
-		mustExec(t, db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-			VALUES (?, NULL, '["11", "aa"]', ?, ?)`,
-			txID, epoch(ts), `["`+relay1PK+`", "`+targetPK+`"]`)
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: n.pk,
+			Name:      n.name,
+			Role:      "repeater",
+			Lat:       nil,
+			Lon:       nil,
+			RxTime:    seenAt,
+			IngestNow: seenAt,
+		}); err != nil {
+			t.Fatalf("seed node %s: %v", n.name, err)
+		}
 	}
 
-	// -- Path B (via relay2): 1 tx, last seen 2026-05-01 → group sig "relay2PK→targetPK" --
-	mustExec(t, db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (4, 'BB', 'hashB1', '2026-05-01T00:00:00Z')`)
-	mustExec(t, db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (4, NULL, '["22", "aa"]', ?, ?)`,
-		epoch("2026-05-01T00:00:00Z"), `["`+relay2PK+`", "`+targetPK+`"]`)
-
-	// -- Path C (direct — target is sole hop): 2 txs, last seen 2026-03-02 --
-	for txID, ts := range map[int]string{
-		5: "2026-03-01T00:00:00Z",
-		6: "2026-03-02T00:00:00Z",
-	} {
-		mustExec(t, db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, 'CC', ?, ?)`,
-			txID, "hashC"+string(rune('0'+txID)), ts)
-		mustExec(t, db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-			VALUES (?, NULL, '["aa"]', ?, ?)`,
-			txID, epoch(ts), `["`+targetPK+`"]`)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        observerKey,
+		Name:      "Recency Observer",
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  seenAt,
+		IngestNow: seenAt,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
 
-	// Wire up server + store
+	packets := []struct {
+		hash     string
+		rawHex   string
+		at       time.Time
+		hops     []string
+		resolved []*string
+	}{
+		{"a000000000000001", "aa", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), []string{"11", "aa"}, []*string{sptr(relay1PK), sptr(targetPK)}},
+		{"a000000000000002", "aa", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), []string{"11", "aa"}, []*string{sptr(relay1PK), sptr(targetPK)}},
+		{"a000000000000003", "aa", time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), []string{"11", "aa"}, []*string{sptr(relay1PK), sptr(targetPK)}},
+		{"b000000000000001", "bb", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), []string{"22", "aa"}, []*string{sptr(relay2PK), sptr(targetPK)}},
+		{"c000000000000001", "cc", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), []string{"aa"}, []*string{sptr(targetPK)}},
+		{"c000000000000002", "cc", time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC), []string{"aa"}, []*string{sptr(targetPK)}},
+	}
+	for _, p := range packets {
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        p.hash,
+			RawHex:      p.rawHex,
+			RouteType:   1,
+			PayloadType: 4,
+			DecodedJSON: "{}",
+		}, p.at)
+		if err != nil {
+			t.Fatalf("seed transmission %s: %v", p.hash, err)
+		}
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    iptr64(obsIdx),
+			SNR:            fptr(5.0),
+			RSSI:           fptr(-90.0),
+			Timestamp:      p.at,
+		}, p.hops, p.resolved)
+		if err != nil {
+			t.Fatalf("seed observation %s: %v", p.hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+	}
+
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()
@@ -102,7 +142,6 @@ func TestHandleNodePaths_SortByRecency_1145(t *testing.T) {
 		t.Errorf("expected TotalTransmissions=6, got %d", resp.TotalTransmissions)
 	}
 
-	// Sort order: B (newest, 2026-05-01) → C (middle, 2026-03-02) → A (oldest, 2026-01-03)
 	wantCounts := []int{1, 2, 3}
 	for i, want := range wantCounts {
 		got := resp.Paths[i].Count
@@ -115,45 +154,96 @@ func TestHandleNodePaths_SortByRecency_1145(t *testing.T) {
 // TestHandleNodePaths_SortCountTiebreaker_1145 verifies that when two paths
 // have identical LastSeen, the one with higher Count appears first.
 func TestHandleNodePaths_SortCountTiebreaker_1145(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 
-	targetPK := "ccddeeFF11111111"
-	relay1PK := "aaaa111100000000"
-	relay2PK := "bbbb222200000000"
-	sameTS := "2026-04-15T12:00:00Z"
-	epoch := func(ts string) int64 {
-		v, _ := time.Parse(time.RFC3339, ts)
-		return v.Unix()
-	}
+	targetPK := "ccddeeff" + strings.Repeat("1", 56)
+	relay1PK := "aa" + strings.Repeat("1", 62)
+	relay2PK := "bb" + strings.Repeat("2", 62)
+	observerKey := scopeKey(31)
+	sameTS := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
 
-	mustExec(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'Tgt', 'repeater', 0, 0, ?, '2026-01-01T00:00:00Z', 1)`, targetPK, sameTS)
-
-	// Path X: 3 txs, all at sameTS → higher count
-	for txID, ts := range map[int]string{
-		10: "2026-04-15T11:00:00Z",
-		11: "2026-04-15T11:30:00Z",
-		12: sameTS,
+	for _, n := range []struct {
+		pk   string
+		name string
+	}{
+		{targetPK, "Tgt"},
+		{relay1PK, "Relay One"},
+		{relay2PK, "Relay Two"},
 	} {
-		mustExec(t, db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, 'XX', ?, ?)`,
-			txID, "hashX"+string(rune('0'+txID)), ts)
-		mustExec(t, db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-			VALUES (?, NULL, '["aa", "cc"]', ?, ?)`,
-			txID, epoch(ts), `["`+relay1PK+`", "`+targetPK+`"]`)
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: n.pk,
+			Name:      n.name,
+			Role:      "repeater",
+			Lat:       nil,
+			Lon:       nil,
+			RxTime:    sameTS,
+			IngestNow: sameTS,
+		}); err != nil {
+			t.Fatalf("seed node %s: %v", n.name, err)
+		}
 	}
 
-	// Path Y: 1 tx, at sameTS → lower count
-	mustExec(t, db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (20, 'YY', 'hashY1', ?)`, sameTS)
-	mustExec(t, db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (20, NULL, '["bb", "cc"]', ?, ?)`,
-		epoch(sameTS), `["`+relay2PK+`", "`+targetPK+`"]`)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        observerKey,
+		Name:      "Tiebreaker Observer",
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  sameTS,
+		IngestNow: sameTS,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	packets := []struct {
+		hash     string
+		rawHex   string
+		at       time.Time
+		hops     []string
+		resolved []*string
+	}{
+		{"e000000000000010", "ee", time.Date(2026, 4, 15, 11, 0, 0, 0, time.UTC), []string{"aa", "cc"}, []*string{sptr(relay1PK), sptr(targetPK)}},
+		{"e000000000000011", "ee", time.Date(2026, 4, 15, 11, 30, 0, 0, time.UTC), []string{"aa", "cc"}, []*string{sptr(relay1PK), sptr(targetPK)}},
+		{"e000000000000012", "ee", sameTS, []string{"aa", "cc"}, []*string{sptr(relay1PK), sptr(targetPK)}},
+		{"f000000000000020", "ff", sameTS, []string{"bb", "cc"}, []*string{sptr(relay2PK), sptr(targetPK)}},
+	}
+	for _, p := range packets {
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        p.hash,
+			RawHex:      p.rawHex,
+			RouteType:   1,
+			PayloadType: 4,
+			DecodedJSON: "{}",
+		}, p.at)
+		if err != nil {
+			t.Fatalf("seed transmission %s: %v", p.hash, err)
+		}
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    iptr64(obsIdx),
+			SNR:            fptr(5.0),
+			RSSI:           fptr(-90.0),
+			Timestamp:      p.at,
+		}, p.hops, p.resolved)
+		if err != nil {
+			t.Fatalf("seed observation %s: %v", p.hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+	}
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()
@@ -172,7 +262,6 @@ func TestHandleNodePaths_SortCountTiebreaker_1145(t *testing.T) {
 	if len(resp.Paths) != 2 {
 		t.Fatalf("expected 2 paths, got %d", len(resp.Paths))
 	}
-	// Path X (count=3) must sort before Path Y (count=1) when LastSeen is equal.
 	if resp.Paths[0].Count != 3 {
 		t.Errorf("Paths[0].Count = %d, want 3 (higher-count path must sort first when LastSeen equal)", resp.Paths[0].Count)
 	}

@@ -38,10 +38,7 @@ func TestStatsFileWriter_SampledAtMatchesProcIOSampledAt(t *testing.T) {
 	statsPath := filepath.Join(dir, "ingestor-stats.json")
 	t.Setenv("CORESCOPE_INGESTOR_STATS", statsPath)
 
-	store, err := OpenStore(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := newTestStore(t)
 	defer store.Close()
 
 	// Inject a deterministic procIO reader. `at` is pinned far in the

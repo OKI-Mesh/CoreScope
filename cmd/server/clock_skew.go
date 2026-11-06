@@ -1,16 +1,25 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"math"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // ── Clock Skew Severity ────────────────────────────────────────────────────────
 
 type SkewSeverity string
+
+var (
+	skewMinAdvert = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	skewMaxAdvert = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+)
 
 const (
 	SkewOK           SkewSeverity = "ok"            // < 5 min
@@ -105,10 +114,14 @@ func classifySkew(absSkewSec float64) SkewSeverity {
 
 // skewSample is a single raw skew measurement from one advert observation.
 type skewSample struct {
-	advertTS   int64  // node's advert Unix timestamp
-	observedTS int64  // observation Unix timestamp
-	observerID string // which observer saw this
-	hash       string // transmission hash (for multi-observer grouping)
+	advertTime   time.Time // what the node's clock said (from the payload)
+	observedTime time.Time // when the observer heard it (from the DB)
+	observerID   string
+	hash         string
+}
+
+func (s skewSample) rawSkewSec() float64 {
+	return s.advertTime.Sub(s.observedTime).Seconds()
 }
 
 // ObserverCalibration holds the computed clock offset for an observer.
@@ -130,7 +143,7 @@ type NodeClockSkew struct {
 	SampleCount          int                 `json:"sampleCount"`
 	Calibrated           bool                `json:"calibrated"`                 // true if observer calibration was applied
 	LastAdvertTS         int64               `json:"lastAdvertTS"`               // most recent advert timestamp
-	LastObservedTS       int64               `json:"lastObservedTS"`             // most recent observation timestamp
+	LastObservedTS       int64               `json:"lastObservedTime"`           // most recent observation timestamp
 	Samples              []SkewSample        `json:"samples,omitempty"`          // time-series for sparklines
 	GoodFraction         float64             `json:"goodFraction"`               // fraction of recent samples with |skew| <= 1h
 	RecentBadSampleCount int                 `json:"recentBadSampleCount"`       // count of recent samples with |skew| > 1h
@@ -139,7 +152,7 @@ type NodeClockSkew struct {
 	RecentHashEvidence   []HashEvidence      `json:"recentHashEvidence,omitempty"`
 	CalibrationSummary   *CalibrationSummary `json:"calibrationSummary,omitempty"`
 	NodeName             string              `json:"nodeName,omitempty"` // populated in fleet responses
-	NodeRole             string              `json:"nodeRole,omitempty"` // populated in fleet responses
+	NodeRole             types.NodeRole      `json:"nodeRole,omitempty"` // populated in fleet responses
 }
 
 // SkewSample is a single (timestamp, skew) point for sparkline rendering.
@@ -202,12 +215,12 @@ type ClockSkewEngine struct {
 
 // hashEvidenceEntry stores raw evidence per observer per hash, cached during Recompute.
 type hashEvidenceEntry struct {
-	observerID string
-	rawSkew    float64
-	corrected  float64
-	offset     float64
-	calibrated bool
-	observedTS int64
+	observerID   string
+	rawSkew      float64
+	corrected    float64
+	offset       float64
+	calibrated   bool
+	observedTime time.Time
 }
 
 func NewClockSkewEngine() *ClockSkewEngine {
@@ -277,8 +290,10 @@ func (e *ClockSkewEngine) Recompute(store *PacketStore) {
 
 // collectSamples extracts skew samples from ADVERT packets in the store.
 // Must be called with store.mu held (at least RLock).
+// collectSamples extracts skew samples from ADVERT packets in the store.
+// Must be called with store.mu held (at least RLock).
 func collectSamples(store *PacketStore) []skewSample {
-	adverts := store.byPayloadType[PayloadADVERT]
+	adverts := store.byPayloadType[types.PayloadADVERT]
 	if len(adverts) == 0 {
 		return nil
 	}
@@ -289,26 +304,26 @@ func collectSamples(store *PacketStore) []skewSample {
 		if decoded == nil {
 			continue
 		}
-		// Extract advert timestamp from decoded JSON.
-		advertTS := extractTimestamp(decoded)
-		if advertTS <= 0 {
+		// Extract advert timestamp (Unix seconds) from decoded JSON.
+		advertTime := extractTimestamp(decoded)
+		if advertTime.IsZero() {
 			continue
 		}
 		// Sanity: skip timestamps before year 2020 or after year 2100.
-		if advertTS < 1577836800 || advertTS > 4102444800 {
+		// Sanity: skip timestamps before year 2020 or after year 2100.
+		if advertTime.Before(skewMinAdvert) || advertTime.After(skewMaxAdvert) {
 			continue
 		}
 
 		for _, obs := range tx.Observations {
-			obsTS := parseISO(obs.Timestamp)
-			if obsTS <= 0 {
+			if obs.Timestamp.IsZero() {
 				continue
 			}
 			samples = append(samples, skewSample{
-				advertTS:   advertTS,
-				observedTS: obsTS,
-				observerID: obs.ObserverID,
-				hash:       tx.Hash,
+				advertTime:   advertTime,
+				observedTime: obs.Timestamp,
+				observerID:   obs.ObserverID,
+				hash:         tx.Hash,
 			})
 		}
 	}
@@ -316,20 +331,20 @@ func collectSamples(store *PacketStore) []skewSample {
 }
 
 // extractTimestamp gets the Unix timestamp from a decoded ADVERT payload.
-func extractTimestamp(decoded map[string]interface{}) int64 {
+func extractTimestamp(decoded map[string]interface{}) time.Time {
 	// Try payload.timestamp first (nested in "payload" key).
 	if payload, ok := decoded["payload"]; ok {
 		if pm, ok := payload.(map[string]interface{}); ok {
 			if ts := jsonNumber(pm, "timestamp"); ts > 0 {
-				return ts
+				return time.Unix(ts, 0).UTC()
 			}
 		}
 	}
 	// Fallback: top-level timestamp.
 	if ts := jsonNumber(decoded, "timestamp"); ts > 0 {
-		return ts
+		return time.Unix(ts, 0).UTC()
 	}
-	return 0
+	return time.Time{}
 }
 
 // jsonNumber extracts an int64 from a JSON-parsed map (handles float64 and json.Number).
@@ -345,6 +360,13 @@ func jsonNumber(m map[string]interface{}, key string) int64 {
 		return n
 	case int:
 		return int64(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i
+		}
+		if f, err := n.Float64(); err == nil {
+			return int64(f)
+		}
 	}
 	return 0
 }
@@ -377,20 +399,23 @@ func calibrateObservers(samples []skewSample) (map[string]float64, map[string]in
 	}
 
 	// For each multi-observer packet, compute per-observer deviation from median.
-	deviations := make(map[string][]float64) // observerID → list of deviations
+	deviations := make(map[string][]float64) // observerID → list of deviations (seconds)
 	for _, group := range byHash {
 		if len(group) < 2 {
 			continue // single-observer packet, can't calibrate
 		}
-		// Compute median observation timestamp for this packet.
-		obsTimes := make([]float64, len(group))
+		// Work in seconds relative to the group's first observation. A
+		// float64 holds ~15-16 significant digits, so absolute Unix
+		// seconds with sub-second parts would lose precision; relative
+		// offsets stay exact.
+		ref := group[0].observedTime
+		rel := make([]float64, len(group))
 		for i, s := range group {
-			obsTimes[i] = float64(s.observedTS)
+			rel[i] = s.observedTime.Sub(ref).Seconds()
 		}
-		medianObs := median(obsTimes)
-		for _, s := range group {
-			dev := float64(s.observedTS) - medianObs
-			deviations[s.observerID] = append(deviations[s.observerID], dev)
+		medianRel := median(rel)
+		for i, s := range group {
+			deviations[s.observerID] = append(deviations[s.observerID], rel[i]-medianRel)
 		}
 	}
 
@@ -411,18 +436,18 @@ func computeNodeSkew(samples []skewSample, obsOffsets map[string]float64) (txSke
 	// Compute corrected skew per sample, grouped by hash (each hash = one
 	// node's advert transmission). The caller maps hash → pubkey via byNode.
 	type correctedSample struct {
-		skew       float64
-		observedTS int64
-		calibrated bool
+		skew         float64
+		observedTime time.Time
+		calibrated   bool
 	}
 
 	byHash := make(map[string][]correctedSample)
-	hashAdvertTS := make(map[string]int64)
+	hashAdvertTime := make(map[string]time.Time)     // was map[string]int64
 	evidence := make(map[string][]hashEvidenceEntry) // hash → per-observer evidence
 
 	for _, s := range samples {
 		obsOffset, hasCal := obsOffsets[s.observerID]
-		rawSkew := float64(s.advertTS - s.observedTS)
+		rawSkew := s.rawSkewSec()
 		corrected := rawSkew
 		if hasCal {
 			// Observer offset = obs_ts - median(all_obs_ts). If observer is ahead,
@@ -430,18 +455,18 @@ func computeNodeSkew(samples []skewSample, obsOffsets map[string]float64) (txSke
 			corrected = rawSkew + obsOffset
 		}
 		byHash[s.hash] = append(byHash[s.hash], correctedSample{
-			skew:       corrected,
-			observedTS: s.observedTS,
-			calibrated: hasCal,
+			skew:         corrected,
+			observedTime: s.observedTime,
+			calibrated:   hasCal,
 		})
-		hashAdvertTS[s.hash] = s.advertTS
+		hashAdvertTime[s.hash] = s.advertTime
 		evidence[s.hash] = append(evidence[s.hash], hashEvidenceEntry{
-			observerID: s.observerID,
-			rawSkew:    round(rawSkew, 1),
-			corrected:  round(corrected, 1),
-			offset:     round(obsOffset, 1),
-			calibrated: hasCal,
-			observedTS: s.observedTS,
+			observerID:   s.observerID,
+			rawSkew:      round(rawSkew, 1),
+			corrected:    round(corrected, 1),
+			offset:       round(obsOffset, 1),
+			calibrated:   hasCal,
+			observedTime: s.observedTime,
 		})
 	}
 
@@ -458,11 +483,11 @@ func computeNodeSkew(samples []skewSample, obsOffsets map[string]float64) (txSke
 		meanSkew := mean(skews)
 
 		// Find latest observation.
-		var latestObsTS int64
+		var latestObs time.Time
 		var anyCal bool
 		for _, c := range cs {
-			if c.observedTS > latestObsTS {
-				latestObsTS = c.observedTS
+			if c.observedTime.After(latestObs) {
+				latestObs = c.observedTime
 			}
 			if c.calibrated {
 				anyCal = true
@@ -477,8 +502,8 @@ func computeNodeSkew(samples []skewSample, obsOffsets map[string]float64) (txSke
 			Severity:       classifySkew(absMedian),
 			SampleCount:    len(cs),
 			Calibrated:     anyCal,
-			LastAdvertTS:   hashAdvertTS[hash],
-			LastObservedTS: latestObsTS,
+			LastAdvertTS:   hashAdvertTime[hash].Unix(),
+			LastObservedTS: latestObs.Unix(),
 		}
 	}
 	return result, evidence
@@ -542,7 +567,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 	var tsSkews []tsSkewPair
 
 	for _, tx := range txs {
-		if tx.PayloadType == nil || *tx.PayloadType != PayloadADVERT {
+		if tx.PayloadType == nil || *tx.PayloadType != types.PayloadADVERT {
 			continue
 		}
 		if !txOriginatedBy(tx, pubkey) {
@@ -712,7 +737,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 	}
 	var evidenceHashes []hashMeta
 	for _, tx := range txs {
-		if tx.PayloadType == nil || *tx.PayloadType != PayloadADVERT {
+		if tx.PayloadType == nil || *tx.PayloadType != types.PayloadADVERT {
 			continue
 		}
 		if !txOriginatedBy(tx, pubkey) {
@@ -730,7 +755,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 				obsNameMap[obs.ObserverID] = obs.ObserverName
 			}
 		}
-		evidenceHashes = append(evidenceHashes, hashMeta{hash: tx.Hash, ts: ev[0].observedTS})
+		evidenceHashes = append(evidenceHashes, hashMeta{hash: tx.Hash, ts: ev[0].observedTime.Unix()})
 	}
 	// Sort by timestamp descending, take most recent 10.
 	sort.Slice(evidenceHashes, func(i, j int) bool { return evidenceHashes[i].ts > evidenceHashes[j].ts })
@@ -797,7 +822,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 // GetFleetClockSkew returns clock skew data for all nodes, optionally
 // filtered to area. With no area, prefers the steady-state recomputer
 // snapshot (issue #1265). Must NOT be called with s.mu held.
-func (s *PacketStore) GetFleetClockSkew(area string) []*NodeClockSkew {
+func (s *PacketStore) GetFleetClockSkew(ctx context.Context, area string) []*NodeClockSkew {
 	if area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompNodesClockSkew
@@ -810,22 +835,22 @@ func (s *PacketStore) GetFleetClockSkew(area string) []*NodeClockSkew {
 			}
 		}
 	}
-	return s.computeFleetClockSkewForArea(area)
+	return s.computeFleetClockSkewForArea(ctx, area)
 }
 
 // computeFleetClockSkew wraps computeFleetClockSkewForArea with no area
 // filter; called by the steady-state recomputer. Must NOT be called with
 // s.mu held.
-func (s *PacketStore) computeFleetClockSkew() []*NodeClockSkew {
-	return s.computeFleetClockSkewForArea("")
+func (s *PacketStore) computeFleetClockSkew(ctx context.Context) []*NodeClockSkew {
+	return s.computeFleetClockSkewForArea(ctx, "")
 }
 
 // computeFleetClockSkewForArea is the underlying compute. Must NOT be
 // called with s.mu held.
-func (s *PacketStore) computeFleetClockSkewForArea(area string) []*NodeClockSkew {
+func (s *PacketStore) computeFleetClockSkewForArea(ctx context.Context, area string) []*NodeClockSkew {
 	var areaNodes map[string]bool
 	if area != "" {
-		areaNodes = s.resolveAreaNodes(area)
+		areaNodes = s.resolveAreaNodes(ctx, area)
 	}
 
 	s.mu.RLock()

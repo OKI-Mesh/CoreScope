@@ -1,0 +1,15 @@
+# Adds the bundled Caddy reverse proxy (TLS on 80/443).
+services:
+  prod:
+    ports:
+      - "${PROD_HTTP_PORT:-80}:80"
+      - "${PROD_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./caddy-config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data/caddy
+    environment:
+      DISABLE_CADDY: "false"
+
+volumes:
+  # Caddy's TLS certificates; managed by Caddy internally, not user data.
+  caddy-data:

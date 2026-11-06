@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,27 +8,27 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 )
 
-// TestServerSourceHasNoCachedRWCalls enforces issue #1287: after the
+// TestServerSourceHasNoWriterCallSites enforces issue #1287: after the
 // follow-up to #1283, cmd/server/ must contain ZERO writer call sites.
-// Specifically, no `cachedRW(`, no `mode=rw`, and no `sql.Open(...rw...)`
-// in non-test source files. All schema migrations, backfills, and
+// Specifically, no `OpenReadWrite(`, no raw DML against the node directory
+// and no multibyte-persist helpers in non-test source files. All schema
+// migrations, backfills, and
 // neighbor-edge persistence must live in cmd/ingestor or a shared
 // package — the server is the read path.
-func TestServerSourceHasNoCachedRWCalls(t *testing.T) {
+func TestServerSourceHasNoWriterCallSites(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read cmd/server dir: %v", err)
 	}
 	// Patterns that indicate write-side DB usage on the server.
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`\bcachedRW\s*\(`),
-		regexp.MustCompile(`mode=rw`),
-		regexp.MustCompile(`sql\.Open\([^)]*\?[^)]*_journal_mode=WAL[^)]*\)`),
+		regexp.MustCompile(`\bOpenReadWrite\s*\(`),
 		// The node directory is ingestor-owned (#1283/#1287); the
 		// server opens mode=ro since #1289 and may never write it.
 		//
@@ -85,101 +84,6 @@ func TestServerSourceHasNoCachedRWCalls(t *testing.T) {
 	}
 }
 
-// TestServerDBHasNoWriteMethods enforces the architectural invariant from
-// issue #1283: cmd/server is the read path. All write/maintenance methods
-// (PruneOldPackets, PruneOldMetrics, RemoveStaleObservers) MUST live on
-// the ingestor's *Store, not on the server's *DB.
-//
-// Before the fix, these methods existed on cmd/server/*DB and used
-// cachedRW(db.path) to acquire a write lock, racing with the ingestor's
-// concurrent INSERTs and producing SQLITE_BUSY (the bug in #1283).
-// After the fix, this test passes because the methods are gone.
-func TestServerDBHasNoWriteMethods(t *testing.T) {
-	forbidden := []string{
-		"PruneOldPackets",
-		"PruneOldMetrics",
-		"RemoveStaleObservers",
-		"PurgeStaleObservers",
-		// #738 / one-click geo-prune: the DELETE must live on the
-		// ingestor's *Store. The server's HTTP handler now enqueues a
-		// marker file (see internal/prunequeue); it does not write.
-		"DeleteNodesByPubkeys",
-		// #1324 follow-up: PR #903 originally added these to *PacketStore
-		// (not *DB), and they UPDATEd nodes/inactive_nodes from a
-		// mode=ro handle. After relocation, the methods live in the
-		// ingestor's *Store (cmd/ingestor/multibyte_persist.go). Server
-		// must expose neither on *DB nor on *PacketStore — see the
-		// dedicated test below for *PacketStore.
-	}
-	typ := reflect.TypeOf((*DB)(nil))
-	for _, name := range forbidden {
-		if _, ok := typ.MethodByName(name); ok {
-			t.Errorf("server *DB exposes forbidden write method %q — must be relocated to ingestor (#1283)", name)
-		}
-	}
-}
-
-// TestServerDBConnIsReadOnly asserts that the *sql.DB the server opens
-// cannot acquire a write lock. The server has always opened mode=ro, but
-// before #1283 it routed around that by calling cachedRW(path) to get a
-// second RW handle. After the fix, server-side writes are impossible
-// because there is no helper to open a writable connection.
-func TestServerDBConnIsReadOnly(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/ro_invariant.db"
-
-	// Bootstrap a minimal DB with the ingestor-style WAL opener so the
-	// server can attach in read-only mode.
-	if err := bootstrapMinimalDB(path); err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-
-	d, err := OpenDB(path)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer d.conn.Close()
-
-	_, err = d.conn.Exec(`INSERT INTO nodes (public_key, name) VALUES ('x','y')`)
-	if err == nil {
-		t.Fatalf("expected INSERT via server *DB to fail (read-only invariant)")
-	}
-}
-
-// bootstrapMinimalDB creates a fully-migrated test DB, opened with WAL
-// so the read-only opener in OpenDB can attach. Kept in *_test.go so
-// it does NOT add any write capability to the production server
-// binary.
-func bootstrapMinimalDB(path string) error {
-	// Bring the database fully under goose's control — OpenDB now
-	// asserts readiness via database.AssertReady before returning a
-	// usable handle.
-	migrateConn, err := sql.Open("sqlite", path)
-	if err != nil {
-		return err
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		migrateConn.Close()
-		return err
-	}
-	migrateConn.Close()
-
-	// Reopen with WAL explicitly, matching what the original fixture
-	// did — BaselineStampMigrate's own connection may not carry this
-	// pragma, and callers relying on WAL mode being active need a
-	// connection opened with it.
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000", path)
-	rw, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return err
-	}
-	defer rw.Close()
-
-	// nodes table already exists via migration 1 — nothing left to
-	// create here.
-	return nil
-}
-
 // TestPacketStoreHasNoMultibytePersistMethods enforces the #1324 follow-up:
 // PR #903 wired persistMultibyteCapability + maybePersistMultibyteCapability
 // onto *PacketStore in cmd/server. Both executed UPDATEs on
@@ -213,9 +117,8 @@ func TestPacketStoreHasNoMultibytePersistMethods(t *testing.T) {
 //
 // Residual gap, stated rather than papered over: SQL assembled at
 // runtime (fmt.Sprintf("UPDATE %s SET ...", tbl)) cannot be caught by
-// source grepping. That is what TestServerDBConnIsReadOnly and
-// TestServerDBHasNoWriteMethods are for — the handle physically cannot
-// write and the write helpers do not exist on the type. This test is the
+// source grepping. That is what TestOpenDBIsReadOnly is for — Postgres
+// refuses writes on the server's handle. This test is the
 // cheap first line that names the offending file and line; those two are
 // the structural backstop.
 func nodeTableWritePattern(verb, trailer string) *regexp.Regexp {
@@ -230,36 +133,29 @@ func nodeTableWritePattern(verb, trailer string) *regexp.Regexp {
 	return regexp.MustCompile(expr)
 }
 
-// TestOpenDBRefusesMissingDatabase pins the behaviour that makes mode=ro
-// meaningful: OpenDB must fail on a path that does not exist rather than
-// creating an empty database there.
-//
-// This is worth a test of its own because the guarantee is not obvious from the
-// call site. github.com/mattn/go-sqlite3 always passes
-// SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE to sqlite3_open_v2; what restricts it
-// is the mode=ro parameter in the URI, which only takes effect because mattn's
-// C wrapper ORs SQLITE_OPEN_URI into the flags (sqlite3.go _sqlite3_open_v2).
-// Lose the file: prefix, or the URI flag, and this silently degrades into a
-// read-write open that manufactures a fresh empty database — which the server
-// would then happily serve. cmd/decrypt shipped exactly that bug for a while by
-// building its DSN without the file: prefix.
-func TestOpenDBRefusesMissingDatabase(t *testing.T) {
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "absent.db")
+// TestOpenDBIsReadOnly pins the guarantee the server relies on: a write
+// through the handle OpenDB returns is refused by Postgres itself, so a bug
+// elsewhere in cmd/server cannot modify data.
+func TestOpenDBIsReadOnly(t *testing.T) {
+	ctx := t.Context()
+	db, err := OpenDB(ctx, pgtest.NewDatabase(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
 
-	db, err := OpenDB(missing)
+	now := time.Now().UTC()
+	_, err = db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "0f0f0f0f",
+		Name:      "should not be written",
+		IATA:      "CVG",
+		LastSeen:  now,
+		IngestNow: now,
+	})
 	if err == nil {
-		db.Close()
-		t.Fatal("OpenDB succeeded against a nonexistent database; mode=ro is not in effect")
+		t.Fatal("a write through the server's database handle succeeded; the handle is not read-only")
 	}
-
-	// Neither the database itself nor a file literally named after the DSN
-	// (what happens when URI handling is off) may have been created.
-	entries, rerr := os.ReadDir(dir)
-	if rerr != nil {
-		t.Fatalf("read temp dir: %v", rerr)
-	}
-	for _, e := range entries {
-		t.Errorf("OpenDB created %q; a read-only open must not write anything", e.Name())
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("write failed, but not because the handle is read-only: %v", err)
 	}
 }

@@ -20,6 +20,7 @@ import (
 func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
+	ctx := t.Context()
 
 	stale := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
 	before := time.Now().Unix()
@@ -27,21 +28,15 @@ func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *te
 	payload := []byte(`{"status":"online","origin":"obs-past","timestamp":"` + stale + `"}`)
 	msg := &mockMessage{topic: "meshcore/SJC/obs-past/status", payload: payload}
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 	after := time.Now().Unix()
 
-	var lastSeen string
-	if err := store.db.QueryRow(`SELECT last_seen FROM observers WHERE id = ?`, "obs-past").Scan(&lastSeen); err != nil {
-		t.Fatalf("scan last_seen: %v", err)
-	}
-	ls, err := time.Parse(time.RFC3339, lastSeen)
-	if err != nil {
-		t.Fatalf("last_seen %q not RFC3339: %v", lastSeen, err)
-	}
-	if ls.Unix() < before-5 || ls.Unix() > after+5 {
+	var lastSeen time.Time
+	mustScan(t, testRow(t, store, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-past"), &lastSeen)
+	if lastSeen.Unix() < before-5 || lastSeen.Unix() > after+5 {
 		t.Errorf("observer.last_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope reported well-formed stale %q (3h ago) — must NOT drag last_seen into the past. Issue #1465.",
-			lastSeen, ls.Unix(), before, after, stale)
+			lastSeen, lastSeen.Unix(), before, after, stale)
 	}
 }
 
@@ -50,6 +45,7 @@ func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *te
 func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_FutureEnvelope_1465(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
+	ctx := t.Context()
 
 	future := time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339)
 	before := time.Now().Unix()
@@ -57,21 +53,15 @@ func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_FutureEnvelope_1465(t *
 	payload := []byte(`{"status":"online","origin":"obs-future","timestamp":"` + future + `"}`)
 	msg := &mockMessage{topic: "meshcore/SJC/obs-future/status", payload: payload}
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 	after := time.Now().Unix()
 
-	var lastSeen string
-	if err := store.db.QueryRow(`SELECT last_seen FROM observers WHERE id = ?`, "obs-future").Scan(&lastSeen); err != nil {
-		t.Fatalf("scan last_seen: %v", err)
-	}
-	ls, err := time.Parse(time.RFC3339, lastSeen)
-	if err != nil {
-		t.Fatalf("last_seen %q not RFC3339: %v", lastSeen, err)
-	}
-	if ls.Unix() < before-5 || ls.Unix() > after+5 {
+	var lastSeen time.Time
+	mustScan(t, testRow(t, store, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-future"), &lastSeen)
+	if lastSeen.Unix() < before-5 || lastSeen.Unix() > after+5 {
 		t.Errorf("observer.last_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope reported well-formed future %q (5 min ahead) — must NOT drag last_seen into the future. Issue #1465.",
-			lastSeen, ls.Unix(), before, after, future)
+			lastSeen, lastSeen.Unix(), before, after, future)
 	}
 }
 
@@ -82,6 +72,7 @@ func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_FutureEnvelope_1465(t *
 func TestPacketMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
+	ctx := t.Context()
 
 	stale := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
 	before := time.Now().Unix()
@@ -90,20 +81,14 @@ func TestPacketMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *te
 	payload := []byte(`{"raw":"` + rawHex + `","SNR":5.5,"RSSI":-100.0,"origin":"obs-pkt","timestamp":"` + stale + `"}`)
 	msg := &mockMessage{topic: "meshcore/SJC/obs-pkt/packets", payload: payload}
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 	after := time.Now().Unix()
 
-	var lastSeen string
-	if err := store.db.QueryRow(`SELECT last_seen FROM observers WHERE id = ?`, "obs-pkt").Scan(&lastSeen); err != nil {
-		t.Fatalf("scan last_seen: %v", err)
-	}
-	ls, err := time.Parse(time.RFC3339, lastSeen)
-	if err != nil {
-		t.Fatalf("last_seen %q not RFC3339: %v", lastSeen, err)
-	}
-	if ls.Unix() < before-5 || ls.Unix() > after+5 {
+	var lastSeen time.Time
+	mustScan(t, testRow(t, store, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-pkt"), &lastSeen)
+	if lastSeen.Unix() < before-5 || lastSeen.Unix() > after+5 {
 		t.Errorf("packet-path observer.last_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope stale = %q. Observer just delivered a packet; last_seen must be NOW. Issue #1465.",
-			lastSeen, ls.Unix(), before, after, stale)
+			lastSeen, lastSeen.Unix(), before, after, stale)
 	}
 }

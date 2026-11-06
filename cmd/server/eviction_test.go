@@ -2,9 +2,14 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // makeTestStore creates a PacketStore with fake packets for eviction testing.
@@ -18,7 +23,7 @@ func makeTestStore(count int, startTime time.Time, intervalMin int) *PacketStore
 		byObserver:    make(map[string][]*StoreObs),
 		byNode:        make(map[string][]*StoreTx),
 		nodeHashes:    make(map[string]map[string]bool),
-		byPayloadType: make(map[int][]*StoreTx),
+		byPayloadType: make(map[types.PayloadType][]*StoreTx),
 		spIndex:       make(map[string]int),
 		distHops:      make([]distHopRecord, 0),
 		distPaths:     make([]distPathRecord, 0),
@@ -36,13 +41,13 @@ func makeTestStore(count int, startTime time.Time, intervalMin int) *PacketStore
 		ts := startTime.Add(time.Duration(i*intervalMin) * time.Minute)
 		hash := fmt.Sprintf("hash%04d", i)
 		txID := i + 1
-		pt := 4 // ADVERT
+		pt := types.PayloadType(4) // ADVERT
 		decodedJSON := fmt.Sprintf(`{"pubKey":"pk%04d"}`, i)
 
 		tx := &StoreTx{
 			ID:          txID,
 			Hash:        hash,
-			FirstSeen:   ts.UTC().Format(time.RFC3339),
+			FirstSeen:   ts.UTC(),
 			PayloadType: &pt,
 			DecodedJSON: decodedJSON,
 			PathJSON:    `["aa","bb","cc"]`,
@@ -57,7 +62,7 @@ func makeTestStore(count int, startTime time.Time, intervalMin int) *PacketStore
 				TransmissionID: txID,
 				ObserverID:     obsIDStr,
 				ObserverName:   fmt.Sprintf("Observer%d", j),
-				Timestamp:      ts.UTC().Format(time.RFC3339),
+				Timestamp:      ts.UTC(),
 			}
 			tx.Observations = append(tx.Observations, obs)
 			tx.ObservationCount++
@@ -102,10 +107,10 @@ func TestEvictStale_TimeBasedEviction(t *testing.T) {
 	store := makeTestStore(100, now.Add(-48*time.Hour), 0)
 	// Override: set first 50 to 48h ago, last 50 to 1h ago
 	for i := 0; i < 50; i++ {
-		store.packets[i].FirstSeen = now.Add(-48 * time.Hour).Format(time.RFC3339)
+		store.packets[i].FirstSeen = now.Add(-48 * time.Hour)
 	}
 	for i := 50; i < 100; i++ {
-		store.packets[i].FirstSeen = now.Add(-1 * time.Hour).Format(time.RFC3339)
+		store.packets[i].FirstSeen = now.Add(-1 * time.Hour)
 	}
 
 	store.retentionHours = 24
@@ -246,11 +251,11 @@ func TestEvictStale_CleansNodeIndexes(t *testing.T) {
 }
 
 func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	// Create a temp DB for on-demand SQL fetch during eviction
 	db := setupTestDB(t)
-	defer db.Close()
 
 	store := &PacketStore{
 		packets:              make([]*StoreTx, 0),
@@ -260,7 +265,7 @@ func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
 		byObserver:           make(map[string][]*StoreObs),
 		byNode:               make(map[string][]*StoreTx),
 		nodeHashes:           make(map[string]map[string]bool),
-		byPayloadType:        make(map[int][]*StoreTx),
+		byPayloadType:        make(map[types.PayloadType][]*StoreTx),
 		spIndex:              make(map[string]int),
 		distHops:             make([]distHopRecord, 0),
 		distPaths:            make([]distPathRecord, 0),
@@ -278,14 +283,35 @@ func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
 	store.initResolvedPathIndex()
 
 	// Create a packet indexed via resolved_path pubkeys
-	relayPK := "relay0001abcdef"
-	txID := 1
-	obsID := 100
+	relayPK := strings.Repeat("ab", 32)
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: relayPK,
+		Name:      "Relay",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-48 * time.Hour),
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed relay node: %v", err)
+	}
+	observerID := mustCreateTestObserver(t, ctx, db, "obs0", "Observer0", "", now.Add(-48*time.Hour))
+	txID64 := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"", "hash_rp_001", "", types.RouteFlood, types.PayloadADVERT, "",
+	), now.Add(-48*time.Hour))
+	txID := int(txID64)
 	tx := &StoreTx{
 		ID:        txID,
 		Hash:      "hash_rp_001",
-		FirstSeen: now.Add(-48 * time.Hour).UTC().Format(time.RFC3339),
+		FirstSeen: now.Add(-48 * time.Hour).UTC(),
 	}
+
+	dbtest.Observation(t, db, txID64, observerID, tx.FirstSeen, 0, 0, "aa:"+relayPK)
+	obsID64, err := db.GetMaxObservationID(ctx)
+	if err != nil {
+		t.Fatalf("GetMaxObservationID: %v", err)
+	}
+	obsID := int(obsID64)
 	obs := &StoreObs{
 		ID:             obsID,
 		TransmissionID: txID,
@@ -293,12 +319,6 @@ func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
 		Timestamp:      tx.FirstSeen,
 	}
 	tx.Observations = append(tx.Observations, obs)
-
-	// Insert into DB so on-demand SQL fetch works during eviction
-	db.conn.Exec("INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (?, '', ?, ?)",
-		txID, tx.Hash, tx.FirstSeen)
-	db.conn.Exec("INSERT INTO observations (id, transmission_id, observer_idx, path_json, timestamp, resolved_path) VALUES (?, ?, 1, ?, ?, ?)",
-		obsID, txID, `["aa"]`, now.Add(-48*time.Hour).Unix(), `["`+relayPK+`"]`)
 
 	store.packets = append(store.packets, tx)
 	store.byHash[tx.Hash] = tx
@@ -318,7 +338,7 @@ func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
 		t.Fatalf("expected nodeHashes[%s] to contain %s", relayPK, tx.Hash)
 	}
 
-	evicted := store.RunEviction()
+	evicted := runEviction(t, store)
 	if evicted != 1 {
 		t.Fatalf("expected 1 evicted, got %d", evicted)
 	}
@@ -343,17 +363,19 @@ func TestEvictStale_CleansResolvedPathNodeIndexes(t *testing.T) {
 func TestEvictStale_RunEvictionThreadSafe(t *testing.T) {
 	now := time.Now().UTC()
 	store := makeTestStore(20, now.Add(-48*time.Hour), 0)
+	store.db = setupTestDB(t)
 	store.retentionHours = 24
 
-	evicted := store.RunEviction()
+	evicted := runEviction(t, store)
 	if evicted != 20 {
 		t.Fatalf("expected 20 evicted, got %d", evicted)
 	}
 }
 
 func TestStartEvictionTicker_NoopWhenDisabled(t *testing.T) {
+	ctx := t.Context()
 	store := &PacketStore{}
-	stop := store.StartEvictionTicker()
+	stop := store.StartEvictionTicker(ctx)
 	stop() // should not panic
 }
 
@@ -450,7 +472,7 @@ func TestTrackedBytes_MatchesExpectedAfterMixedInsertEvict(t *testing.T) {
 	// Create 100 packets, 50 old + 50 recent
 	store := makeTestStore(100, now.Add(-48*time.Hour), 0)
 	for i := 50; i < 100; i++ {
-		store.packets[i].FirstSeen = now.Add(-1 * time.Hour).Format(time.RFC3339)
+		store.packets[i].FirstSeen = now.Add(-1 * time.Hour)
 	}
 	store.retentionHours = 24
 

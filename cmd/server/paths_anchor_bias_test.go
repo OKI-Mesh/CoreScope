@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -35,48 +37,47 @@ import (
 // the best-obs canonical resolved_path doesn't contain it. Conversely
 // /api/nodes/{nodeGPS}/paths MUST include it.
 func TestHandleNodePaths_AnchorBiasInconsistency_Issue1278(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	recent := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := time.Now().Add(-1 * time.Hour).Unix()
+	recent := time.Now().UTC().Add(-1 * time.Hour)
 
 	nodeNoGPSPK := "c0dedad4208acb6cbe44b848943fc6d3c5d43cf38a21e48b43826a70862980e4"
 	nodeGPSPK := "c0ffeec700000000000000000000000000000000000000000000000000000001"
 
-	if _, err := db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeNoGPS', 'repeater', 0, 0, ?, '2026-01-01', 1)`, nodeNoGPSPK, recent); err != nil {
-		t.Fatalf("insert nodeNoGPS: %v", err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeGPS', 'repeater', 37.5, -122.0, ?, '2026-01-01', 1)`, nodeGPSPK, recent); err != nil {
-		t.Fatalf("insert nodeGPS: %v", err)
-	}
+	latA, lonA := 0.0, 0.0
+	latB, lonB := 37.5, -122.0
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: nodeNoGPSPK, Name: "NodeNoGPS", Role: "repeater", Lat: &latA, Lon: &lonA, RxTime: recent, IngestNow: recent,
+	})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: nodeGPSPK, Name: "NodeGPS", Role: "repeater", Lat: &latB, Lon: &lonB, RxTime: recent, IngestNow: recent,
+	})
 
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen)
-		VALUES (100, 'AA', 'hash_collision', ?)`, recent); err != nil {
-		t.Fatalf("insert tx: %v", err)
-	}
+	txID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AA", "hash_fp", "", types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
 	// obs1: SHORTER path_json (single hop), resolved → nodeNoGPS.
 	// (Without this row, the membership index wouldn't list nodeNoGPS at all
 	// and the tx would be cleanly excluded — the bug needs the index hit.)
-	if _, err := db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (100, NULL, '["c0"]', ?, ?)`, recentEpoch, `["`+nodeNoGPSPK+`"]`); err != nil {
-		t.Fatalf("insert obs1: %v", err)
-	}
+	mustInsertUnobservedTestObservation(t, ctx, db, txID, recent, 0, 0,
+		[]string{"c0"}, []*string{&nodeNoGPSPK})
 	// obs2: LONGER path_json (two hops, first hop is what packets page shows
 	// as resolved_path[0]). fetchResolvedPathForTxBest picks this obs as
 	// canonical because it has the longer path_json. Its resolved_path
 	// picks nodeGPS for "c0", NOT nodeNoGPS.
-	if _, err := db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (100, NULL, '["c0","ee"]', ?, ?)`, recentEpoch, `["`+nodeGPSPK+`","ee00000000000000000000000000000000000000000000000000000000000000"]`); err != nil {
-		t.Fatalf("insert obs2: %v", err)
-	}
+	resolvedEE := "ee00000000000000000000000000000000000000000000000000000000000000"
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: resolvedEE, Name: "NodeEE", Role: "repeater", RxTime: recent, IngestNow: recent,
+	})
+	mustInsertUnobservedTestObservation(t, ctx, db, txID, recent, 0, 0,
+		[]string{"c0", "ee"}, []*string{&nodeGPSPK, &resolvedEE})
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// The path-hop index that /paths reads is built in a background goroutine
 	// (#1008); querying before it is ready races the build and yields a

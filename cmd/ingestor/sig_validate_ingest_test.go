@@ -46,11 +46,8 @@ func makeAppdata(name string) []byte {
 }
 
 func TestSigValidation_ValidAdvertStored(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -61,22 +58,19 @@ func TestSigValidation_ValidAdvertStored(t *testing.T) {
 	msg := newMockMsg("meshcore/US/obs1/packet", `{"raw":"`+rawHex+`","origin":"TestObs"}`)
 	cfg := &Config{}
 
-	handleMessage(store, "test", source, msg, nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
 	// Verify packet was stored
 	var count int
-	store.db.QueryRow("SELECT COUNT(*) FROM transmissions").Scan(&count)
+	count = countRows(t, store, "transmissions")
 	if count == 0 {
 		t.Fatal("valid advert should be stored, got 0 transmissions")
 	}
 }
 
 func TestSigValidation_TamperedSignatureDropped(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -98,18 +92,18 @@ func TestSigValidation_TamperedSignatureDropped(t *testing.T) {
 	msg := newMockMsg("meshcore/US/obs1/packet", `{"raw":"`+tamperedHex+`","origin":"TestObs"}`)
 	cfg := &Config{}
 
-	handleMessage(store, "test", source, msg, nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
 	// Verify packet was NOT stored in transmissions
 	var txCount int
-	store.db.QueryRow("SELECT COUNT(*) FROM transmissions").Scan(&txCount)
+	txCount = countRows(t, store, "transmissions")
 	if txCount != 0 {
 		t.Fatalf("tampered advert should be dropped, got %d transmissions", txCount)
 	}
 
 	// Verify it was recorded in dropped_packets
 	var dropCount int
-	store.db.QueryRow("SELECT COUNT(*) FROM dropped_packets").Scan(&dropCount)
+	dropCount = countRows(t, store, "dropped_packets")
 	if dropCount == 0 {
 		t.Fatal("tampered advert should be recorded in dropped_packets")
 	}
@@ -121,7 +115,7 @@ func TestSigValidation_TamperedSignatureDropped(t *testing.T) {
 
 	// Verify dropped_packets has correct fields
 	var reason, nodeKey, nodeName, obsID string
-	store.db.QueryRow("SELECT reason, node_pubkey, node_name, observer_id FROM dropped_packets LIMIT 1").Scan(&reason, &nodeKey, &nodeName, &obsID)
+	mustScan(t, testRow(t, store, "SELECT reason, node_pubkey, node_name, observer_id FROM dropped_packets LIMIT 1"), &reason, &nodeKey, &nodeName, &obsID)
 	if reason != "invalid signature" {
 		t.Fatalf("expected reason 'invalid signature', got %q", reason)
 	}
@@ -137,11 +131,8 @@ func TestSigValidation_TamperedSignatureDropped(t *testing.T) {
 }
 
 func TestSigValidation_TruncatedAppdataDropped(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -157,21 +148,18 @@ func TestSigValidation_TruncatedAppdataDropped(t *testing.T) {
 	msg := newMockMsg("meshcore/US/obs1/packet", `{"raw":"`+truncatedHex+`","origin":"TestObs"}`)
 	cfg := &Config{}
 
-	handleMessage(store, "test", source, msg, nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
 	var txCount int
-	store.db.QueryRow("SELECT COUNT(*) FROM transmissions").Scan(&txCount)
+	txCount = countRows(t, store, "transmissions")
 	if txCount != 0 {
 		t.Fatalf("truncated advert should be dropped, got %d transmissions", txCount)
 	}
 }
 
 func TestSigValidation_DisabledByConfig(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -192,22 +180,19 @@ func TestSigValidation_DisabledByConfig(t *testing.T) {
 	falseVal := false
 	cfg := &Config{ValidateSignatures: &falseVal}
 
-	handleMessage(store, "test", source, msg, nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
 	// With validation disabled, tampered packet should be stored
 	var txCount int
-	store.db.QueryRow("SELECT COUNT(*) FROM transmissions").Scan(&txCount)
+	txCount = countRows(t, store, "transmissions")
 	if txCount == 0 {
 		t.Fatal("with validateSignatures=false, tampered advert should be stored")
 	}
 }
 
 func TestSigValidation_DropCounterIncrements(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -225,7 +210,7 @@ func TestSigValidation_DropCounterIncrements(t *testing.T) {
 			rawBytes[76] = '0'
 		}
 		msg := newMockMsg("meshcore/US/obs1/packet", `{"raw":"`+string(rawBytes)+`","origin":"Obs"}`)
-		handleMessage(store, "test", source, msg, nil, nil, cfg)
+		handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 	}
 
 	if store.Stats.SignatureDrops.Load() != 3 {
@@ -234,12 +219,8 @@ func TestSigValidation_DropCounterIncrements(t *testing.T) {
 }
 
 func TestSigValidation_LogContainsFields(t *testing.T) {
-	// This test verifies the dropped_packets row has all required fields
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
 	pub, priv, _ := ed25519.GenerateKey(nil)
@@ -258,14 +239,10 @@ func TestSigValidation_LogContainsFields(t *testing.T) {
 	msg := newMockMsg("meshcore/US/obs1/packet", `{"raw":"`+string(rawBytes)+`","origin":"MyObserver"}`)
 	cfg := &Config{}
 
-	handleMessage(store, "test", source, msg, nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
 	var hash, reason, obsID, obsName, pubkey, nodeName string
-	err = store.db.QueryRow("SELECT hash, reason, observer_id, observer_name, node_pubkey, node_name FROM dropped_packets LIMIT 1").
-		Scan(&hash, &reason, &obsID, &obsName, &pubkey, &nodeName)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mustScan(t, testRow(t, store, "SELECT hash, reason, observer_id, observer_name, node_pubkey, node_name FROM dropped_packets LIMIT 1"), &hash, &reason, &obsID, &obsName, &pubkey, &nodeName)
 
 	if hash == "" {
 		t.Error("dropped packet should have hash")
@@ -288,18 +265,14 @@ func TestSigValidation_LogContainsFields(t *testing.T) {
 }
 
 func TestPruneDroppedPackets(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	store, err := OpenStoreWithInterval(dbPath, 300)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newTestStore(t)
+	ctx := testCtx(t)
 	defer store.Close()
 
-	// Insert an old dropped packet
-	store.db.Exec(`INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('old', 'test', datetime('now', '-60 days'))`)
-	store.db.Exec(`INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('new', 'test', datetime('now'))`)
+	testExec(t, store, `INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('old', 'test', NOW() - INTERVAL '60 days')`)
+	testExec(t, store, `INSERT INTO dropped_packets (hash, reason, dropped_at) VALUES ('new', 'test', NOW())`)
 
-	n, err := store.PruneDroppedPackets(30)
+	n, err := store.PruneDroppedPackets(ctx, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,8 +280,7 @@ func TestPruneDroppedPackets(t *testing.T) {
 		t.Fatalf("expected 1 pruned, got %d", n)
 	}
 
-	var count int
-	store.db.QueryRow("SELECT COUNT(*) FROM dropped_packets").Scan(&count)
+	count := countRows(t, store, "dropped_packets")
 	if count != 1 {
 		t.Fatalf("expected 1 remaining, got %d", count)
 	}

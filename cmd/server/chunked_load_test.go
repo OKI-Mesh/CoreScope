@@ -17,43 +17,38 @@ package main
 // production code is absent — that is the red-commit contract.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 func openChunkedTestStore(t *testing.T, numTx int) *PacketStore {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "chunked.db")
-	createTestDBAt(t, dbPath, numTx)
-	t.Cleanup(func() { os.RemoveAll(dir) })
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	cfg := &PacketStoreConfig{}
-	return NewPacketStore(db, cfg)
+	db := dbtest.New(t)
+	dbtest.SeedTransmissions(t, db, numTx)
+	return NewPacketStore(db, &PacketStoreConfig{})
 }
 
 // (a) FirstChunkReady fires before LoadChunked returns.
 func TestLoadChunked_FirstChunkReadyBeforeComplete(t *testing.T) {
+	ctx := t.Context()
 	store := openChunkedTestStore(t, 2500)
-	defer store.db.conn.Close()
 
 	doneCh := make(chan error, 1)
-	go func() { doneCh <- store.LoadChunked(500) }()
+	go func() { doneCh <- store.LoadChunked(ctx, 500) }()
 
+	drained := false // true once doneCh's single value has been received
 	select {
 	case <-store.FirstChunkReady():
 		// Good: first chunk signaled. Load may or may not have completed
 		// for tiny test DBs, but the gate must have fired without
 		// requiring the full load.
 	case err := <-doneCh:
+		drained = true
 		// If load completed before we could observe the signal, the
 		// signal still must be closed.
 		if err != nil {
@@ -68,14 +63,16 @@ func TestLoadChunked_FirstChunkReadyBeforeComplete(t *testing.T) {
 		t.Fatal("FirstChunkReady did not fire within 10s — listener would never bind")
 	}
 
-	// Drain background completion.
-	select {
-	case err := <-doneCh:
-		if err != nil {
-			t.Fatalf("LoadChunked returned error: %v", err)
+	// Drain background completion (unless the first select already did).
+	if !drained {
+		select {
+		case err := <-doneCh:
+			if err != nil {
+				t.Fatalf("LoadChunked returned error: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("LoadChunked never returned")
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("LoadChunked never returned")
 	}
 
 	if !store.LoadComplete() {
@@ -87,8 +84,8 @@ func TestLoadChunked_FirstChunkReadyBeforeComplete(t *testing.T) {
 //
 //	loading→ready transition.
 func TestLoadStatusMiddleware_HeaderTransition(t *testing.T) {
+	ctx := t.Context()
 	store := openChunkedTestStore(t, 100)
-	defer store.db.conn.Close()
 
 	handler := loadStatusMiddleware(store, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -102,7 +99,7 @@ func TestLoadStatusMiddleware_HeaderTransition(t *testing.T) {
 		t.Fatalf("expected loading status header before Load, got %q", got)
 	}
 
-	if err := store.LoadChunked(50); err != nil {
+	if err := store.LoadChunked(ctx, 50); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 
@@ -119,15 +116,16 @@ func TestLoadStatusMiddleware_HeaderTransition(t *testing.T) {
 //
 //	fires once per chunk.
 func TestLoadChunked_ChunkSizeHonored(t *testing.T) {
+	ctx := t.Context()
+
 	store := openChunkedTestStore(t, 2500)
-	defer store.db.conn.Close()
 
 	var chunks []int
 	store.OnChunkLoaded(func(rowsThisChunk, totalRows int) {
 		chunks = append(chunks, rowsThisChunk)
 	})
 
-	if err := store.LoadChunked(1000); err != nil {
+	if err := store.LoadChunked(ctx, 1000); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 
@@ -148,5 +146,50 @@ func TestConfig_DBLoadChunkSize(t *testing.T) {
 	c.DB = &DBConfig{Load: &dbLoadConfig{ChunkSize: 2500}}
 	if got := c.DBLoadChunkSize(); got != 2500 {
 		t.Fatalf("DBLoadChunkSize() configured = %d, want 2500", got)
+	}
+}
+
+// TestLoadChunked_LoadsRowsAtOrBelowZero guards the first chunk's cursor.
+// Production ids come from an identity column and start at 1, but the E2E fixture
+// holds rows with id 0 and a negative sentinel (#1791). A start cursor of -1 left
+// the sentinel in the database and out of the store.
+//
+// The rows are inserted with OVERRIDING SYSTEM VALUE because the id column is
+// GENERATED ALWAYS and no insert method can set it.
+func TestLoadChunked_LoadsRowsAtOrBelowZero(t *testing.T) {
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	ctx := t.Context()
+
+	firstSeen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ids := []int64{-1000000, 0, 1}
+	for i, id := range ids {
+		if _, err := db.Pool().Exec(ctx, `
+			INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version)
+			OVERRIDING SYSTEM VALUE
+			VALUES ($1, $2, $3, $4, 1, 6, 0)`,
+			id, []byte{0x19, 0x00, 0x01, byte(i)}, fmt.Sprintf("cursor%016d", i), firstSeen.Add(time.Duration(i)*time.Minute),
+		); err != nil {
+			t.Fatalf("insert transmission %d: %v", id, err)
+		}
+		if _, err := db.Pool().Exec(ctx, `
+			INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_hash, timestamp, hop_prefixes, hop_nodes)
+			VALUES ($1, NULL, 'rx', 7.0, -88, 0, NULL, $2, '{}', '{}')`,
+			id, firstSeen.Add(time.Duration(i)*time.Minute),
+		); err != nil {
+			t.Fatalf("insert observation for %d: %v", id, err)
+		}
+	}
+
+	store := loadStoreFromDB(t, db, 512)
+
+	loaded := map[int64]bool{}
+	for _, packet := range store.packets {
+		loaded[int64(packet.ID)] = true
+	}
+	for _, id := range ids {
+		if !loaded[id] {
+			t.Errorf("transmission %d is in the database but was not loaded into the store", id)
+		}
 	}
 }

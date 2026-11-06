@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/websocket"
 )
 
@@ -289,29 +291,33 @@ func (c *Client) writePump(pingInterval time.Duration) {
 
 // Poller watches for new transmissions in SQLite and broadcasts them.
 type Poller struct {
-	db       *DB
+	db       *database.DB
 	hub      *Hub
 	store    *PacketStore // optional: if set, new transmissions are ingested into memory
 	interval time.Duration
 	stop     chan struct{}
 }
 
-func NewPoller(db *DB, hub *Hub, interval time.Duration) *Poller {
-	return &Poller{db: db, hub: hub, interval: interval, stop: make(chan struct{})}
+func NewPoller(db *database.DB, store *PacketStore, hub *Hub, interval time.Duration) *Poller {
+	return &Poller{db: db, hub: hub, store: store, interval: interval, stop: make(chan struct{})}
 }
 
-func (p *Poller) Start() {
-	lastID := p.db.GetMaxTransmissionID()
-	lastObsID := p.db.GetMaxObservationID()
-	// If the store already loaded data, use its max IDs as a floor.
-	// This prevents replaying the entire DB when the DB query fails
-	// (e.g., corrupted DB returns 0 from COALESCE).
-	if p.store != nil {
-		if storeMax := p.store.MaxTransmissionID(); storeMax > lastID {
-			lastID = storeMax
+func (p *Poller) Start(ctx context.Context) {
+	lastID := p.store.MaxTransmissionID()
+	lastObsID := int64(p.store.MaxObservationID())
+
+	if lastID == 0 {
+		if id, err := p.db.GetMaxTransmissionID(ctx); err != nil {
+			log.Printf("[poller] max transmission id: %v", err)
+		} else {
+			lastID = int(id)
 		}
-		if storeMaxObs := p.store.MaxObservationID(); storeMaxObs > lastObsID {
-			lastObsID = storeMaxObs
+	}
+	if lastObsID == 0 {
+		if id, err := p.db.GetMaxObservationID(ctx); err != nil {
+			log.Printf("[poller] max observation id: %v", err)
+		} else {
+			lastObsID = int64(id)
 		}
 	}
 	log.Printf("[poller] starting from transmission ID %d, obs ID %d, interval %v", lastID, lastObsID, p.interval)
@@ -321,69 +327,38 @@ func (p *Poller) Start() {
 
 	for {
 		select {
-		case <-ticker.C:
-			if p.store != nil {
-				// Ingest new transmissions into in-memory store and broadcast
-				newTxs, newMax := p.store.IngestNewFromDB(lastID, 100)
-				if newMax > lastID {
-					lastID = newMax
-				}
-				// Ingest new observations for existing transmissions (fixes #174)
-				nextObsID := lastObsID
-				if err := p.db.conn.QueryRow(`
-					SELECT COALESCE(MAX(id), ?) FROM (
-						SELECT id FROM observations
-						WHERE id > ?
-						ORDER BY id ASC
-						LIMIT 500
-					)`, lastObsID, lastObsID).Scan(&nextObsID); err != nil {
-					nextObsID = lastObsID
-				}
-				newObs := p.store.IngestNewObservations(lastObsID, 500)
-				if nextObsID > lastObsID {
-					lastObsID = nextObsID
-				}
-				if len(newTxs) > 0 {
-					log.Printf("[broadcast] sending %d packets to %d clients (lastID now %d)", len(newTxs), p.hub.ClientCount(), lastID)
-				}
-				for _, tx := range newTxs {
-					p.hub.Broadcast(WSMessage{
-						Type: "packet",
-						Data: tx,
-					})
-				}
-				for _, obs := range newObs {
-					p.hub.Broadcast(WSMessage{
-						Type: "packet",
-						Data: obs,
-					})
-				}
-			} else {
-				// Fallback: direct DB query (used when store is nil, e.g. tests)
-				newTxs, err := p.db.GetNewTransmissionsSince(lastID, 100)
-				if err != nil {
-					log.Printf("[poller] error: %v", err)
-					continue
-				}
-				for _, tx := range newTxs {
-					id, _ := tx["id"].(int)
-					if id > lastID {
-						lastID = id
-					}
-					// Copy packet fields for the nested packet (avoids circular ref)
-					pkt := make(map[string]interface{}, len(tx))
-					for k, v := range tx {
-						pkt[k] = v
-					}
-					tx["packet"] = pkt
-					p.hub.Broadcast(WSMessage{
-						Type: "packet",
-						Data: tx,
-					})
-				}
-			}
+		case <-ctx.Done():
+			return
 		case <-p.stop:
 			return
+		case <-ticker.C:
+			// Ingest new transmissions into the in-memory store and broadcast.
+			newTxs, newMax, err := p.store.IngestNewFromDB(ctx, lastID, 100)
+			if err != nil {
+				log.Printf("[poller] ingest transmissions: %v", err)
+				continue // cursors unchanged; the next tick retries
+			}
+			if newMax > lastID {
+				lastID = newMax
+			}
+
+			// Ingest new observations for existing transmissions (fixes #174).
+			newObs, nextObsID, err := p.store.IngestNewObservations(ctx, lastObsID, 500)
+			if err != nil {
+				log.Printf("[poller] ingest observations: %v", err)
+			} else if nextObsID > lastObsID {
+				lastObsID = nextObsID
+			}
+
+			if len(newTxs) > 0 {
+				log.Printf("[broadcast] sending %d packets to %d clients (lastID now %d)", len(newTxs), p.hub.ClientCount(), lastID)
+			}
+			for _, tx := range newTxs {
+				p.hub.Broadcast(WSMessage{Type: "packet", Data: tx})
+			}
+			for _, obs := range newObs {
+				p.hub.Broadcast(WSMessage{Type: "packet", Data: obs})
+			}
 		}
 	}
 }

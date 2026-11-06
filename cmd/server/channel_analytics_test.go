@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 var _ = time.Second // suppress unused import
@@ -19,7 +21,7 @@ func newChannelTestStore(packets []*StoreTx) *PacketStore {
 		byNode:         make(map[string][]*StoreTx),
 		byPathHop:      make(map[string][]*StoreTx),
 		nodeHashes:     make(map[string]map[string]bool),
-		byPayloadType:  make(map[int][]*StoreTx),
+		byPayloadType:  make(map[types.PayloadType][]*StoreTx),
 		rfCache:        make(map[string]*cachedResult),
 		topoCache:      make(map[string]*cachedResult),
 		hashCache:      make(map[string]*cachedResult),
@@ -56,11 +58,11 @@ func makeGrpTxWithStatus(channelHash int, channel, text, sender, decryptionStatu
 		decoded["decryptionStatus"] = decryptionStatus
 	}
 	b, _ := json.Marshal(decoded)
-	pt := 5
+	pt := types.PayloadType(5)
 	return &StoreTx{
 		ID:          1,
 		DecodedJSON: string(b),
-		FirstSeen:   "2026-05-01T12:00:00Z",
+		FirstSeen:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		PayloadType: &pt,
 	}
 }
@@ -68,6 +70,7 @@ func makeGrpTxWithStatus(channelHash int, channel, text, sender, decryptionStatu
 // TestComputeAnalyticsChannels_MergesEncryptedAndDecrypted verifies that packets
 // with the same hash byte but different decryption status merge into ONE bucket.
 func TestComputeAnalyticsChannels_MergesEncryptedAndDecrypted(t *testing.T) {
+	ctx := t.Context()
 	// Hash 129 is the real hash for #wardriving: SHA256(SHA256("#wardriving")[:16])[0] = 129
 	// Some packets are decrypted (have channel name), some are not (encrypted)
 	packets := []*StoreTx{
@@ -78,7 +81,7 @@ func TestComputeAnalyticsChannels_MergesEncryptedAndDecrypted(t *testing.T) {
 	}
 
 	store := newChannelTestStore(packets)
-	result := store.computeAnalyticsChannels("", "", TimeWindow{})
+	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
 	channels := result["channels"].([]map[string]interface{})
 	if len(channels) != 1 {
@@ -100,6 +103,7 @@ func TestComputeAnalyticsChannels_MergesEncryptedAndDecrypted(t *testing.T) {
 // with channelHash=72 but channel="#wardriving" (mismatch) does NOT create a
 // "#wardriving" bucket — it falls into "ch72" instead.
 func TestComputeAnalyticsChannels_RejectsRainbowTableMismatch(t *testing.T) {
+	ctx := t.Context()
 	// Hash 72 is NOT the correct hash for #wardriving (which is 129).
 	// This simulates a rainbow-table collision/mismatch.
 	packets := []*StoreTx{
@@ -108,7 +112,7 @@ func TestComputeAnalyticsChannels_RejectsRainbowTableMismatch(t *testing.T) {
 	}
 
 	store := newChannelTestStore(packets)
-	result := store.computeAnalyticsChannels("", "", TimeWindow{})
+	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
 	channels := result["channels"].([]map[string]interface{})
 	if len(channels) != 2 {
@@ -185,13 +189,14 @@ func TestIsPlaceholderName(t *testing.T) {
 // well-known key and marks them decryptionStatus:"decrypted"; the server must
 // trust that name instead of re-applying the hashtag hash check.
 func TestComputeAnalyticsChannels_PublicChannelPreserved(t *testing.T) {
+	ctx := t.Context()
 	packets := []*StoreTx{
 		makeGrpTxWithStatus(17, "Public", "hello net", "alice", "decrypted"),
 		makeGrpTxWithStatus(17, "Public", "morning", "bob", "decrypted"),
 	}
 
 	store := newChannelTestStore(packets)
-	result := store.computeAnalyticsChannels("", "", TimeWindow{})
+	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
 	channels := result["channels"].([]map[string]interface{})
 	if len(channels) != 1 {
@@ -215,6 +220,7 @@ func TestComputeAnalyticsChannels_PublicChannelPreserved(t *testing.T) {
 // the hashtag hash check is still discarded to "chNN", even if text/sender
 // happen to be present (e.g. a stale/foreign rainbow-table hit).
 func TestComputeAnalyticsChannels_UndecryptedNameStillValidated(t *testing.T) {
+	ctx := t.Context()
 	// Hash 17 is NOT the hashtag hash of #Public (that is 186). Without a
 	// "decrypted" status, the name must be rejected.
 	packets := []*StoreTx{
@@ -222,7 +228,7 @@ func TestComputeAnalyticsChannels_UndecryptedNameStillValidated(t *testing.T) {
 	}
 
 	store := newChannelTestStore(packets)
-	result := store.computeAnalyticsChannels("", "", TimeWindow{})
+	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
 	channels := result["channels"].([]map[string]interface{})
 	if len(channels) != 1 {

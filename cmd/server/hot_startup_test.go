@@ -1,18 +1,19 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -21,37 +22,14 @@ import (
 // Packets within each day are spaced 1 minute apart.
 func createTestDBMultiDay(t *testing.T, numDays, txPerDay int) string {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	migrateConn, err := sql.Open("sqlite", dbPath)
+	dsn := pgtest.NewDatabase(t)
+	ctx := t.Context()
+	db, err := database.OpenReadWrite(ctx, dsn)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open test database: %v", err)
 	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-
-	// Real observers row so the LEFT JOIN observers ON obs.rowid =
-	// o.observer_idx resolves — without this, ObserverID/byObserver
-	// silently come back empty (LEFT JOIN with no match).
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
-	if err != nil {
-		t.Fatalf("createTestDBMultiDay insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("createTestDBMultiDay observer rowid: %v", err)
-	}
+	defer db.Close()
+	observerID := mustCreateTestObserver(t, ctx, db, "obs1", "Obs1", "", time.Now().UTC())
 
 	id := 1
 	now := time.Now().UTC()
@@ -62,23 +40,47 @@ func createTestDBMultiDay(t *testing.T, numDays, txPerDay int) string {
 		base := now.Add(-time.Duration(day)*24*time.Hour + 30*time.Minute)
 		for i := 0; i < txPerDay; i++ {
 			txTime := base.Add(time.Duration(i) * time.Minute)
-			ts := txTime.Format(time.RFC3339)
-			unixTs := txTime.Unix()
 			hash := fmt.Sprintf("hash%06d", id)
-			if _, err := conn.Exec(`INSERT INTO transmissions
-				(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-				VALUES (?,?,?,?,0,4,1,?,?)`, id, "aa", hash, ts, `{}`, unixTs); err != nil {
-				t.Fatalf("createTestDBMultiDay insert tx: %v", err)
-			}
-			if _, err := conn.Exec(`INSERT INTO observations
-				(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-				VALUES (?,?,?,?,?,?,?,?,?)`, id, id, observerRowID, "RX", -10.0, -80.0, 5, `[]`, unixTs); err != nil {
-				t.Fatalf("createTestDBMultiDay insert obs: %v", err)
-			}
+			txID := mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+				RawHex: "aa", Hash: hash, RouteType: types.RouteTransportFlood,
+				PayloadType: types.PayloadADVERT, DecodedJSON: `{}`,
+			}, txTime)
+			dbtest.Observation(t, db, txID, observerID, txTime, -10, -80, nil...)
 			id++
 		}
 	}
-	return dbPath
+	return dsn
+}
+
+func createTestDBWithAgedPackets(t *testing.T, recentCount, oldCount int) string {
+	t.Helper()
+	dsn := pgtest.NewDatabase(t)
+	ctx := t.Context()
+	db, err := database.OpenReadWrite(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	observerID := mustCreateTestObserver(t, ctx, db, "obs1", "Obs1", "", now)
+	id := 1
+	seed := func(count int, base time.Time) {
+		t.Helper()
+		for i := 0; i < count; i++ {
+			seen := base.Add(time.Duration(i) * time.Minute)
+			hash := fmt.Sprintf("aged%012d", id)
+			txID := mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+				RawHex: "aa", Hash: hash, RouteType: types.RouteTransportFlood,
+				PayloadType: types.PayloadADVERT, DecodedJSON: `{}`,
+			}, seen)
+			dbtest.Observation(t, db, txID, observerID, seen, -10, -80, nil...)
+			id++
+		}
+	}
+	seed(oldCount, now.Add(-48*time.Hour))
+	seed(recentCount, now.Add(-30*time.Minute))
+	return dsn
 }
 
 // waitForBackgroundLoad polls backgroundLoadDone until true or timeout.
@@ -97,8 +99,7 @@ func waitForBackgroundLoad(t *testing.T, store *PacketStore, timeout time.Durati
 func TestHotStartupConfig_Clamp(t *testing.T) {
 
 	db := setupTestDB(t)
-	seedTransmissions(t, db.conn, 10)
-	defer db.conn.Close()
+	dbtest.SeedTransmissions(t, db, 10)
 
 	// hotStartupHours > retentionHours → must be clamped
 	store := NewPacketStore(db, &PacketStoreConfig{
@@ -112,8 +113,7 @@ func TestHotStartupConfig_Clamp(t *testing.T) {
 
 func TestHotStartupConfig_ZeroIsDisabled(t *testing.T) {
 	db := setupTestDB(t)
-	seedTransmissions(t, db.conn, 10)
-	defer db.conn.Close()
+	dbtest.SeedTransmissions(t, db, 10)
 
 	// hotStartupHours > retentionHours → must be clamped
 	store := NewPacketStore(db, &PacketStoreConfig{
@@ -123,7 +123,7 @@ func TestHotStartupConfig_ZeroIsDisabled(t *testing.T) {
 	if store.hotStartupHours != 24 {
 		t.Errorf("expected hotStartupHours clamped to retentionHours=24, got %f", store.hotStartupHours)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store = NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  24,
@@ -135,21 +135,23 @@ func TestHotStartupConfig_ZeroIsDisabled(t *testing.T) {
 }
 
 func TestHotStartup_LoadsOnlyHotWindow(t *testing.T) {
+	ctx := t.Context()
+
 	// 50 old packets (48h ago), 10 recent (30min ago)
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1, // load only last 1 hour
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// Only the 10 recent packets should be in memory
@@ -157,11 +159,10 @@ func TestHotStartup_LoadsOnlyHotWindow(t *testing.T) {
 		t.Errorf("expected 10 recent packets in hot window, got %d", len(store.packets))
 	}
 	// oldestLoaded should be ~1h ago
-	if store.oldestLoaded == "" {
+	if store.oldestLoaded.IsZero() {
 		t.Fatal("oldestLoaded must be set after Load()")
 	}
-	oldest, _ := time.Parse(time.RFC3339, store.oldestLoaded)
-	diff := time.Since(oldest)
+	diff := time.Since(store.oldestLoaded)
 	if diff < 30*time.Minute || diff > 90*time.Minute {
 		t.Errorf("oldestLoaded %s should be ~1h ago, got diff=%v", store.oldestLoaded, diff)
 	}
@@ -172,21 +173,23 @@ func TestHotStartup_LoadsOnlyHotWindow(t *testing.T) {
 }
 
 func TestHotStartup_DisabledWhenZero(t *testing.T) {
+	ctx := t.Context()
+
 	// 50 old (48h ago), 10 recent (30min ago) — all within 72h retention
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 0, // disabled → load all retentionHours as before
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// All 60 packets should be loaded (both old and recent within 72h)
@@ -196,21 +199,23 @@ func TestHotStartup_DisabledWhenZero(t *testing.T) {
 }
 
 func TestHotStartup_loadChunk_AddsOlderData(t *testing.T) {
+	ctx := t.Context()
+
 	// 50 old packets (48h ago), 10 recent (30min ago)
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if len(store.packets) != 10 {
 		t.Fatalf("setup: expected 10 packets after hot Load, got %d", len(store.packets))
@@ -219,7 +224,7 @@ func TestHotStartup_loadChunk_AddsOlderData(t *testing.T) {
 	// Load the old chunk (covers the 50 old packets at ~48h ago)
 	chunkEnd := time.Now().UTC().Add(-1 * time.Hour)
 	chunkStart := time.Now().UTC().Add(-72 * time.Hour)
-	if err := store.loadChunk(chunkStart, chunkEnd); err != nil {
+	if err := store.loadChunk(ctx, chunkStart, chunkEnd); err != nil {
 		t.Fatalf("loadChunk failed: %v", err)
 	}
 
@@ -229,7 +234,7 @@ func TestHotStartup_loadChunk_AddsOlderData(t *testing.T) {
 	}
 	// Packets must remain sorted ASC by first_seen
 	for i := 1; i < len(store.packets); i++ {
-		if store.packets[i].FirstSeen < store.packets[i-1].FirstSeen {
+		if store.packets[i].FirstSeen.Before(store.packets[i-1].FirstSeen) {
 			t.Fatalf("packets not in ASC order at index %d: %s < %s",
 				i, store.packets[i].FirstSeen, store.packets[i-1].FirstSeen)
 		}
@@ -245,21 +250,23 @@ func TestHotStartup_loadChunk_AddsOlderData(t *testing.T) {
 }
 
 func TestHotStartup_BackgroundFillsToRetention(t *testing.T) {
+	ctx := t.Context()
+
 	// 3 days × 50 tx/day = 150 total
 	dbPath := createTestDBMultiDay(t, 3, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 24,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// After hot Load: only ~50 packets (day 1 = last 24h)
@@ -269,7 +276,7 @@ func TestHotStartup_BackgroundFillsToRetention(t *testing.T) {
 	}
 
 	// Start background fill
-	go store.loadBackgroundChunks()
+	go store.loadBackgroundChunks(ctx)
 	waitForBackgroundLoad(t, store, 15*time.Second)
 
 	// After background fill: all 150 packets should be loaded
@@ -286,9 +293,11 @@ func TestHotStartup_BackgroundFillsToRetention(t *testing.T) {
 }
 
 func TestHotStartup_ChunkErrorRecovery(t *testing.T) {
+	ctx := t.Context()
+
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,16 +306,16 @@ func TestHotStartup_ChunkErrorRecovery(t *testing.T) {
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// intentional: closed early to simulate chunk-load failures; no defer
-	db.conn.Close()
+	db.Close()
 
 	done := make(chan struct{})
 	go func() {
-		store.loadBackgroundChunks()
+		store.loadBackgroundChunks(ctx)
 		close(done)
 	}()
 
@@ -330,30 +339,35 @@ func TestHotStartup_ChunkErrorRecovery(t *testing.T) {
 }
 
 func TestHotStartup_SQLFallback_TriggeredForOldDate(t *testing.T) {
+	ctx := t.Context()
+
 	// 50 old packets (48h ago), 10 recent (30min ago)
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	// Hot load: only last 1h → 10 recent packets in memory
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if len(store.packets) != 10 {
 		t.Fatalf("setup: expected 10 in-memory packets, got %d", len(store.packets))
 	}
 
 	// Query with Since = 49h ago (before oldestLoaded ~1h ago) → SQL fallback
-	since49h := time.Now().UTC().Add(-49 * time.Hour).Format(time.RFC3339)
-	result := store.QueryPackets(PacketQuery{Since: since49h, Limit: 100, Order: "ASC"})
+	since49h := time.Now().UTC().Add(-49 * time.Hour)
+	result, err := store.QueryPackets(ctx, database.PacketQuery{FirstSeenAfter: &since49h, Limit: 100, Order: "ASC"})
+	if err != nil {
+		t.Fatalf("QueryPackets(): %v", err)
+	}
 
 	// SQL fallback returns all packets newer than Since: 50 old (48h ago) + 10 recent (30min ago) = 60
 	if result.Total != 60 {
@@ -362,20 +376,22 @@ func TestHotStartup_SQLFallback_TriggeredForOldDate(t *testing.T) {
 }
 
 func TestHotStartup_PerfStats(t *testing.T) {
+	ctx := t.Context()
+
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	stats := store.GetPerfStoreStats()
@@ -392,27 +408,32 @@ func TestHotStartup_PerfStats(t *testing.T) {
 }
 
 func TestHotStartup_SQLFallback_NotTriggeredForRecentDate(t *testing.T) {
+	ctx := t.Context()
+
 	// 50 old packets (48h ago), 10 recent (30min ago)
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	// Hot load: last 1h → 10 recent packets in memory
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// Query with Since = 45min ago (after oldestLoaded ~1h ago) → in-memory path
-	since45m := time.Now().UTC().Add(-45 * time.Minute).Format(time.RFC3339)
-	result := store.QueryPackets(PacketQuery{Since: since45m, Limit: 100, Order: "ASC"})
+	since45m := time.Now().UTC().Add(-45 * time.Minute)
+	result, err := store.QueryPackets(ctx, database.PacketQuery{FirstSeenAfter: &since45m, Limit: 100, Order: "ASC"})
+	if err != nil {
+		t.Fatalf("QueryPackets(): %v", err)
+	}
 
 	// In-memory path: returns only the 10 recent packets (all within last 30min)
 	if result.Total != 10 {
@@ -421,30 +442,35 @@ func TestHotStartup_SQLFallback_NotTriggeredForRecentDate(t *testing.T) {
 }
 
 func TestHotStartup_SQLFallback_Until(t *testing.T) {
+	ctx := t.Context()
+
 	// 50 old packets (48h ago), 10 recent (30min ago)
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	// Hot load: only last 1h → 10 recent in memory, oldestLoaded ~1h ago
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if len(store.packets) != 10 {
 		t.Fatalf("setup: expected 10 in-memory packets, got %d", len(store.packets))
 	}
 
 	// Until = 2h ago (before oldestLoaded ~1h ago) → SQL fallback
-	until2h := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	result := store.QueryPackets(PacketQuery{Until: until2h, Limit: 100, Order: "ASC"})
+	until2h := time.Now().UTC().Add(-2 * time.Hour)
+	result, err := store.QueryPackets(ctx, database.PacketQuery{FirstSeenBefore: &until2h, Limit: 100, Order: "ASC"})
+	if err != nil {
+		t.Fatalf("QueryPackets(): %v", err)
+	}
 
 	// SQL fallback returns the 50 old packets (stored at ~48h ago, all before Until)
 	if result.Total != 50 {
@@ -453,20 +479,22 @@ func TestHotStartup_SQLFallback_Until(t *testing.T) {
 }
 
 func TestHotStartup_PerfStoreHTTP(t *testing.T) {
+	ctx := t.Context()
+
 	dbPath := createTestDBWithAgedPackets(t, 10, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	srv := NewServer(db, &Config{Port: 3000}, NewHub())
@@ -500,23 +528,25 @@ func TestHotStartup_PerfStoreHTTP(t *testing.T) {
 }
 
 func TestHotStartup_ConcurrentQueryDuringBackgroundLoad(t *testing.T) {
+	ctx := t.Context()
+
 	// 5 days × 200 tx/day = 1000 total — small enough to run in CI fast,
 	// large enough to give pollers >=1 query during the background fill.
 	dbPath := createTestDBMultiDay(t, 5, 200)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	// Hot load: only last 24h → ~200 packets in memory
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  120,
 		HotStartupHours: 24,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	preLen := len(store.packets)
@@ -531,11 +561,11 @@ func TestHotStartup_ConcurrentQueryDuringBackgroundLoad(t *testing.T) {
 	// since=200h ago covers everything; as oldestLoaded retreats from
 	// 24h ago to 120h ago, the answer source switches from SQL fallback
 	// to in-memory; Total must never decrease across that switch.
-	since := time.Now().UTC().Add(-200 * time.Hour).Format(time.RFC3339)
-	q := PacketQuery{Since: since, Limit: 5000, Order: "ASC"}
+	since := time.Now().UTC().Add(-200 * time.Hour)
+	q := database.PacketQuery{FirstSeenAfter: &since, Limit: 5000, Order: "ASC"}
 
 	// Start background fill.
-	go store.loadBackgroundChunks()
+	go store.loadBackgroundChunks(ctx)
 
 	// Pollers: each goroutine keeps querying until the loader is done,
 	// asserting that within its own series Total only grows or stays equal.
@@ -550,7 +580,11 @@ func TestHotStartup_ConcurrentQueryDuringBackgroundLoad(t *testing.T) {
 			defer wg.Done()
 			lastTotal := -1
 			for !store.backgroundLoadDone.Load() {
-				r := store.QueryPackets(q)
+				r, err := store.QueryPackets(ctx, q)
+				if err != nil {
+					t.Errorf("poller %d QueryPackets(): %v", i, err)
+					return
+				}
 				if r == nil {
 					continue
 				}
@@ -561,7 +595,11 @@ func TestHotStartup_ConcurrentQueryDuringBackgroundLoad(t *testing.T) {
 				lastTotal = r.Total
 				totalSamples.inc()
 			}
-			r := store.QueryPackets(q)
+			r, err := store.QueryPackets(ctx, q)
+			if err != nil {
+				t.Errorf("poller %d final QueryPackets(): %v", i, err)
+				return
+			}
 			if r != nil {
 				if lastTotal >= 0 && r.Total < lastTotal {
 					t.Errorf("poller %d: post-load result set shrank (%d → %d)", i, lastTotal, r.Total)
@@ -600,9 +638,11 @@ func (a *atomicSamples) get() int64 {
 // — instead it surfaces backgroundLoadFailed=true via GetPerfStoreStats so
 // operators see a visible failure rather than silent data loss. Munger r2 #3.
 func TestHotStartup_BackgroundLoadFailureSurfacesInPerf(t *testing.T) {
+	ctx := t.Context()
+
 	dbPath := createTestDBMultiDay(t, 3, 50)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,17 +650,15 @@ func TestHotStartup_BackgroundLoadFailureSurfacesInPerf(t *testing.T) {
 		RetentionHours:  72,
 		HotStartupHours: 24,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// Force every loadChunk call to fail by closing the read connection.
 	// loadBackgroundChunks must then NOT report "complete" — it must report failed.
-	if err := db.conn.Close(); err != nil {
-		t.Fatal(err)
-	}
+	db.Close()
 
-	store.loadBackgroundChunks()
+	store.loadBackgroundChunks(ctx)
 
 	perf := store.GetPerfStoreStats()
 	failed, hasFailedKey := perf["backgroundLoadFailed"].(bool)

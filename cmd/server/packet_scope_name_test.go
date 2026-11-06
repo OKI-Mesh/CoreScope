@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -62,28 +63,28 @@ func TestTxToMapScopeNameNotTransportScoped(t *testing.T) {
 // intact. Before this test, txToMap dropped the field entirely and the Scope row
 // only ever rendered for packets old enough to fall through to the DB.
 func TestPacketDetailExposesScopeName(t *testing.T) {
-	db := setupTestDB(t)
-	db.hasScopeName = true
+	ctx := t.Context()
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	db := setupTestDB(t)
+
+	now := time.Now().UTC()
 	// route_type 1 = FLOOD (never transport-scoped → NULL); 0 = TRANSPORT_FLOOD.
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type)
-		VALUES ('AABB', 'aaaaaaaaaaaaaaa1', ?, 1, 4)`, now); err != nil {
-		t.Fatalf("insert unscoped: %v", err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, scope_name)
-		VALUES ('AABB', 'aaaaaaaaaaaaaaa2', ?, 0, 4, '')`, now); err != nil {
-		t.Fatalf("insert unknown-scope: %v", err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, scope_name)
-		VALUES ('AABB', 'aaaaaaaaaaaaaaa3', ?, 0, 4, '#belgium')`, now); err != nil {
-		t.Fatalf("insert matched-scope: %v", err)
-	}
+	mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AABB", "aaaaaaaaaaaaaaa1", "", types.RouteFlood, types.PayloadADVERT, "",
+	), now)
+	unknownScope := ""
+	unknownTx := testTransmission("AABB", "aaaaaaaaaaaaaaa2", "", types.RouteTransportFlood, types.PayloadADVERT, "")
+	unknownTx.ScopeName = &unknownScope
+	mustCreateTestTransmission(t, ctx, db, unknownTx, now)
+	matchedScope := "#belgium"
+	matchedTx := testTransmission("AABB", "aaaaaaaaaaaaaaa3", "", types.RouteTransportFlood, types.PayloadADVERT, "")
+	matchedTx.ScopeName = &matchedScope
+	mustCreateTestTransmission(t, ctx, db, matchedTx, now)
 
 	srv := NewServer(db, &Config{Port: 3000}, NewHub())
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatal("background indexes never became ready")
@@ -103,7 +104,11 @@ func TestPacketDetailExposesScopeName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if store.GetPacketByHash(tc.hash) == nil {
+			packet, err := store.GetPacketByHash(ctx, tc.hash)
+			if err != nil {
+				t.Fatalf("GetPacketByHash(%q): %v", tc.hash, err)
+			}
+			if packet == nil {
 				t.Fatalf("precondition: %s not in store (would hit the DB fallback)", tc.hash)
 			}
 			req := httptest.NewRequest("GET", "/api/packets/"+tc.hash, nil)
@@ -144,81 +149,82 @@ func TestGroupedTxsToPageCarriesScopeName(t *testing.T) {
 	res := groupedTxsToPage(txs, len(txs), 0, len(txs))
 	want := []interface{}{"#belgium", "", nil}
 	for i, w := range want {
-		if got := res.Packets[i]["scope_name"]; got != w {
+		var got interface{}
+		if res.Packets[i].ScopeName != nil {
+			got = *res.Packets[i].ScopeName
+		}
+		if got != w {
 			t.Errorf("packet %d: scope_name = %#v, want %#v", i, got, w)
 		}
 	}
 }
 
 func TestGroupedPacketsEndpointExposesScopeName(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	db.hasScopeName = true
-	if _, err := db.conn.Exec(`DELETE FROM transmissions`); err != nil {
-		t.Fatalf("clear transmissions: %v", err)
-	}
+	now := time.Now().UTC()
+	mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AABB", "bbbbbbbbbbbbbbb1", "", types.RouteFlood, types.PayloadADVERT, "",
+	), now)
+	unknownScope := ""
+	unknownTx := testTransmission("AABB", "bbbbbbbbbbbbbbb2", "", types.RouteTransportFlood, types.PayloadADVERT, "")
+	unknownTx.ScopeName = &unknownScope
+	mustCreateTestTransmission(t, ctx, db, unknownTx, now)
+	matchedScope := "#belgium"
+	matchedTx := testTransmission("AABB", "bbbbbbbbbbbbbbb3", "", types.RouteTransportFlood, types.PayloadADVERT, "")
+	matchedTx.ScopeName = &matchedScope
+	mustCreateTestTransmission(t, ctx, db, matchedTx, now)
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type)
-		VALUES ('AABB', 'bbbbbbbbbbbbbbb1', ?, 1, 4)`, now); err != nil {
-		t.Fatalf("insert unscoped: %v", err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, scope_name)
-		VALUES ('AABB', 'bbbbbbbbbbbbbbb2', ?, 0, 4, '')`, now); err != nil {
-		t.Fatalf("insert unknown-scope: %v", err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, scope_name)
-		VALUES ('AABB', 'bbbbbbbbbbbbbbb3', ?, 0, 4, '#belgium')`, now); err != nil {
-		t.Fatalf("insert matched-scope: %v", err)
-	}
-
-	want := map[string]interface{}{
+	want := map[string]*string{
 		"bbbbbbbbbbbbbbb1": nil,
-		"bbbbbbbbbbbbbbb2": "",
-		"bbbbbbbbbbbbbbb3": "#belgium",
+		"bbbbbbbbbbbbbbb2": &unknownScope,
+		"bbbbbbbbbbbbbbb3": &matchedScope,
 	}
 
-	// Both the store-backed path and the DB-only fallback must agree.
-	for _, withStore := range []bool{true, false} {
-		name := "store"
-		if !withStore {
-			name = "db"
-		}
-		t.Run(name, func(t *testing.T) {
-			srv := NewServer(db, &Config{Port: 3000}, NewHub())
-			if withStore {
-				store := NewPacketStore(db, nil)
-				if err := store.Load(); err != nil {
-					t.Fatalf("store.Load: %v", err)
-				}
-				if !store.WaitIndexesReady(5 * time.Second) {
-					t.Fatal("background indexes never became ready")
-				}
-				srv.store = store
-			}
-			router := mux.NewRouter()
-			srv.RegisterRoutes(router)
+	srv := NewServer(db, &Config{Port: 3000}, NewHub())
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if !store.WaitIndexesReady(5 * time.Second) {
+		t.Fatal("background indexes never became ready")
+	}
+	srv.store = store
+	router := mux.NewRouter()
+	srv.RegisterRoutes(router)
 
-			req := httptest.NewRequest("GET", "/api/packets?groupByHash=true&limit=50", nil)
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-			if w.Code != 200 {
-				t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
-			}
-			var body struct {
-				Packets []map[string]interface{} `json:"packets"`
-			}
-			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if len(body.Packets) != 3 {
-				t.Fatalf("expected 3 grouped packets, got %d", len(body.Packets))
-			}
-			for _, p := range body.Packets {
-				h, _ := p["hash"].(string)
-				if got := p["scope_name"]; got != want[h] {
-					t.Errorf("%s: scope_name = %#v, want %#v", h, got, want[h])
-				}
-			}
-		})
+	req := httptest.NewRequest("GET", "/api/packets?groupByHash=true&limit=50", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		Packets []struct {
+			Hash      string  `json:"hash"`
+			ScopeName *string `json:"scope_name"`
+		} `json:"packets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Packets) != 3 {
+		t.Fatalf("expected 3 grouped packets, got %d", len(body.Packets))
+	}
+	for _, p := range body.Packets {
+		expected, known := want[p.Hash]
+		if !known {
+			t.Errorf("unexpected packet %s", p.Hash)
+			continue
+		}
+		switch {
+		case expected == nil && p.ScopeName != nil:
+			t.Errorf("%s: scope_name = %q, want null", p.Hash, *p.ScopeName)
+		case expected != nil && p.ScopeName == nil:
+			t.Errorf("%s: scope_name = null, want %q", p.Hash, *expected)
+		case expected != nil && *p.ScopeName != *expected:
+			t.Errorf("%s: scope_name = %q, want %q", p.Hash, *p.ScopeName, *expected)
+		}
 	}
 }
