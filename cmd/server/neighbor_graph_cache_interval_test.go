@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -14,8 +15,8 @@ import (
 func TestNeighborGraphCacheRecomputerHonorsInterval(t *testing.T) {
 	ctx := t.Context()
 	s := &Server{
-		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region string, role types.NodeRole) NeighborGraphResponse {
-			return NeighborGraphResponse{}
+		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region string, role types.NodeRole) api.NeighborGraphResponse {
+			return api.NeighborGraphResponse{}
 		},
 	}
 	// Count successful rebuilds via the at-timestamp swaps.

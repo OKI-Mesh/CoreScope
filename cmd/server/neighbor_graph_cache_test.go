@@ -7,16 +7,18 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // #1481 P0-1: handler must serve from pre-marshaled cache when set.
 func TestNeighborGraphCacheServesFromAtomicPointer(t *testing.T) {
 	s := &Server{}
-	resp := NeighborGraphResponse{
-		Nodes: []GraphNode{{Pubkey: "deadbeef", Name: "cached-node"}},
-		Edges: []GraphEdge{},
-		Stats: GraphStats{TotalNodes: 1},
+	name := "cached-node"
+	resp := api.NeighborGraphResponse{
+		Nodes: []api.GraphNode{{Pubkey: "deadbeef", Name: &name}},
+		Edges: []api.GraphEdge{},
+		Stats: api.GraphStats{TotalNodes: 1},
 	}
 	raw, _ := json.Marshal(resp)
 	s.neighborGraphCache.ptr.Store(&neighborGraphCacheEntry{resp: resp, json: raw})
@@ -37,8 +39,9 @@ func TestNeighborGraphCacheServesFromAtomicPointer(t *testing.T) {
 // return the sentinel verbatim (proves cache is wired and consulted).
 func TestNeighborGraphCacheServesSentinelOnDefaultParams(t *testing.T) {
 	s := &Server{}
-	resp := NeighborGraphResponse{
-		Nodes: []GraphNode{{Pubkey: "deadbeef", Name: "CACHED-SENTINEL"}},
+	name := "CACHED-SENTINEL"
+	resp := api.NeighborGraphResponse{
+		Nodes: []api.GraphNode{{Pubkey: "deadbeef", Name: &name}},
 	}
 	raw, _ := json.Marshal(resp)
 	s.neighborGraphCache.ptr.Store(&neighborGraphCacheEntry{resp: resp, json: raw})
@@ -59,8 +62,9 @@ func TestNeighborGraphCacheServesSentinelOnDefaultParams(t *testing.T) {
 // that shape must ALSO be cache-served (from a separate atomic-pointer).
 func TestNeighborGraphCacheServesUnfilteredShape(t *testing.T) {
 	s := &Server{}
-	resp := NeighborGraphResponse{
-		Nodes: []GraphNode{{Pubkey: "abcd", Name: "UNFILTERED-SENTINEL"}},
+	name := "UNFILTERED-SENTINEL"
+	resp := api.NeighborGraphResponse{
+		Nodes: []api.GraphNode{{Pubkey: "abcd", Name: &name}},
 	}
 	raw, _ := json.Marshal(resp)
 	s.neighborGraphCache.unfilteredPtr.Store(&neighborGraphCacheEntry{resp: resp, json: raw})
@@ -85,18 +89,20 @@ func TestNeighborGraphCacheServesUnfilteredShape(t *testing.T) {
 // branch must NOT serve the sentinel — body must NOT contain it.
 func TestNeighborGraphCacheBypassOnRegionFilter(t *testing.T) {
 	var computeCalls atomic.Int32
-	bypassResp := NeighborGraphResponse{
-		Nodes: []GraphNode{{Pubkey: "abcd", Name: "BYPASS-COMPUTED"}},
-		Stats: GraphStats{TotalNodes: 1},
+	bypassName := "BYPASS-COMPUTED"
+	bypassResp := api.NeighborGraphResponse{
+		Nodes: []api.GraphNode{{Pubkey: "abcd", Name: &bypassName}},
+		Stats: api.GraphStats{TotalNodes: 1},
 	}
 	s := &Server{
-		computeNeighborGraphResponseFn: func(minCount int, minScore float64, region string, role types.NodeRole) NeighborGraphResponse {
+		computeNeighborGraphResponseFn: func(_ int, _ float64, _ string, _ types.NodeRole) api.NeighborGraphResponse {
 			computeCalls.Add(1)
 			return bypassResp
 		},
 	}
-	sentinel := NeighborGraphResponse{
-		Nodes: []GraphNode{{Pubkey: "deadbeef", Name: "CACHED-SENTINEL"}},
+	sentinelName := "CACHED-SENTINEL"
+	sentinel := api.NeighborGraphResponse{
+		Nodes: []api.GraphNode{{Pubkey: "deadbeef", Name: &sentinelName}},
 	}
 	rawSent, _ := json.Marshal(sentinel)
 	s.neighborGraphCache.ptr.Store(&neighborGraphCacheEntry{resp: sentinel, json: rawSent})
@@ -119,7 +125,7 @@ func TestNeighborGraphCacheBypassOnRegionFilter(t *testing.T) {
 		t.Fatalf("expected compute fn called exactly once, got %d", got)
 	}
 	// Body must parse as non-empty JSON object with a nodes array.
-	var parsed NeighborGraphResponse
+	var parsed api.NeighborGraphResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
 		t.Fatalf("body is not valid JSON: %v body=%s", err, body)
 	}

@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
@@ -122,7 +123,7 @@ type Server struct {
 	// computeNeighborGraphResponse pipeline so tests can assert the
 	// bypass branch was exercised without standing up a full DB/store.
 	// Production code MUST leave this nil. #1483 follow-up.
-	computeNeighborGraphResponseFn func(minCount int, minScore float64, region string, role types.NodeRole) NeighborGraphResponse
+	computeNeighborGraphResponseFn func(minCount int, minScore float64, region string, role types.NodeRole) api.NeighborGraphResponse
 
 	// Per-server state for /api/nodes/{pk}/reach: TTL cache + singleflight
 	// + cached neighbor_edges degree snapshot. Lives on *Server (not as
@@ -356,6 +357,9 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	// Decode endpoint
 	r.HandleFunc("/api/decode", s.handleDecode).Methods("POST")
 
+	// Neighbor Endpoints
+	s.registerNeighborRoutes(r)
+
 	// Node endpoints — fixed routes BEFORE parameterized
 	r.HandleFunc("/api/nodes/search", s.handleNodeSearch).Methods("GET")
 	r.HandleFunc("/api/nodes/bulk-health", s.handleBulkHealth).Methods("GET")
@@ -368,7 +372,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/nodes/clock-skew", s.handleFleetClockSkew).Methods("GET")
 	r.HandleFunc("/api/nodes/{pubkey}/clock-skew", s.handleNodeClockSkew).Methods("GET")
 	r.HandleFunc("/api/observers/clock-skew", s.handleObserverClockSkew).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/neighbors", s.handleNodeNeighbors).Methods("GET")
+
 	// Keep specific sub-routes (…/reach, …/rx-coverage) registered BEFORE the
 	// catch-all /api/nodes/{pubkey} — mux matches in registration order, so
 	// reordering these below the catch-all would shadow them and break the route.

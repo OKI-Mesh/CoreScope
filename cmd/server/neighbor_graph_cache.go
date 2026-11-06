@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // #1481 P0-1: cached default-filter neighbor-graph response.
@@ -26,7 +28,7 @@ const neighborGraphCacheInterval = 5 * time.Minute
 // tests / structured access) and the pre-marshaled bytes that the
 // handler writes verbatim.
 type neighborGraphCacheEntry struct {
-	resp NeighborGraphResponse
+	resp api.NeighborGraphResponse
 	json []byte
 	at   time.Time
 }

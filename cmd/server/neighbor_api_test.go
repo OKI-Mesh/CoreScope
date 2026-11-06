@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -96,7 +97,7 @@ func TestNeighborAPI_EmptyGraph(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestNeighborAPI_SingleNeighbor(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -149,7 +150,7 @@ func TestNeighborAPI_MultipleNeighbors(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 2 {
@@ -170,7 +171,7 @@ func TestNeighborAPI_AmbiguousCandidates(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -194,7 +195,7 @@ func TestNeighborAPI_UnresolvedPrefix(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -216,7 +217,7 @@ func TestNeighborAPI_MinCountFilter(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors?min_count=10")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -234,7 +235,7 @@ func TestNeighborAPI_MinScoreFilter(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors?min_score=0.5")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -249,7 +250,7 @@ func TestNeighborAPI_ExcludeAmbiguous(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors?include_ambiguous=false")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -267,7 +268,7 @@ func TestNeighborAPI_UnknownNode(t *testing.T) {
 		t.Fatalf("expected 200 for unknown node, got %d", rr.Code)
 	}
 
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 	if len(resp.Neighbors) != 0 {
 		t.Errorf("expected 0 neighbors for unknown node, got %d", len(resp.Neighbors))
@@ -284,7 +285,7 @@ func TestNeighborGraphAPI_EmptyGraph(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Edges) != 0 {
@@ -305,7 +306,7 @@ func TestNeighborGraphAPI_WithEdges(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph?min_count=1&min_score=0")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Edges) != 2 {
@@ -326,7 +327,7 @@ func TestNeighborGraphAPI_MinCountDefault(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Edges) != 1 {
@@ -341,7 +342,7 @@ func TestNeighborGraphAPI_AmbiguousEdgesCount(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1, e2))
 
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph?min_count=1&min_score=0")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if resp.Stats.AmbiguousEdges != 1 {
@@ -379,7 +380,7 @@ func TestNeighborAPI_DistanceKm_WithGPS(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -419,7 +420,7 @@ func TestNeighborAPI_DistanceKm_NoGPS(t *testing.T) {
 	srv.neighborGraph = makeTestGraph(newEdge("aaaa", "bbbb", "bb", 50, now))
 
 	rr := serveRequest(srv, "GET", "/api/nodes/aaaa/neighbors")
-	var resp NeighborResponse
+	var resp api.NodeNeighborsResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	if len(resp.Neighbors) != 1 {
@@ -438,7 +439,7 @@ func TestNeighborGraphAPI_RegionFilter(t *testing.T) {
 	srv := makeTestServer(makeTestGraph(e1))
 	// No store → region filter has no observers → filters everything out.
 	rr := serveRequest(srv, "GET", "/api/analytics/neighbor-graph?region=SJC&min_count=1&min_score=0")
-	var resp NeighborGraphResponse
+	var resp api.NeighborGraphResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	// With no store, regionObs is nil so filter is skipped → all edges returned.

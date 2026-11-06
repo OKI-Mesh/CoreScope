@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -360,12 +361,12 @@ func TestIntegration_DualPrefixSingleNeighbor(t *testing.T) {
 func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 	pk := "b0b1eeeeb0b1eeee"
 	name := "NodeB"
-	entries := []NeighborEntry{
+	entries := []api.NeighborEntry{
 		{
 			Pubkey:    nil, // unresolved
 			Prefix:    "b0",
 			Count:     207,
-			LastSeen:  "2026-04-10T12:00:00Z",
+			LastSeen:  time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
 			Observers: []string{"obs1"},
 			Ambiguous: true,
 		},
@@ -374,7 +375,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 			Prefix:    "b0b1",
 			Name:      &name,
 			Count:     1,
-			LastSeen:  "2026-04-09T12:00:00Z",
+			LastSeen:  time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC),
 			Observers: []string{"obs2"},
 		},
 	}
@@ -390,7 +391,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 	if result[0].Count != 208 { // 1 + 207
 		t.Errorf("expected merged count 208, got %d", result[0].Count)
 	}
-	if result[0].LastSeen != "2026-04-10T12:00:00Z" {
+	if result[0].LastSeen != time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC) {
 		t.Errorf("expected higher LastSeen, got %s", result[0].LastSeen)
 	}
 	// Both observers should be present.
@@ -405,7 +406,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 
 func TestDedupPrefixEntries_NoMatchNoChange(t *testing.T) {
 	pk := "dddd4444"
-	entries := []NeighborEntry{
+	entries := []api.NeighborEntry{
 		{Pubkey: nil, Prefix: "b0", Count: 5, Ambiguous: true, Observers: []string{}},
 		{Pubkey: &pk, Prefix: "dd", Count: 10, Observers: []string{}},
 	}
@@ -485,12 +486,12 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 	pk2 := "b0c2ffffb0c2ffff"
 	name1 := "NodeB1"
 	name2 := "NodeB2"
-	entries := []NeighborEntry{
+	entries := []api.NeighborEntry{
 		{
 			Pubkey:    nil, // unresolved
 			Prefix:    "b0",
 			Count:     100,
-			LastSeen:  "2026-04-10T12:00:00Z",
+			LastSeen:  time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
 			Observers: []string{"obs1"},
 			Ambiguous: true,
 		},
@@ -499,7 +500,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Prefix:    "b0b1",
 			Name:      &name1,
 			Count:     5,
-			LastSeen:  "2026-04-09T12:00:00Z",
+			LastSeen:  time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC),
 			Observers: []string{"obs2"},
 		},
 		{
@@ -507,7 +508,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Prefix:    "b0c2",
 			Name:      &name2,
 			Count:     3,
-			LastSeen:  "2026-04-08T12:00:00Z",
+			LastSeen:  time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC),
 			Observers: []string{"obs3"},
 		},
 	}

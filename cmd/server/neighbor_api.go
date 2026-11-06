@@ -11,75 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
-
-// ─── Neighbor API response types ───────────────────────────────────────────────
-
-type NeighborResponse struct {
-	Node              string          `json:"node"`
-	Neighbors         []NeighborEntry `json:"neighbors"`
-	TotalObservations int             `json:"total_observations"`
-}
-
-type NeighborEntry struct {
-	Pubkey *string         `json:"pubkey"`
-	Prefix string          `json:"prefix"`
-	Name   *string         `json:"name"`
-	Role   *types.NodeRole `json:"role"`
-	Count  int             `json:"count"`
-	// CountsByMode breaks Count down by observation hash-prefix mode in bytes
-	// (1, 2, 4, 6). Lets the frontend weight confidence by ambiguity rather
-	// than treating every sighting as equal evidence. Issue #1638.
-	CountsByMode map[int]int      `json:"counts_by_mode,omitempty"`
-	Score        float64          `json:"score"`
-	FirstSeen    string           `json:"first_seen"`
-	LastSeen     string           `json:"last_seen"`
-	AvgSNR       *float64         `json:"avg_snr"`
-	DistanceKm   *float64         `json:"distance_km,omitempty"`
-	Observers    []string         `json:"observers"`
-	Ambiguous    bool             `json:"ambiguous"`
-	Unresolved   bool             `json:"unresolved,omitempty"`
-	Candidates   []CandidateEntry `json:"candidates,omitempty"`
-}
-
-type CandidateEntry struct {
-	Pubkey string         `json:"pubkey"`
-	Name   string         `json:"name"`
-	Role   types.NodeRole `json:"role"`
-}
-
-type NeighborGraphResponse struct {
-	Nodes []GraphNode `json:"nodes"`
-	Edges []GraphEdge `json:"edges"`
-	Stats GraphStats  `json:"stats"`
-}
-
-type GraphNode struct {
-	Pubkey        string         `json:"pubkey"`
-	Name          string         `json:"name"`
-	Role          types.NodeRole `json:"role"`
-	NeighborCount int            `json:"neighbor_count"`
-}
-
-type GraphEdge struct {
-	Source        string   `json:"source"`
-	Target        string   `json:"target"`
-	Weight        int      `json:"weight"`
-	Score         float64  `json:"score"`
-	Bidirectional bool     `json:"bidirectional"`
-	AvgSNR        *float64 `json:"avg_snr"`
-	Ambiguous     bool     `json:"ambiguous"`
-}
-
-type GraphStats struct {
-	TotalNodes          int     `json:"total_nodes"`
-	TotalEdges          int     `json:"total_edges"`
-	AmbiguousEdges      int     `json:"ambiguous_edges"`
-	AvgClusterSize      float64 `json:"avg_cluster_size"`
-	RejectedEdgesGeoFar uint64  `json:"rejected_edges_geo_far"` // edges dropped at build time by the geo-implausibility filter (#1228)
-}
 
 // ─── Graph accessor on Server ──────────────────────────────────────────────────
 
@@ -102,6 +37,13 @@ func (s *Server) getNeighborGraph() *NeighborGraph {
 		}
 	}
 	return s.neighborGraph
+}
+
+// Routes
+
+func (s *Server) registerNeighborRoutes(r *mux.Router) {
+	r.HandleFunc("/api/nodes/{pubkey}/neighbors", s.handleNodeNeighbors).Methods("GET")
+	r.HandleFunc("/api/analytics/neighbor-graph", s.handleNeighborGraph).Methods("GET")
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────────
@@ -148,7 +90,7 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 		srcInfo = nodeMap[pubkey]
 	}
 
-	var entries []NeighborEntry
+	var entries []api.NeighborEntry
 	totalObs := 0
 
 	for _, e := range edges {
@@ -168,20 +110,20 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 			neighborPK = e.NodeB
 		}
 
-		entry := NeighborEntry{
+		entry := api.NeighborEntry{
 			Prefix:       e.Prefix,
 			Count:        e.Count,
 			CountsByMode: copyCountsByMode(e.CountsByMode),
 			Score:        score,
-			FirstSeen:    e.FirstSeen.UTC().Format(time.RFC3339),
-			LastSeen:     e.LastSeen.UTC().Format(time.RFC3339),
+			FirstSeen:    e.FirstSeen.UTC(),
+			LastSeen:     e.LastSeen.UTC(),
 			Ambiguous:    e.Ambiguous,
 			Observers:    observerList(e.Observers),
 		}
 
 		if e.SNRCount > 0 {
 			avg := e.AvgSNR()
-			entry.AvgSNR = &avg
+			entry.AvgSnr = &avg
 		}
 
 		if e.Ambiguous {
@@ -189,10 +131,10 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 				entry.Unresolved = true
 			}
 			for _, cpk := range e.Candidates {
-				ce := CandidateEntry{Pubkey: cpk}
+				ce := api.CandidateEntry{Pubkey: cpk}
 				if info, ok := nodeMap[strings.ToLower(cpk)]; ok {
 					ce.Name = info.Name
-					ce.Role = info.Role
+					ce.Role = &info.Role
 				}
 				entry.Candidates = append(entry.Candidates, ce)
 			}
@@ -221,10 +163,10 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if entries == nil {
-		entries = []NeighborEntry{}
+		entries = []api.NeighborEntry{}
 	}
 
-	resp := NeighborResponse{
+	resp := api.NodeNeighborsResponse{
 		Node:              pubkey,
 		Neighbors:         entries,
 		TotalObservations: totalObs,
@@ -286,7 +228,7 @@ func (s *Server) handleNeighborGraph(w http.ResponseWriter, r *http.Request) {
 
 // computeNeighborGraphResponseDispatch routes to the test-injected
 // function when set, otherwise to the real pipeline. #1483 follow-up.
-func (s *Server) computeNeighborGraphResponseDispatch(ctx context.Context, minCount int, minScore float64, region string, roleFilter types.NodeRole) NeighborGraphResponse {
+func (s *Server) computeNeighborGraphResponseDispatch(ctx context.Context, minCount int, minScore float64, region string, roleFilter types.NodeRole) api.NeighborGraphResponse {
 	if s.computeNeighborGraphResponseFn != nil {
 		return s.computeNeighborGraphResponseFn(minCount, minScore, region, roleFilter)
 	}
@@ -296,13 +238,13 @@ func (s *Server) computeNeighborGraphResponseDispatch(ctx context.Context, minCo
 // buildDefaultNeighborGraphResponse builds the default-shape response
 // used by the #1481 P0-1 recomputer. Goes through the dispatch so test
 // hooks can inject failures (#1483 follow-up).
-func (s *Server) buildDefaultNeighborGraphResponse(ctx context.Context) NeighborGraphResponse {
+func (s *Server) buildDefaultNeighborGraphResponse(ctx context.Context) api.NeighborGraphResponse {
 	return s.computeNeighborGraphResponseDispatch(ctx, 5, 0.1, "", "")
 }
 
 // computeNeighborGraphResponse does the full graph build + filter + score
 // pipeline previously inlined in handleNeighborGraph.
-func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int, minScore float64, region string, roleFilter types.NodeRole) NeighborGraphResponse {
+func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int, minScore float64, region string, roleFilter types.NodeRole) api.NeighborGraphResponse {
 	graph := s.getNeighborGraph()
 	allEdges := graph.AllEdges()
 	now := time.Now()
@@ -315,7 +257,7 @@ func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int,
 
 	nodeMap := s.buildNodeInfoMap(ctx)
 	nodeSet := make(map[string]bool)
-	var filteredEdges []GraphEdge
+	var filteredEdges []api.GraphEdge
 	ambiguousCount := 0
 
 	for _, e := range allEdges {
@@ -358,7 +300,7 @@ func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int,
 			continue
 		}
 
-		ge := GraphEdge{
+		ge := api.GraphEdge{
 			Source:        e.NodeA,
 			Target:        e.NodeB,
 			Weight:        e.Count,
@@ -368,7 +310,7 @@ func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int,
 		}
 		if e.SNRCount > 0 {
 			avg := e.AvgSNR()
-			ge.AvgSNR = &avg
+			ge.AvgSnr = &avg
 		}
 
 		if e.Ambiguous {
@@ -398,21 +340,21 @@ func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int,
 		neighborCounts[ge.Target]++
 	}
 
-	var nodes []GraphNode
+	var nodes []api.GraphNode
 	for pk := range nodeSet {
-		gn := GraphNode{Pubkey: pk, NeighborCount: neighborCounts[pk]}
+		gn := api.GraphNode{Pubkey: pk, NeighborCount: neighborCounts[pk]}
 		if info, ok := nodeMap[strings.ToLower(pk)]; ok {
-			gn.Name = info.Name
-			gn.Role = info.Role
+			gn.Name = &info.Name
+			gn.Role = &info.Role
 		}
 		nodes = append(nodes, gn)
 	}
 
 	if filteredEdges == nil {
-		filteredEdges = []GraphEdge{}
+		filteredEdges = []api.GraphEdge{}
 	}
 	if nodes == nil {
-		nodes = []GraphNode{}
+		nodes = []api.GraphNode{}
 	}
 
 	avgCluster := 0.0
@@ -420,15 +362,15 @@ func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int,
 		avgCluster = float64(len(filteredEdges)*2) / float64(len(nodes))
 	}
 
-	return NeighborGraphResponse{
+	return api.NeighborGraphResponse{
 		Nodes: nodes,
 		Edges: filteredEdges,
-		Stats: GraphStats{
+		Stats: api.GraphStats{
 			TotalNodes:          len(nodes),
 			TotalEdges:          len(filteredEdges),
 			AmbiguousEdges:      ambiguousCount,
 			AvgClusterSize:      avgCluster,
-			RejectedEdgesGeoFar: atomic.LoadUint64(&graph.RejectedEdgesGeoFar),
+			RejectedEdgesGeoFar: int64(atomic.LoadUint64(&graph.RejectedEdgesGeoFar)),
 		},
 	}
 }
@@ -438,13 +380,13 @@ func (s *Server) computeNeighborGraphResponse(ctx context.Context, minCount int,
 // copyCountsByMode returns a shallow copy of the per-mode count map so the
 // API response doesn't share state with the live in-memory edge. Returns
 // nil for empty/nil input so omitempty drops the field from legacy payloads.
-func copyCountsByMode(m map[int]int) map[int]int {
+func copyCountsByMode(m map[int]int) map[string]int {
 	if len(m) == 0 {
 		return nil
 	}
-	out := make(map[int]int, len(m))
-	for k, v := range m {
-		out[k] = v
+	out := make(map[string]int, len(m))
+	for mode, count := range m {
+		out[strconv.Itoa(mode)] = count
 	}
 	return out
 }
@@ -497,7 +439,7 @@ func (s *Server) buildNodeInfoMap(ctx context.Context) map[string]nodeInfo {
 
 // dedupPrefixEntries merges unresolved prefix entries with resolved pubkey entries
 // where the prefix is a prefix of the resolved pubkey. Defense-in-depth for #698.
-func dedupPrefixEntries(entries []NeighborEntry) []NeighborEntry {
+func dedupPrefixEntries(entries []api.NeighborEntry) []api.NeighborEntry {
 	if len(entries) < 2 {
 		return entries
 	}
@@ -537,15 +479,15 @@ func dedupPrefixEntries(entries []NeighborEntry) []NeighborEntry {
 		entries[j].Count += entries[i].Count
 		if entries[i].CountsByMode != nil {
 			if entries[j].CountsByMode == nil {
-				entries[j].CountsByMode = make(map[int]int)
+				entries[j].CountsByMode = make(map[string]int)
 			}
-			for m, c := range entries[i].CountsByMode {
-				entries[j].CountsByMode[m] += c
+			for mode, count := range entries[i].CountsByMode {
+				entries[j].CountsByMode[mode] += count
 			}
 		}
 
 		// Preserve higher LastSeen.
-		if entries[i].LastSeen > entries[j].LastSeen {
+		if entries[i].LastSeen.After(entries[j].LastSeen) {
 			entries[j].LastSeen = entries[i].LastSeen
 		}
 
@@ -566,7 +508,7 @@ func dedupPrefixEntries(entries []NeighborEntry) []NeighborEntry {
 		return entries
 	}
 
-	result := make([]NeighborEntry, 0, len(entries)-len(remove))
+	result := make([]api.NeighborEntry, 0, len(entries)-len(remove))
 	for i, e := range entries {
 		if !remove[i] {
 			result = append(result, e)
