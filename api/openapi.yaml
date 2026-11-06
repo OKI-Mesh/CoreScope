@@ -101,7 +101,7 @@ paths:
           required: false
           description: Keep only edges where at least one endpoint has this role. Matched case-insensitively.
           schema:
-            type: string
+            $ref: "#/components/schemas/FilterableRole"
       responses:
         "200":
           description: Success
@@ -114,6 +114,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NeighborGraphResponse"
+        "400":
+          description: The role filter is not a recognized role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     NodeRole:
@@ -122,6 +128,13 @@ components:
         MeshCore node role. observer marks a standalone observer; unknown marks
         a pubkey seen only in packets and is not a real MeshCore role.
       enum: [repeater, companion, room, sensor, observer, unknown]
+      x-go-type: types.NodeRole
+      x-go-type-import:
+        path: github.com/OKI-Mesh/CoreScope/internal/types
+    FilterableRole:
+      type: string
+      description: A role the API accepts as a filter. Unlike NodeRole, it does not include unknown.
+      enum: [repeater, companion, room, sensor, observer]
       x-go-type: types.NodeRole
       x-go-type-import:
         path: github.com/OKI-Mesh/CoreScope/internal/types
@@ -191,11 +204,9 @@ components:
           maximum: 1
           description: "Affinity score: count saturation × recency decay × observer-diversity confidence."
         first_seen:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
         last_seen:
-          type: string
-          format: date-time
+          $ref: "#/components/schemas/Timestamp"
         avg_snr:
           type: number
           format: double
@@ -308,3 +319,11 @@ components:
           format: int64
           minimum: 0
           description: Edges dropped at build time because the two nodes are implausibly far apart.
+    Timestamp:
+      type: string
+      format: date-time
+      description: UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
+      x-go-type: types.UTCTime
+      x-go-type-import:
+        path: github.com/OKI-Mesh/CoreScope/internal/types

@@ -366,7 +366,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 			Pubkey:    nil, // unresolved
 			Prefix:    "b0",
 			Count:     207,
-			LastSeen:  time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+			LastSeen:  types.WireTime{Time: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs1"},
 			Ambiguous: true,
 		},
@@ -375,7 +375,7 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 			Prefix:    "b0b1",
 			Name:      &name,
 			Count:     1,
-			LastSeen:  time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC),
+			LastSeen:  types.WireTime{Time: time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs2"},
 		},
 	}
@@ -391,8 +391,9 @@ func TestDedupPrefixEntries_MergesUnresolved(t *testing.T) {
 	if result[0].Count != 208 { // 1 + 207
 		t.Errorf("expected merged count 208, got %d", result[0].Count)
 	}
-	if result[0].LastSeen != time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC) {
-		t.Errorf("expected higher LastSeen, got %s", result[0].LastSeen)
+	want := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	if !result[0].LastSeen.Equal(want) {
+		t.Errorf("expected higher LastSeen %s, got %s", want, result[0].LastSeen)
 	}
 	// Both observers should be present.
 	obsMap := make(map[string]bool)
@@ -491,7 +492,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Pubkey:    nil, // unresolved
 			Prefix:    "b0",
 			Count:     100,
-			LastSeen:  time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC),
+			LastSeen:  types.WireTime{Time: time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs1"},
 			Ambiguous: true,
 		},
@@ -500,7 +501,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Prefix:    "b0b1",
 			Name:      &name1,
 			Count:     5,
-			LastSeen:  time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC),
+			LastSeen:  types.WireTime{Time: time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs2"},
 		},
 		{
@@ -508,7 +509,7 @@ func TestDedupPrefixEntries_MultiMatchNoMerge(t *testing.T) {
 			Prefix:    "b0c2",
 			Name:      &name2,
 			Count:     3,
-			LastSeen:  time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC),
+			LastSeen:  types.WireTime{Time: time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)},
 			Observers: []string{"obs3"},
 		},
 	}

@@ -39,12 +39,22 @@ func newSpecChecker(t *testing.T) specChecker {
 }
 
 // check sends GET path through the server's router and fails the test if the
-// response does not match the spec.
+// 200 response does not match the spec.
 func (c specChecker) check(t *testing.T, router *mux.Router, path string) {
+	t.Helper()
+	c.checkStatus(t, router, path, http.StatusOK)
+}
+
+// checkStatus sends GET path, requires the given status, and fails the test if
+// the response does not match the spec.
+func (c specChecker) checkStatus(t *testing.T, router *mux.Router, path string, want int) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
+	if rec.Code != want {
+		t.Fatalf("%s: status %d, want %d; body=%s", path, rec.Code, want, rec.Body.String())
+	}
 
 	route, pathParams, err := c.routes.FindRoute(req)
 	if err != nil {
@@ -64,6 +74,12 @@ func (c specChecker) check(t *testing.T, router *mux.Router, path string) {
 	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
 		t.Errorf("%s: status %d does not match the spec: %v", path, rec.Code, err)
 	}
+}
+
+func TestInvalidRoleFilterMatchesSpec(t *testing.T) {
+	checker := newSpecChecker(t)
+	_, router := setupTestServer(t)
+	checker.checkStatus(t, router, "/api/analytics/neighbor-graph?role=bogus", http.StatusBadRequest)
 }
 
 // TestResponsesMatchCommittedSpec checks every documented endpoint against the
@@ -130,4 +146,41 @@ func TestNeighborGraphPopulatedResponseMatchesSpec(t *testing.T) {
 
 	// min_count=2 keeps the request off the pre-marshaled snapshot paths.
 	checker.check(t, router, "/api/analytics/neighbor-graph?min_count=2&min_score=0.5")
+}
+
+// TestSpecDescribesOnlyRegisteredRoutes fails when api/openapi.yaml documents an
+// operation that no handler serves, so the spec cannot be pre-staged.
+func TestSpecDescribesOnlyRegisteredRoutes(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
+	if err != nil {
+		t.Fatalf("load spec: %v", err)
+	}
+	_, router := setupTestServer(t)
+
+	registered := make(map[string]bool)
+	err = router.Walk(func(route *mux.Route, _ *mux.Router, _ []*mux.Route) error {
+		path, err := route.GetPathTemplate()
+		if err != nil {
+			return nil
+		}
+		methods, err := route.GetMethods()
+		if err != nil {
+			return nil
+		}
+		for _, method := range methods {
+			registered[method+" "+path] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk routes: %v", err)
+	}
+
+	for path, item := range doc.Paths.Map() {
+		for method := range item.Operations() {
+			if !registered[method+" "+path] {
+				t.Errorf("spec documents %s %s but no handler is registered for it", method, path)
+			}
+		}
+	}
 }

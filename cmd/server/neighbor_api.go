@@ -115,8 +115,8 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 			Count:        e.Count,
 			CountsByMode: copyCountsByMode(e.CountsByMode),
 			Score:        score,
-			FirstSeen:    e.FirstSeen.UTC(),
-			LastSeen:     e.LastSeen.UTC(),
+			FirstSeen:    types.WireTime{Time: e.FirstSeen},
+			LastSeen:     types.WireTime{Time: e.LastSeen},
 			Ambiguous:    e.Ambiguous,
 			Observers:    observerList(e.Observers),
 		}
@@ -193,7 +193,7 @@ func (s *Server) handleNeighborGraph(w http.ResponseWriter, r *http.Request) {
 	region := r.URL.Query().Get("region")
 	roleFilter := types.NodeRole(strings.ToLower(r.URL.Query().Get("role")))
 	if roleFilter != "" && !roleFilter.Filterable() {
-		http.Error(w, "invalid role", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid role")
 		return
 	}
 
@@ -487,7 +487,7 @@ func dedupPrefixEntries(entries []api.NeighborEntry) []api.NeighborEntry {
 		}
 
 		// Preserve higher LastSeen.
-		if entries[i].LastSeen.After(entries[j].LastSeen) {
+		if entries[i].LastSeen.After(entries[j].LastSeen.Time) {
 			entries[j].LastSeen = entries[i].LastSeen
 		}
 

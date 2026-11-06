@@ -8,42 +8,34 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-// TestSpecRoleEnumMatchesNodeRole fails when a role is added to or removed from
-// types.NodeRole without the same change to the NodeRole enum in openapi.yaml.
-func TestSpecRoleEnumMatchesNodeRole(t *testing.T) {
+// TestSpecFilterableRoleEnumMatchesFilterable fails when the FilterableRole enum
+// in the spec and types.NodeRole.Filterable() disagree.
+func TestSpecFilterableRoleEnumMatchesFilterable(t *testing.T) {
 	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
 	if err != nil {
 		t.Fatalf("load spec: %v", err)
 	}
-	schema, ok := doc.Components.Schemas["NodeRole"]
+	schema, ok := doc.Components.Schemas["FilterableRole"]
 	if !ok {
-		t.Fatal("NodeRole is not in the spec")
+		t.Fatal("FilterableRole is not in the spec")
 	}
 
 	inSpec := make(map[types.NodeRole]bool)
 	for _, v := range schema.Value.Enum {
 		s, ok := v.(string)
 		if !ok {
-			t.Fatalf("NodeRole enum value %v is not a string", v)
+			t.Fatalf("FilterableRole enum value %v is not a string", v)
 		}
 		inSpec[types.NodeRole(s)] = true
 	}
 
-	inCode := []types.NodeRole{
-		types.RoleRepeater,
-		types.RoleCompanion,
-		types.RoleRoom,
-		types.RoleSensor,
-		types.RoleObserver,
-		types.RoleUnknown,
+	all := []types.NodeRole{
+		types.RoleRepeater, types.RoleCompanion, types.RoleRoom,
+		types.RoleSensor, types.RoleObserver, types.RoleUnknown,
 	}
-
-	if len(inSpec) != len(inCode) {
-		t.Errorf("spec lists %d roles, code defines %d", len(inSpec), len(inCode))
-	}
-	for _, role := range inCode {
-		if !inSpec[role] {
-			t.Errorf("role %q is defined in code but missing from the spec enum", role)
+	for _, role := range all {
+		if role.Filterable() != inSpec[role] {
+			t.Errorf("role %q: Filterable()=%v but in spec enum=%v", role, role.Filterable(), inSpec[role])
 		}
 	}
 }

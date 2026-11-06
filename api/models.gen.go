@@ -4,8 +4,6 @@
 package api
 
 import (
-	"time"
-
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -21,6 +19,9 @@ type CandidateEntry struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+// FilterableRole A role the API accepts as a filter. Unlike NodeRole, it does not include unknown.
+type FilterableRole = types.NodeRole
 
 // GraphEdge defines model for GraphEdge.
 type GraphEdge struct {
@@ -78,11 +79,15 @@ type NeighborEntry struct {
 	CountsByMode map[string]int `json:"counts_by_mode,omitempty"`
 
 	// DistanceKm Great-circle distance to the queried node. Absent unless both nodes have a position.
-	DistanceKm *float64  `json:"distance_km,omitempty"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
-	Name       *string   `json:"name"`
-	Observers  []string  `json:"observers"`
+	DistanceKm *float64 `json:"distance_km,omitempty"`
+
+	// FirstSeen UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
+	FirstSeen Timestamp `json:"first_seen"`
+
+	// LastSeen UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
+	LastSeen  Timestamp `json:"last_seen"`
+	Name      *string   `json:"name"`
+	Observers []string  `json:"observers"`
 
 	// Prefix Raw hop hash prefix that established this edge.
 	Prefix string `json:"prefix"`
@@ -119,6 +124,9 @@ type NodeNeighborsResponse struct {
 // NodeRole MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
 type NodeRole = types.NodeRole
 
+// Timestamp UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
+type Timestamp = types.WireTime
+
 // GetNeighborGraphParams defines parameters for GetNeighborGraph.
 type GetNeighborGraphParams struct {
 	// MinCount Drop edges with fewer observations than this. Values below 1 are ignored.
@@ -131,7 +139,7 @@ type GetNeighborGraphParams struct {
 	Region *string `form:"region,omitempty" json:"region,omitempty"`
 
 	// Role Keep only edges where at least one endpoint has this role. Matched case-insensitively.
-	Role *string `form:"role,omitempty" json:"role,omitempty"`
+	Role *FilterableRole `form:"role,omitempty" json:"role,omitempty"`
 }
 
 // GetNodeNeighborsParams defines parameters for GetNodeNeighbors.
