@@ -18,23 +18,9 @@ import (
 	"github.com/gorilla/mux"
 )
 
-type NodeAdvertObservation struct {
-	ID             int64    `json:"id"`
-	TransmissionID int64    `json:"transmission_id"`
-	ObserverID     *string  `json:"observer_id"`
-	ObserverName   *string  `json:"observer_name"`
-	ObserverIATA   string   `json:"observer_iata"`
-	SNR            *float64 `json:"snr"`
-	RSSI           *float64 `json:"rssi"`
-	Score          *float64 `json:"score"`
-	Direction      *string  `json:"direction"`
-	PathJSON       string   `json:"path_json"`
-	Timestamp      UTCTime  `json:"timestamp"`
-}
-
 type NodeAdvertResponse struct {
 	PacketResponse
-	Observations []NodeAdvertObservation `json:"observations"`
+	Observations []api.NodeAdvertObservation `json:"observations"`
 }
 
 type NodeHealthStats struct {
@@ -55,12 +41,91 @@ type NodeHealthResponse struct {
 	RecentPackets      []map[string]interface{} `json:"recentPackets"` // becomes []PacketResponse with the packet responses
 }
 
-func nodeAdvertResponse(p database.Packet, observations []database.Observation) NodeAdvertResponse {
-	out := make([]NodeAdvertObservation, len(observations))
+func (s *Server) registerNodeRoutes(r *mux.Router) {
+	// Fixed routes BEFORE the parameterized /api/nodes/{pubkey}.
+	r.HandleFunc("/api/nodes/search", s.handleNodeSearch).Methods("GET")
+	r.HandleFunc("/api/nodes/bulk-health", s.handleBulkHealth).Methods("GET")
+	r.HandleFunc("/api/nodes/network-status", s.handleNetworkStatus).Methods("GET")
+	r.HandleFunc("/api/nodes/clock-skew", s.handleFleetClockSkew).Methods("GET")
+	r.HandleFunc("/api/nodes/resolve", s.handleResolvePrefix).Methods("GET")
+
+	r.HandleFunc("/api/nodes/{pubkey}/health", s.handleNodeHealth).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/paths", s.handleNodePaths).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/analytics", s.handleNodeAnalytics).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/hop_analytics", s.handleNodeHopAnalytics).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/battery", s.handleNodeBattery).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/clock-skew", s.handleNodeClockSkew).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/reach", s.handleNodeReach).Methods("GET")
+	// Coverage routes are always registered; each handler 404s when the opt-in
+	// clientRxCoverage flag is off (a clean 404 rather than the SPA fallback that
+	// an unregistered /api route would hit). See requireClientRxCoverage.
+	r.HandleFunc("/api/nodes/{pubkey}/rx-coverage", s.handleNodeRxCoverage).Methods("GET")
+
+	r.HandleFunc("/api/nodes/{pubkey}", s.handleNodeDetail).Methods("GET")
+	r.HandleFunc("/api/nodes", s.handleNodes).Methods("GET")
+}
+
+func packetCore(p database.Packet) api.PacketCore {
+
+	firstSeen := types.WireTimeSeconds{Time: p.FirstSeen}
+	timestamp := firstSeen // the representative observation's time wins below
+
+	r := api.PacketCore{
+		Id:               int(p.ID),
+		RawHex:           optString(p.RawHex),
+		Hash:             optString(p.Hash),
+		FirstSeen:        &firstSeen,
+		Timestamp:        &timestamp,
+		RouteType:        &p.RouteType,
+		PayloadType:      &p.PayloadType,
+		DecodedJson:      optString(p.DecodedJSON),
+		ObservationCount: p.ObservationCount,
+		ObserverId:       p.ObserverPubkey,
+		ObserverName:     p.ObserverName,
+		Snr:              p.SNR,
+		Rssi:             p.RSSI,
+		Score:            p.Score,
+		Direction:        p.Direction,
+		ScopeName:        p.ScopeName,
+	}
+	if p.ObsTimestamp != nil {
+		r.Timestamp = types.NewWireTimeSecondsPtr(p.ObsTimestamp)
+	}
+	if p.ObserverPubkey != nil {
+		pj := prefixesJSON(p.HopPrefixes)
+		r.PathJson = &pj
+	}
+	return r
+}
+
+func nodeAdvertResponse(p database.Packet, observations []database.Observation) api.NodeAdvert {
+	c := packetCore(p)
+	out := make([]api.NodeAdvertObservation, len(observations))
 	for i, o := range observations {
 		out[i] = nodeAdvertObservation(o)
 	}
-	return NodeAdvertResponse{PacketResponse: packetResponse(p), Observations: out}
+	return api.NodeAdvert{
+		Id:               c.Id,
+		RawHex:           c.RawHex,
+		Hash:             c.Hash,
+		FirstSeen:        c.FirstSeen,
+		Timestamp:        c.Timestamp,
+		RouteType:        c.RouteType,
+		PayloadType:      c.PayloadType,
+		DecodedJson:      c.DecodedJson,
+		ObservationCount: c.ObservationCount,
+		ObserverId:       c.ObserverId,
+		ObserverName:     c.ObserverName,
+		ObserverIata:     c.ObserverIata,
+		Snr:              c.Snr,
+		Rssi:             c.Rssi,
+		Score:            c.Score,
+		PathJson:         c.PathJson,
+		Direction:        c.Direction,
+		ScopeName:        c.ScopeName,
+		ResolvedPath:     c.ResolvedPath,
+		Observations:     out,
+	}
 }
 
 func roleCountsToResponse(c database.RoleCounts) api.RoleCounts {
@@ -85,16 +150,16 @@ func nodeToResponse(n *database.Node) api.Node {
 		Role:              n.Role,
 		Lat:               n.Lat,
 		Lon:               n.Lon,
-		LastSeen:          types.NewWireTimePtr(n.LastSeen),
-		FirstSeen:         types.NewWireTimePtr(n.FirstSeen),
+		LastSeen:          types.NewWireTimeSecondsPtr(n.LastSeen),
+		FirstSeen:         types.NewWireTimeSecondsPtr(n.FirstSeen),
 		AdvertCount:       int(n.AdvertCount),
 		Foreign:           n.Foreign,
 		BatteryMv:         n.BatteryMv,
 		TemperatureC:      n.TemperatureC,
 		DefaultScope:      n.DefaultScope,
 		ConfiguredScope:   n.ConfiguredScope,
-		ConfiguredScopeAt: types.NewWireTimePtr(n.ConfiguredScopeAt),
-		LastHeard:         types.NewWireTimePtr(n.LastSeen), // same value as last_seen, as nodeMap had it
+		ConfiguredScopeAt: types.NewWireTimeSecondsPtr(n.ConfiguredScopeAt),
+		LastHeard:         types.NewWireTimeSecondsPtr(n.LastSeen), // same value as last_seen, as nodeMap had it
 	}
 	return out
 }
@@ -262,7 +327,7 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("WARN ListObservationsForTransmissions(%s): %v", pubkey, err)
 	}
-	recentAdverts := make([]NodeAdvertResponse, 0, len(recentAdvertPackets))
+	recentAdverts := make([]api.NodeAdvert, 0, len(recentAdvertPackets))
 	for _, packet := range recentAdvertPackets {
 		recentAdverts = append(recentAdverts, nodeAdvertResponse(packet, observationsByTx[packet.ID]))
 	}
@@ -275,9 +340,9 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WARN CountFloodAdvertsForNode(%s): %v", pubkey, err)
 	}
 
-	writeJSON(w, NodeDetailResponse{
+	writeJSON(w, api.NodeDetailResponse{
 		Node:          node,
-		RecentAdverts: nonNil(recentAdverts),
+		RecentAdverts: recentAdverts,
 	})
 }
 
@@ -1234,23 +1299,23 @@ func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[str
 	}, nil
 }
 
-func nodeAdvertObservation(o database.Observation) NodeAdvertObservation {
+func nodeAdvertObservation(o database.Observation) api.NodeAdvertObservation {
 	hops := o.HopPrefixes()
 	prefixes := make([]string, len(hops))
 	for i, h := range hops {
 		prefixes[i] = strings.ToUpper(h)
 	}
-	return NodeAdvertObservation{
-		ID:             o.ID,
-		TransmissionID: o.TransmissionID,
-		ObserverID:     optString(o.ObserverID),
+	return api.NodeAdvertObservation{
+		Id:             o.ID,
+		TransmissionId: o.TransmissionID,
+		ObserverId:     optString(o.ObserverID),
 		ObserverName:   optString(o.ObserverName),
-		ObserverIATA:   o.ObserverIATA,
-		SNR:            o.SNR,
-		RSSI:           o.RSSI,
+		ObserverIata:   o.ObserverIATA,
+		Snr:            o.SNR,
+		Rssi:           o.RSSI,
 		Score:          o.Score,
 		Direction:      optString(o.Direction),
-		PathJSON:       prefixesJSON(prefixes),
-		Timestamp:      UTCTime{o.Timestamp},
+		PathJson:       prefixesJSON(prefixes),
+		Timestamp:      types.WireTimeMillis{Time: o.Timestamp},
 	}
 }

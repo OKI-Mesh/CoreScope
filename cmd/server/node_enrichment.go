@@ -74,7 +74,7 @@ func enrichNodeWithRelayInfo(node *api.Node, info *RepeaterRelayInfo) {
 		return
 	}
 	if !info.LastRelayed.IsZero() {
-		node.LastRelayed = &types.WireTime{Time: info.LastRelayed}
+		node.LastRelayed = &types.WireTimeSeconds{Time: info.LastRelayed}
 	}
 	node.RelayActive = ptr(info.RelayActive)
 	node.RelayWindowHours = ptr(info.WindowHours)

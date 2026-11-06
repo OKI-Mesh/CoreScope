@@ -282,8 +282,8 @@ func TestEnrichNodeWithRelayInfo(t *testing.T) {
 			TransportedScopes:     []string{"oki"},
 		})
 		got := decode(node)
-		if string(got.LastRelayed) != `"2026-11-06T13:00:00.123Z"` {
-			t.Errorf("last_relayed = %s, want \"2026-11-06T13:00:00.123Z\"", got.LastRelayed)
+		if string(got.LastRelayed) != `"2026-11-06T13:00:00Z"` {
+			t.Errorf("last_relayed = %s, want \"2026-11-06T13:00:00Z\"", got.LastRelayed)
 		}
 		if string(got.RelayActive) != "true" {
 			t.Errorf("relay_active = %s, want true", got.RelayActive)

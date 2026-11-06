@@ -41,7 +41,7 @@ func TestNodeMatchesSpec(t *testing.T) {
 	}
 
 	heard := time.Date(2026, 11, 6, 13, 0, 0, 123456789, time.UTC)
-	stamp := types.WireTime{Time: heard}
+	stamp := types.WireTimeSeconds{Time: heard}
 	name := "Ridge"
 	role := types.RoleRepeater
 	lat, lon := 39.3, -84.4
@@ -141,5 +141,35 @@ func TestNodeEndpointsMatchSpec(t *testing.T) {
 
 	t.Run("unparseable before bound is a 400", func(t *testing.T) {
 		checker.checkStatus(t, router, "/api/nodes?before=notadate", http.StatusBadRequest)
+	})
+}
+
+func TestNodeDetailMatchesSpec(t *testing.T) {
+	ctx := t.Context()
+	checker := newSpecChecker(t)
+	srv, router := setupScopeConfigStateServer(t)
+
+	const (
+		loneKey  = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+		twinOne  = "deadbeef00000000000000000000000000000000000000000000000000000001"
+		twinTwo  = "deadbeef00000000000000000000000000000000000000000000000000000002"
+		declared = "be,*"
+	)
+	scope := declared
+	seedScopeConfigNode(t, ctx, srv.db, loneKey, "lone-rp", "repeater", 51.0, 4.0, &scope)
+	seedScopeConfigNode(t, ctx, srv.db, twinOne, "twin-one", "repeater", 51.1, 4.1, nil)
+	seedScopeConfigNode(t, ctx, srv.db, twinTwo, "twin-two", "repeater", 51.2, 4.2, nil)
+
+	t.Run("full pubkey", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/"+loneKey)
+	})
+	t.Run("unique prefix resolves to the node", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/"+loneKey[:12])
+	})
+	t.Run("unknown pubkey is a 404", func(t *testing.T) {
+		checker.checkStatus(t, router, "/api/nodes/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", http.StatusNotFound)
+	})
+	t.Run("ambiguous prefix is a 409", func(t *testing.T) {
+		checker.checkStatus(t, router, "/api/nodes/deadbeef", http.StatusConflict)
 	})
 }

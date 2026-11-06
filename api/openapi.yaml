@@ -1,3 +1,10 @@
+# Schema naming convention
+#   Entities get bare names:                Node, NodeAdvert, NeighborEntry, PacketCore
+#   Envelopes that wrap entities get a
+#   "Response" suffix:                      NodeListResponse, NodeDetailResponse, ...
+# A name ending in Response is the whole body of an endpoint. A bare name is
+# a thing that appears inside one.
+
 openapi: 3.0.3
 info:
   title: CoreScope API
@@ -237,6 +244,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/nodes/{pubkey}:
+    get:
+      operationId: getNode
+      summary: One node, with its recent adverts
+      description: >
+        pubkey is a full 64-character public key or a hex prefix of 8 to 63
+        characters. A prefix that matches exactly one node resolves to it;
+        a prefix that matches several returns 409.
+      parameters:
+        - name: pubkey
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The node and its recent adverts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeDetailResponse' }
+        "404":
+          description: Unknown, blacklisted or hidden node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "409":
+          description: The prefix matches more than one node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   schemas:
     NodeRole:
@@ -321,9 +362,9 @@ components:
           maximum: 1
           description: "Affinity score: count saturation × recency decay × observer-diversity confidence."
         first_seen:
-          $ref: "#/components/schemas/Timestamp"
+          $ref: "#/components/schemas/TimestampSeconds"
         last_seen:
-          $ref: "#/components/schemas/Timestamp"
+          $ref: "#/components/schemas/TimestampSeconds"
         avg_snr:
           type: number
           format: double
@@ -436,14 +477,22 @@ components:
           format: int64
           minimum: 0
           description: Edges dropped at build time because the two nodes are implausibly far apart.
-    Timestamp:
+    TimestampMillis:
       type: string
-      format: date-time
-      description: UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
+      description: >
+        UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z).
+        Used where the server formats with formatTS (observation timestamps).
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
-      x-go-type: types.WireTime
-      x-go-type-import:
-        path: github.com/OKI-Mesh/CoreScope/internal/types
+      x-go-type: types.WireTimeMillis
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+    TimestampSeconds:
+      type: string
+      description: >
+        UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z).
+        Used for node, neighbor and packet-level times.
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+      x-go-type: types.WireTimeSeconds
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
     UsefulnessGrade:
       type: string
       description: Letter grade derived from usefulness_score.
@@ -542,18 +591,18 @@ components:
         last_seen:
           nullable: true
           allOf:
-            - $ref: "#/components/schemas/Timestamp"
+            - $ref: "#/components/schemas/TimestampSeconds"
         first_seen:
           nullable: true
           allOf:
-            - $ref: "#/components/schemas/Timestamp"
+            - $ref: "#/components/schemas/TimestampSeconds"
         advert_count:
           type: integer
         last_heard:
           nullable: true
           description: Same value as last_seen.
           allOf:
-            - $ref: "#/components/schemas/Timestamp"
+            - $ref: "#/components/schemas/TimestampSeconds"
         hash_size:
           type: integer
           nullable: true
@@ -579,7 +628,7 @@ components:
         configured_scope_at:
           nullable: true
           allOf:
-            - $ref: "#/components/schemas/Timestamp"
+            - $ref: "#/components/schemas/TimestampSeconds"
         hash_sizes_seen:
           type: array
           x-go-type-skip-optional-pointer: true
@@ -599,7 +648,7 @@ components:
         last_relayed:
           description: Repeater/room only. Time this node last appeared as a relay hop. Absent if it never has.
           allOf:
-            - $ref: "#/components/schemas/Timestamp"
+            - $ref: "#/components/schemas/TimestampSeconds"
         relay_active:
           type: boolean
           description: Repeater/room only. Relayed traffic within the active window.
@@ -669,3 +718,100 @@ components:
         declared_regions_truncated:
           type: boolean
           description: Present, and true, only when the answer behind declared_regions was flagged as cut off.
+    NodeDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [node, recentAdverts]
+      properties:
+        node: { $ref: '#/components/schemas/Node' }
+        recentAdverts:
+          type: array
+          items: { $ref: '#/components/schemas/NodeAdvert' }
+
+    PacketCore:
+      type: object
+      required:
+        - id
+        - raw_hex
+        - hash
+        - first_seen
+        - timestamp
+        - route_type
+        - payload_type
+        - decoded_json
+        - observation_count
+        - observer_id
+        - observer_name
+        - observer_iata
+        - snr
+        - rssi
+        - path_json
+        - direction
+        - scope_name
+        - _parsedPath
+      properties:
+        id: { type: integer }
+        raw_hex: { type: string, nullable: true }
+        hash: { type: string, nullable: true }
+        first_seen:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        timestamp:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        route_type:
+          type: integer
+          nullable: true
+          x-go-type: types.RouteType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        payload_type:
+          type: integer
+          nullable: true
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        decoded_json: { type: string, nullable: true }
+        observation_count: { type: integer }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string, nullable: true }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        score: { type: number, format: double }
+        path_json: { type: string, nullable: true }
+        direction: { type: string, nullable: true }
+        scope_name: { type: string, nullable: true }
+        _parsedPath:
+          type: array
+          nullable: true
+          items: { type: string }
+        resolved_path:
+          type: array
+          items: { type: string, nullable: true }
+
+    NodeAdvertObservation:
+      type: object
+      additionalProperties: false
+      required:
+        [id, transmission_id, observer_id, observer_name, observer_iata, snr, rssi, score, direction, path_json, timestamp]
+      properties:
+        id: { type: integer, format: int64 }
+        transmission_id: { type: integer, format: int64 }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        score: { type: number, format: double, nullable: true }
+        direction: { type: string, nullable: true }
+        path_json: { type: string }
+        timestamp: { $ref: '#/components/schemas/TimestampMillis' }
+
+    NodeAdvert:
+      allOf:
+        - $ref: '#/components/schemas/PacketCore'
+        - type: object
+          required: [observations]
+          properties:
+            observations:
+              type: array
+              items: { $ref: '#/components/schemas/NodeAdvertObservation' }

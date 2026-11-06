@@ -115,8 +115,8 @@ func (s *Server) handleNodeNeighbors(w http.ResponseWriter, r *http.Request) {
 			Count:        e.Count,
 			CountsByMode: copyCountsByMode(e.CountsByMode),
 			Score:        score,
-			FirstSeen:    types.WireTime{Time: e.FirstSeen},
-			LastSeen:     types.WireTime{Time: e.LastSeen},
+			FirstSeen:    types.WireTimeSeconds{Time: e.FirstSeen},
+			LastSeen:     types.WireTimeSeconds{Time: e.LastSeen},
 			Ambiguous:    e.Ambiguous,
 			Observers:    observerList(e.Observers),
 		}

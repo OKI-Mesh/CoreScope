@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
@@ -84,7 +85,7 @@ func TestNodeDetailRoute_PrefixResolves(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for unique 8-char prefix, got %d body=%s", w.Code, w.Body.String())
 	}
-	var body NodeDetailResponse
+	var body api.NodeDetailResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

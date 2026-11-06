@@ -361,31 +361,13 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	s.registerNeighborRoutes(r)
 
 	// Node endpoints — fixed routes BEFORE parameterized
-	r.HandleFunc("/api/nodes/search", s.handleNodeSearch).Methods("GET")
-	r.HandleFunc("/api/nodes/bulk-health", s.handleBulkHealth).Methods("GET")
-	r.HandleFunc("/api/nodes/network-status", s.handleNetworkStatus).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/health", s.handleNodeHealth).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/paths", s.handleNodePaths).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/analytics", s.handleNodeAnalytics).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/hop_analytics", s.handleNodeHopAnalytics).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/battery", s.handleNodeBattery).Methods("GET")
-	r.HandleFunc("/api/nodes/clock-skew", s.handleFleetClockSkew).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/clock-skew", s.handleNodeClockSkew).Methods("GET")
+
+	s.registerNodeRoutes(r)
+
 	r.HandleFunc("/api/observers/clock-skew", s.handleObserverClockSkew).Methods("GET")
 
-	// Keep specific sub-routes (…/reach, …/rx-coverage) registered BEFORE the
-	// catch-all /api/nodes/{pubkey} — mux matches in registration order, so
-	// reordering these below the catch-all would shadow them and break the route.
-	r.HandleFunc("/api/nodes/{pubkey}/reach", s.handleNodeReach).Methods("GET")
-	// Coverage routes are always registered; each handler 404s when the opt-in
-	// clientRxCoverage flag is off (a clean 404 rather than the SPA fallback that
-	// an unregistered /api route would hit). See requireClientRxCoverage.
-	r.HandleFunc("/api/nodes/{pubkey}/rx-coverage", s.handleNodeRxCoverage).Methods("GET")
-	r.HandleFunc("/api/nodes/resolve", s.handleResolvePrefix).Methods("GET")
 	r.HandleFunc("/api/rx-coverage", s.handleRxCoverage).Methods("GET")
 	r.HandleFunc("/api/rx-leaderboard", s.handleRxLeaderboard).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}", s.handleNodeDetail).Methods("GET")
-	r.HandleFunc("/api/nodes", s.handleNodes).Methods("GET")
 
 	// Analytics endpoints
 	r.HandleFunc("/api/analytics/roles", s.handleAnalyticsRoles).Methods("GET")

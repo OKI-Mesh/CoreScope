@@ -186,13 +186,13 @@ type NeighborEntry struct {
 	// DistanceKm Great-circle distance to the queried node. Absent unless both nodes have a position.
 	DistanceKm *float64 `json:"distance_km,omitempty"`
 
-	// FirstSeen UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
-	FirstSeen Timestamp `json:"first_seen"`
+	// FirstSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	FirstSeen TimestampSeconds `json:"first_seen"`
 
-	// LastSeen UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
-	LastSeen  Timestamp `json:"last_seen"`
-	Name      *string   `json:"name"`
-	Observers []string  `json:"observers"`
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen  TimestampSeconds `json:"last_seen"`
+	Name      *string          `json:"name"`
+	Observers []string         `json:"observers"`
 
 	// Prefix Raw hop hash prefix that established this edge.
 	Prefix string `json:"prefix"`
@@ -221,9 +221,9 @@ type Node struct {
 	BatteryMv   *int `json:"battery_mv"`
 
 	// BridgeScore Repeater/room only. Normalized betweenness centrality (chokepoint importance).
-	BridgeScore       *float64   `json:"bridge_score,omitempty"`
-	ConfiguredScope   *string    `json:"configured_scope"`
-	ConfiguredScopeAt *Timestamp `json:"configured_scope_at"`
+	BridgeScore       *float64          `json:"bridge_score,omitempty"`
+	ConfiguredScope   *string           `json:"configured_scope"`
+	ConfiguredScopeAt *TimestampSeconds `json:"configured_scope_at"`
 
 	// CoverageScore Repeater/room only. Normalized harmonic reach centrality.
 	CoverageScore *float64 `json:"coverage_score,omitempty"`
@@ -232,9 +232,9 @@ type Node struct {
 	DeclaredRegions *[]string `json:"declared_regions,omitempty"`
 
 	// DeclaredRegionsTruncated Present, and true, only when the answer behind declared_regions was flagged as cut off.
-	DeclaredRegionsTruncated *bool      `json:"declared_regions_truncated,omitempty"`
-	DefaultScope             *string    `json:"default_scope"`
-	FirstSeen                *Timestamp `json:"first_seen"`
+	DeclaredRegionsTruncated *bool             `json:"declared_regions_truncated,omitempty"`
+	DefaultScope             *string           `json:"default_scope"`
+	FirstSeen                *TimestampSeconds `json:"first_seen"`
 
 	// FloodAdvertCount7d Distinct flood adverts originated in the last 7 days. Present on the node detail endpoint.
 	FloodAdvertCount7d *int `json:"flood_advert_count_7d,omitempty"`
@@ -250,15 +250,15 @@ type Node struct {
 	HashSizesSeen []int `json:"hash_sizes_seen,omitempty"`
 
 	// LastHeard Same value as last_seen.
-	LastHeard *Timestamp `json:"last_heard"`
+	LastHeard *TimestampSeconds `json:"last_heard"`
 
 	// LastRelayed Repeater/room only. Time this node last appeared as a relay hop. Absent if it never has.
-	LastRelayed          *Timestamp `json:"last_relayed,omitempty"`
-	LastSeen             *Timestamp `json:"last_seen"`
-	Lat                  *float64   `json:"lat"`
-	Lon                  *float64   `json:"lon"`
-	MultiByteEvidence    *string    `json:"multi_byte_evidence,omitempty"`
-	MultiByteMaxHashSize *int       `json:"multi_byte_max_hash_size,omitempty"`
+	LastRelayed          *TimestampSeconds `json:"last_relayed,omitempty"`
+	LastSeen             *TimestampSeconds `json:"last_seen"`
+	Lat                  *float64          `json:"lat"`
+	Lon                  *float64          `json:"lon"`
+	MultiByteEvidence    *string           `json:"multi_byte_evidence,omitempty"`
+	MultiByteMaxHashSize *int              `json:"multi_byte_max_hash_size,omitempty"`
 
 	// MultiByteStatus Present on any node with a multi-byte capability entry.
 	MultiByteStatus *string `json:"multi_byte_status,omitempty"`
@@ -305,6 +305,55 @@ type Node struct {
 	UsefulnessScore *float64 `json:"usefulness_score,omitempty"`
 }
 
+// NodeAdvert defines model for NodeAdvert.
+type NodeAdvert struct {
+	UnderscoreParsedPath *[]string               `json:"_parsedPath"`
+	DecodedJson          *string                 `json:"decoded_json"`
+	Direction            *string                 `json:"direction"`
+	FirstSeen            *TimestampSeconds       `json:"first_seen"`
+	Hash                 *string                 `json:"hash"`
+	Id                   int                     `json:"id"`
+	ObservationCount     int                     `json:"observation_count"`
+	Observations         []NodeAdvertObservation `json:"observations"`
+	ObserverIata         *string                 `json:"observer_iata"`
+	ObserverId           *string                 `json:"observer_id"`
+	ObserverName         *string                 `json:"observer_name"`
+	PathJson             *string                 `json:"path_json"`
+	PayloadType          *types.PayloadType      `json:"payload_type"`
+	RawHex               *string                 `json:"raw_hex"`
+	ResolvedPath         *[]*string              `json:"resolved_path,omitempty"`
+	RouteType            *types.RouteType        `json:"route_type"`
+	Rssi                 *float64                `json:"rssi"`
+	ScopeName            *string                 `json:"scope_name"`
+	Score                *float64                `json:"score,omitempty"`
+	Snr                  *float64                `json:"snr"`
+	Timestamp            *TimestampSeconds       `json:"timestamp"`
+}
+
+// NodeAdvertObservation defines model for NodeAdvertObservation.
+type NodeAdvertObservation struct {
+	Direction    *string  `json:"direction"`
+	Id           int64    `json:"id"`
+	ObserverIata string   `json:"observer_iata"`
+	ObserverId   *string  `json:"observer_id"`
+	ObserverName *string  `json:"observer_name"`
+	PathJson     string   `json:"path_json"`
+	Rssi         *float64 `json:"rssi"`
+	Score        *float64 `json:"score"`
+	Snr          *float64 `json:"snr"`
+
+	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Timestamp      TimestampMillis `json:"timestamp"`
+	TransmissionId int64           `json:"transmission_id"`
+}
+
+// NodeDetailResponse defines model for NodeDetailResponse.
+type NodeDetailResponse struct {
+	// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
+	Node          Node         `json:"node"`
+	RecentAdverts []NodeAdvert `json:"recentAdverts"`
+}
+
 // NodeListResponse defines model for NodeListResponse.
 type NodeListResponse struct {
 	// Counts All-time node counts per role.
@@ -337,6 +386,30 @@ type NodeSearchResponse struct {
 	Nodes []Node `json:"nodes"`
 }
 
+// PacketCore defines model for PacketCore.
+type PacketCore struct {
+	UnderscoreParsedPath *[]string          `json:"_parsedPath"`
+	DecodedJson          *string            `json:"decoded_json"`
+	Direction            *string            `json:"direction"`
+	FirstSeen            *TimestampSeconds  `json:"first_seen"`
+	Hash                 *string            `json:"hash"`
+	Id                   int                `json:"id"`
+	ObservationCount     int                `json:"observation_count"`
+	ObserverIata         *string            `json:"observer_iata"`
+	ObserverId           *string            `json:"observer_id"`
+	ObserverName         *string            `json:"observer_name"`
+	PathJson             *string            `json:"path_json"`
+	PayloadType          *types.PayloadType `json:"payload_type"`
+	RawHex               *string            `json:"raw_hex"`
+	ResolvedPath         *[]*string         `json:"resolved_path,omitempty"`
+	RouteType            *types.RouteType   `json:"route_type"`
+	Rssi                 *float64           `json:"rssi"`
+	ScopeName            *string            `json:"scope_name"`
+	Score                *float64           `json:"score,omitempty"`
+	Snr                  *float64           `json:"snr"`
+	Timestamp            *TimestampSeconds  `json:"timestamp"`
+}
+
 // RoleCounts All-time node counts per role.
 type RoleCounts struct {
 	Companions int `json:"companions"`
@@ -348,8 +421,11 @@ type RoleCounts struct {
 // ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
 type ScopeConfigState string
 
-// Timestamp UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
-type Timestamp = types.WireTime
+// TimestampMillis UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+type TimestampMillis = types.WireTimeMillis
+
+// TimestampSeconds UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+type TimestampSeconds = types.WireTimeSeconds
 
 // UsefulnessGrade Letter grade derived from usefulness_score.
 type UsefulnessGrade string

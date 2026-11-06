@@ -416,10 +416,10 @@ type DecodeResponse struct {
 
 // ─── Nodes ─────────────────────────────────────────────────────────────────────
 
-type NodeDetailResponse struct {
-	Node          api.Node             `json:"node"`
-	RecentAdverts []NodeAdvertResponse `json:"recentAdverts"`
-}
+// type NodeDetailResponse struct {
+// 	Node          api.Node             `json:"node"`
+// 	RecentAdverts []NodeAdvertResponse `json:"recentAdverts"`
+// }
 
 type NodeStatsResp struct {
 	TotalTransmissions int         `json:"totalTransmissions"`
