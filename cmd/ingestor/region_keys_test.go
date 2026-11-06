@@ -12,35 +12,6 @@ import (
 	"time"
 )
 
-func TestRegionNameAcceptable(t *testing.T) {
-	cases := []struct {
-		name string
-		want string
-		ok   bool
-		why  string
-	}{
-		{"be", "be", true, "a bare name from an OTA answer"},
-		{"#be", "be", true, "the same region as nodes.configured_scope spells it — normalizeScopeList adds the '#'"},
-		{"nl-li-nth", "nl-li-nth", true, "hyphens are ordinary in region names"},
-		{"*", "", false, "the flood wildcard is not a region, and hashing it would invent one nobody declared"},
-		{"#*", "", false, "the wildcard stays the wildcard however it is spelled"},
-		{"", "", false, "empty"},
-		{"#", "", false, "a bare prefix names nothing"},
-		{"be,nl", "", false, "a comma would split the name on the next round-trip"},
-		{"be#nl", "", false, "a second '#' cannot come from either source intact"},
-		{"be nl", "", false, "whitespace would hash bytes nobody intended"},
-		{"bé", "", false, "non-ASCII, same reason"},
-		{"be" + string(rune(0)), "", false, "NUL is block-cipher padding a stale client failed to trim"},
-		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", false, "33 chars, past maxRegionNameLen"},
-	}
-	for _, c := range cases {
-		got, ok := regionNameAcceptable(c.name)
-		if ok != c.ok || got != c.want {
-			t.Errorf("regionNameAcceptable(%q) = (%q, %v), want (%q, %v) — %s", c.name, got, ok, c.want, c.ok, c.why)
-		}
-	}
-}
-
 func TestRankDeclaredRegionsPrefersWidelyDeclared(t *testing.T) {
 	// The cap must drop the long tail of one-off local names, never a region
 	// half the network declares. On live data "be" is declared by 127
@@ -561,46 +532,49 @@ func TestDeclaredRegionSourcesReadsConfiguredScope(t *testing.T) {
 	for _, s := range stats {
 		byName[s.Name] = s
 	}
-	if got := byName["#be"].Declarers; got != 2 {
-		t.Errorf("#be declarers = %d, want 2 — both nodes declare it", got)
+	if got := byName["be"].Declarers; got != 2 {
+		t.Errorf("be declarers = %d, want 2 — both nodes declare it", got)
 	}
-	if got := byName["#be"].LastSeen; got != time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC) {
-		t.Errorf("#be lastSeen = %q, want the newer of the two answers", got)
+	if want, got := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC), byName["be"].LastSeen; !got.Equal(want) {
+		t.Errorf("be lastSeen = %v, want %v, the newer of the two answers", got, want)
 	}
-	if got := byName["#nl-li"].Declarers; got != 1 {
-		t.Errorf("#nl-li declarers = %d, want 1", got)
+	if got := byName["nl-li"].Declarers; got != 1 {
+		t.Errorf("nl-li declarers = %d, want 1", got)
 	}
-	if _, ok := byName["*"]; ok {
-		t.Error("want '*' excluded from the declared-name count — it is the wildcard, and nearly every node declares it")
+	for name := range byName {
+		if name == "*" || strings.HasPrefix(name, "#") {
+			t.Errorf("stat named %q: want bare names with the wildcard excluded — '*' is not a region and nearly every node declares it", name)
+		}
 	}
 }
 
 // TestDeclaredRegionSourcesMergesBothSources: an instance that has both the
 // column and the optional table must see a name declared in either, and count
 // a node once per name rather than once per source.
-func TestDeclaredRegionSourcesMergesBothSources(t *testing.T) {
+func TestDeclaredRegionSourcesCountsSpellingsOfOneRegionOnce(t *testing.T) {
 	store := newTestStore(t)
-	pk := "cc" + strings.Repeat("33", 31)
-	seedNodeWithConfiguredScope(t, store, pk, "#be", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC))
-	insertDeclaredRegions(t, store, pk, "2026-09-08T00:00:00Z", "fm-112")
+	seedNodeWithConfiguredScope(t, store, "aa"+strings.Repeat("11", 31), "#be", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC))
+	seedNodeWithConfiguredScope(t, store, "bb"+strings.Repeat("22", 31), "be", time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
+	seedNodeWithConfiguredScope(t, store, "cc"+strings.Repeat("33", 31), "#be,be", time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC))
+	seedNodeWithConfiguredScope(t, store, "dd"+strings.Repeat("44", 31), "#BE", time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC))
 
 	stats, err := store.declaredRegionSources(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := map[string]int{}
+	byName := map[string]declaredRegionStat{}
 	for _, s := range stats {
-		names[s.Name] = s.Declarers
+		byName[s.Name] = s
 	}
-	if names["#be"] != 1 {
-		t.Errorf("#be declarers = %d, want 1 (from configured_scope)", names["#be"])
+	if len(byName) != 2 {
+		t.Fatalf("want 2 regions (be and BE), got %+v", stats)
 	}
-	if names["fm-112"] != 1 {
-		t.Errorf("fm-112 declarers = %d, want 1 (from the optional table)", names["fm-112"])
+	if got := byName["be"].Declarers; got != 3 {
+		t.Errorf("be declarers = %d, want 3: #be, be, and a node that declares both spellings counts once", got)
 	}
-	// Both spellings of the same region reach the same derived key, which is
-	// what regionNameAcceptable's "#"-stripping is for. Asserted there rather
-	// than here; this only pins that neither source is dropped.
+	if got := byName["BE"].Declarers; got != 1 {
+		t.Errorf("BE declarers = %d, want 1: region names are case sensitive", got)
+	}
 }
 
 // seedNodeWithConfiguredScope writes one node with a confirmed scope list, the

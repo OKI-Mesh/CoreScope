@@ -216,9 +216,14 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 	obsAgg := map[string]*agg{}
 	cellObservers := map[string]map[string]struct{}{} // cell -> set of rx_pubkey
 
-	scanned := 0
-	err := s.db.EachLeaderboardSample(ctx, since, leaderboardScanCap, func(r database.LeaderboardSample) error {
-		scanned++
+	samples, err := s.db.ListLeaderboardSamples(ctx, since, leaderboardScanCap)
+	if err != nil {
+		return nil, err
+	}
+	if len(samples) >= leaderboardScanCap {
+		log.Printf("[rx-leaderboard] scan hit cap %d over %dd window; ranking is partial (most-recent rows)", leaderboardScanCap, days)
+	}
+	for _, r := range samples {
 		a := obsAgg[r.RxPubkey]
 		if a == nil {
 			a = &agg{name: r.Name, cells: map[string]struct{}{}, nodes: map[string]struct{}{}}
@@ -234,13 +239,6 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 			cellObservers[cell] = set
 		}
 		set[r.RxPubkey] = struct{}{}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if scanned >= leaderboardScanCap {
-		log.Printf("[rx-leaderboard] scan hit cap %d over %dd window; ranking is partial (most-recent rows)", leaderboardScanCap, days)
 	}
 
 	// Per-cell observer counts EXCLUDING blacklisted contributors, so an operator

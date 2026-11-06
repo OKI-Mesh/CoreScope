@@ -177,7 +177,7 @@ func aggregateEdges(edges []edgeRow) []database.NeighborEdgeInput {
 type neighborEdgeStore interface {
 	ListNodePublicKeys(ctx context.Context) ([]string, error)
 	LatestNeighborEdgeTime(ctx context.Context) (time.Time, error)
-	ScanNeighborObservations(ctx context.Context, since time.Time, limit int32, jsonTypes []types.PayloadType) ([]database.NeighborObservation, error)
+	ScanNeighborObservations(ctx context.Context, after database.NeighborCursor, limit int, jsonTypes []types.PayloadType) ([]database.NeighborObservation, error)
 	UpsertNeighborEdges(ctx context.Context, edges []database.NeighborEdgeInput) (int64, error)
 }
 
@@ -193,15 +193,17 @@ type neighborBuilder struct {
 	refreshPrefixIndex func(context.Context) error
 	refreshGraph       func(context.Context) error
 
-	// since is the in-memory watermark: observations at or before it have been
-	// processed. Zero means a full warm-up scan. WarmUp seeds it from the newest
-	// neighbor_edges row, so a restart resumes from what the table reflects.
+	// cursor is the in-memory watermark: observations up to and including it
+	// have been processed. The zero cursor means a full warm-up scan. WarmUp
+	// seeds it just after the newest neighbor_edges row, so a restart resumes
+	// from what the table reflects. Each batch advances it to its last
+	// observation, so observations that share a timestamp across a batch
+	// boundary are neither skipped nor read twice.
 	//
 	// Trade-off, inherited from the SQLite version: an observation that arrives
-	// with a timestamp already behind the watermark is skipped, and rows that
-	// tie the last scanned timestamp at a batch boundary are too. Acceptable for
-	// an approximate neighbor graph. A periodic full rebuild can close it later.
-	since    time.Time
+	// with a timestamp already behind the cursor is skipped. Acceptable for an
+	// approximate neighbor graph. A periodic full rebuild can close it later.
+	cursor   database.NeighborCursor
 	maxBatch int // 0 means neighborBuilderMaxBatch; tests set it small
 }
 
@@ -219,7 +221,7 @@ func (b *neighborBuilder) build(ctx context.Context) (scanned, edges int, err er
 	if err != nil {
 		return 0, 0, fmt.Errorf("list nodes: %w", err)
 	}
-	rows, err := b.db.ScanNeighborObservations(ctx, b.since, int32(b.batchSize()), neighborOriginatorTypes)
+	rows, err := b.db.ScanNeighborObservations(ctx, b.cursor, b.batchSize(), neighborOriginatorTypes)
 	if err != nil {
 		return 0, 0, fmt.Errorf("scan observations: %w", err)
 	}
@@ -235,7 +237,7 @@ func (b *neighborBuilder) build(ctx context.Context) (scanned, edges int, err er
 	}
 	// Advance past everything scanned, including rows that produced no edge, so
 	// a batch of edge-less rows can't be rescanned forever.
-	b.since = rows[len(rows)-1].Timestamp
+	b.cursor = rows[len(rows)-1].Cursor()
 	return len(rows), len(agg), nil
 }
 
@@ -250,7 +252,7 @@ func (b *neighborBuilder) WarmUp(ctx context.Context) {
 		log.Printf("[neighbor-build] initial watermark error: %v", err)
 		return
 	}
-	b.since = since
+	b.cursor = database.CursorAfterTime(since)
 
 	// Prime the prefix index (#1547) and neighbor graph (#1560) so the very
 	// first InsertTransmission after startup can resolve hop prefixes.

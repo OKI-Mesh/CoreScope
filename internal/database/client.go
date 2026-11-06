@@ -117,8 +117,8 @@ func (db *DB) GetCurrentDeclaredRegions(ctx context.Context, target string) (*ty
 	return &types.ClientDeclaredRegions{
 		Target:        row.Target,
 		RxPubkey:      row.RxPubkey,
-		ObservedAt:    row.ObservedAt,
-		IngestedAt:    row.IngestedAt,
+		ObservedAt:    row.ObservedAt.UTC(),
+		IngestedAt:    row.IngestedAt.UTC(),
 		RegionsCSV:    row.RegionsCsv,
 		Truncated:     row.Truncated,
 		Lat:           fromPgFloat8(row.Lat),
@@ -161,4 +161,26 @@ func (db *DB) PruneDeclaredRegions(ctx context.Context, cutoff time.Time) (int64
 
 func (db *DB) GetClientRxObservationsCount(ctx context.Context) (int64, error) {
 	return db.q.GetClientRxObservationsCount(ctx)
+}
+
+func (db *DB) ListClientRfSamplesWithPrev(ctx context.Context, rxPubkey string, start, end time.Time) ([]types.RfSampleWithPrev, error) {
+	rows, err := db.q.ListClientRfSamplesWithPrev(ctx, pgdb.ListClientRfSamplesWithPrevParams{
+		RxPubkey: rxPubkey, StartAt: start, EndAt: end,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]types.RfSampleWithPrev, len(rows))
+	for i, r := range rows {
+		out[i] = types.RfSampleWithPrev{
+			SampledAt: r.SampledAt.UTC(), Lat: r.Lat, Lon: r.Lon,
+			Stationary: r.Stationary, UptimeSecs: r.UptimeSecs,
+			RxAirSecs: fromPgInt8(r.RxAirSecs), TxAirSecs: fromPgInt8(r.TxAirSecs),
+			Recv: fromPgInt8(r.Recv), RecvErrors: fromPgInt8(r.RecvErrors),
+			PrevAt: fromPgTimestamptz(r.PrevAt), PrevUptime: fromPgInt8(r.PrevUptime),
+			PrevRx: fromPgInt8(r.PrevRx), PrevTx: fromPgInt8(r.PrevTx),
+			PrevRecv: fromPgInt8(r.PrevRecv), PrevErrs: fromPgInt8(r.PrevErrs),
+		}
+	}
+	return out, nil
 }

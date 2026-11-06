@@ -13,19 +13,19 @@ VALUES (
     sqlc.narg(role),
     sqlc.narg(lat),
     sqlc.narg(lon),
-    sqlc.arg(rx_time)::timestamptz,
-    sqlc.arg(rx_time)::timestamptz
+    LEAST(sqlc.arg(rx_time)::timestamptz, sqlc.arg(ingest_now)::timestamptz),
+    LEAST(sqlc.arg(rx_time)::timestamptz, sqlc.arg(ingest_now)::timestamptz)
 )
 ON CONFLICT (public_key) DO UPDATE SET
     name      = COALESCE(sqlc.narg(name), nodes.name),
     role      = COALESCE(sqlc.narg(role), nodes.role),
     lat       = COALESCE(sqlc.narg(lat), nodes.lat),
     lon       = COALESCE(sqlc.narg(lon), nodes.lon),
-    last_seen = GREATEST(
-                    LEAST(COALESCE(nodes.last_seen, 'epoch'::timestamptz), sqlc.arg(ingest_now)::timestamptz),
-                    sqlc.arg(rx_time)::timestamptz
+    last_seen = LEAST(
+                    GREATEST(COALESCE(nodes.last_seen, 'epoch'::timestamptz), sqlc.arg(rx_time)::timestamptz),
+                    sqlc.arg(ingest_now)::timestamptz
                 );
-
+                
 -- name: IncrementNodeAdvertCount :exec
 UPDATE nodes SET advert_count = advert_count + 1 WHERE public_key = sqlc.arg(public_key);
 

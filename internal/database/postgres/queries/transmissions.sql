@@ -32,12 +32,12 @@ WITH batch AS (
 DELETE FROM transmissions WHERE id IN (SELECT id FROM batch);
 
 -- name: CountFloodAdvertsForNode :one
-SELECT count(*)::bigint
+SELECT COUNT(*)::bigint
 FROM transmissions
-WHERE from_pubkey   = sqlc.arg(pubkey)
-  AND payload_type  = sqlc.arg(payload_type)
-  AND route_type    = sqlc.arg(route_type)
-  AND first_seen    > sqlc.arg(cutoff);
+WHERE from_pubkey = sqlc.arg(pubkey)
+  AND payload_type = sqlc.arg(payload_type)
+  AND route_type = ANY(sqlc.arg(route_types)::int[])
+  AND first_seen > sqlc.arg(cutoff);
 
 -- name: GetTransmissionIDByHash :one
 SELECT id FROM transmissions WHERE hash = $1;
@@ -52,10 +52,9 @@ FROM transmissions t2
 WHERE (sqlc.narg(since)::timestamptz IS NULL OR t2.last_seen >= sqlc.narg(since)::timestamptz);
 
 -- name: ListTransmissionsChunk :many
-SELECT id, hash, raw_hex, first_seen, route_type, payload_type,
-       payload_version, decoded_json, scope_name
+SELECT id, hash, raw_hex, first_seen, route_type, payload_type, decoded_json, scope_name
 FROM transmissions
-WHERE id > sqlc.arg(after_id)
+WHERE id > sqlc.arg(after_id)::bigint
   AND (sqlc.narg(since)::timestamptz IS NULL OR COALESCE(last_seen, first_seen) >= sqlc.narg(since)::timestamptz)
   AND (sqlc.narg(until)::timestamptz IS NULL OR COALESCE(last_seen, first_seen) <  sqlc.narg(until)::timestamptz)
 ORDER BY id ASC
@@ -124,21 +123,6 @@ ORDER BY array_position(@ids::bigint[], t.id);
 -- name: GetMaxTransmissionID :one
 SELECT COALESCE(MAX(id), 0)::bigint FROM transmissions;
 
--- name: ListTransmissionsAfterID :many
-SELECT
-    id,
-    raw_hex,
-    hash,
-    first_seen,
-    route_type,
-    payload_type,
-    payload_version,
-    decoded_json::text AS decoded_json
-FROM transmissions
-WHERE id > @after_id
-ORDER BY id ASC
-LIMIT @row_limit;
-
 -- name: ListUnmatchedTransmissions :many
 SELECT t.id, t.raw_hex
 FROM transmissions t
@@ -163,7 +147,16 @@ FROM (
     FROM transmissions
     WHERE from_pubkey = sqlc.arg(pubkey)
       AND payload_type = sqlc.arg(payload_type)
-      AND route_type = sqlc.arg(route_type)
+      AND route_type = ANY(sqlc.arg(route_types)::int[])
       AND first_seen > sqlc.arg(since)::timestamptz
     LIMIT sqlc.arg(row_cap)::int
 ) AS capped;
+
+-- name: ListGroupTextTransmissions :many
+SELECT id, hash, raw_hex
+FROM transmissions
+WHERE payload_type = sqlc.arg(payload_type)
+  AND id > sqlc.arg(after_id)
+ORDER BY id
+LIMIT sqlc.arg(row_limit);
+

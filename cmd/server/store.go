@@ -746,7 +746,7 @@ func NewPacketStore(db *database.DB, cfg *PacketStoreConfig, cacheTTLs ...map[st
 
 // newStoreObs builds the in-memory observation. pj is pathJSON(lo.Path),
 // passed in because the caller already computed it for the dedup key.
-func newStoreObs(lo database.LoadedObservation, txID int, pj string) *StoreObs {
+func newStoreObs(lo database.Observation, txID int, pj string) *StoreObs {
 	return &StoreObs{
 		ID:             int(lo.ID),
 		TransmissionID: txID,
@@ -2609,7 +2609,7 @@ func (s *PacketStore) IngestNewObservations(ctx context.Context, sinceObsID int6
 			continue
 		}
 		// obs.RawHex is deliberately not stored: it duplicates tx.RawHex.
-		obs := newStoreObs(no.LoadedObservation, tx.ID, pj)
+		obs := newStoreObs(no, tx.ID, pj)
 
 		// Resolve the path now for late-arriving observations. Decode-window
 		// discipline: decode, feed consumers, don't store on the struct.

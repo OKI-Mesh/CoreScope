@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -12,6 +13,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+// GroupTextTransmission is one GRP_TXT transmission as the offline channel
+// decrypt tool reads it: the raw frame plus the identifiers needed to report it.
+type GroupTextTransmission struct {
+	ID    int64
+	Hash  string
+	Frame types.RawFrame
+}
 
 // PacketQuery holds filter params for packet listing.
 type PacketQuery struct {
@@ -43,7 +52,7 @@ type PacketQuery struct {
 	ExpandObservations bool // store-only: include observation sub-maps in txToMap output
 }
 
-type GroupedPacketRow struct {
+type GroupedPacket struct {
 	Hash          string    `db:"hash"`
 	FirstSeen     time.Time `db:"first_seen"`
 	RawHex        string    `db:"raw_hex"`
@@ -146,17 +155,47 @@ type PacketWithObservations struct {
 	Observations []Observation
 }
 
-func (db *DB) CreateOrUpdateTransmission(ctx context.Context, data TransmissionInput, rxTime time.Time) (txID int64, isNew bool, err error) {
+// normalize applies the defaults and checks the page bounds. It returns the
+// legal sort order: "ASC", or "DESC" for anything else.
+func (q *PacketQuery) normalize() (string, error) {
+	if q.Limit <= 0 {
+		q.Limit = 50
+	}
+	if q.Limit > math.MaxInt32 || q.Offset < 0 || q.Offset > math.MaxInt32 {
+		return "", fmt.Errorf("packet page limit %d offset %d out of range", q.Limit, q.Offset)
+	}
+	if strings.EqualFold(q.Order, "ASC") {
+		return "ASC", nil
+	}
+	return "DESC", nil
+}
+
+// CreateOrUpdateTransmission inserts the transmission, or finds the existing one
+// with the same hash, and upserts the advertising node in the same transaction.
+// isNew is false when the hash was already stored.
+func (db *DB) CreateOrUpdateTransmission(ctx context.Context, data TransmissionInput, rxTime time.Time) (int64, bool, error) {
+	hash := normalizeKey(data.Hash)
+	if hash == "" {
+		return 0, false, errors.New("transmission: empty hash")
+	}
 	frame, err := types.ParseRawFrame(data.RawHex)
 	if err != nil {
-		return 0, false, fmt.Errorf("transmission %s: %w", data.Hash, err)
+		return 0, false, fmt.Errorf("transmission %s: %w", hash, err)
 	}
+	if data.PayloadVersion < 0 || data.PayloadVersion > math.MaxInt32 {
+		return 0, false, fmt.Errorf("transmission %s: payload version %d out of range", hash, data.PayloadVersion)
+	}
+
+	var txID int64
+	var isNew bool
 	err = db.inTx(ctx, func(tx *DB) error {
 		var from pgtype.Text
 		if data.Advert != nil {
 			n := *data.Advert
-			n.PublicKey = strings.ToLower(n.PublicKey)
-			n.IngestNow = time.Now().UTC()
+			n.PublicKey = normalizeKey(n.PublicKey)
+			if n.IngestNow.IsZero() {
+				n.IngestNow = time.Now().UTC()
+			}
 			if err := tx.CreateOrUpdateNode(ctx, n); err != nil {
 				return fmt.Errorf("upsert advert node: %w", err)
 			}
@@ -164,7 +203,7 @@ func (db *DB) CreateOrUpdateTransmission(ctx context.Context, data TransmissionI
 		}
 		row, err := tx.q.InsertTransmission(ctx, pgdb.InsertTransmissionParams{
 			RawHex:           frame,
-			Hash:             data.Hash,
+			Hash:             hash,
 			FirstSeen:        rxTime,
 			RouteType:        data.RouteType,
 			PayloadType:      data.PayloadType,
@@ -184,29 +223,47 @@ func (db *DB) CreateOrUpdateTransmission(ctx context.Context, data TransmissionI
 		txID, isNew = row.ID, row.Inserted
 		return nil
 	})
-	return txID, isNew, err
+	if err != nil {
+		return 0, false, err
+	}
+	return txID, isNew, nil
 }
 
+// BumpTransmissionLastSeen records that the transmission was heard again at rxTime.
 func (db *DB) BumpTransmissionLastSeen(ctx context.Context, txID int64, rxTime time.Time) error {
-	return db.q.BumpTxLastSeen(ctx, pgdb.BumpTxLastSeenParams{
+	err := db.q.BumpTxLastSeen(ctx, pgdb.BumpTxLastSeenParams{
 		LastSeen: pgtype.Timestamptz{Time: rxTime, Valid: true},
 		ID:       txID,
 	})
+	if err != nil {
+		return fmt.Errorf("bump transmission %d last seen: %w", txID, err)
+	}
+	return nil
 }
 
+// PruneTransmissionsBatch deletes up to batchSize transmissions older than cutoff
+// and returns how many it deleted. Call it until it returns 0.
 func (db *DB) PruneTransmissionsBatch(ctx context.Context, cutoff time.Time, batchSize int32) (int64, error) {
-	return db.q.PruneTransmissionsBatch(ctx, pgdb.PruneTransmissionsBatchParams{
+	if batchSize < 1 {
+		return 0, fmt.Errorf("prune transmissions: batch size %d must be at least 1", batchSize)
+	}
+	n, err := db.q.PruneTransmissionsBatch(ctx, pgdb.PruneTransmissionsBatchParams{
 		Cutoff: cutoff, BatchSize: batchSize,
 	})
+	if err != nil {
+		return 0, fmt.Errorf("prune transmissions: %w", err)
+	}
+	return n, nil
 }
 
-// CountFloodAdvertsForNode returns how many FLOOD adverts pubkey originated
-// strictly after since. DIRECT (zero-hop) adverts are excluded.
+// CountFloodAdvertsForNode returns how many flood adverts pubkey originated
+// strictly after since, scoped (TRANSPORT_FLOOD) or not. DIRECT (zero-hop)
+// adverts are excluded.
 func (db *DB) CountFloodAdvertsForNode(ctx context.Context, pubkey string, since time.Time) (int, error) {
 	n, err := db.q.CountFloodAdvertsForNode(ctx, pgdb.CountFloodAdvertsForNodeParams{
-		Pubkey:      pgtype.Text{String: strings.ToLower(pubkey), Valid: true},
+		Pubkey:      pgtype.Text{String: normalizeKey(pubkey), Valid: true},
 		PayloadType: types.PayloadADVERT,
-		RouteType:   types.RouteFlood,
+		RouteTypes:  floodRoutes,
 		Cutoff:      since,
 	})
 	if err != nil {
@@ -215,8 +272,9 @@ func (db *DB) CountFloodAdvertsForNode(ctx context.Context, pubkey string, since
 	return int(n), nil
 }
 
+// GetTransmissionIDByHash returns the id for hash (any case), or ErrNotFound.
 func (db *DB) GetTransmissionIDByHash(ctx context.Context, hash string) (int64, error) {
-	id, err := db.q.GetTransmissionbyHash(ctx, hash)
+	id, err := db.q.GetTransmissionbyHash(ctx, normalizeKey(hash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrNotFound
 	}
@@ -234,16 +292,28 @@ func (db *DB) CountTransmissions(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// QueryMultiNodePackets returns the page of packets originated by any of the
+// pubkeys (any case), newest first unless Asc, and the total across all pages.
 func (db *DB) QueryMultiNodePackets(ctx context.Context, p MultiNodePacketParams) ([]Packet, int64, error) {
-	if len(p.Pubkeys) == 0 {
-		return nil, 0, nil
+	pubkeys := make([]string, 0, len(p.Pubkeys))
+	for _, k := range p.Pubkeys {
+		if k = normalizeKey(k); k != "" {
+			pubkeys = append(pubkeys, k)
+		}
+	}
+	if len(pubkeys) == 0 {
+		return []Packet{}, 0, nil
 	}
 	if p.Limit <= 0 {
 		p.Limit = 50
 	}
+	if p.Limit > math.MaxInt32 || p.Offset < 0 || p.Offset > math.MaxInt32 {
+		return nil, 0, fmt.Errorf("packet page limit %d offset %d out of range", p.Limit, p.Offset)
+	}
+	p.Pubkeys = pubkeys
 
 	total, err := db.q.CountTransmissionsByFromPubkeys(ctx, pgdb.CountTransmissionsByFromPubkeysParams{
-		Pubkeys: nonNil(p.Pubkeys),
+		Pubkeys: p.Pubkeys,
 		Since:   toPgTimestamptzPtr(p.Since),
 		Until:   toPgTimestamptzPtr(p.Until),
 	})
@@ -251,12 +321,11 @@ func (db *DB) QueryMultiNodePackets(ctx context.Context, p MultiNodePacketParams
 		return nil, 0, fmt.Errorf("count: %w", err)
 	}
 
-	// page ids (Desc or Asc query), then hydrate with the shared by-ids query
 	ids, err := db.pageIDs(ctx, p)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := db.listPacketsByIDs(ctx, ids) // keeps the page's order
+	rows, err := db.listPacketsByIDs(ctx, ids)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -285,11 +354,11 @@ func (db *DB) pageIDs(ctx context.Context, p MultiNodePacketParams) ([]int64, er
 // listPacketsByIDs hydrates ids into packets, preserving the order of ids.
 func (db *DB) listPacketsByIDs(ctx context.Context, ids []int64) ([]Packet, error) {
 	if len(ids) == 0 {
-		return nil, nil
+		return []Packet{}, nil
 	}
 	rows, err := db.q.ListPacketsByIDs(ctx, ids)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list packets by ids: %w", err)
 	}
 	out := make([]Packet, len(rows))
 	for i, r := range rows {
@@ -318,16 +387,6 @@ func (db *DB) listPacketsByIDs(ctx context.Context, ids []int64) ([]Packet, erro
 	return out, nil
 }
 
-func (q *PacketQuery) normalize() (order string) {
-	if q.Limit <= 0 {
-		q.Limit = 50
-	}
-	if strings.EqualFold(q.Order, "ASC") {
-		return "ASC"
-	}
-	return "DESC" // default, and the only other legal value
-}
-
 // transmissionWhere resolves q.Node and builds the WHERE clause text and args.
 func (db *DB) transmissionWhere(ctx context.Context, q PacketQuery) (clause string, args []any, err error) {
 	nodePK := ""
@@ -354,7 +413,10 @@ func (db *DB) countTransmissionsWhere(ctx context.Context, clause string, args [
 }
 
 func (db *DB) QueryPackets(ctx context.Context, q PacketQuery) ([]Packet, int64, error) {
-	order := q.normalize()
+	order, err := q.normalize()
+	if err != nil {
+		return nil, 0, err
+	}
 	clause, args, err := db.transmissionWhere(ctx, q)
 	if err != nil {
 		return nil, 0, err
@@ -387,8 +449,11 @@ func (db *DB) QueryPackets(ctx context.Context, q PacketQuery) ([]Packet, int64,
 	return packets, total, nil
 }
 
-func (db *DB) QueryGroupedPackets(ctx context.Context, q PacketQuery) ([]GroupedPacketRow, int64, error) {
-	q.normalize()
+func (db *DB) QueryGroupedPackets(ctx context.Context, q PacketQuery) ([]GroupedPacket, int64, error) {
+	_, err := q.normalize()
+	if err != nil {
+		return nil, 0, err
+	}
 	clause, args, err := db.transmissionWhere(ctx, q)
 	if err != nil {
 		return nil, 0, err
@@ -431,9 +496,13 @@ LIMIT $%d OFFSET $%d`, clause, len(args)+1, len(args)+2)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query grouped packets: %w", err)
 	}
-	out, err := pgx.CollectRows(rows, pgx.RowToStructByName[GroupedPacketRow])
+	out, err := pgx.CollectRows(rows, pgx.RowToStructByName[GroupedPacket])
 	if err != nil {
 		return nil, 0, fmt.Errorf("scan grouped packets: %w", err)
+	}
+	for i := range out {
+		out[i].FirstSeen = out[i].FirstSeen.UTC()
+		out[i].Latest = out[i].Latest.UTC()
 	}
 	return out, total, nil
 }
@@ -464,7 +533,7 @@ func buildTransmissionWhere(q PacketQuery, nodePubkey string) ([]string, []any) 
 		w.add("t.route_type = ?", *q.Route)
 	}
 	if q.Hash != "" {
-		w.add("t.hash = ?", strings.ToLower(q.Hash))
+		w.add("t.hash = ?", normalizeKey(q.Hash))
 	}
 
 	// RFC3339 since/until match any observation in range, so re-observed
@@ -496,9 +565,9 @@ func buildTransmissionWhere(q PacketQuery, nodePubkey string) ([]string, []any) 
 		w.add("t.channel_encrypted = ?", q.ChannelEncrypted)
 	}
 	if len(q.Observers) > 0 {
-		// observers.pubkey is stored lowercase; the handler lowercases the input.
+		// observers.pubkey is stored lowercase.
 		w.add("EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.id = oi.observer_idx "+
-			"WHERE oi.transmission_id = t.id AND obi.pubkey = ANY(?::text[]))", q.Observers)
+			"WHERE oi.transmission_id = t.id AND obi.pubkey = ANY(?::text[]))", normalizeKeys(q.Observers))
 	}
 	if q.Region != "" {
 		w.add("EXISTS (SELECT 1 FROM observations oi JOIN observers obi ON obi.id = oi.observer_idx "+
@@ -509,38 +578,11 @@ func buildTransmissionWhere(q PacketQuery, nodePubkey string) ([]string, []any) 
 
 // GetMaxTransmissionID returns the highest transmission id, or 0 if there are none.
 func (db *DB) GetMaxTransmissionID(ctx context.Context) (int64, error) {
-	return db.q.GetMaxTransmissionID(ctx)
-}
-
-// GetNewTransmissionsSince returns transmissions with id > lastID, oldest first,
-// for WebSocket polling. limit <= 0 defaults to 100.
-func (db *DB) GetNewTransmissionsSince(ctx context.Context, lastID int64, limit int) ([]NewTransmission, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := db.q.ListTransmissionsAfterID(ctx, pgdb.ListTransmissionsAfterIDParams{
-		AfterID:  lastID,
-		RowLimit: int32(limit),
-	})
+	id, err := db.q.GetMaxTransmissionID(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list transmissions after id %d: %w", lastID, err)
+		return 0, fmt.Errorf("get max transmission id: %w", err)
 	}
-
-	out := make([]NewTransmission, 0, len(rows))
-	for _, r := range rows {
-		rawHex := types.RawFrame(r.RawHex).Hex()
-		out = append(out, NewTransmission{
-			ID:             r.ID,
-			RawHex:         &rawHex,
-			Hash:           &r.Hash,
-			FirstSeen:      &r.FirstSeen,
-			RouteType:      &r.RouteType,
-			PayloadType:    &r.PayloadType,
-			PayloadVersion: &r.PayloadVersion,
-			DecodedJSON:    &r.DecodedJson,
-		})
-	}
-	return out, nil
+	return id, nil
 }
 
 // GetRecentTransmissionsForNode returns recent transmissions originated by a
@@ -554,7 +596,7 @@ func (db *DB) GetRecentTransmissionsForNode(ctx context.Context, pubkey string, 
 		limit = 20
 	}
 	rows, _, err := db.QueryMultiNodePackets(ctx, MultiNodePacketParams{
-		Pubkeys: []string{strings.ToLower(pubkey)},
+		Pubkeys: []string{normalizeKey(pubkey)},
 		Limit:   limit,
 	})
 	return rows, err
@@ -568,8 +610,11 @@ type UnmatchedTransmission struct {
 }
 
 // ListUnmatchedTransmissions returns up to limit transmissions with an empty
-// scope_name at or after since, newest first.
+// scope_name at or after since, on the given route types, newest first.
 func (db *DB) ListUnmatchedTransmissions(ctx context.Context, since time.Time, routeTypes []int, limit int) ([]UnmatchedTransmission, error) {
+	if limit < 0 || limit > math.MaxInt32 {
+		return nil, fmt.Errorf("unmatched transmissions limit %d out of range", limit)
+	}
 	rt := make([]int32, len(routeTypes))
 	for i, v := range routeTypes {
 		rt[i] = int32(v)
@@ -580,7 +625,7 @@ func (db *DB) ListUnmatchedTransmissions(ctx context.Context, since time.Time, r
 		RowLimit:   int32(limit),
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list unmatched transmissions: %w", err)
 	}
 	out := make([]UnmatchedTransmission, 0, len(rows))
 	for _, r := range rows {
@@ -589,29 +634,14 @@ func (db *DB) ListUnmatchedTransmissions(ctx context.Context, since time.Time, r
 	return out, nil
 }
 
-// pathHops pairs the two parallel hop arrays; "" in resolved means unresolved.
-func pathHops(prefixes, resolved []string) []PathHop {
-	if len(prefixes) == 0 {
-		return nil
-	}
-	hops := make([]PathHop, len(prefixes))
-	for i, p := range prefixes {
-		hops[i] = PathHop{Prefix: p}
-		if i < len(resolved) && resolved[i] != "" {
-			r := resolved[i]
-			hops[i].ResolvedPubkey = &r
-		}
-	}
-	return hops
-}
-
+// NthNewestTransmissionID returns the id of the nth newest transmission (1 is
+// the newest) first seen at or after since, or ErrNotFound if there are fewer.
 func (db *DB) NthNewestTransmissionID(ctx context.Context, since *time.Time, n int64) (int64, error) {
-	var pgSince pgtype.Timestamptz
-	if since != nil {
-		pgSince = pgtype.Timestamptz{Time: *since, Valid: true}
+	if n < 1 {
+		return 0, fmt.Errorf("nth newest transmission: n must be at least 1, got %d", n)
 	}
 	id, err := db.q.NthNewestTransmissionID(ctx, pgdb.NthNewestTransmissionIDParams{
-		Since: pgSince,
+		Since: toPgTimestamptzPtr(since),
 		Skip:  n - 1,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -621,4 +651,47 @@ func (db *DB) NthNewestTransmissionID(ctx context.Context, since *time.Time, n i
 		return 0, fmt.Errorf("nth newest transmission id: %w", err)
 	}
 	return id, nil
+}
+
+// ListGroupTextTransmissions returns up to limit GRP_TXT transmissions with an
+// id greater than afterID, oldest id first. Page by passing the last id back.
+func (db *DB) ListGroupTextTransmissions(ctx context.Context, afterID int64, limit int) ([]GroupTextTransmission, error) {
+	if limit < 1 || limit > math.MaxInt32 {
+		return nil, fmt.Errorf("group text page limit %d out of range", limit)
+	}
+	rows, err := db.q.ListGroupTextTransmissions(ctx, pgdb.ListGroupTextTransmissionsParams{
+		PayloadType: types.PayloadGRP_TXT,
+		AfterID:     afterID,
+		RowLimit:    int32(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list group text transmissions: %w", err)
+	}
+	out := make([]GroupTextTransmission, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, GroupTextTransmission{ID: r.ID, Hash: r.Hash, Frame: types.RawFrame(r.RawHex)})
+	}
+	return out, nil
+}
+
+// GetPacketByID returns one transmission with its representative observation,
+// or ErrNotFound. It returns the same Packet the listings do.
+func (db *DB) GetPacketByID(ctx context.Context, id int64) (*Packet, error) {
+	rows, err := db.listPacketsByIDs(ctx, []int64{id})
+	if err != nil {
+		return nil, fmt.Errorf("get packet %d: %w", id, err)
+	}
+	if len(rows) == 0 {
+		return nil, ErrNotFound
+	}
+	return &rows[0], nil
+}
+
+// GetPacketByHash is GetPacketByID for a transmission hash (any case).
+func (db *DB) GetPacketByHash(ctx context.Context, hash string) (*Packet, error) {
+	id, err := db.GetTransmissionIDByHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetPacketByID(ctx, id)
 }

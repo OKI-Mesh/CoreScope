@@ -28,7 +28,7 @@ type ObserverMetricsResponse struct {
 	Metrics      []MetricsSample `json:"metrics"`
 }
 
-func (s *Server) observerMetrics(ctx context.Context, pubkey string, since, until *time.Time, resolution string, sampleIntervalSec int) ([]MetricsSample, []string, error) {
+func (s *Server) observerMetrics(ctx context.Context, pubkey string, since, until *time.Time, resolution database.MetricsResolution, sampleIntervalSec int) ([]MetricsSample, []string, error) {
 	raw, err := s.db.GetObserverMetrics(ctx, pubkey, since, until, resolution)
 	if err != nil {
 		return nil, nil, err
@@ -39,11 +39,11 @@ func (s *Server) observerMetrics(ctx context.Context, pubkey string, since, unti
 
 // metricsBucketSeconds is the expected spacing between samples; a gap larger
 // than twice this is not interpolated.
-func metricsBucketSeconds(resolution string, sampleIntervalSec int) int {
+func metricsBucketSeconds(resolution database.MetricsResolution, sampleIntervalSec int) int {
 	switch resolution {
-	case "1h":
+	case database.MetricsHourly:
 		return 3600
-	case "1d":
+	case database.MetricsDaily:
 		return 86400
 	}
 	if sampleIntervalSec <= 0 {

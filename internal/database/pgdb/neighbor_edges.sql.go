@@ -142,7 +142,8 @@ func (q *Queries) PruneNeighborEdges(ctx context.Context, cutoff time.Time) (int
 }
 
 const scanNeighborObservations = `-- name: ScanNeighborObservations :many
-SELECT t.payload_type,
+SELECT o.id,
+       t.payload_type,
        (CASE WHEN t.from_pubkey IS NULL AND t.payload_type = ANY($1::int[])
              THEN COALESCE(t.decoded_json, '') ELSE '' END)::text AS decoded_json,
        COALESCE(t.from_pubkey, '')::text   AS from_pubkey,
@@ -153,18 +154,20 @@ SELECT t.payload_type,
 FROM observations o
 JOIN transmissions t ON t.id = o.transmission_id
 LEFT JOIN observers obs ON obs.id = o.observer_idx
-WHERE o.timestamp > $2::timestamptz
-ORDER BY o.timestamp
-LIMIT $3::int
+WHERE (o.timestamp, o.id) > ($2::timestamptz, $3::bigint)
+ORDER BY o.timestamp, o.id
+LIMIT $4::int
 `
 
 type ScanNeighborObservationsParams struct {
-	JsonTypes []int32
-	Since     time.Time
-	BatchSize int32
+	JsonTypes      []int32
+	AfterTimestamp time.Time
+	AfterID        int64
+	BatchSize      int32
 }
 
 type ScanNeighborObservationsRow struct {
+	ID             int64
 	PayloadType    types.PayloadType
 	DecodedJson    string
 	FromPubkey     string
@@ -175,7 +178,12 @@ type ScanNeighborObservationsRow struct {
 }
 
 func (q *Queries) ScanNeighborObservations(ctx context.Context, arg ScanNeighborObservationsParams) ([]ScanNeighborObservationsRow, error) {
-	rows, err := q.db.Query(ctx, scanNeighborObservations, arg.JsonTypes, arg.Since, arg.BatchSize)
+	rows, err := q.db.Query(ctx, scanNeighborObservations,
+		arg.JsonTypes,
+		arg.AfterTimestamp,
+		arg.AfterID,
+		arg.BatchSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +192,7 @@ func (q *Queries) ScanNeighborObservations(ctx context.Context, arg ScanNeighbor
 	for rows.Next() {
 		var i ScanNeighborObservationsRow
 		if err := rows.Scan(
+			&i.ID,
 			&i.PayloadType,
 			&i.DecodedJson,
 			&i.FromPubkey,

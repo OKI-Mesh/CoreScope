@@ -7,6 +7,11 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/database/pgdb"
 )
 
+const (
+	defaultDroppedPacketLimit = 100
+	maxDroppedPacketLimit     = 500
+)
+
 // DroppedPacket is a packet rejected during ingest. On insert, empty strings are
 // stored as NULL and ID and DroppedAt are ignored (the database assigns them).
 // On read, NULL comes back as "".
@@ -34,18 +39,24 @@ func (db *DB) InsertDroppedPacket(ctx context.Context, dp DroppedPacket) error {
 	})
 }
 
+// PruneDroppedPackets deletes packets dropped before cutoff and returns how
+// many were removed.
 func (db *DB) PruneDroppedPackets(ctx context.Context, cutoff time.Time) (int64, error) {
 	return db.q.PruneDroppedPackets(ctx, cutoff)
 }
 
-// GetDroppedPackets returns recently dropped packets, newest first. An empty
-// observerID or nodePubkey means no filter. limit outside 1..500 becomes 100.
-func (db *DB) GetDroppedPackets(ctx context.Context, limit int, observerID, nodePubkey string) ([]DroppedPacket, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+// ListDroppedPackets returns dropped packets, newest first (ties broken by
+// newest id). An empty observerID or nodePubkey means no filter. A limit of
+// zero or less becomes 100; a limit above 500 becomes 500.
+func (db *DB) ListDroppedPackets(ctx context.Context, limit int, observerID, nodePubkey string) ([]DroppedPacket, error) {
+	switch {
+	case limit <= 0:
+		limit = defaultDroppedPacketLimit
+	case limit > maxDroppedPacketLimit:
+		limit = maxDroppedPacketLimit
 	}
 	rows, err := db.q.ListDroppedPackets(ctx, pgdb.ListDroppedPacketsParams{
-		ObserverID: toPgTextIfNotEmpty(observerID), // your empty-to-NULL helper
+		ObserverID: toPgTextIfNotEmpty(observerID),
 		NodePubkey: toPgTextIfNotEmpty(nodePubkey),
 		MaxRows:    int32(limit),
 	})

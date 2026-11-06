@@ -15,9 +15,9 @@ import (
 const listObservationsAfterID = `-- name: ListObservationsAfterID :many
 SELECT o.id,
        o.transmission_id,
-       COALESCE(obs.pubkey, '')::text AS observer_id,
-       COALESCE(obs.name, '')::text   AS observer_name,
-       COALESCE(obs.iata, '')::text   AS observer_iata,
+       COALESCE(obs.pubkey, '')::text  AS observer_id,
+       COALESCE(obs.name, '')::text    AS observer_name,
+       COALESCE(obs.iata, '')::text    AS observer_iata,
        COALESCE(o.direction, '')::text AS direction,
        o.snr, o.rssi, o.score, o.timestamp,
        o.hop_prefixes::text[] AS hop_prefixes,
@@ -27,9 +27,9 @@ SELECT o.id,
              ORDER BY p.ord)::text[] AS hop_resolved
 FROM observations o
 LEFT JOIN observers obs ON obs.id = o.observer_idx
-WHERE o.id > $1
+WHERE o.id > $1::bigint
 ORDER BY o.id ASC
-LIMIT $2
+LIMIT $2::int
 `
 
 type ListObservationsAfterIDParams struct {

@@ -4,6 +4,12 @@ FROM transmissions t
 WHERE t.channel_hash = sqlc.arg(channel_hash)::text
   AND t.payload_type = 5
   AND t.channel_encrypted = sqlc.arg(encrypted)::bool
+  AND t.decoded_json IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM observations o
+    WHERE o.transmission_id = t.id
+  )
   AND (
     COALESCE(cardinality(sqlc.arg(regions)::text[]), 0) = 0
     OR EXISTS (

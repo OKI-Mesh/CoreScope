@@ -14,22 +14,16 @@ import (
 //go:embed postgres/migrations/*.sql
 var migrationsFS embed.FS
 
-func NewMigrationProvider(ctx context.Context, db *sql.DB, allowOutOfOrder bool, disableVersioning bool) (*goose.Provider, error) {
+func newMigrationProvider(db *sql.DB) (*goose.Provider, error) {
 	sub, err := fs.Sub(migrationsFS, "postgres/migrations")
 	if err != nil {
 		return nil, fmt.Errorf("creating migrations sub filesystem: %w", err)
 	}
-	opts := []goose.ProviderOption{}
-	if allowOutOfOrder {
-		opts = append(opts, goose.WithAllowOutofOrder(true))
-	}
-	if disableVersioning {
-		opts = append(opts, goose.WithDisableVersioning(true))
-	}
-	return goose.NewProvider(goose.DialectPostgres, db, sub, opts...)
+	return goose.NewProvider(goose.DialectPostgres, db, sub)
 }
 
-func withMigrationHandle(ctx context.Context, connStr string, fn func(*sql.DB) error) error {
+// Migrate applies every pending migration to the database at connStr.
+func Migrate(ctx context.Context, connStr string) error {
 	migDB, err := sql.Open("pgx", connStr)
 	if err != nil {
 		return fmt.Errorf("opening migration handle: %w", err)
@@ -38,24 +32,20 @@ func withMigrationHandle(ctx context.Context, connStr string, fn func(*sql.DB) e
 	if err := migDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("cannot reach database: %w", err)
 	}
-	return fn(migDB)
+	provider, err := newMigrationProvider(migDB)
+	if err != nil {
+		return fmt.Errorf("creating migration provider: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
+	return nil
 }
 
-func Migrate(ctx context.Context, connStr string) error {
-	return withMigrationHandle(ctx, connStr, func(migDB *sql.DB) error {
-		provider, err := NewMigrationProvider(ctx, migDB, false, false)
-		if err != nil {
-			return fmt.Errorf("creating migration provider: %w", err)
-		}
-		if _, err := provider.Up(ctx); err != nil {
-			return fmt.Errorf("running migrations: %w", err)
-		}
-		return nil
-	})
-}
-
+// AssertReady fails unless every embedded migration is recorded as applied.
+// It only reads, so it is safe on a read-only connection.
 func AssertReady(ctx context.Context, ro *sql.DB) error {
-	provider, err := NewMigrationProvider(ctx, ro, false, false)
+	provider, err := newMigrationProvider(ro)
 	if err != nil {
 		return fmt.Errorf("creating goose provider: %w", err)
 	}
@@ -70,8 +60,9 @@ func AssertReady(ctx context.Context, ro *sql.DB) error {
 	return nil
 }
 
+// CurrentSchemaVersion is the newest migration version recorded as applied.
 func CurrentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
-	provider, err := NewMigrationProvider(ctx, db, false, false)
+	provider, err := newMigrationProvider(db)
 	if err != nil {
 		return 0, fmt.Errorf("creating goose provider: %w", err)
 	}
@@ -82,8 +73,9 @@ func CurrentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
 	return ver, nil
 }
 
+// LatestSchemaVersion is the newest migration version embedded in the binary.
 func LatestSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
-	provider, err := NewMigrationProvider(ctx, db, false, false)
+	provider, err := newMigrationProvider(db)
 	if err != nil {
 		return 0, fmt.Errorf("creating goose provider: %w", err)
 	}

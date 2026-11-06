@@ -138,7 +138,39 @@ type Server struct {
 
 // MetricsSummaryResponse is the body of GET /api/observers/metrics/summary.
 type MetricsSummaryResponse struct {
-	Observers []database.MetricsSummary `json:"observers"`
+	Observers []MetricsSummaryObserver `json:"observers"`
+}
+
+// MetricsSummaryObserver is one observer in the metrics summary. Its JSON keys
+// are the contract with public/analytics.js.
+type MetricsSummaryObserver struct {
+	ObserverID    string     `json:"observer_id"`
+	ObserverName  *string    `json:"observer_name"`
+	IATA          string     `json:"iata,omitempty"`
+	CurrentNF     *float64   `json:"current_noise_floor"`
+	AvgNF         *float64   `json:"avg_noise_floor_24h"`
+	MaxNF         *float64   `json:"max_noise_floor_24h"`
+	CurrentBattMv *int       `json:"battery_mv"`
+	SampleCount   int        `json:"sample_count"`
+	Sparkline     []*float64 `json:"sparkline"`
+}
+
+func newMetricsSummaryObserver(s database.MetricsSummary) MetricsSummaryObserver {
+	var name *string
+	if s.ObserverName != "" {
+		name = &s.ObserverName
+	}
+	return MetricsSummaryObserver{
+		ObserverID:    s.ObserverID,
+		ObserverName:  name,
+		IATA:          s.IATA,
+		CurrentNF:     s.CurrentNF,
+		AvgNF:         s.AvgNF,
+		MaxNF:         s.MaxNF,
+		CurrentBattMv: s.CurrentBattMv,
+		SampleCount:   s.SampleCount,
+		Sparkline:     s.Sparkline,
+	}
 }
 
 // PerfStats tracks request performance.
@@ -1258,7 +1290,7 @@ func (s *Server) handlePacketDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err == nil && row == nil && idErr == nil {
-			row, err = s.db.GetTransmissionByID(ctx, id)
+			row, err = s.db.GetPacketByID(ctx, int64(id))
 			if errors.Is(err, database.ErrNotFound) {
 				row, err = nil, nil
 			}
@@ -1373,32 +1405,25 @@ func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
 // enrichObsWithTx produces, so the packet-detail fallback and the store path
 // feed mapSliceToObservations identically.
 func observationMap(o database.Observation) map[string]interface{} {
-	hops := o.HopPrefixes
-	if hops == nil {
-		hops = []string{}
-	}
-	pathJSON, _ := json.Marshal(hops) // []string cannot fail
-
 	m := map[string]interface{}{
 		"id":              int(o.ID), // must be int: mapSliceToObservations asserts .(int)
 		"transmission_id": int(o.TransmissionID),
-		"observer_id":     strPtrOrNil(o.ObserverPubkey),
-		"observer_name":   strPtrOrNil(o.ObserverName),
+		"observer_id":     strOrNil(o.ObserverID),
+		"observer_name":   strOrNil(o.ObserverName),
 		"observer_iata":   strOrNil(o.ObserverIATA),
-		"direction":       strPtrOrNil(o.Direction),
+		"direction":       strOrNil(o.Direction),
 		"snr":             floatPtrOrNil(o.SNR),
 		"rssi":            floatPtrOrNil(o.RSSI),
-		"path_json":       string(pathJSON),
+		"path_json":       hopsJSON(o.HopPrefixes()),
 		"timestamp":       formatTS(o.Timestamp),
 	}
 
 	// resolved_path only when at least one hop resolved, as on the store path.
-	rp := make([]*string, len(o.HopResolved))
+	rp := make([]*string, len(o.Path))
 	any := false
-	for i, pk := range o.HopResolved {
-		if pk != "" {
-			p := pk
-			rp[i] = &p
+	for i, hop := range o.Path {
+		if hop.ResolvedPubkey != nil && *hop.ResolvedPubkey != "" {
+			rp[i] = hop.ResolvedPubkey
 			any = true
 		}
 	}
@@ -2257,12 +2282,12 @@ func traceEntries(obs []database.Observation) []TraceEntry {
 	for i := len(obs) - 1; i >= 0; i-- {
 		o := obs[i]
 		traces = append(traces, TraceEntry{
-			Observer:     o.ObserverPubkey,
-			ObserverName: o.ObserverName,
+			Observer:     optString(o.ObserverID),
+			ObserverName: optString(o.ObserverName),
 			Time:         formatTS(o.Timestamp),
 			SNR:          o.SNR,
 			RSSI:         o.RSSI,
-			PathJSON:     hopsJSON(o.HopPrefixes),
+			PathJSON:     hopsJSON(o.HopPrefixes()),
 		})
 	}
 	return traces
@@ -2540,14 +2565,9 @@ func (s *Server) handleObserverMetrics(w http.ResponseWriter, r *http.Request) {
 	id := strings.ToLower(mux.Vars(r)["id"]) // pubkeys are stored lowercase
 	q := r.URL.Query()
 
-	resolution := q.Get("resolution")
-	if resolution == "" {
-		resolution = "5m"
-	}
-	switch resolution {
-	case "5m", "1h", "1d":
-	default:
-		writeError(w, 400, "invalid resolution: "+resolution+". Must be 5m, 1h, or 1d")
+	resolution, err := database.ParseMetricsResolution(q.Get("resolution"))
+	if err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
 
@@ -2628,7 +2648,11 @@ func (s *Server) handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
 		summary = filtered
 	}
 
-	writeJSON(w, MetricsSummaryResponse{Observers: summary})
+	observers := make([]MetricsSummaryObserver, len(summary))
+	for i, s := range summary {
+		observers[i] = newMetricsSummaryObserver(s)
+	}
+	writeJSON(w, MetricsSummaryResponse{Observers: observers})
 }
 
 // parseWindowDuration parses strings like "24h", "3d", "7d", "30d".
@@ -2791,7 +2815,7 @@ func (s *Server) handleDroppedPackets(w http.ResponseWriter, r *http.Request) {
 	observerID := r.URL.Query().Get("observer")
 	nodePubkey := r.URL.Query().Get("pubkey")
 
-	results, err := s.db.GetDroppedPackets(ctx, limit, observerID, nodePubkey)
+	results, err := s.db.ListDroppedPackets(ctx, limit, observerID, nodePubkey)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return

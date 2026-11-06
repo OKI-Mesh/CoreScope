@@ -17,6 +17,25 @@ import (
 	"github.com/gorilla/mux"
 )
 
+type NodeAdvertObservation struct {
+	ID             int64    `json:"id"`
+	TransmissionID int64    `json:"transmission_id"`
+	ObserverID     *string  `json:"observer_id"`
+	ObserverName   *string  `json:"observer_name"`
+	ObserverIATA   string   `json:"observer_iata"`
+	SNR            *float64 `json:"snr"`
+	RSSI           *float64 `json:"rssi"`
+	Score          *float64 `json:"score"`
+	Direction      *string  `json:"direction"`
+	PathJSON       string   `json:"path_json"`
+	Timestamp      UTCTime  `json:"timestamp"`
+}
+
+type NodeAdvertResponse struct {
+	PacketResponse
+	Observations []NodeAdvertObservation `json:"observations"`
+}
+
 type RoleCountsResponse struct {
 	Repeaters  int `json:"repeaters"`
 	Rooms      int `json:"rooms"`
@@ -40,6 +59,14 @@ type NodeHealthResponse struct {
 	RelayObserverCount int                      `json:"relayObserverCount"`
 	Stats              NodeHealthStats          `json:"stats"`
 	RecentPackets      []map[string]interface{} `json:"recentPackets"` // becomes []PacketResponse with the packet responses
+}
+
+func nodeAdvertResponse(p database.Packet, observations []database.Observation) NodeAdvertResponse {
+	out := make([]NodeAdvertObservation, len(observations))
+	for i, o := range observations {
+		out[i] = nodeAdvertObservation(o)
+	}
+	return NodeAdvertResponse{PacketResponse: packetResponse(p), Observations: out}
 }
 
 func roleCountsToResponse(c database.RoleCounts) RoleCountsResponse {
@@ -235,9 +262,6 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 				node.SetDeclaredScope(answer, has, info.TransportedScopes)
 			}
 
-			if mx := maxFloat(usefulMap); mx > 0 {
-				trafficNorm = trafficRaw / mx
-			}
 		}
 	}
 
@@ -250,9 +274,9 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 	for i, packet := range recentAdvertPackets {
 		txIDs[i] = packet.ID
 	}
-	observationsByTx, err := s.db.ObservationsForTransmissions(ctx, txIDs)
+	observationsByTx, err := s.db.ListObservationsForTransmissions(ctx, txIDs)
 	if err != nil {
-		log.Printf("WARN ObservationsForTransmissions(%s): %v", pubkey, err)
+		log.Printf("WARN ListObservationsForTransmissions(%s): %v", pubkey, err)
 	}
 	recentAdverts := make([]NodeAdvertResponse, 0, len(recentAdvertPackets))
 	for _, packet := range recentAdvertPackets {
@@ -1225,4 +1249,25 @@ func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[str
 		},
 		"recentPackets": recentPackets,
 	}, nil
+}
+
+func nodeAdvertObservation(o database.Observation) NodeAdvertObservation {
+	hops := o.HopPrefixes()
+	prefixes := make([]string, len(hops))
+	for i, h := range hops {
+		prefixes[i] = strings.ToUpper(h)
+	}
+	return NodeAdvertObservation{
+		ID:             o.ID,
+		TransmissionID: o.TransmissionID,
+		ObserverID:     optString(o.ObserverID),
+		ObserverName:   optString(o.ObserverName),
+		ObserverIATA:   o.ObserverIATA,
+		SNR:            o.SNR,
+		RSSI:           o.RSSI,
+		Score:          o.Score,
+		Direction:      optString(o.Direction),
+		PathJSON:       prefixesJSON(prefixes),
+		Timestamp:      UTCTime{o.Timestamp},
+	}
 }

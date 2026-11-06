@@ -3647,22 +3647,6 @@ func TestStoreGetObservationsForHash(t *testing.T) {
 	})
 }
 
-// --- Store.GetNewTransmissionsSince ---
-
-func TestStoreGetNewTransmissionsSince(t *testing.T) {
-	ctx := t.Context()
-	db := setupTestDB(t)
-	seedTestData(t, db)
-
-	txs, err := db.GetNewTransmissionsSince(ctx, 0, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(txs) < 1 {
-		t.Error("expected >=1 transmission")
-	}
-}
-
 // --- HandlePacketDetail with store (by hash, by tx ID, by obs ID) ---
 
 func TestHandlePacketDetailWithStoreAllPaths(t *testing.T) {
@@ -3699,22 +3683,6 @@ func TestHandlePacketDetailWithStoreAllPaths(t *testing.T) {
 			t.Fatalf("expected 404, got %d", w.Code)
 		}
 	})
-}
-
-// --- Additional DB function coverage ---
-
-func TestDBGetNewTransmissionsSince(t *testing.T) {
-	ctx := t.Context()
-	db := setupTestDB(t)
-	seedTestData(t, db)
-
-	txs, err := db.GetNewTransmissionsSince(ctx, 0, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(txs) < 1 {
-		t.Error("expected >=1 transmissions")
-	}
 }
 
 func TestDBGetObserverByID(t *testing.T) {

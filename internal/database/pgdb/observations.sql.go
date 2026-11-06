@@ -79,6 +79,7 @@ ON CONFLICT (transmission_id, observer_idx, COALESCE(path_hash, '')) DO UPDATE S
     rssi      = COALESCE(EXCLUDED.rssi,  observations.rssi),
     score     = COALESCE(EXCLUDED.score, observations.score),
     hop_nodes = CASE WHEN cardinality(EXCLUDED.hop_nodes) > 0
+                      AND cardinality(EXCLUDED.hop_nodes) = cardinality(observations.hop_prefixes)
                      THEN EXCLUDED.hop_nodes
                      ELSE observations.hop_nodes END
 RETURNING id, (xmax = 0) AS inserted
@@ -201,14 +202,11 @@ func (q *Queries) ListObservationRawHexByHash(ctx context.Context, hash string) 
 const listObservationsByTransmissionIDs = `-- name: ListObservationsByTransmissionIDs :many
 SELECT o.transmission_id,
        o.id,
-       obs.pubkey                   AS observer_pubkey,
-       obs.name                     AS observer_name,
-       COALESCE(obs.iata, '')::text AS observer_iata,
-       o.direction,
-       o.snr,
-       o.rssi,
-       o.score,
-       o.timestamp,
+       COALESCE(obs.pubkey, '')::text  AS observer_id,
+       COALESCE(obs.name, '')::text    AS observer_name,
+       COALESCE(obs.iata, '')::text    AS observer_iata,
+       COALESCE(o.direction, '')::text AS direction,
+       o.snr, o.rssi, o.score, o.timestamp,
        o.hop_prefixes::text[] AS hop_prefixes,
        ARRAY(SELECT COALESCE(n.public_key, '')
              FROM unnest(o.hop_prefixes) WITH ORDINALITY AS p(prefix, ord)
@@ -223,10 +221,10 @@ ORDER BY o.timestamp DESC, o.id DESC
 type ListObservationsByTransmissionIDsRow struct {
 	TransmissionID int64
 	ID             int64
-	ObserverPubkey pgtype.Text
-	ObserverName   pgtype.Text
+	ObserverID     string
+	ObserverName   string
 	ObserverIata   string
-	Direction      pgtype.Text
+	Direction      string
 	Snr            pgtype.Float8
 	Rssi           pgtype.Float8
 	Score          pgtype.Float8
@@ -235,8 +233,8 @@ type ListObservationsByTransmissionIDsRow struct {
 	HopResolved    []string
 }
 
-func (q *Queries) ListObservationsByTransmissionIDs(ctx context.Context, txIds []int64) ([]ListObservationsByTransmissionIDsRow, error) {
-	rows, err := q.db.Query(ctx, listObservationsByTransmissionIDs, txIds)
+func (q *Queries) ListObservationsByTransmissionIDs(ctx context.Context, transmissionIds []int64) ([]ListObservationsByTransmissionIDsRow, error) {
+	rows, err := q.db.Query(ctx, listObservationsByTransmissionIDs, transmissionIds)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +245,7 @@ func (q *Queries) ListObservationsByTransmissionIDs(ctx context.Context, txIds [
 		if err := rows.Scan(
 			&i.TransmissionID,
 			&i.ID,
-			&i.ObserverPubkey,
+			&i.ObserverID,
 			&i.ObserverName,
 			&i.ObserverIata,
 			&i.Direction,
@@ -257,6 +255,52 @@ func (q *Queries) ListObservationsByTransmissionIDs(ctx context.Context, txIds [
 			&i.Timestamp,
 			&i.HopPrefixes,
 			&i.HopResolved,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listObserverReceptions = `-- name: ListObserverReceptions :many
+SELECT o.transmission_id,
+       ob.name AS observer_name,
+       o.snr,
+       o.rssi,
+       o.timestamp
+FROM observations o
+LEFT JOIN observers ob ON ob.id = o.observer_idx
+WHERE o.transmission_id = ANY($1::bigint[])
+ORDER BY o.transmission_id, o.timestamp, o.id
+`
+
+type ListObserverReceptionsRow struct {
+	TransmissionID int64
+	ObserverName   pgtype.Text
+	Snr            pgtype.Float8
+	Rssi           pgtype.Float8
+	Timestamp      time.Time
+}
+
+func (q *Queries) ListObserverReceptions(ctx context.Context, transmissionIds []int64) ([]ListObserverReceptionsRow, error) {
+	rows, err := q.db.Query(ctx, listObserverReceptions, transmissionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObserverReceptionsRow{}
+	for rows.Next() {
+		var i ListObserverReceptionsRow
+		if err := rows.Scan(
+			&i.TransmissionID,
+			&i.ObserverName,
+			&i.Snr,
+			&i.Rssi,
+			&i.Timestamp,
 		); err != nil {
 			return nil, err
 		}

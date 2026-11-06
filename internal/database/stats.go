@@ -2,11 +2,17 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database/pgdb"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// sqlstateInsufficientPrivilege is the code Postgres returns when the role may
+// not call a function such as pg_ls_waldir().
+const sqlstateInsufficientPrivilege = "42501"
 
 // Stats holds system statistics.
 type Stats struct {
@@ -34,14 +40,27 @@ type DBSizeStats struct {
 	DBSizeBytes  int64
 	WALSizeBytes *int64           // nil when the role cannot call pg_ls_waldir()
 	DeadTuples   int64            // closest analogue to the SQLite freelist
-	Checkpoints  *CheckpointStats // nil if pg_stat_checkpointer is unavailable
+	Checkpoints  *CheckpointStats // always set on Postgres 17 and later
 	Rows         TableRowCounts   // transmissions, observations, nodes, observers
+}
+
+// EntityCounts are the node and observer totals in the store stats.
+type EntityCounts struct {
+	ActiveNodes int
+	AllNodes    int
+	Observers   int
+}
+
+// RecentObservationCounts are the observation totals for the last hour and day.
+type RecentObservationCounts struct {
+	LastHour int
+	Last24h  int
 }
 
 // GetStats returns aggregate counts. totalNodes counts nodes seen in the
 // last 7 days; now is a parameter so tests control the windows.
-func (d *DB) GetStats(ctx context.Context, now time.Time) (*Stats, error) {
-	row, err := d.q.GetStats(ctx, pgdb.GetStatsParams{
+func (db *DB) GetStats(ctx context.Context, now time.Time) (*Stats, error) {
+	row, err := db.q.GetStats(ctx, pgdb.GetStatsParams{
 		ActiveSince: now.Add(-7 * 24 * time.Hour),
 		HourAgo:     now.Add(-time.Hour),
 		DayAgo:      now.Add(-24 * time.Hour),
@@ -61,8 +80,35 @@ func (d *DB) GetStats(ctx context.Context, now time.Time) (*Stats, error) {
 	}, nil
 }
 
+// GetEntityCounts counts nodes heard after activeSince, all nodes, and
+// observers that are not inactive.
+func (db *DB) GetEntityCounts(ctx context.Context, activeSince time.Time) (EntityCounts, error) {
+	r, err := db.q.GetEntityCounts(ctx, activeSince)
+	if err != nil {
+		return EntityCounts{}, fmt.Errorf("get entity counts: %w", err)
+	}
+	return EntityCounts{
+		ActiveNodes: int(r.ActiveNodes),
+		AllNodes:    int(r.AllNodes),
+		Observers:   int(r.Observers),
+	}, nil
+}
+
+// CountRecentObservations counts observations in the hour and the day before now.
+func (db *DB) CountRecentObservations(ctx context.Context, now time.Time) (RecentObservationCounts, error) {
+	r, err := db.q.CountRecentObservations(ctx, pgdb.CountRecentObservationsParams{
+		HourAgo: now.Add(-time.Hour),
+		DayAgo:  now.Add(-24 * time.Hour),
+	})
+	if err != nil {
+		return RecentObservationCounts{}, fmt.Errorf("count recent observations: %w", err)
+	}
+	return RecentObservationCounts{LastHour: int(r.LastHour), Last24h: int(r.LastDay)}, nil
+}
+
 // GetDBSizeStats returns database size, WAL, bloat and row-count figures
-// for the /api/perf endpoint.
+// for the /api/perf endpoint. The WAL size is omitted, not an error, when the
+// role lacks the privilege to list the WAL directory.
 func (db *DB) GetDBSizeStats(ctx context.Context) (DBSizeStats, error) {
 	base, err := db.q.GetDBSizeStats(ctx)
 	if err != nil {
@@ -79,11 +125,16 @@ func (db *DB) GetDBSizeStats(ctx context.Context) (DBSizeStats, error) {
 		},
 	}
 
-	// Best-effort extras: a missing privilege must not fail the whole endpoint.
 	var wal int64
-	if err := db.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size), 0)::bigint FROM pg_ls_waldir()`).Scan(&wal); err == nil {
+	err = db.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(size), 0)::bigint FROM pg_ls_waldir()`).Scan(&wal)
+	var pgErr *pgconn.PgError
+	switch {
+	case err == nil:
 		out.WALSizeBytes = &wal
+	case errors.As(err, &pgErr) && pgErr.Code == sqlstateInsufficientPrivilege:
+	default:
+		return DBSizeStats{}, fmt.Errorf("wal size: %w", err)
 	}
 
 	if err := db.pool.QueryRow(ctx,
@@ -94,9 +145,10 @@ func (db *DB) GetDBSizeStats(ctx context.Context) (DBSizeStats, error) {
 	var cp CheckpointStats
 	if err := db.pool.QueryRow(ctx,
 		`SELECT num_timed::bigint, num_requested::bigint, buffers_written::bigint
-		   FROM pg_stat_checkpointer`).Scan(&cp.Timed, &cp.Requested, &cp.BuffersWritten); err == nil {
-		out.Checkpoints = &cp
+		   FROM pg_stat_checkpointer`).Scan(&cp.Timed, &cp.Requested, &cp.BuffersWritten); err != nil {
+		return DBSizeStats{}, fmt.Errorf("checkpoint stats: %w", err)
 	}
+	out.Checkpoints = &cp
 
 	return out, nil
 }

@@ -83,3 +83,27 @@ SELECT COUNT(*)::bigint AS receptions,
        COUNT(DISTINCT rx_pubkey)::bigint AS clients
 FROM client_receptions
 WHERE heard_key = ANY(sqlc.arg(heard_keys)::text[]);
+
+-- name: ListClientRfSamplesWithPrev :many
+WITH s AS (
+    SELECT sampled_at, lat, lon, stationary, uptime_secs,
+           rx_air_secs, tx_air_secs, recv, recv_errors,
+           LAG(sampled_at) OVER (ORDER BY sampled_at) AS prev_sampled_at
+    FROM client_rf_samples
+    WHERE rx_pubkey = sqlc.arg(rx_pubkey)
+      AND sampled_at >= sqlc.arg(start_at)::timestamptz
+      AND sampled_at <  sqlc.arg(end_at)::timestamptz
+)
+SELECT s.sampled_at, s.lat, s.lon, s.stationary, s.uptime_secs,
+       s.rx_air_secs, s.tx_air_secs, s.recv, s.recv_errors,
+       p.sampled_at  AS prev_at,
+       p.uptime_secs AS prev_uptime,
+       p.rx_air_secs AS prev_rx,
+       p.tx_air_secs AS prev_tx,
+       p.recv        AS prev_recv,
+       p.recv_errors AS prev_errs
+FROM s
+LEFT JOIN client_rf_samples p
+       ON p.rx_pubkey = sqlc.arg(rx_pubkey)
+      AND p.sampled_at = s.prev_sampled_at
+ORDER BY s.sampled_at;

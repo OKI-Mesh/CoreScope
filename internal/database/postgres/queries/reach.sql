@@ -9,6 +9,7 @@ JOIN transmissions t ON t.id = o.transmission_id
 LEFT JOIN observers obs ON obs.id = o.observer_idx
 WHERE o.timestamp >= sqlc.arg(since)::timestamptz
   AND o.hop_prefixes && sqlc.arg(tokens)::text[]
+ORDER BY o.timestamp DESC, o.id DESC
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListTransmissionIDsWithResolvedPubkey :many

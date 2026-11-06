@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -32,21 +31,29 @@ type ObservationInput struct {
 type Observation struct {
 	ID             int64
 	TransmissionID int64
-	ObserverPubkey *string
-	ObserverName   *string
-	ObserverIATA   string // "" when there is no observer
-	Direction      *string
+	ObserverID     string // observer pubkey; empty when observer_idx is NULL
+	ObserverName   string
+	ObserverIATA   string
+	Direction      string
 	SNR, RSSI      *float64
 	Score          *float64
+	Path           []PathHop // hop order
 	Timestamp      time.Time
-	HopPrefixes    []string // ordered by hop_index
-	HopResolved    []string // same length; "" = unresolved
+}
+
+// HopPrefixes returns the hop prefixes in path order. It is never nil.
+func (o Observation) HopPrefixes() []string {
+	prefixes := make([]string, len(o.Path))
+	for i, hop := range o.Path {
+		prefixes[i] = hop.Prefix
+	}
+	return prefixes
 }
 
 func (db *DB) InsertObservationWithHops(ctx context.Context, obs ObservationInput, hops []string, resolved []*string) (obsID int64, inserted bool, err error) {
-	hopPrefixes := hops
-	if hopPrefixes == nil {
-		hopPrefixes = []string{}
+	hopPrefixes := make([]string, len(hops))
+	for i, h := range hops {
+		hopPrefixes[i] = normalizeKey(h)
 	}
 	resolvedPubkeys := make([]string, len(hopPrefixes))
 	var frame []byte
@@ -59,9 +66,11 @@ func (db *DB) InsertObservationWithHops(ctx context.Context, obs ObservationInpu
 	}
 	anyResolved := false
 	for i := range hopPrefixes {
-		if i < len(resolved) && resolved[i] != nil && *resolved[i] != "" {
-			resolvedPubkeys[i] = *resolved[i]
-			anyResolved = true
+		if i < len(resolved) && resolved[i] != nil {
+			if key := normalizeKey(*resolved[i]); key != "" {
+				resolvedPubkeys[i] = key
+				anyResolved = true
+			}
 		}
 	}
 	if !anyResolved {
@@ -153,55 +162,176 @@ func (db *DB) ObservationRawHexForHash(ctx context.Context, hash string) (map[in
 	return out, nil
 }
 
-// ObservationsForTransmissions returns the observations of the given
-// transmissions, newest first, grouped by transmission id. Transmissions with
-// no observations are absent from the map.
-func (db *DB) ObservationsForTransmissions(ctx context.Context, txIDs []int64) (map[int64][]Observation, error) {
-	out := make(map[int64][]Observation)
-	if len(txIDs) == 0 {
-		return out, nil
-	}
-	rows, err := db.q.ListObservationsByTransmissionIDs(ctx, txIDs)
+// ObserverReception is one observer's receipt of a transmission.
+type ObserverReception struct {
+	TransmissionID int64
+	ObserverName   *string // nil when the observer is unknown or never sent a name
+	SNR, RSSI      *float64
+	ReceivedAt     time.Time
+}
+
+// ListObserverReceptions groups every observation of txIDs by transmission,
+// oldest first, with the observer's name when it has one.
+func (db *DB) ListObserverReceptions(ctx context.Context, txIDs []int64) (map[int64][]ObserverReception, error) {
+	rows, err := db.q.ListObserverReceptions(ctx, txIDs)
 	if err != nil {
-		return nil, fmt.Errorf("list observations: %w", err)
+		return nil, err
 	}
+	out := make(map[int64][]ObserverReception, len(txIDs))
 	for _, r := range rows {
-		out[r.TransmissionID] = append(out[r.TransmissionID], Observation{
-			ID:             r.ID,
-			TransmissionID: r.TransmissionID,
-			ObserverPubkey: fromPgText(r.ObserverPubkey),
+		txID := int64(r.TransmissionID)
+		out[txID] = append(out[txID], ObserverReception{
+			TransmissionID: txID,
 			ObserverName:   fromPgText(r.ObserverName),
-			ObserverIATA:   r.ObserverIata,
-			Direction:      fromPgText(r.Direction),
 			SNR:            fromPgFloat8(r.Snr),
 			RSSI:           fromPgFloat8(r.Rssi),
-			Score:          fromPgFloat8(r.Score),
-			Timestamp:      r.Timestamp.UTC(), // adjust to the generated type
-			HopPrefixes:    r.HopPrefixes,
-			HopResolved:    r.HopResolved,
+			ReceivedAt:     r.Timestamp.UTC(),
 		})
 	}
 	return out, nil
 }
 
-// ObservationsForHash returns every observation of the transmission with the given hash,
-// oldest first. An unknown hash yields an empty slice, not an error.
-func (d *DB) ObservationsForHash(ctx context.Context, hash string) ([]Observation, error) {
-	id, err := d.q.GetTransmissionIDByHash(ctx, strings.ToLower(hash))
+// GetObservationsForHash lists every observation of a transmission, newest
+// first. An unknown hash is an empty slice, not an error.
+func (db *DB) GetObservationsForHash(ctx context.Context, hash string) ([]Observation, error) {
+	id, err := db.q.GetTransmissionIDByHash(ctx, strings.ToLower(hash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return []Observation{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get transmission id for hash %q: %w", hash, err)
 	}
-	byTx, err := d.ObservationsForTransmissions(ctx, []int64{id})
+	byTx, err := db.ListObservationsForTransmissions(ctx, []int64{id})
 	if err != nil {
 		return nil, err
 	}
-	obs := byTx[id] // newest first
-	slices.Reverse(obs)
+	obs := byTx[id]
 	if obs == nil {
 		obs = []Observation{}
 	}
 	return obs, nil
+}
+
+// TransmissionIDsWithResolvedPubkey returns the IDs from txIDs whose
+// observations resolve a hop to pubkey. One query for the whole batch.
+// An empty input returns nil without touching the database.
+func (d *DB) TransmissionIDsWithResolvedPubkey(ctx context.Context, txIDs []int, pubkey string) ([]int, error) {
+	if len(txIDs) == 0 {
+		return nil, nil
+	}
+	ids := make([]int64, len(txIDs))
+	for i, id := range txIDs {
+		ids[i] = int64(id)
+	}
+	found, err := d.q.ListTransmissionIDsWithResolvedPubkey(ctx, pgdb.ListTransmissionIDsWithResolvedPubkeyParams{
+		TransmissionIds: ids,
+		Pubkey:          normalizeKey(pubkey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("transmissions with resolved pubkey: %w", err)
+	}
+	out := make([]int, len(found))
+	for i, id := range found {
+		out[i] = int(id)
+	}
+	return out, nil
+}
+
+// BestResolvedPaths returns, per transmission, the resolved hop pubkeys of
+// its best observation (see ListBestResolvedPaths). A nil element is a hop
+// that was not resolved. Transmissions with no resolved hop are absent.
+// One query for the whole batch.
+func (d *DB) BestResolvedPaths(ctx context.Context, txIDs []int) (map[int][]*string, error) {
+	out := make(map[int][]*string, len(txIDs))
+	if len(txIDs) == 0 {
+		return out, nil
+	}
+	ids := make([]int64, len(txIDs))
+	for i, id := range txIDs {
+		ids[i] = int64(id)
+	}
+	rows, err := d.q.ListBestResolvedPaths(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("best resolved paths: %w", err)
+	}
+	for _, r := range rows {
+		rp := make([]*string, len(r.Resolved))
+		for i := range r.Resolved {
+			if r.Resolved[i] != "" {
+				pk := r.Resolved[i]
+				rp[i] = &pk
+			}
+		}
+		out[int(r.TransmissionID)] = rp
+	}
+	return out, nil
+}
+
+// ResolvedPaths holds resolved hop pubkeys fetched ahead of building API
+// responses. A nil element is a hop that was not resolved.
+type ResolvedPaths struct {
+	ByTx  map[int][]*string // transmission ID → its best observation's path
+	ByObs map[int][]*string // observation ID → that observation's path
+}
+
+// ResolvedPaths fetches both views in two queries. Either ID list may be empty.
+func (d *DB) ResolvedPaths(ctx context.Context, txIDs, obsIDs []int) (ResolvedPaths, error) {
+	out := ResolvedPaths{ByTx: map[int][]*string{}, ByObs: map[int][]*string{}}
+
+	if len(txIDs) > 0 {
+		best, err := d.BestResolvedPaths(ctx, txIDs)
+		if err != nil {
+			return ResolvedPaths{}, err
+		}
+		out.ByTx = best
+	}
+	if len(obsIDs) > 0 {
+		ids := make([]int64, len(obsIDs))
+		for i, id := range obsIDs {
+			ids[i] = int64(id)
+		}
+		rows, err := d.q.ListResolvedPathsForObservations(ctx, ids)
+		if err != nil {
+			return ResolvedPaths{}, fmt.Errorf("resolved paths for observations: %w", err)
+		}
+		for _, r := range rows {
+			out.ByObs[int(r.ObservationID)] = resolvedFromText(r.Resolved)
+		}
+	}
+	return out, nil
+}
+
+// resolvedFromText maps ” to nil so unresolved hops serialize as null.
+func resolvedFromText(in []string) []*string {
+	rp := make([]*string, len(in))
+	for i := range in {
+		if in[i] != "" {
+			pk := in[i]
+			rp[i] = &pk
+		}
+	}
+	return rp
+}
+
+// ResolvedPubkeysForTransmissions returns, per transmission, the distinct
+// resolved hop pubkeys across all of its observations. Transmissions that
+// resolved nothing are absent. One query for the whole batch; the caller
+// must not hold any store lock.
+func (d *DB) ResolvedPubkeysForTransmissions(ctx context.Context, txIDs []int) (map[int][]string, error) {
+	out := make(map[int][]string, len(txIDs))
+	if len(txIDs) == 0 {
+		return out, nil
+	}
+	ids := make([]int64, len(txIDs))
+	for i, id := range txIDs {
+		ids[i] = int64(id)
+	}
+	rows, err := d.q.ListResolvedPubkeysForTransmissions(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("resolved pubkeys for transmissions: %w", err)
+	}
+	for _, r := range rows {
+		out[int(r.TransmissionID)] = r.Pubkeys
+	}
+	return out, nil
 }

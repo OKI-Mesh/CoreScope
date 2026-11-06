@@ -62,6 +62,7 @@ JOIN transmissions t ON t.id = o.transmission_id
 LEFT JOIN observers obs ON obs.id = o.observer_idx
 WHERE o.timestamp >= $1::timestamptz
   AND o.hop_prefixes && $2::text[]
+ORDER BY o.timestamp DESC, o.id DESC
 LIMIT $3::int
 `
 

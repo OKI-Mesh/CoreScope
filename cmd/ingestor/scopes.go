@@ -22,50 +22,6 @@ type declaredRegionStat struct {
 	LastSeen  time.Time // greatest observed_at across declarers; zero when unknown
 }
 
-// maxRegionNameLen bounds a derived region name. Firmware region names are
-// short labels; anything longer is a malformed or hostile entry, and each
-// accepted name costs an HMAC on every transport-scoped packet.
-const maxRegionNameLen = 32
-
-// regionNameAcceptable reports whether a declared name may become a derived
-// region key, and returns the name in the form the key is derived from.
-//
-// The two declared-region sources spell a name differently, so this
-// canonicalises before judging: nodes.configured_scope carries the leading
-// "#" (normalizeScopeList puts it there, matching every other stored scope
-// value), while a node_declared_regions row carries the bare name the OTA
-// query returned. Both mean the same region, and loadRegionKeys already
-// prefixes a missing "#" before hashing, so the "#" is stripped here and put
-// back by the caller.
-//
-// The rules are structural, never about the name's meaning. A declared set
-// contains entries that look like junk ("null", "sol3"), but a blocklist on
-// string values is unmaintainable, and the cost of one bad name is a single
-// slot out of maxDerived plus a 1-in-65536 collision chance. What IS rejected
-// is anything that cannot be a region name:
-//
-//   - "*" is the flood wildcard, not a region, and hashing it would invent a
-//     region nobody declared
-//   - a comma would split the name on the next round-trip through a
-//     comma-separated column
-//   - a second "#" cannot come from either source intact
-//   - non-ASCII or whitespace would make the key a hash over bytes nobody
-//     intended, silently mismatching the sender
-//   - a NUL is block-cipher padding a stale client failed to trim
-func regionNameAcceptable(name string) (string, bool) {
-	name = strings.TrimPrefix(name, "#")
-	if name == "" || name == "*" || len(name) > maxRegionNameLen {
-		return "", false
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c <= ' ' || c >= 0x7F || c == ',' || c == '#' {
-			return "", false
-		}
-	}
-	return name, true
-}
-
 // declaredRegionSources reads the declared region names from every source this
 // instance has, newest answer per node, and counts how many distinct nodes
 // declare each name.
@@ -86,21 +42,21 @@ func regionNameAcceptable(name string) (string, bool) {
 func (s *Store) declaredRegionSources(ctx context.Context) ([]declaredRegionStat, error) {
 	agg := map[string]*declaredRegionStat{}
 	count := func(csv string, at time.Time) {
-		seenHere := map[string]bool{} // one node counts once per name
-		for _, name := range splitDeclaredRegionsCSV(csv) {
-			// '*' is the flood wildcard, not a region. regionNameAcceptable
-			// rejects it too, but skipping it here as well keeps it out of the
-			// declared-name count that the cap arithmetic and the refresh log
-			// are stated in: nearly every node declares it, so counting it
-			// would overstate both on every deployment.
-			if name == "*" || name == "#*" || seenHere[name] {
+		seenHere := map[string]bool{} // one node counts once per region
+		for _, raw := range splitDeclaredRegionsCSV(csv) {
+			name := types.RegionName(raw)
+			// '*' is the flood wildcard, not a region. regionNameAcceptable rejects it
+			// too, but skipping it here keeps it out of the declared-name count that the
+			// cap arithmetic and the refresh log are stated in: nearly every node
+			// declares it, so counting it would overstate both on every deployment.
+			if name.IsWildcard() || seenHere[name.Key()] {
 				continue
 			}
-			seenHere[name] = true
-			st, ok := agg[name]
+			seenHere[name.Key()] = true
+			st, ok := agg[name.Key()]
 			if !ok {
-				st = &declaredRegionStat{Name: name}
-				agg[name] = st
+				st = &declaredRegionStat{Name: name.Key()}
+				agg[name.Key()] = st
 			}
 			st.Declarers++
 			if at.After(st.LastSeen) {
@@ -109,19 +65,11 @@ func (s *Store) declaredRegionSources(ctx context.Context) ([]declaredRegionStat
 		}
 	}
 
-	configured, err := s.db.ListConfiguredScopes(ctx)
+	declared, err := s.db.AllCurrentDeclaredRegions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("declared regions from configured_scope: %w", err)
+		return nil, fmt.Errorf("declared regions: %w", err)
 	}
-	for _, r := range configured {
-		count(r.RegionsCSV, r.ObservedAt)
-	}
-
-	latest, err := s.db.ListLatestDeclaredRegions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("declared regions from node_declared_regions: %w", err)
-	}
-	for _, r := range latest {
+	for _, r := range declared {
 		count(r.RegionsCSV, r.ObservedAt)
 	}
 
@@ -140,7 +88,7 @@ func (s *Store) declaredRegionSources(ctx context.Context) ([]declaredRegionStat
 func rankDeclaredRegions(stats []declaredRegionStat, max int) []string {
 	kept := make([]declaredRegionStat, 0, len(stats))
 	for _, s := range stats {
-		if canonical, ok := regionNameAcceptable(s.Name); ok {
+		if canonical, ok := types.RegionName(s.Name).Canonical(); ok {
 			s.Name = canonical
 			kept = append(kept, s)
 		}
@@ -274,7 +222,7 @@ func (s *regionKeySet) refreshDerived(names []string) []string {
 	}
 	added := make([]string, 0, len(names))
 	for _, raw := range names {
-		canonical, ok := regionNameAcceptable(raw)
+		canonical, ok := types.RegionName(raw).Canonical()
 		if !ok {
 			continue
 		}

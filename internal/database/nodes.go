@@ -103,8 +103,27 @@ type NodeIdentity struct {
 	Role *types.NodeRole
 }
 
-func (db *DB) CreateOrUpdateNode(ctx context.Context, n NodeInput) error {
+// normalizeKey is the stored form of a public key.
+func normalizeKey(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
 
+// normalizeKeys returns the stored form of each public key.
+// normalizeKeys returns the stored form of each public key; nil stays nil.
+func normalizeKeys(keys []string) []string {
+	if keys == nil {
+		return nil
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = normalizeKey(k)
+	}
+	return out
+}
+
+// CreateOrUpdateNode inserts a node or updates its name, role, position and
+// last_seen. last_seen never advances past IngestNow.
+func (db *DB) CreateOrUpdateNode(ctx context.Context, n NodeInput) error {
 	if n.IngestNow.IsZero() {
 		n.IngestNow = time.Now().UTC()
 	}
@@ -113,14 +132,13 @@ func (db *DB) CreateOrUpdateNode(ctx context.Context, n NodeInput) error {
 		rx = n.IngestNow // zero means "no envelope time": use ingest time
 	}
 
-	n.PublicKey = strings.ToLower(strings.TrimSpace(n.PublicKey))
+	n.PublicKey = normalizeKey(n.PublicKey)
 	if n.PublicKey == "" {
 		return errors.New("node public key is empty")
 	}
 	var role *types.NodeRole
 	if n.Role != "" {
-		value := types.NodeRole(n.Role)
-		role = &value
+		role = &n.Role
 	}
 
 	return db.q.CreateOrUpdateNode(ctx, pgdb.CreateOrUpdateNodeParams{
@@ -135,17 +153,13 @@ func (db *DB) CreateOrUpdateNode(ctx context.Context, n NodeInput) error {
 }
 
 func (db *DB) IncrementNodeAdvertCount(ctx context.Context, pubKey string) error {
-	err := db.q.IncrementNodeAdvertCount(ctx, pubKey)
-	if err != nil {
-		return err
-	}
-	return nil
+	return db.q.IncrementNodeAdvertCount(ctx, normalizeKey(pubKey))
 }
 
 func (db *DB) TouchNodeLastSeen(ctx context.Context, pubkey string, rxTime time.Time) (int64, error) {
 	return db.q.UpdateNodeLastSeen(ctx, pgdb.UpdateNodeLastSeenParams{
 		LastSeen:  pgtype.Timestamptz{Time: rxTime, Valid: true},
-		PublicKey: pubkey,
+		PublicKey: normalizeKey(pubkey),
 	})
 }
 
@@ -155,16 +169,15 @@ func (db *DB) MarkStaleNodesInactive(ctx context.Context, cutoff time.Time) (int
 }
 
 func (db *DB) UpdateBatteryVoltageAndTempC(ctx context.Context, pubKey string, bv *int, tc *float64) error {
-	err := db.q.UpdateBatteryVoltageAndTempC(ctx, pgdb.UpdateBatteryVoltageAndTempCParams{
+	return db.q.UpdateBatteryVoltageAndTempC(ctx, pgdb.UpdateBatteryVoltageAndTempCParams{
 		BatteryMv:    toPgInt4Ptr(bv),
 		TemperatureC: toPgFloat8Ptr(tc),
-		PublicKey:    pubKey,
+		PublicKey:    normalizeKey(pubKey),
 	})
-	return err
 }
 
 func (db *DB) SetForeignAdvert(ctx context.Context, pubKey string) error {
-	return db.q.SetForeignAdvert(ctx, pubKey)
+	return db.q.SetForeignAdvert(ctx, normalizeKey(pubKey))
 }
 
 func (db *DB) UpdateNodeConfiguredScope(ctx context.Context, pubkey, scope string, reportedAt *time.Time) error {
@@ -173,7 +186,7 @@ func (db *DB) UpdateNodeConfiguredScope(ctx context.Context, pubkey, scope strin
 		at = pgtype.Timestamptz{Time: *reportedAt, Valid: true}
 	}
 	return db.q.UpdateNodeConfiguredScope(ctx, pgdb.UpdateNodeConfiguredScopeParams{
-		PublicKey:  pubkey,
+		PublicKey:  normalizeKey(pubkey),
 		Scope:      scope,
 		ReportedAt: at,
 	})
@@ -181,7 +194,7 @@ func (db *DB) UpdateNodeConfiguredScope(ctx context.Context, pubkey, scope strin
 
 func (db *DB) UpdateNodeDefaultScope(ctx context.Context, pubkey, scope string) error {
 	return db.q.UpdateNodeDefaultScope(ctx, pgdb.UpdateNodeDefaultScopeParams{
-		PublicKey: pubkey,
+		PublicKey: normalizeKey(pubkey),
 		Scope:     scope,
 	})
 }
@@ -205,7 +218,7 @@ func (db *DB) UpdateNodeMultibyteCaps(ctx context.Context, caps []NodeMultibyteC
 	sups := make([]int32, len(caps))
 	evid := make([]string, len(caps))
 	for i, c := range caps {
-		keys[i], sups[i], evid[i] = c.PublicKey, c.Sup, c.Evidence
+		keys[i], sups[i], evid[i] = normalizeKey(c.PublicKey), c.Sup, c.Evidence
 	}
 	return db.q.UpdateNodeMultibyteCaps(ctx, pgdb.UpdateNodeMultibyteCapsParams{
 		Pubkeys:  keys,
@@ -218,7 +231,7 @@ func (db *DB) DeleteNodesByPubkeys(ctx context.Context, pubkeys []string) (int64
 	if len(pubkeys) == 0 {
 		return 0, nil
 	}
-	return db.q.DeleteNodesByPubkeys(ctx, pubkeys)
+	return db.q.DeleteNodesByPubkeys(ctx, normalizeKeys(pubkeys))
 }
 
 // ListLocatedNodes returns every node that has GPS coordinates.
@@ -274,14 +287,7 @@ func (db *DB) GetNodeLocationsByKeys(ctx context.Context, keys []string) (map[st
 		return result, nil
 	}
 
-	// #1481 P0-3: lowercase in Go so the lookup is a plain match on the
-	// indexed pubkey column (no LOWER() wrap, which would force a full scan).
-	lowered := make([]string, len(keys))
-	for i, k := range keys {
-		lowered[i] = strings.ToLower(k)
-	}
-
-	rows, err := db.q.ListNodeLocationsByKeys(ctx, lowered)
+	rows, err := db.q.ListNodeLocationsByKeys(ctx, normalizeKeys(keys))
 	if err != nil {
 		return nil, fmt.Errorf("node locations by keys: %w", err)
 	}
@@ -341,6 +347,10 @@ func (db *DB) ListNodes(ctx context.Context, p NodeListParams) ([]Node, int64, e
 	if p.Limit <= 0 {
 		p.Limit = 50
 	}
+	if p.Offset < 0 {
+		p.Offset = 0
+	}
+	excludeKeys := normalizeKeys(p.ExcludeKeys)
 	sort := string(NodeSortLastSeen)
 	switch p.Sort {
 	case NodeSortName, NodeSortPacketCount:
@@ -368,7 +378,7 @@ func (db *DB) ListNodes(ctx context.Context, p NodeListParams) ([]Node, int64, e
 		Before:         toPgTimestamptzPtr(p.Before),
 		HeardSince:     toPgTimestamptzPtr(p.HeardSince),
 		Regions:        p.Regions,
-		ExcludeKeys:    p.ExcludeKeys,
+		ExcludeKeys:    excludeKeys,
 		HiddenPrefixes: hiddenPrefixes,
 	})
 	if err != nil {
@@ -381,7 +391,7 @@ func (db *DB) ListNodes(ctx context.Context, p NodeListParams) ([]Node, int64, e
 		Before:         toPgTimestamptzPtr(p.Before),
 		HeardSince:     toPgTimestamptzPtr(p.HeardSince),
 		Regions:        p.Regions,
-		ExcludeKeys:    p.ExcludeKeys,
+		ExcludeKeys:    excludeKeys,
 		HiddenPrefixes: hiddenPrefixes,
 		Sort:           sort,
 		RowLimit:       int32(p.Limit),
@@ -408,7 +418,7 @@ func nodeFromRow(r pgdb.Node) Node {
 		LastSeen:          utcPtr(fromPgTimestamptz(r.LastSeen)),
 		FirstSeen:         utcPtr(fromPgTimestamptz(r.FirstSeen)),
 		AdvertCount:       int(r.AdvertCount),
-		BatteryMv:         int4Ptr(r.BatteryMv),
+		BatteryMv:         fromPgInt4(r.BatteryMv),
 		TemperatureC:      fromPgFloat8(r.TemperatureC),
 		Foreign:           r.ForeignAdvert, // adjust to the column type
 		DefaultScope:      fromPgText(r.DefaultScope),
@@ -495,7 +505,7 @@ func (db *DB) GetNodeByPrefix(ctx context.Context, prefix string, minHexLen int)
 			return nil, false, nil
 		}
 	}
-	rows, err := db.q.FindNodesByKeyPrefix(ctx, strings.ToLower(prefix))
+	rows, err := db.q.FindNodesByKeyPrefix(ctx, normalizeKey(prefix))
 	if err != nil {
 		return nil, false, fmt.Errorf("find node by prefix: %w", err)
 	}
@@ -512,7 +522,7 @@ func (db *DB) GetNodeByPrefix(ctx context.Context, prefix string, minHexLen int)
 
 // GetNodeByPubkey returns a single node, or ErrNotFound when there is none.
 func (db *DB) GetNodeByPubkey(ctx context.Context, pubkey string) (*Node, error) {
-	row, err := db.q.GetNodeByPublicKey(ctx, strings.ToLower(pubkey))
+	row, err := db.q.GetNodeByPublicKey(ctx, normalizeKey(pubkey))
 	if err != nil {
 		if err = notFound(err); errors.Is(err, ErrNotFound) {
 			return nil, err
@@ -593,16 +603,12 @@ func (db *DB) ListNodeIdentities(ctx context.Context, pubkeys []string) (map[str
 	if len(pubkeys) == 0 {
 		return out, nil
 	}
-	lower := make([]string, len(pubkeys))
-	for i, k := range pubkeys {
-		lower[i] = strings.ToLower(k)
-	}
-	rows, err := db.q.ListNodeIdentities(ctx, lower)
+	rows, err := db.q.ListNodeIdentities(ctx, normalizeKeys(pubkeys))
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rows {
-		out[strings.ToLower(r.PublicKey)] = NodeIdentity{
+		out[normalizeKey(r.PublicKey)] = NodeIdentity{
 			Name: fromPgText(r.Name),
 			Role: r.Role,
 		}

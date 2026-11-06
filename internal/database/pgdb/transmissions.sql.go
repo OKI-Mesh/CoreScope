@@ -36,7 +36,7 @@ FROM (
     FROM transmissions
     WHERE from_pubkey = $1
       AND payload_type = $2
-      AND route_type = $3
+      AND route_type = ANY($3::int[])
       AND first_seen > $4::timestamptz
     LIMIT $5::int
 ) AS capped
@@ -45,7 +45,7 @@ FROM (
 type CountFloodAdvertsParams struct {
 	Pubkey      pgtype.Text
 	PayloadType types.PayloadType
-	RouteType   types.RouteType
+	RouteTypes  []int32
 	Since       time.Time
 	RowCap      int32
 }
@@ -54,7 +54,7 @@ func (q *Queries) CountFloodAdverts(ctx context.Context, arg CountFloodAdvertsPa
 	row := q.db.QueryRow(ctx, countFloodAdverts,
 		arg.Pubkey,
 		arg.PayloadType,
-		arg.RouteType,
+		arg.RouteTypes,
 		arg.Since,
 		arg.RowCap,
 	)
@@ -64,18 +64,18 @@ func (q *Queries) CountFloodAdverts(ctx context.Context, arg CountFloodAdvertsPa
 }
 
 const countFloodAdvertsForNode = `-- name: CountFloodAdvertsForNode :one
-SELECT count(*)::bigint
+SELECT COUNT(*)::bigint
 FROM transmissions
-WHERE from_pubkey   = $1
-  AND payload_type  = $2
-  AND route_type    = $3
-  AND first_seen    > $4
+WHERE from_pubkey = $1
+  AND payload_type = $2
+  AND route_type = ANY($3::int[])
+  AND first_seen > $4
 `
 
 type CountFloodAdvertsForNodeParams struct {
 	Pubkey      pgtype.Text
 	PayloadType types.PayloadType
-	RouteType   types.RouteType
+	RouteTypes  []int32
 	Cutoff      time.Time
 }
 
@@ -83,7 +83,7 @@ func (q *Queries) CountFloodAdvertsForNode(ctx context.Context, arg CountFloodAd
 	row := q.db.QueryRow(ctx, countFloodAdvertsForNode,
 		arg.Pubkey,
 		arg.PayloadType,
-		arg.RouteType,
+		arg.RouteTypes,
 		arg.Cutoff,
 	)
 	var column_1 int64
@@ -232,6 +232,47 @@ func (q *Queries) InsertTransmission(ctx context.Context, arg InsertTransmission
 	return i, err
 }
 
+const listGroupTextTransmissions = `-- name: ListGroupTextTransmissions :many
+SELECT id, hash, raw_hex
+FROM transmissions
+WHERE payload_type = $1
+  AND id > $2
+ORDER BY id
+LIMIT $3
+`
+
+type ListGroupTextTransmissionsParams struct {
+	PayloadType types.PayloadType
+	AfterID     int64
+	RowLimit    int32
+}
+
+type ListGroupTextTransmissionsRow struct {
+	ID     int64
+	Hash   string
+	RawHex []byte
+}
+
+func (q *Queries) ListGroupTextTransmissions(ctx context.Context, arg ListGroupTextTransmissionsParams) ([]ListGroupTextTransmissionsRow, error) {
+	rows, err := q.db.Query(ctx, listGroupTextTransmissions, arg.PayloadType, arg.AfterID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGroupTextTransmissionsRow{}
+	for rows.Next() {
+		var i ListGroupTextTransmissionsRow
+		if err := rows.Scan(&i.ID, &i.Hash, &i.RawHex); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPacketsByIDs = `-- name: ListPacketsByIDs :many
 SELECT
     t.id,
@@ -332,72 +373,10 @@ func (q *Queries) ListPacketsByIDs(ctx context.Context, ids []int64) ([]ListPack
 	return items, nil
 }
 
-const listTransmissionsAfterID = `-- name: ListTransmissionsAfterID :many
-SELECT
-    id,
-    raw_hex,
-    hash,
-    first_seen,
-    route_type,
-    payload_type,
-    payload_version,
-    decoded_json::text AS decoded_json
-FROM transmissions
-WHERE id > $1
-ORDER BY id ASC
-LIMIT $2
-`
-
-type ListTransmissionsAfterIDParams struct {
-	AfterID  int64
-	RowLimit int32
-}
-
-type ListTransmissionsAfterIDRow struct {
-	ID             int64
-	RawHex         []byte
-	Hash           string
-	FirstSeen      time.Time
-	RouteType      types.RouteType
-	PayloadType    types.PayloadType
-	PayloadVersion int32
-	DecodedJson    string
-}
-
-func (q *Queries) ListTransmissionsAfterID(ctx context.Context, arg ListTransmissionsAfterIDParams) ([]ListTransmissionsAfterIDRow, error) {
-	rows, err := q.db.Query(ctx, listTransmissionsAfterID, arg.AfterID, arg.RowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListTransmissionsAfterIDRow{}
-	for rows.Next() {
-		var i ListTransmissionsAfterIDRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.RawHex,
-			&i.Hash,
-			&i.FirstSeen,
-			&i.RouteType,
-			&i.PayloadType,
-			&i.PayloadVersion,
-			&i.DecodedJson,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listTransmissionsChunk = `-- name: ListTransmissionsChunk :many
-SELECT id, hash, raw_hex, first_seen, route_type, payload_type,
-       payload_version, decoded_json, scope_name
+SELECT id, hash, raw_hex, first_seen, route_type, payload_type, decoded_json, scope_name
 FROM transmissions
-WHERE id > $1
+WHERE id > $1::bigint
   AND ($2::timestamptz IS NULL OR COALESCE(last_seen, first_seen) >= $2::timestamptz)
   AND ($3::timestamptz IS NULL OR COALESCE(last_seen, first_seen) <  $3::timestamptz)
 ORDER BY id ASC
@@ -412,15 +391,14 @@ type ListTransmissionsChunkParams struct {
 }
 
 type ListTransmissionsChunkRow struct {
-	ID             int64
-	Hash           string
-	RawHex         []byte
-	FirstSeen      time.Time
-	RouteType      types.RouteType
-	PayloadType    types.PayloadType
-	PayloadVersion int32
-	DecodedJson    pgtype.Text
-	ScopeName      pgtype.Text
+	ID          int64
+	Hash        string
+	RawHex      []byte
+	FirstSeen   time.Time
+	RouteType   types.RouteType
+	PayloadType types.PayloadType
+	DecodedJson pgtype.Text
+	ScopeName   pgtype.Text
 }
 
 func (q *Queries) ListTransmissionsChunk(ctx context.Context, arg ListTransmissionsChunkParams) ([]ListTransmissionsChunkRow, error) {
@@ -444,7 +422,6 @@ func (q *Queries) ListTransmissionsChunk(ctx context.Context, arg ListTransmissi
 			&i.FirstSeen,
 			&i.RouteType,
 			&i.PayloadType,
-			&i.PayloadVersion,
 			&i.DecodedJson,
 			&i.ScopeName,
 		); err != nil {

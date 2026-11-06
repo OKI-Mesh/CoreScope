@@ -2,7 +2,10 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgdb"
 )
 
 // LeaderboardSample is one reception with the best available receiver name.
@@ -13,33 +16,29 @@ type LeaderboardSample struct {
 	HeardKey string
 }
 
-// EachLeaderboardSample streams the most recent receptions at or after since
-// (newest first, at most limit) to fn, without holding them all in memory.
-// It holds one pooled connection until the scan ends, so fn must not call the
-// database. A non-nil error from fn stops the scan and is returned.
-func (db *DB) EachLeaderboardSample(ctx context.Context, since time.Time, limit int, fn func(LeaderboardSample) error) error {
-	rows, err := db.pool.Query(ctx, `
-		SELECT cr.rx_pubkey,
-		       COALESCE(NULLIF(n.name, ''), NULLIF(co.name, ''), '')::text,
-		       cr.lat, cr.lon, cr.heard_key
-		FROM client_receptions cr
-		LEFT JOIN nodes n ON n.public_key = cr.rx_pubkey
-		LEFT JOIN client_observers co ON co.pubkey = cr.rx_pubkey
-		WHERE cr.rx_at >= $1
-		ORDER BY cr.rx_at DESC
-		LIMIT $2`, since, limit)
+// ListLeaderboardSamples returns the most recent receptions at or after since,
+// newest first (ties by receiver, then heard key), at most limit. A limit of
+// zero returns none and a negative limit is an error.
+func (db *DB) ListLeaderboardSamples(ctx context.Context, since time.Time, limit int) ([]LeaderboardSample, error) {
+	if limit < 0 {
+		return nil, fmt.Errorf("leaderboard sample limit must not be negative, got %d", limit)
+	}
+	rows, err := db.q.ListLeaderboardSamples(ctx, pgdb.ListLeaderboardSamplesParams{
+		Since:   since,
+		MaxRows: int32(limit),
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var s LeaderboardSample
-		if err := rows.Scan(&s.RxPubkey, &s.Name, &s.Lat, &s.Lon, &s.HeardKey); err != nil {
-			return err
-		}
-		if err := fn(s); err != nil {
-			return err
-		}
+	out := make([]LeaderboardSample, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, LeaderboardSample{
+			RxPubkey: r.RxPubkey,
+			Name:     r.Name,
+			Lat:      r.Lat,
+			Lon:      r.Lon,
+			HeardKey: r.HeardKey,
+		})
 	}
-	return rows.Err()
+	return out, nil
 }

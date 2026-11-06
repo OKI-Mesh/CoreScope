@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
@@ -55,53 +54,6 @@ type PacketResponse struct {
 	ParsedPath       []string              `json:"_parsedPath"`
 	ResolvedPath     []*string             `json:"resolved_path,omitzero"`
 	Observations     []ObservationResponse `json:"observations,omitzero"`
-}
-
-type NodeAdvertObservation struct {
-	ID             int64    `json:"id"`
-	TransmissionID int64    `json:"transmission_id"`
-	ObserverID     *string  `json:"observer_id"`
-	ObserverName   *string  `json:"observer_name"`
-	ObserverIATA   string   `json:"observer_iata"`
-	SNR            *float64 `json:"snr"`
-	RSSI           *float64 `json:"rssi"`
-	Score          *float64 `json:"score"`
-	Direction      *string  `json:"direction"`
-	PathJSON       string   `json:"path_json"`
-	Timestamp      UTCTime  `json:"timestamp"`
-}
-
-type NodeAdvertResponse struct {
-	PacketResponse
-	Observations []NodeAdvertObservation `json:"observations"`
-}
-
-func nodeAdvertObservation(o database.Observation) NodeAdvertObservation {
-	prefixes := make([]string, len(o.HopPrefixes))
-	for i, h := range o.HopPrefixes {
-		prefixes[i] = strings.ToUpper(h)
-	}
-	return NodeAdvertObservation{
-		ID:             o.ID,
-		TransmissionID: o.TransmissionID,
-		ObserverID:     o.ObserverPubkey,
-		ObserverName:   o.ObserverName,
-		ObserverIATA:   o.ObserverIATA,
-		SNR:            o.SNR,
-		RSSI:           o.RSSI,
-		Score:          o.Score,
-		Direction:      o.Direction,
-		PathJSON:       prefixesJSON(prefixes),
-		Timestamp:      UTCTime{o.Timestamp},
-	}
-}
-
-func nodeAdvertResponse(p database.Packet, observations []database.Observation) NodeAdvertResponse {
-	out := make([]NodeAdvertObservation, len(observations))
-	for i, o := range observations {
-		out[i] = nodeAdvertObservation(o)
-	}
-	return NodeAdvertResponse{PacketResponse: packetResponse(p), Observations: out}
 }
 
 // GroupedPacketResponse is one row of the groupByHash=true list.

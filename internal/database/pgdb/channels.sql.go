@@ -18,6 +18,12 @@ FROM transmissions t
 WHERE t.channel_hash = $1::text
   AND t.payload_type = 5
   AND t.channel_encrypted = $2::bool
+  AND t.decoded_json IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM observations o
+    WHERE o.transmission_id = t.id
+  )
   AND (
     COALESCE(cardinality($3::text[]), 0) = 0
     OR EXISTS (

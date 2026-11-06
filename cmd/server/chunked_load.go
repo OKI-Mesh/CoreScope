@@ -36,9 +36,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"math"
+
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
-	"math"
 )
 
 const firstChunkCursor int64 = math.MinInt64
@@ -485,7 +486,7 @@ func (s *PacketStore) LoadChunked(ctx context.Context, chunkSize int) error {
 
 // mergeChunk merges one chunk into the store under s.mu.Lock. It makes no
 // database calls.
-func (s *PacketStore) mergeChunk(txs []database.LoadedTransmission, obsByTx map[int64][]database.LoadedObservation, relayPM *prefixMap, coldLoadAmbiguousHopsSkipped *int) {
+func (s *PacketStore) mergeChunk(txs []database.LoadedTransmission, obsByTx map[int64][]database.Observation, relayPM *prefixMap, coldLoadAmbiguousHopsSkipped *int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

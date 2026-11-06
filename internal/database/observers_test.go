@@ -4,7 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 func TestSoftDeleteBlacklistedObservers(t *testing.T) {
@@ -86,5 +88,27 @@ func TestSoftDeleteBlacklistedObservers_AlreadyInactiveNotDoubleCounted(t *testi
 	}
 	if n != 0 {
 		t.Errorf("expected 0 rows affected for already inactive observer, got %d", n)
+	}
+}
+
+func TestCreateOrUpdateObserver_RejectsBatteryThatDoesNotFitInt4_DB(t *testing.T) {
+	db := newDB(t)
+	ctx := t.Context()
+	seen := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	_, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "obsbat", Name: "Battery", IATA: "CVG", LastSeen: seen, IngestNow: seen,
+		Meta: &types.ObserverMeta{BatteryMv: ptr(3_000_000_000)},
+	})
+	if err == nil {
+		t.Fatal("want an error for a battery reading above the 32-bit range")
+	}
+
+	var stored int
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM observers WHERE pubkey = 'obsbat'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 0 {
+		t.Errorf("a rejected observer must not be stored, found %d rows", stored)
 	}
 }

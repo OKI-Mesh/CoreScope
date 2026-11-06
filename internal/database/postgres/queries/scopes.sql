@@ -91,4 +91,5 @@ WHERE t.first_seen >= sqlc.arg(since)
   AND t.route_type = ANY(sqlc.arg(route_types)::int[])
   AND o.hop_prefixes && sqlc.arg(prefixes)::text[]
   AND length(h.hop) >= sqlc.arg(min_hop_len)::int
-  AND h.hop = ANY(sqlc.arg(prefixes)::text[]);
+  AND h.hop = ANY(sqlc.arg(prefixes)::text[])
+  ORDER BY transmission_id, hop;

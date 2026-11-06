@@ -20,6 +20,7 @@ ON CONFLICT (transmission_id, observer_idx, COALESCE(path_hash, '')) DO UPDATE S
     rssi      = COALESCE(EXCLUDED.rssi,  observations.rssi),
     score     = COALESCE(EXCLUDED.score, observations.score),
     hop_nodes = CASE WHEN cardinality(EXCLUDED.hop_nodes) > 0
+                      AND cardinality(EXCLUDED.hop_nodes) = cardinality(observations.hop_prefixes)
                      THEN EXCLUDED.hop_nodes
                      ELSE observations.hop_nodes END
 RETURNING id, (xmax = 0) AS inserted;
@@ -55,19 +56,16 @@ SELECT o.id, f.frame
 FROM transmissions t
 JOIN observations o ON o.transmission_id = t.id
 JOIN observation_frames f ON f.observation_id = o.id
-WHERE t.hash = @hash::text;
+WHERE t.hash = sqlc.arg(hash)::text;
 
 -- name: ListObservationsByTransmissionIDs :many
 SELECT o.transmission_id,
        o.id,
-       obs.pubkey                   AS observer_pubkey,
-       obs.name                     AS observer_name,
-       COALESCE(obs.iata, '')::text AS observer_iata,
-       o.direction,
-       o.snr,
-       o.rssi,
-       o.score,
-       o.timestamp,
+       COALESCE(obs.pubkey, '')::text  AS observer_id,
+       COALESCE(obs.name, '')::text    AS observer_name,
+       COALESCE(obs.iata, '')::text    AS observer_iata,
+       COALESCE(o.direction, '')::text AS direction,
+       o.snr, o.rssi, o.score, o.timestamp,
        o.hop_prefixes::text[] AS hop_prefixes,
        ARRAY(SELECT COALESCE(n.public_key, '')
              FROM unnest(o.hop_prefixes) WITH ORDINALITY AS p(prefix, ord)
@@ -75,5 +73,16 @@ SELECT o.transmission_id,
              ORDER BY p.ord)::text[] AS hop_resolved
 FROM observations o
 LEFT JOIN observers obs ON obs.id = o.observer_idx
-WHERE o.transmission_id = ANY(@tx_ids::bigint[])
+WHERE o.transmission_id = ANY(sqlc.arg(transmission_ids)::bigint[])
 ORDER BY o.timestamp DESC, o.id DESC;
+
+-- name: ListObserverReceptions :many
+SELECT o.transmission_id,
+       ob.name AS observer_name,
+       o.snr,
+       o.rssi,
+       o.timestamp
+FROM observations o
+LEFT JOIN observers ob ON ob.id = o.observer_idx
+WHERE o.transmission_id = ANY(sqlc.arg(transmission_ids)::bigint[])
+ORDER BY o.transmission_id, o.timestamp, o.id;

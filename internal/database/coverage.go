@@ -2,7 +2,6 @@ package database
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -34,58 +33,47 @@ func (db *DB) ListCoverageRows(ctx context.Context, q CoverageQuery) ([]Coverage
 
 	if len(q.HeardKeys) == 0 {
 		rows, err := db.q.ListCoverageRowsAnyNode(ctx, pgdb.ListCoverageRowsAnyNodeParams{
-			MinLat:   q.MinLat,
-			MaxLat:   q.MaxLat,
-			MinLon:   q.MinLon,
-			MaxLon:   q.MaxLon,
-			RxPubkey: rxPubkey,
-			Since:    since,
+			MinLat: q.MinLat, MaxLat: q.MaxLat, MinLon: q.MinLon, MaxLon: q.MaxLon,
+			RxPubkey: rxPubkey, Since: since,
 		})
 		if err != nil {
 			return nil, err
 		}
-		out := make([]CoveragePoint, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, CoveragePoint{
-				Lat:      r.Lat,
-				Lon:      r.Lon,
-				SNR:      fromPgFloat8(r.Snr),
-				RSSI:     fromPgInt4(r.Rssi),
-				HeardKey: strings.ToLower(r.HeardKey),
-				RxAt:     r.RxAt.UTC(),
-			})
+		out := make([]CoveragePoint, len(rows))
+		for i, r := range rows {
+			out[i] = coveragePoint(pgdb.ListCoverageRowsRow(r))
 		}
 		return out, nil
 	}
 
 	rows, err := db.q.ListCoverageRows(ctx, pgdb.ListCoverageRowsParams{
-		HeardKeys: q.HeardKeys,
-		MinLat:    q.MinLat,
-		MaxLat:    q.MaxLat,
-		MinLon:    q.MinLon,
-		MaxLon:    q.MaxLon,
-		RxPubkey:  rxPubkey,
-		Since:     since,
+		HeardKeys: normalizeKeys(q.HeardKeys),
+		MinLat:    q.MinLat, MaxLat: q.MaxLat, MinLon: q.MinLon, MaxLon: q.MaxLon,
+		RxPubkey: rxPubkey, Since: since,
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]CoveragePoint, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, CoveragePoint{
-			Lat:      r.Lat,
-			Lon:      r.Lon,
-			SNR:      fromPgFloat8(r.Snr),
-			RSSI:     fromPgInt4(r.Rssi),
-			HeardKey: strings.ToLower(r.HeardKey),
-			RxAt:     r.RxAt.UTC(),
-		})
+	out := make([]CoveragePoint, len(rows))
+	for i, r := range rows {
+		out[i] = coveragePoint(r)
 	}
 	return out, nil
 }
 
+func coveragePoint(r pgdb.ListCoverageRowsRow) CoveragePoint {
+	return CoveragePoint{
+		Lat:      r.Lat,
+		Lon:      r.Lon,
+		SNR:      fromPgFloat8(r.Snr),
+		RSSI:     fromPgInt4(r.Rssi),
+		HeardKey: normalizeKey(r.HeardKey),
+		RxAt:     r.RxAt.UTC(),
+	}
+}
+
 func (db *DB) CountMobileReceptions(ctx context.Context, heardKeys []string) (receptions, clients int, err error) {
-	r, err := db.q.CountMobileReceptions(ctx, heardKeys)
+	r, err := db.q.CountMobileReceptions(ctx, normalizeKeys(heardKeys))
 	if err != nil {
 		return 0, 0, err
 	}

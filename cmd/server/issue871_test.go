@@ -20,10 +20,12 @@ func TestIssue871_NoNullHashOrTimestamp(t *testing.T) {
 	seedTestData(t, db)
 
 	// The typed database API still permits an empty legacy hash, but
-	// first_seen is NOT NULL in the current schema and cannot be seeded as NULL.
+	// first_seen is NOT NULL and CreateOrUpdateTransmission rejects an empty hash,
+	// so neither a NULL nor an empty hash or timestamp can reach /api/packets
+	// through the typed database API. This keeps the response-level check.
 	now := time.Now().UTC().Add(-30 * time.Minute)
 	mustCreateTestTransmission(t, ctx, db, testTransmission(
-		"DEAD", "", "{}", types.RouteFlood, types.PayloadADVERT, "",
+		"DEAD", "dead0001", "{}", types.RouteFlood, types.PayloadADVERT, "",
 	), now)
 
 	cfg := &Config{Port: 3000}

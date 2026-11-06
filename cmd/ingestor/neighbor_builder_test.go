@@ -189,26 +189,29 @@ func TestAggregateEdges(t *testing.T) {
 
 // ---- Warm-up termination, against a fake store (no database) ----
 
-// fakeNeighborStore serves rows ordered by timestamp, honoring the since and
-// limit parameters the way the real query does.
+// fakeNeighborStore serves rows ordered by (timestamp, id), honoring the cursor
+// and limit parameters the way the real query does. served records the id of
+// every row it hands out, in order.
 type fakeNeighborStore struct {
 	rows    []database.NeighborObservation
 	calls   int
 	upserts int
+	served  []int64
 }
 
 func (f *fakeNeighborStore) ListNodePublicKeys(context.Context) ([]string, error) { return nil, nil }
 func (f *fakeNeighborStore) LatestNeighborEdgeTime(context.Context) (time.Time, error) {
 	return time.Time{}, nil
 }
-func (f *fakeNeighborStore) ScanNeighborObservations(_ context.Context, since time.Time, limit int32,
+func (f *fakeNeighborStore) ScanNeighborObservations(_ context.Context, after database.NeighborCursor, limit int,
 	_ []types.PayloadType) ([]database.NeighborObservation, error) {
 	f.calls++
 	var out []database.NeighborObservation
 	for _, r := range f.rows {
-		if r.Timestamp.After(since) {
+		if r.Timestamp.After(after.Timestamp) || (r.Timestamp.Equal(after.Timestamp) && r.ID > after.ID) {
 			out = append(out, r)
-			if int32(len(out)) == limit {
+			f.served = append(f.served, r.ID)
+			if len(out) == limit {
 				break
 			}
 		}
@@ -260,8 +263,8 @@ func TestWarmUpTerminatesWhenRowsProduceNoEdges(t *testing.T) {
 				t.Errorf("upserts = %d, want 0 (nothing resolves)", f.upserts)
 			}
 			if c.rows > 0 {
-				if want := base.Add(time.Duration(c.rows-1) * time.Second); !b.since.Equal(want) {
-					t.Errorf("watermark = %v, want %v (past every scanned row)", b.since, want)
+				if want := base.Add(time.Duration(c.rows-1) * time.Second); !b.cursor.Timestamp.Equal(want) {
+					t.Errorf("watermark = %v, want %v (past every scanned row)", b.cursor.Timestamp, want)
 				}
 			}
 		})
@@ -336,7 +339,7 @@ func TestScanNeighborObservationsHandlesNulls(t *testing.T) {
 	seedNeighborObservation(t, s, 0, "no-observer", at.Add(2*time.Second), "", types.PayloadREQ, "cc")
 	seedNeighborObservation(t, s, obsID, "advert-no-from", at.Add(3*time.Second), "", types.PayloadADVERT, "dd")
 
-	rows, err := s.db.ScanNeighborObservations(ctx, time.Time{}, 100, neighborOriginatorTypes)
+	rows, err := s.db.ScanNeighborObservations(ctx, database.NeighborCursor{}, 100, neighborOriginatorTypes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,6 +364,41 @@ func TestScanNeighborObservationsHandlesNulls(t *testing.T) {
 	}
 	if rows[3].DecodedJSON != "{}" {
 		t.Errorf("ADVERT row with NULL from_pubkey: decoded_json = %q, want {}", rows[3].DecodedJSON)
+	}
+}
+
+// TestWarmUpScansRowsSharingATimestampAcrossBatchesExactlyOnce is the
+// regression test for the batch-boundary skip: with a watermark of timestamp
+// alone, the rows that tie the last scanned timestamp were never read again.
+func TestWarmUpScansRowsSharingATimestampAcrossBatchesExactlyOnce(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	f := &fakeNeighborStore{}
+	for id := int64(1); id <= 7; id++ {
+		f.rows = append(f.rows, database.NeighborObservation{
+			ID: id, PayloadType: types.PayloadADVERT, FromPubkey: nbNodeA, Observer: nbObserver,
+			Timestamp: at,
+			FirstHop:  nbHop("zz"), LastHop: nbHop("zz"), // unresolvable: no edges
+		})
+	}
+	b := &neighborBuilder{db: f, trust: trustAllPrefixes(), maxBatch: 3,
+		refreshPrefixIndex: noRefresh, refreshGraph: noRefresh}
+
+	done := make(chan struct{})
+	go func() { b.WarmUp(t.Context()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WarmUp did not terminate")
+	}
+
+	if want := []int64{1, 2, 3, 4, 5, 6, 7}; !slices.Equal(f.served, want) {
+		t.Errorf("rows served = %v, want each of %v exactly once, in order", f.served, want)
+	}
+	if f.calls != 3 {
+		t.Errorf("scan calls = %d, want 3 (3 + 3 + 1)", f.calls)
+	}
+	if !b.cursor.Timestamp.Equal(at) || b.cursor.ID != 7 {
+		t.Errorf("cursor = %+v, want timestamp %v and id 7", b.cursor, at)
 	}
 }
 
@@ -396,8 +434,8 @@ func TestNeighborBuilderDeltaScan(t *testing.T) {
 	if got := pairCount(); got != 25 {
 		t.Fatalf("after warm-up the a|b edge counts %d observations, want 25 (no batch skipped or double counted)", got)
 	}
-	if want := base.Add(24 * time.Second); !b.since.Equal(want) {
-		t.Fatalf("watermark = %v, want %v", b.since, want)
+	if want := base.Add(24 * time.Second); !b.cursor.Timestamp.Equal(want) {
+		t.Fatalf("watermark = %v, want %v", b.cursor.Timestamp, want)
 	}
 
 	// A tick with nothing new scans nothing.

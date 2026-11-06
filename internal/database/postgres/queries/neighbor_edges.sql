@@ -5,7 +5,8 @@ DELETE FROM neighbor_edges WHERE last_seen < sqlc.arg(cutoff)::timestamptz;
 SELECT COALESCE(MAX(last_seen), 'epoch'::timestamptz)::timestamptz AS latest FROM neighbor_edges;
 
 -- name: ScanNeighborObservations :many
-SELECT t.payload_type,
+SELECT o.id,
+       t.payload_type,
        (CASE WHEN t.from_pubkey IS NULL AND t.payload_type = ANY(sqlc.arg(json_types)::int[])
              THEN COALESCE(t.decoded_json, '') ELSE '' END)::text AS decoded_json,
        COALESCE(t.from_pubkey, '')::text   AS from_pubkey,
@@ -16,8 +17,8 @@ SELECT t.payload_type,
 FROM observations o
 JOIN transmissions t ON t.id = o.transmission_id
 LEFT JOIN observers obs ON obs.id = o.observer_idx
-WHERE o.timestamp > sqlc.arg(since)::timestamptz
-ORDER BY o.timestamp
+WHERE (o.timestamp, o.id) > (sqlc.arg(after_timestamp)::timestamptz, sqlc.arg(after_id)::bigint)
+ORDER BY o.timestamp, o.id
 LIMIT sqlc.arg(batch_size)::int;
 
 -- name: UpsertNeighborEdges :execrows

@@ -118,17 +118,17 @@ VALUES (
     $3,
     $4,
     $5,
-    $6::timestamptz,
-    $6::timestamptz
+    LEAST($6::timestamptz, $7::timestamptz),
+    LEAST($6::timestamptz, $7::timestamptz)
 )
 ON CONFLICT (public_key) DO UPDATE SET
     name      = COALESCE($2, nodes.name),
     role      = COALESCE($3, nodes.role),
     lat       = COALESCE($4, nodes.lat),
     lon       = COALESCE($5, nodes.lon),
-    last_seen = GREATEST(
-                    LEAST(COALESCE(nodes.last_seen, 'epoch'::timestamptz), $7::timestamptz),
-                    $6::timestamptz
+    last_seen = LEAST(
+                    GREATEST(COALESCE(nodes.last_seen, 'epoch'::timestamptz), $6::timestamptz),
+                    $7::timestamptz
                 )
 `
 

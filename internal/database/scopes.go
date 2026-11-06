@@ -1,10 +1,12 @@
 package database
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"math"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +23,17 @@ var (
 	floodRoutes        = []int32{int32(types.RouteTransportFlood), int32(types.RouteFlood)}
 )
 
+// DeclaredRegions is the newest declared-regions answer for one target.
+// RegionsCSV is stored and returned verbatim: region names are case sensitive,
+// and MeshCore treats "#cvg" and "cvg" as the same region, so callers compare
+// names by their key with the leading "#" removed.
+type DeclaredRegions struct {
+	Target     string
+	ObservedAt time.Time // zero when the source has no timestamp
+	RegionsCSV string
+	Truncated  bool
+}
+
 // ScopeMatchTotals is the persisted scope-match tally: one row, cumulative
 // since Since.
 type ScopeMatchTotals struct {
@@ -33,9 +46,9 @@ type ScopeMatchTotals struct {
 
 type ScopeSummary struct {
 	TransportTotal int64
-	Scoped         int64
+	Scoped         int64 // transport transmissions with a scope name, including UnknownScope
 	Unscoped       int64 // includes every non-transport transmission (#1838)
-	UnknownScope   int64
+	UnknownScope   int64 // scoped, but the name did not match a known region
 }
 
 type ScopeRegionCount struct {
@@ -71,7 +84,7 @@ func (db *DB) GetScopeMatchTotals(ctx context.Context) (*ScopeMatchTotals, error
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get scope match totals: %w", err)
 	}
 	return &ScopeMatchTotals{
 		Since:               r.CountingSince.UTC(),
@@ -84,7 +97,7 @@ func (db *DB) GetScopeMatchTotals(ctx context.Context) (*ScopeMatchTotals, error
 
 // SaveScopeMatchTotals upserts the single row. now is the updated_at stamp.
 func (db *DB) SaveScopeMatchTotals(ctx context.Context, t ScopeMatchTotals, now time.Time) error {
-	return db.q.UpsertScopeMatchTotals(ctx, pgdb.UpsertScopeMatchTotalsParams{
+	err := db.q.UpsertScopeMatchTotals(ctx, pgdb.UpsertScopeMatchTotalsParams{
 		CountingSince:       t.Since,
 		UniqueMatches:       t.Unique,
 		ExplicitOverDerived: t.ExplicitOverDerived,
@@ -92,101 +105,99 @@ func (db *DB) SaveScopeMatchTotals(ctx context.Context, t ScopeMatchTotals, now 
 		NoneMatches:         t.None,
 		UpdatedAt:           now,
 	})
+	if err != nil {
+		return fmt.Errorf("save scope match totals: %w", err)
+	}
+	return nil
 }
 
 // ListConfiguredScopes returns the region sets that nodes.configured_scope
-// holds, one row per node that has one. Names carry the leading "#".
+// holds, one row per node that has one, with the node's public key as Target.
+// Truncated is always false: the /neighbors report has a size cap but does not
+// say whether it fired, so claiming false would invent a fact only in the sense
+// of "not flagged".
 func (db *DB) ListConfiguredScopes(ctx context.Context) ([]DeclaredRegions, error) {
 	rows, err := db.q.ListConfiguredScopes(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list configured scopes: %w", err)
 	}
 	out := make([]DeclaredRegions, len(rows))
 	for i, r := range rows {
-		out[i] = DeclaredRegions{RegionsCSV: r.ConfiguredScope, ObservedAt: r.ConfiguredScopeAt.Time.UTC()}
+		var at time.Time
+		if p := fromPgTimestamptz(r.ConfiguredScopeAt); p != nil {
+			at = p.UTC()
+		}
+		out[i] = DeclaredRegions{Target: r.PublicKey, RegionsCSV: r.ConfiguredScope, ObservedAt: at}
 	}
 	return out, nil
 }
 
 // ListLatestDeclaredRegions returns the newest answer per target from
-// node_declared_regions. Names are bare, without the "#".
+// node_declared_regions.
 func (db *DB) ListLatestDeclaredRegions(ctx context.Context) ([]DeclaredRegions, error) {
 	rows, err := db.q.ListLatestDeclaredRegions(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list latest declared regions: %w", err)
 	}
 	out := make([]DeclaredRegions, len(rows))
 	for i, r := range rows {
-		out[i] = DeclaredRegions{Target: r.Target, RegionsCSV: r.RegionsCsv, ObservedAt: r.ObservedAt.UTC(), Truncated: r.Truncated}
+		out[i] = DeclaredRegions{
+			Target:     r.Target,
+			RegionsCSV: r.RegionsCsv,
+			ObservedAt: r.ObservedAt.UTC(),
+			Truncated:  r.Truncated,
+		}
 	}
 	return out, nil
 }
 
-// DeclaredRegions is the newest declared-regions answer for one target.
-type DeclaredRegions struct {
-	Target     string
-	ObservedAt time.Time // zero when the source has no timestamp
-	RegionsCSV string
-	Truncated  bool
-}
+// AllCurrentDeclaredRegions merges configured scopes and declared answers into
+// one row per node, keyed by lowercase target because node_declared_regions is
+// filled by an external collector whose casing is not controlled. The newer
+// ObservedAt wins and a tie keeps the configured scope. Rows without a target
+// are dropped. The result is sorted by target and is never nil.
+func (db *DB) AllCurrentDeclaredRegions(ctx context.Context) ([]DeclaredRegions, error) {
+	configured, err := db.ListConfiguredScopes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	latest, err := db.ListLatestDeclaredRegions(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-func (d *DB) AllCurrentDeclaredRegions(ctx context.Context) ([]DeclaredRegions, error) {
-	merged := map[string]DeclaredRegions{}
-	keep := func(r DeclaredRegions) {
+	byTarget := make(map[string]DeclaredRegions, len(configured)+len(latest))
+	for _, r := range configured {
+		r.Target = normalizeKey(r.Target)
 		if r.Target == "" {
-			return
+			continue
 		}
-		if cur, ok := merged[r.Target]; ok && !r.ObservedAt.After(cur.ObservedAt) {
-			return // ties keep the first source seen (configured_scope)
-		}
-		merged[r.Target] = r
-	}
-
-	scopes, err := d.q.ListConfiguredScopes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("declared regions from configured_scope: %w", err)
-	}
-	for _, s := range scopes {
-		// Truncated has no equivalent on this source: the /neighbors report has a size
-		// cap but does not say whether it fired, so claiming false would invent a fact.
-		var at time.Time
-		if p := fromPgTimestamptz(s.ConfiguredScopeAt); p != nil { // GUESS: configured_scope_at is timestamptz
-			at = p.UTC()
-		}
-		keep(DeclaredRegions{Target: s.PublicKey, ObservedAt: at, RegionsCSV: s.ConfiguredScope})
-	}
-
-	latest, err := d.q.ListLatestDeclaredRegions(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("declared regions from node_declared_regions: %w", err)
+		byTarget[r.Target] = r
 	}
 	for _, r := range latest {
-		keep(DeclaredRegions{
-			Target:     r.Target,
-			ObservedAt: r.ObservedAt.UTC(), // GUESS: observed_at timestamptz NOT NULL
-			RegionsCSV: r.RegionsCsv,
-			Truncated:  r.Truncated, // GUESS: boolean (was int 0/1)
-		})
+		r.Target = normalizeKey(r.Target)
+		if r.Target == "" {
+			continue
+		}
+		if cur, ok := byTarget[r.Target]; ok && !r.ObservedAt.After(cur.ObservedAt) {
+			continue
+		}
+		byTarget[r.Target] = r
 	}
 
-	if len(merged) == 0 {
-		return nil, nil
-	}
-	out := make([]DeclaredRegions, 0, len(merged))
-	for _, r := range merged {
+	out := make([]DeclaredRegions, 0, len(byTarget))
+	for _, r := range byTarget {
 		out = append(out, r)
 	}
-	// Stable output: the handler ranks rows itself, but a deterministic order keeps
-	// responses comparable between calls on unchanged data.
-	sort.Slice(out, func(i, j int) bool { return out[i].Target < out[j].Target })
+	slices.SortFunc(out, func(a, b DeclaredRegions) int { return cmp.Compare(a.Target, b.Target) })
 	return out, nil
 }
 
 // GetScopeStats returns scope statistics for transmissions first seen at or after since.
-// bucket is the time-series bucket width (at least one second).
+// bucket is the time-series bucket width: a whole number of seconds, at least one.
 func (db *DB) GetScopeStats(ctx context.Context, since time.Time, bucket time.Duration) (*ScopeStats, error) {
-	if bucket < time.Second {
-		return nil, fmt.Errorf("scope stats: bucket %v is shorter than one second", bucket)
+	if bucket < time.Second || bucket%time.Second != 0 || bucket/time.Second > math.MaxInt32 {
+		return nil, fmt.Errorf("scope stats: bucket %v must be a whole number of seconds, at least one", bucket)
 	}
 
 	sum, err := db.q.GetScopeSummary(ctx, pgdb.GetScopeSummaryParams{
@@ -250,7 +261,7 @@ func (db *DB) GetScopeStats(ctx context.Context, since time.Time, bucket time.Du
 
 type ScopeAuditQuery struct {
 	Since      time.Time
-	Prefixes   []string // lowercase hop prefixes to look for
+	Prefixes   []string // hop prefixes to look for, any case; lowercased before matching
 	MinHopLen  int
 	RouteTypes []int
 }
@@ -263,8 +274,20 @@ type ScopeAuditHop struct {
 	FirstSeen time.Time
 }
 
+// ListScopeAuditHops returns one row per distinct (transmission, hop) where a hop
+// of at least MinHopLen characters equals one of the prefixes, for transmissions
+// first seen at or after Since on the given route types.
 func (db *DB) ListScopeAuditHops(ctx context.Context, q ScopeAuditQuery) ([]ScopeAuditHop, error) {
-	if len(q.Prefixes) == 0 {
+	if q.MinHopLen < 0 || q.MinHopLen > math.MaxInt32 {
+		return nil, fmt.Errorf("scope audit min hop length %d out of range", q.MinHopLen)
+	}
+	prefixes := make([]string, 0, len(q.Prefixes))
+	for _, p := range q.Prefixes {
+		if p = normalizeKey(p); p != "" {
+			prefixes = append(prefixes, p)
+		}
+	}
+	if len(prefixes) == 0 {
 		return []ScopeAuditHop{}, nil
 	}
 	routeTypes := make([]int32, len(q.RouteTypes))
@@ -275,10 +298,10 @@ func (db *DB) ListScopeAuditHops(ctx context.Context, q ScopeAuditQuery) ([]Scop
 		Since:      q.Since,
 		RouteTypes: routeTypes,
 		MinHopLen:  int32(q.MinHopLen),
-		Prefixes:   q.Prefixes,
+		Prefixes:   prefixes,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list scope audit hops: %w", err)
 	}
 	out := make([]ScopeAuditHop, 0, len(rows))
 	for _, r := range rows {
@@ -286,7 +309,7 @@ func (db *DB) ListScopeAuditHops(ctx context.Context, q ScopeAuditQuery) ([]Scop
 			TxID:      int64(r.TransmissionID),
 			Hop:       r.Hop,
 			ScopeName: fromPgText(r.ScopeName),
-			FirstSeen: r.FirstSeen,
+			FirstSeen: r.FirstSeen.UTC(),
 		})
 	}
 	return out, nil

@@ -145,14 +145,15 @@ func TestInsertTransmissionWritesResolvedPath(t *testing.T) {
 	if len(obs) != 1 {
 		t.Fatalf("observations: want 1, got %d", len(obs))
 	}
-	if len(obs[0].HopResolved) != 1 {
-		t.Fatalf("resolved path length: want 1, got %d (prefixes=%v resolved=%v)", len(obs[0].HopResolved), obs[0].HopPrefixes, obs[0].HopResolved)
+	if len(obs[0].Path) != 1 {
+		t.Fatalf("path length: want 1, got %d (path=%+v)", len(obs[0].Path), obs[0].Path)
 	}
-	if obs[0].HopResolved[0] == "" {
+	resolved := obs[0].Path[0].ResolvedPubkey
+	if resolved == nil || *resolved == "" {
 		t.Fatalf("expected a resolved pubkey for hop 0, got unresolved (regression: #1547)")
 	}
-	if obs[0].HopResolved[0] != hopPK {
-		t.Errorf("resolved path[0]: want %s, got %s", hopPK, obs[0].HopResolved[0])
+	if *resolved != hopPK {
+		t.Errorf("resolved path[0]: want %s, got %s", hopPK, *resolved)
 	}
 }
 
@@ -429,10 +430,11 @@ func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetObservationsForHash (first): %v", err)
 	}
-	if len(first) != 1 || len(first[0].HopResolved) != 1 || first[0].HopResolved[0] == "" {
+	if len(first) != 1 || len(first[0].Path) != 1 ||
+		first[0].Path[0].ResolvedPubkey == nil || *first[0].Path[0].ResolvedPubkey == "" {
 		t.Fatalf("precondition failed: first ingest left the resolved path empty; cannot test clobber (got %+v)", first)
 	}
-	wantPreserved := first[0].HopResolved[0]
+	wantPreserved := *first[0].Path[0].ResolvedPubkey
 
 	store.prefixIdx.store(prefixIndex{})
 
@@ -444,13 +446,14 @@ func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetObservationsForHash (after): %v", err)
 	}
-	if len(after) != 1 || len(after[0].HopResolved) != 1 {
+	if len(after) != 1 || len(after[0].Path) != 1 {
 		t.Fatalf("re-ingest changed the observation shape: %+v", after)
 	}
-	if after[0].HopResolved[0] == "" {
+	got := after[0].Path[0].ResolvedPubkey
+	if got == nil || *got == "" {
 		t.Fatalf("data loss: resolved pubkey was cleared by re-ingest (was %q)", wantPreserved)
 	}
-	if after[0].HopResolved[0] != wantPreserved {
-		t.Errorf("data loss: resolved pubkey was clobbered by all-nil re-ingest\n  before: %s\n  after:  %s", wantPreserved, after[0].HopResolved[0])
+	if *got != wantPreserved {
+		t.Errorf("data loss: resolved pubkey was clobbered by all-nil re-ingest\n  before: %s\n  after:  %s", wantPreserved, *got)
 	}
 }

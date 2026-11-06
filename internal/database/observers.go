@@ -89,10 +89,16 @@ func (db *DB) ResolveObserverAndTouch(ctx context.Context, observerID string, in
 }
 
 func (db *DB) CreateOrUpdateObserver(ctx context.Context, o ObserverInput) (int64, error) {
-	model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay := metaToParams(o.Meta)
-	o.ID = strings.ToLower(strings.TrimSpace(o.ID))
+	o.ID = normalizeKey(o.ID)
 	if o.ID == "" {
 		return 0, errors.New("observer ID is empty")
+	}
+	meta := types.ObserverMeta{}
+	if o.Meta != nil {
+		meta = *o.Meta
+	}
+	if err := int4Fits("battery_mv", meta.BatteryMv); err != nil {
+		return 0, err
 	}
 
 	id, err := db.q.CreateOrUpdateObserver(ctx, pgdb.CreateOrUpdateObserverParams{
@@ -101,14 +107,14 @@ func (db *DB) CreateOrUpdateObserver(ctx context.Context, o ObserverInput) (int6
 		Iata:          toPgTextIfNotEmpty(o.IATA),
 		LastSeen:      o.LastSeen,
 		IngestNow:     o.IngestNow,
-		Model:         model,
-		Firmware:      firmware,
-		ClientVersion: clientVersion,
-		Radio:         radio,
-		BatteryMv:     batteryMv,
-		UptimeSecs:    uptimeSecs,
-		NoiseFloor:    noiseFloor,
-		CanRelay:      canRelay,
+		Model:         toPgTextPtr(meta.Model),
+		Firmware:      toPgTextPtr(meta.Firmware),
+		ClientVersion: toPgTextPtr(meta.ClientVersion),
+		Radio:         toPgTextPtr(meta.Radio),
+		BatteryMv:     toPgInt4Ptr(meta.BatteryMv),
+		UptimeSecs:    toPgInt8Ptr(meta.UptimeSecs),
+		NoiseFloor:    toPgFloat8Ptr(meta.NoiseFloor),
+		CanRelay:      toPgBoolPtr(meta.CanRelay),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("create or update observer %s: %w", o.ID, err)
@@ -128,20 +134,26 @@ func (db *DB) ReactivateObserver(ctx context.Context, pubkey string) error {
 // last_seen, and never clears inactive: a retained message is not a sign
 // of life.
 func (db *DB) UpdateObserverMetadataIfRetained(ctx context.Context, in ObserverMetadataInput) error {
-	model, firmware, clientVersion, radio, batteryMv, uptimeSecs, noiseFloor, canRelay := metaToParams(in.Meta)
+	meta := types.ObserverMeta{}
+	if in.Meta != nil {
+		meta = *in.Meta
+	}
+	if err := int4Fits("battery_mv", meta.BatteryMv); err != nil {
+		return err
+	}
 
 	return db.q.UpdateObserverMetadataIfRetained(ctx, pgdb.UpdateObserverMetadataIfRetainedParams{
-		Pubkey:        in.ID,
+		Pubkey:        normalizeKey(in.ID),
 		Name:          toPgTextIfNotEmpty(in.Name),
 		Iata:          toPgTextIfNotEmpty(in.IATA),
-		Model:         model,
-		Firmware:      firmware,
-		ClientVersion: clientVersion,
-		Radio:         radio,
-		BatteryMv:     batteryMv,
-		UptimeSecs:    uptimeSecs,
-		NoiseFloor:    noiseFloor,
-		CanRelay:      canRelay,
+		Model:         toPgTextPtr(meta.Model),
+		Firmware:      toPgTextPtr(meta.Firmware),
+		ClientVersion: toPgTextPtr(meta.ClientVersion),
+		Radio:         toPgTextPtr(meta.Radio),
+		BatteryMv:     toPgInt4Ptr(meta.BatteryMv),
+		UptimeSecs:    toPgInt8Ptr(meta.UptimeSecs),
+		NoiseFloor:    toPgFloat8Ptr(meta.NoiseFloor),
+		CanRelay:      toPgBoolPtr(meta.CanRelay),
 	})
 }
 
@@ -160,7 +172,7 @@ func (db *DB) DeleteMetricsForInactiveObservers(ctx context.Context) (int64, err
 func (db *DB) SoftDeleteBlacklistedObservers(ctx context.Context, blacklist []string) (int64, error) {
 	keys := make([]string, 0, len(blacklist))
 	for _, pk := range blacklist {
-		if t := strings.ToLower(strings.TrimSpace(pk)); t != "" {
+		if t := normalizeKey(pk); t != "" {
 			keys = append(keys, t)
 		}
 	}
@@ -171,7 +183,7 @@ func (db *DB) SoftDeleteBlacklistedObservers(ctx context.Context, blacklist []st
 }
 
 func (db *DB) GetObserverID(ctx context.Context, pubkey string) (int64, error) {
-	pubkey = strings.ToLower(strings.TrimSpace(pubkey)) // same normalization as the writer
+	pubkey = normalizeKey(pubkey) // same normalization as the writer
 	id, err := db.q.GetObserverID(ctx, pubkey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrNotFound
@@ -360,7 +372,7 @@ func (db *DB) GetNodeBatteryHistory(ctx context.Context, pubkey string, since ti
 		return nil, nil
 	}
 	rows, err := db.q.ListNodeBatteryHistory(ctx, pgdb.ListNodeBatteryHistoryParams{
-		Pubkey: strings.ToLower(pubkey),
+		Pubkey: normalizeKey(pubkey),
 		Since:  since,
 	})
 	if err != nil {
@@ -380,7 +392,7 @@ func (db *DB) GetNonRelayObserverPubkeys(ctx context.Context) ([]string, error) 
 }
 
 func (db *DB) MarkObserverInactive(ctx context.Context, pubkey string) error {
-	err := db.q.MarkObserverInactive(ctx, strings.ToLower(pubkey))
+	err := db.q.MarkObserverInactive(ctx, normalizeKey(pubkey))
 	if err != nil {
 		return err
 	}

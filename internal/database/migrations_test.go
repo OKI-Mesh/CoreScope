@@ -2,9 +2,8 @@ package database_test
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
@@ -54,6 +53,15 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateReportsUnreachableDatabase(t *testing.T) {
+	dsn := "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=2"
+
+	err := database.Migrate(t.Context(), dsn)
+	if err == nil || !strings.Contains(err.Error(), "cannot reach database") {
+		t.Fatalf("want a cannot-reach-database error, got %v", err)
+	}
+}
+
 func TestAssertReadyFailsOnUnmigratedDatabase(t *testing.T) {
 	ctx := t.Context()
 	db := openSQL(t, pgtest.NewEmptyDatabase(t))
@@ -72,14 +80,53 @@ func TestAssertReadyPassesOnMigratedDatabase(t *testing.T) {
 	}
 }
 
-func TestAssertReadyFailsWhenMigrationUnrecorded(t *testing.T) {
+func TestAssertReadyPassesOverReadOnlyConnection(t *testing.T) {
+	ctx := t.Context()
+	dsn := pgtest.NewDatabase(t)
+
+	ro, err := database.OpenReadOnly(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ro.Close() })
+
+	handle := ro.SQL()
+	t.Cleanup(func() { handle.Close() })
+	if err := database.AssertReady(ctx, handle); err != nil {
+		t.Fatalf("AssertReady must work without write access, got: %v", err)
+	}
+}
+
+func TestAssertReadyFailsWhenNewestMigrationUnrecorded(t *testing.T) {
 	ctx := t.Context()
 	db := openSQL(t, pgtest.NewDatabase(t))
 
-	if _, err := db.ExecContext(ctx, `DELETE FROM goose_db_version WHERE version_id = 1`); err != nil {
-		t.Fatalf("unrecord migration: %v", err)
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM goose_db_version WHERE version_id = (SELECT max(version_id) FROM goose_db_version)`); err != nil {
+		t.Fatalf("unrecord newest migration: %v", err)
 	}
-	if err := database.AssertReady(ctx, db); err == nil {
-		t.Fatal("expected AssertReady to fail when a migration is no longer recorded as applied")
+	err := database.AssertReady(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "pending migrations") {
+		t.Fatalf("want a pending-migrations error, got %v", err)
+	}
+}
+
+func TestAssertReadyFailsOnSchemaGap(t *testing.T) {
+	ctx := t.Context()
+	db := openSQL(t, pgtest.NewDatabase(t))
+
+	latest, err := database.LatestSchemaVersion(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest < 2 {
+		t.Skip("a schema gap needs at least two migrations")
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM goose_db_version WHERE version_id = 1`); err != nil {
+		t.Fatalf("unrecord first migration: %v", err)
+	}
+	err = database.AssertReady(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "schema gap") {
+		t.Fatalf("want a schema-gap error, got %v", err)
 	}
 }

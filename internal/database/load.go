@@ -9,10 +9,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// ChunkQuery pages through transmissions in id order. AfterID is exclusive.
+// Since is inclusive and Until is exclusive, both compared against a
+// transmission's last activity (last_seen, else first_seen); a nil bound is
+// open. Limit must not be negative; zero returns nothing.
 type ChunkQuery struct {
 	AfterID int64
-	Since   *time.Time // nil = no lower bound
-	Until   *time.Time // nil = no upper bound; exclusive
+	Since   *time.Time
+	Until   *time.Time
 	Limit   int
 }
 
@@ -32,19 +36,6 @@ type LoadedTransmission struct {
 type PathHop struct {
 	Prefix         string  // hop prefix as transmitted
 	ResolvedPubkey *string // nil if unresolved or ambiguous
-}
-
-// LoadedObservation is one observation of a loaded transmission.
-type LoadedObservation struct {
-	ID           int64
-	ObserverID   string // observer pubkey; empty when observer_idx is NULL
-	ObserverName string
-	ObserverIATA string
-	Direction    string
-	SNR, RSSI    *float64
-	Score        *float64
-	Path         []PathHop // hop order
-	Timestamp    time.Time
 }
 
 func sinceParam(t *time.Time) pgtype.Timestamptz {
@@ -100,38 +91,26 @@ func (db *DB) CountTransmissionsSince(ctx context.Context, since *time.Time) (in
 
 // ListObservationsForTransmissions groups the observations of txIDs by
 // transmission id, newest first within each, with their path hops attached.
-func (db *DB) ListObservationsForTransmissions(ctx context.Context, txIDs []int64) (map[int64][]LoadedObservation, error) {
+func (db *DB) ListObservationsForTransmissions(ctx context.Context, txIDs []int64) (map[int64][]Observation, error) {
 	rows, err := db.q.ListObservationsByTransmissionIDs(ctx, txIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make(map[int64][]LoadedObservation, len(txIDs))
+	out := make(map[int64][]Observation, len(txIDs))
 	for _, r := range rows {
-		var path []PathHop
-		if len(r.HopPrefixes) > 0 {
-			path = make([]PathHop, len(r.HopPrefixes))
-			for i, prefix := range r.HopPrefixes {
-				hop := PathHop{Prefix: prefix}
-				if i < len(r.HopResolved) && r.HopResolved[i] != "" {
-					pk := r.HopResolved[i]
-					hop.ResolvedPubkey = &pk
-				}
-				path[i] = hop
-			}
-		}
-		txID := int64(r.TransmissionID)
-		out[txID] = append(out[txID], LoadedObservation{
-			ID:           int64(r.ID),
-			ObserverID:   textValue(r.ObserverPubkey),
-			ObserverName: textValue(r.ObserverName),
-			ObserverIATA: r.ObserverIata,
-			Direction:    textValue(r.Direction),
-			SNR:          fromPgFloat8(r.Snr),
-			RSSI:         fromPgFloat8(r.Rssi),
-			Score:        fromPgFloat8(r.Score),
-			Path:         path,
-			Timestamp:    r.Timestamp.UTC(),
+		out[r.TransmissionID] = append(out[r.TransmissionID], Observation{
+			ID:             r.ID,
+			TransmissionID: r.TransmissionID,
+			ObserverID:     r.ObserverID,
+			ObserverName:   r.ObserverName,
+			ObserverIATA:   r.ObserverIata,
+			Direction:      r.Direction,
+			SNR:            fromPgFloat8(r.Snr),
+			RSSI:           fromPgFloat8(r.Rssi),
+			Score:          fromPgFloat8(r.Score),
+			Path:           pathHops(r.HopPrefixes, r.HopResolved),
+			Timestamp:      r.Timestamp.UTC(),
 		})
 	}
 	return out, nil
@@ -145,14 +124,8 @@ func textValue(v pgtype.Text) string {
 	return ""
 }
 
-// NewObservation is a LoadedObservation plus the transmission it belongs to.
-type NewObservation struct {
-	TransmissionID int64
-	LoadedObservation
-}
-
 // ListObservationsAfterID returns up to limit observations with id > afterID, oldest first.
-func (db *DB) ListObservationsAfterID(ctx context.Context, afterID int64, limit int) ([]NewObservation, error) {
+func (db *DB) ListObservationsAfterID(ctx context.Context, afterID int64, limit int) ([]Observation, error) {
 	rows, err := db.q.ListObservationsAfterID(ctx, pgdb.ListObservationsAfterIDParams{
 		AfterID:  afterID,
 		RowLimit: int32(limit),
@@ -160,23 +133,37 @@ func (db *DB) ListObservationsAfterID(ctx context.Context, afterID int64, limit 
 	if err != nil {
 		return nil, err
 	}
-	out := make([]NewObservation, len(rows))
+	out := make([]Observation, len(rows))
 	for i, r := range rows {
-		out[i] = NewObservation{
+		out[i] = Observation{
+			ID:             r.ID,
 			TransmissionID: r.TransmissionID,
-			LoadedObservation: LoadedObservation{
-				ID:           r.ID,
-				ObserverID:   r.ObserverID,
-				ObserverName: r.ObserverName,
-				ObserverIATA: r.ObserverIata,
-				Direction:    r.Direction,
-				SNR:          fromPgFloat8(r.Snr),
-				RSSI:         fromPgFloat8(r.Rssi),
-				Score:        fromPgFloat8(r.Score),
-				Path:         pathHops(r.HopPrefixes, r.HopResolved),
-				Timestamp:    r.Timestamp.UTC(),
-			},
+			ObserverID:     r.ObserverID,
+			ObserverName:   r.ObserverName,
+			ObserverIATA:   r.ObserverIata,
+			Direction:      r.Direction,
+			SNR:            fromPgFloat8(r.Snr),
+			RSSI:           fromPgFloat8(r.Rssi),
+			Score:          fromPgFloat8(r.Score),
+			Path:           pathHops(r.HopPrefixes, r.HopResolved),
+			Timestamp:      r.Timestamp.UTC(),
 		}
 	}
 	return out, nil
+}
+
+// pathHops pairs the two parallel hop arrays; "" in resolved means unresolved.
+func pathHops(prefixes, resolved []string) []PathHop {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	hops := make([]PathHop, len(prefixes))
+	for i, p := range prefixes {
+		hops[i] = PathHop{Prefix: p}
+		if i < len(resolved) && resolved[i] != "" {
+			r := resolved[i]
+			hops[i].ResolvedPubkey = &r
+		}
+	}
+	return hops
 }

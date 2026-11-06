@@ -216,6 +216,7 @@ WHERE t.first_seen >= $1
   AND o.hop_prefixes && $3::text[]
   AND length(h.hop) >= $4::int
   AND h.hop = ANY($3::text[])
+  ORDER BY transmission_id, hop
 `
 
 type ListScopeAuditHopsParams struct {

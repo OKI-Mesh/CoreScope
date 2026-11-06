@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -12,8 +13,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// MetricsResolution selects how GetObserverMetrics aggregates samples.
+type MetricsResolution string
+
+const (
+	MetricsRaw    MetricsResolution = "5m"
+	MetricsHourly MetricsResolution = "1h"
+	MetricsDaily  MetricsResolution = "1d"
+)
+
+// ObserverMetricsInput is one sample to store. The optional counters are
+// cumulative since boot and must fit a 32-bit integer.
 type ObserverMetricsInput struct {
-	ObserverID  string
+	ObserverID  string // observer pubkey
 	Timestamp   time.Time
 	NoiseFloor  *float64
 	TxAirSecs   *int
@@ -39,19 +51,61 @@ type ObserverMetric struct {
 // MetricsSummary is one observer's noise-floor and battery summary over a window.
 type MetricsSummary struct {
 	ObserverID    string
-	ObserverName  *string
+	ObserverName  string
 	IATA          string
-	CurrentNF     *float64 // latest sample in the window; nil if that sample has no noise floor
-	AvgNF         *float64 // nil if no sample has a noise floor
+	CurrentNF     *float64
+	AvgNF         *float64
 	MaxNF         *float64
 	CurrentBattMv *int
 	SampleCount   int
-	Sparkline     []*float64 // noise floor per sample, oldest first
+	Sparkline     []*float64
 }
 
+func int4Fits(field string, v *int) error {
+	if v != nil && (*v < math.MinInt32 || *v > math.MaxInt32) {
+		return fmt.Errorf("observer metric %s %d does not fit a 32-bit integer", field, *v)
+	}
+	return nil
+}
+
+// ParseMetricsResolution turns an API resolution into a MetricsResolution.
+// "5m" (the default, also the empty string) means the unaggregated samples.
+func ParseMetricsResolution(s string) (MetricsResolution, error) {
+	switch s {
+	case "", "5m":
+		return MetricsRaw, nil
+	case "1h":
+		return MetricsHourly, nil
+	case "1d":
+		return MetricsDaily, nil
+	}
+	return "", fmt.Errorf("invalid resolution: %s. Must be 5m, 1h, or 1d", s)
+}
+
+// truncUnit is the date_trunc unit of a bucketed resolution, "" for raw.
+func (r MetricsResolution) truncUnit() string {
+	switch r {
+	case MetricsHourly:
+		return "hour"
+	case MetricsDaily:
+		return "day"
+	}
+	return ""
+}
+
+// CreateOrUpdateObserverMetrics stores a sample, replacing the stored one with
+// the same observer and timestamp.
 func (db *DB) CreateOrUpdateObserverMetrics(ctx context.Context, input ObserverMetricsInput) error {
-	return db.q.CreateOrUpdateObserverMetrics(ctx, pgdb.CreateOrUpdateObserverMetricsParams{
-		ObserverID:  input.ObserverID,
+	for field, v := range map[string]*int{
+		"tx_air_secs": input.TxAirSecs, "rx_air_secs": input.RxAirSecs, "recv_errors": input.RecvErrors,
+		"battery_mv": input.BatteryMv, "packets_sent": input.PacketsSent, "packets_recv": input.PacketsRecv,
+	} {
+		if err := int4Fits(field, v); err != nil {
+			return err
+		}
+	}
+	err := db.q.CreateOrUpdateObserverMetrics(ctx, pgdb.CreateOrUpdateObserverMetricsParams{
+		ObserverID:  normalizeKey(input.ObserverID),
 		Timestamp:   input.Timestamp,
 		NoiseFloor:  toPgFloat8Ptr(input.NoiseFloor),
 		TxAirSecs:   toPgInt4Ptr(input.TxAirSecs),
@@ -61,44 +115,50 @@ func (db *DB) CreateOrUpdateObserverMetrics(ctx context.Context, input ObserverM
 		PacketsSent: toPgInt4Ptr(input.PacketsSent),
 		PacketsRecv: toPgInt4Ptr(input.PacketsRecv),
 	})
+	if err != nil {
+		return fmt.Errorf("store observer metrics for %s: %w", input.ObserverID, err)
+	}
+	return nil
 }
 
+// PruneObserverMetrics deletes samples older than cutoff and returns how many
+// were removed.
 func (db *DB) PruneObserverMetrics(ctx context.Context, cutoff time.Time) (int64, error) {
-	return db.q.PruneObserverMetrics(ctx, cutoff)
+	removed, err := db.q.PruneObserverMetrics(ctx, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune observer metrics: %w", err)
+	}
+	return removed, nil
 }
 
-// GetObserverMetrics returns the observer's samples oldest first. resolution is "1h" or
-// "1d" for the last sample per UTC hour/day; anything else returns the raw samples.
-// since and until are inclusive and optional.
-func (d *DB) GetObserverMetrics(ctx context.Context, pubkey string, since, until *time.Time, resolution string) ([]ObserverMetric, error) {
-	var out []ObserverMetric
-	switch resolution {
-	case "1h", "1d":
-		bucket := "hour"
-		if resolution == "1d" {
-			bucket = "day"
-		}
-		rows, err := d.q.ListObserverMetricsBucketed(ctx, pgdb.ListObserverMetricsBucketedParams{
-			Bucket: bucket, ObserverID: pubkey, Since: toPgTimestamptzPtr(since), Until: toPgTimestamptzPtr(until),
+// GetObserverMetrics returns the observer's samples oldest first. Hourly and
+// daily resolutions return the last sample per UTC hour or day, stamped with
+// the bucket start; raw returns every sample. since and until are inclusive and
+// optional.
+func (db *DB) GetObserverMetrics(ctx context.Context, pubkey string, since, until *time.Time, resolution MetricsResolution) ([]ObserverMetric, error) {
+	pubkey = normalizeKey(pubkey)
+	if unit := resolution.truncUnit(); unit != "" {
+		rows, err := db.q.ListObserverMetricsBucketed(ctx, pgdb.ListObserverMetricsBucketedParams{
+			Bucket: unit, ObserverID: pubkey, Since: toPgTimestamptzPtr(since), Until: toPgTimestamptzPtr(until),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("list observer metrics (%s): %w", resolution, err)
 		}
-		out = make([]ObserverMetric, len(rows))
+		out := make([]ObserverMetric, len(rows))
 		for i, r := range rows {
 			out[i] = observerMetric(r.Timestamp, r.NoiseFloor, r.TxAirSecs, r.RxAirSecs, r.RecvErrors, r.BatteryMv, r.PacketsSent, r.PacketsRecv)
 		}
-	default:
-		rows, err := d.q.ListObserverMetrics(ctx, pgdb.ListObserverMetricsParams{
-			ObserverID: pubkey, Since: toPgTimestamptzPtr(since), Until: toPgTimestamptzPtr(until),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list observer metrics: %w", err)
-		}
-		out = make([]ObserverMetric, len(rows))
-		for i, r := range rows {
-			out[i] = observerMetric(r.Timestamp, r.NoiseFloor, r.TxAirSecs, r.RxAirSecs, r.RecvErrors, r.BatteryMv, r.PacketsSent, r.PacketsRecv)
-		}
+		return out, nil
+	}
+	rows, err := db.q.ListObserverMetrics(ctx, pgdb.ListObserverMetricsParams{
+		ObserverID: pubkey, Since: toPgTimestamptzPtr(since), Until: toPgTimestamptzPtr(until),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list observer metrics: %w", err)
+	}
+	out := make([]ObserverMetric, len(rows))
+	for i, r := range rows {
+		out[i] = observerMetric(r.Timestamp, r.NoiseFloor, r.TxAirSecs, r.RxAirSecs, r.RecvErrors, r.BatteryMv, r.PacketsSent, r.PacketsRecv)
 	}
 	return out, nil
 }
@@ -121,7 +181,7 @@ func observerMetric(ts time.Time, noise pgtype.Float8, tx, rx, errs, battery, se
 func (db *DB) GetMetricsSummary(ctx context.Context, since time.Time) ([]MetricsSummary, error) {
 	rows, err := db.q.ListMetricsSummarySamples(ctx, since)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list metrics summary samples: %w", err)
 	}
 
 	out := []MetricsSummary{}
@@ -156,7 +216,7 @@ func summarizeMetrics(g []pgdb.ListMetricsSummarySamplesRow) MetricsSummary {
 	last := g[len(g)-1]
 	s := MetricsSummary{
 		ObserverID:    last.ObserverID,
-		ObserverName:  &last.Name,
+		ObserverName:  last.Name,
 		IATA:          last.Iata,
 		CurrentNF:     fromPgFloat8(last.NoiseFloor),
 		CurrentBattMv: fromPgInt4(last.BatteryMv),

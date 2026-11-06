@@ -557,39 +557,17 @@ func TestGetMaxTransmissionID(t *testing.T) {
 	}
 }
 
-func TestGetNewTransmissionsSince(t *testing.T) {
-	ctx := t.Context()
-	db := setupTestDB(t)
-	seedTestData(t, db)
-
-	txs, err := db.GetNewTransmissionsSince(ctx, 0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(txs) != 3 {
-		t.Errorf("expected 3 new transmissions, got %d", len(txs))
-	}
-
-	txs, err = db.GetNewTransmissionsSince(ctx, 1, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(txs) != 2 {
-		t.Errorf("expected 2 new transmissions after ID 1, got %d", len(txs))
-	}
-}
-
 func TestGetTransmissionByIDFound(t *testing.T) {
 	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
-	tx, err := db.GetTransmissionByID(ctx, 1)
+	tx, err := db.GetPacketByID(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tx == nil {
-		t.Fatal("expected transmission, got nil")
+		t.Fatal("expected packet, got nil")
 	}
 	if tx.Hash != "abc123def4567890" {
 		t.Errorf("expected hash abc123def4567890, got %v", tx.Hash)
@@ -599,14 +577,14 @@ func TestGetTransmissionByIDFound(t *testing.T) {
 	}
 }
 
-func TestGetTransmissionByIDNotFound(t *testing.T) {
+func TestGetPacketByIDNotFound(t *testing.T) {
 	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
-	result, err := db.GetTransmissionByID(ctx, 9999)
+	result, err := db.GetPacketByID(ctx, 9999)
 	if err == nil || result != nil {
-		t.Error("expected not-found error and nil result for nonexistent transmission")
+		t.Error("expected not-found error and nil result for nonexistent packet")
 	}
 }
 
