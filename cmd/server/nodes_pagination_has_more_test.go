@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
@@ -62,14 +63,14 @@ func TestNodesHasMoreSurvivesPostLimitFiltering(t *testing.T) {
 		LonMin: fptr(-90), LonMax: fptr(-80),
 	}
 
-	page := func(offset int) NodeListResponse {
+	page := func(offset int) api.NodeListResponse {
 		req := httptest.NewRequest("GET", fmt.Sprintf("/api/nodes?limit=3&offset=%d", offset), nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("offset %d: status %d body=%s", offset, w.Code, w.Body.String())
 		}
-		var got NodeListResponse
+		var got api.NodeListResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("offset %d: decode: %v", offset, err)
 		}

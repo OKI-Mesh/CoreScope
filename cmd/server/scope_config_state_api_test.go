@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
@@ -55,7 +56,7 @@ func insertDeclaredRegionsForTest(t *testing.T, ctx context.Context, db *databas
 	}
 }
 
-func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]map[string]interface{} {
+func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]api.Node {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/nodes"+query, nil)
 	w := httptest.NewRecorder()
@@ -63,16 +64,13 @@ func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]ma
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	var resp struct {
-		Nodes []map[string]interface{} `json:"nodes"`
-	}
+	var resp api.NodeListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	out := map[string]map[string]interface{}{}
+	out := make(map[string]api.Node, len(resp.Nodes))
 	for _, n := range resp.Nodes {
-		pk, _ := n["public_key"].(string)
-		out[pk] = n
+		out[n.PublicKey] = n
 	}
 	return out
 }
@@ -91,11 +89,13 @@ func TestHandleNodesExposesScopeConfigState(t *testing.T) {
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	if got := nodes["pk_declared"]["scope_config_state"]; got != ScopeConfigFull {
-		t.Errorf("declared repeater scope_config_state = %v, want %q", got, ScopeConfigFull)
+	declared := nodes["pk_declared"]
+	if declared.ScopeConfigState == nil || string(*declared.ScopeConfigState) != string(ScopeConfigFull) {
+		t.Errorf("declared repeater scope_config_state = %v, want %q", declared.ScopeConfigState, ScopeConfigFull)
 	}
-	if got := nodes["pk_silent"]["scope_config_state"]; got != ScopeConfigNone {
-		t.Errorf("never-asked repeater scope_config_state = %v, want %q", got, ScopeConfigNone)
+	silent := nodes["pk_silent"]
+	if silent.ScopeConfigState == nil || string(*silent.ScopeConfigState) != string(ScopeConfigNone) {
+		t.Errorf("never-asked repeater scope_config_state = %v, want %q", silent.ScopeConfigState, ScopeConfigNone)
 	}
 }
 
@@ -111,9 +111,10 @@ func TestHandleNodesOmitsScopeConfigStateForNonForwarders(t *testing.T) {
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	if _, present := nodes["pk_companion"]["scope_config_state"]; present {
+	companion := nodes["pk_companion"]
+	if companion.ScopeConfigState != nil {
 		t.Errorf("companion carries scope_config_state = %v, want the field absent",
-			nodes["pk_companion"]["scope_config_state"])
+			*companion.ScopeConfigState)
 	}
 }
 
@@ -135,12 +136,13 @@ func TestHandleNodeDetailExposesScopeConfigState(t *testing.T) {
 	}
 	// The detail endpoint wraps the node: {"node": {...}, "recentAdverts": [...]}.
 	var resp struct {
-		Node map[string]interface{} `json:"node"`
+		Node api.Node `json:"node"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got := resp.Node["scope_config_state"]; got != ScopeConfigNoUnscoped {
+	got := resp.Node.ScopeConfigState
+	if got == nil || string(*got) != string(ScopeConfigNoUnscoped) {
 		t.Errorf("scope_config_state = %v, want %q", got, ScopeConfigNoUnscoped)
 	}
 }
@@ -160,8 +162,9 @@ func TestHandleNodesMatchesDeclaredTargetCaseInsensitively(t *testing.T) {
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	if got := nodes["pk_mixedcase"]["scope_config_state"]; got != ScopeConfigFull {
-		t.Errorf("scope_config_state = %v for a declared answer in the other case, want %q", got, ScopeConfigFull)
+	mixedcase := nodes["pk_mixedcase"]
+	if mixedcase.ScopeConfigState == nil || string(*mixedcase.ScopeConfigState) != string(ScopeConfigFull) {
+		t.Errorf("scope_config_state = %v for a declared answer in the other case, want %q", mixedcase.ScopeConfigState, ScopeConfigFull)
 	}
 }
 
@@ -205,8 +208,9 @@ func TestDeclaredRegionsLookupRunsOncePerWindow(t *testing.T) {
 	}
 	// And the field is still correct, so the cache is not just cheap.
 	nodes := nodesByPubkey(t, router, "?limit=200")
-	if got := nodes["pk_perf"]["scope_config_state"]; got != ScopeConfigFull {
-		t.Errorf("scope_config_state = %v, want %q", got, ScopeConfigFull)
+	perf := nodes["pk_perf"]
+	if perf.ScopeConfigState == nil || string(*perf.ScopeConfigState) != string(ScopeConfigFull) {
+		t.Errorf("scope_config_state = %v, want %q", perf.ScopeConfigState, ScopeConfigFull)
 	}
 }
 
@@ -259,14 +263,14 @@ func TestHandleNodesReportsObservedForUndeclaredForwarder(t *testing.T) {
 	srv.RegisterRoutes(router)
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
-	node := nodes[pk]
-	if node == nil {
+	node, ok := nodes[pk]
+	if !ok {
 		t.Fatalf("seeded repeater missing from the response")
 	}
-	if node["transportedScopes"] == nil {
-		t.Fatalf("fixture did not produce transportedScopes; the test would prove nothing (got %v)", node)
+	if node.TransportedScopes == nil {
+		t.Fatalf("fixture did not produce transported_scopes; the test would prove nothing (got %v)", node)
 	}
-	if got := node["scope_config_state"]; got != ScopeConfigObserved {
+	if got := node.ScopeConfigState; got == nil || string(*got) != string(ScopeConfigObserved) {
 		t.Errorf("scope_config_state = %v for a never-asked repeater carrying scoped traffic, want %q", got, ScopeConfigObserved)
 	}
 }
@@ -308,9 +312,17 @@ func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
 			t.Errorf("%s (%q): the scope audit does not list the repeater at all", pk, csv)
 			continue
 		}
-		want := nodes[strings.ToLower(pk)]["scope_config_state"]
-		if got != want {
-			t.Errorf("regions_csv %q: the scope audit page shows %q, the map shows %v", csv, got, want)
+		node, ok := nodes[strings.ToLower(pk)]
+		if !ok {
+			t.Errorf("%s (%q): the node list does not contain the repeater", pk, csv)
+			continue
+		}
+		if node.ScopeConfigState == nil {
+			t.Errorf("regions_csv %q: the scope audit page shows %q, the node has no scope_config_state", csv, got)
+			continue
+		}
+		if want := string(*node.ScopeConfigState); got != want {
+			t.Errorf("regions_csv %q: the scope audit page shows %q, the map shows %q", csv, got, want)
 		}
 	}
 }

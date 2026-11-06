@@ -10,8 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
+
+func declaredRegionsOf(node api.Node) ([]string, bool) {
+	if node.DeclaredRegions == nil {
+		return nil, false
+	}
+	return *node.DeclaredRegions, true
+}
 
 // scopeKey builds a valid 64-char lowercase hex pubkey from a small number,
 // so fixtures satisfy the nodes.public_key guards.
@@ -27,31 +35,6 @@ type scopedNode struct {
 	Node    database.NodeInput
 	Scope   *string
 	ScopeAt *time.Time // nil skips the last-write-wins guard
-}
-
-// declaredRegionsOf reads the declared_regions field back as a []string, and
-// reports whether the field was present at all. Absent and present-but-empty
-// are different answers (never asked vs answered with no named region), so
-// the helper keeps them apart instead of collapsing both to nil.
-func declaredRegionsOf(t *testing.T, node map[string]interface{}) ([]string, bool) {
-	t.Helper()
-	raw, present := node["declared_regions"]
-	if !present {
-		return nil, false
-	}
-	list, ok := raw.([]interface{})
-	if !ok {
-		t.Fatalf("declared_regions is %T (%v), want a JSON array", raw, raw)
-	}
-	out := make([]string, 0, len(list))
-	for _, v := range list {
-		s, ok := v.(string)
-		if !ok {
-			t.Fatalf("declared_regions entry is %T (%v), want a string", v, v)
-		}
-		out = append(out, s)
-	}
-	return out, true
 }
 
 func seedScopedNodes(t *testing.T, db *database.DB, fixtures []scopedNode) {
@@ -106,9 +89,9 @@ func TestHandleNodesExposesDeclaredRegions(t *testing.T) {
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	got, present := declaredRegionsOf(t, nodes[keyNamed])
+	got, present := declaredRegionsOf(nodes[keyNamed])
 	if !present {
-		t.Fatalf("declared repeater has no declared_regions field: %v", nodes[keyNamed])
+		t.Fatalf("declared repeater has no declared_regions field: %+v", nodes[keyNamed])
 	}
 	if want := []string{"be", "be-bru"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("declared_regions = %v, want %v ('#' stripped, '*' left out, list order kept)", got, want)
@@ -116,7 +99,7 @@ func TestHandleNodesExposesDeclaredRegions(t *testing.T) {
 
 	// Answered with only the wildcard: the answer exists and names no region.
 	// That is an empty list, not an absent field.
-	got, present = declaredRegionsOf(t, nodes[keyStarOnly])
+	got, present = declaredRegionsOf(nodes[keyStarOnly])
 	if !present {
 		t.Errorf("wildcard-only repeater has no declared_regions field, want an empty list")
 	} else if len(got) != 0 {
@@ -124,13 +107,13 @@ func TestHandleNodesExposesDeclaredRegions(t *testing.T) {
 	}
 
 	// Never asked: no answer to report.
-	if v, present := nodes[keyNever]["declared_regions"]; present {
+	if v, present := declaredRegionsOf(nodes[keyNever]); present {
 		t.Errorf("never-asked repeater carries declared_regions = %v, want the field absent", v)
 	}
 
 	// A companion does not forward, so a declared list on it is not something
 	// the region filter should read, same rule as scope_config_state.
-	if v, present := nodes[keyCompanion]["declared_regions"]; present {
+	if v, present := declaredRegionsOf(nodes[keyCompanion]); present {
 		t.Errorf("companion carries declared_regions = %v, want the field absent", v)
 	}
 }
@@ -159,14 +142,14 @@ func TestHandleNodeDetailExposesDeclaredRegions(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Node map[string]interface{} `json:"node"`
+		Node api.Node `json:"node"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	got, present := declaredRegionsOf(t, resp.Node)
+	got, present := declaredRegionsOf(resp.Node)
 	if !present {
-		t.Fatalf("detail endpoint has no declared_regions field: %v", resp.Node)
+		t.Fatalf("detail endpoint has no declared_regions field: %+v", resp.Node)
 	}
 	if want := []string{"nl", "be"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("declared_regions = %v, want %v", got, want)
@@ -212,13 +195,18 @@ func TestScopeAuditAndNodesAgreeOnDeclaredRegions(t *testing.T) {
 			t.Errorf("%s (%q): the scope audit does not list the repeater at all", c.label, c.csv)
 			continue
 		}
-		got, present := declaredRegionsOf(t, nodes[c.key])
+		node, ok := nodes[c.key]
+		if !ok {
+			t.Errorf("%s (%q): the node list does not contain the repeater", c.label, c.csv)
+			continue
+		}
+		got, present := declaredRegionsOf(node)
 		if !present {
-			t.Errorf("regions_csv %q: the scope audit lists %v, the map has no declared_regions field", c.csv, want)
+			t.Errorf("regions_csv %q: the scope audit lists %v, the node has no declared_regions field", c.csv, want)
 			continue
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("regions_csv %q: the scope audit lists %v, the map lists %v", c.csv, want, got)
+			t.Errorf("regions_csv %q: the scope audit lists %v, the node lists %v", c.csv, want, got)
 		}
 	}
 }
@@ -238,11 +226,15 @@ func TestNodesNeverCarryDeclaredRegionsTruncated(t *testing.T) {
 	})
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
-	if _, present := declaredRegionsOf(t, nodes[keyCfg]); !present {
+	node, ok := nodes[keyCfg]
+	if !ok {
+		t.Fatalf("%s: missing from the node list", keyCfg)
+	}
+	if _, present := declaredRegionsOf(node); !present {
 		t.Errorf("%s: no declared_regions field", keyCfg)
 	}
-	if v, present := nodes[keyCfg]["declared_regions_truncated"]; present {
-		t.Errorf("%s: declared_regions_truncated = %v, want the field absent", keyCfg, v)
+	if node.DeclaredRegionsTruncated != nil {
+		t.Errorf("%s: declared_regions_truncated = %v, want the field absent", keyCfg, *node.DeclaredRegionsTruncated)
 	}
 
 	req := httptest.NewRequest("GET", "/api/nodes/"+keyCfg, nil)
@@ -252,12 +244,12 @@ func TestNodesNeverCarryDeclaredRegionsTruncated(t *testing.T) {
 		t.Fatalf("detail status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Node map[string]json.RawMessage `json:"node"`
+		Node api.Node `json:"node"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if v, present := resp.Node["declared_regions_truncated"]; present {
-		t.Errorf("detail endpoint declared_regions_truncated = %s, want the field absent", v)
+	if resp.Node.DeclaredRegionsTruncated != nil {
+		t.Errorf("detail endpoint declared_regions_truncated = %v, want the field absent", *resp.Node.DeclaredRegionsTruncated)
 	}
 }

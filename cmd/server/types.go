@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -54,21 +55,21 @@ type TimeBucket struct {
 // ─── Stats ─────────────────────────────────────────────────────────────────────
 
 type StatsResponse struct {
-	TotalPackets          int                `json:"totalPackets"`
-	TotalTransmissions    *int               `json:"totalTransmissions"`
-	TotalObservations     int                `json:"totalObservations"`
-	TotalNodes            int                `json:"totalNodes"`
-	TotalNodesAllTime     int                `json:"totalNodesAllTime"`
-	TotalObservers        int                `json:"totalObservers"`
-	PacketsLastHour       int                `json:"packetsLastHour"`
-	PacketsLast24h        int                `json:"packetsLast24h"`
-	Engine                string             `json:"engine"`
-	Version               string             `json:"version"`
-	Commit                string             `json:"commit"`
-	BuildTime             string             `json:"buildTime"`
-	Counts                RoleCountsResponse `json:"counts"`
-	SignatureDrops        int64              `json:"signatureDrops,omitempty"`
-	HashMigrationComplete bool               `json:"hashMigrationComplete"`
+	TotalPackets          int            `json:"totalPackets"`
+	TotalTransmissions    *int           `json:"totalTransmissions"`
+	TotalObservations     int            `json:"totalObservations"`
+	TotalNodes            int            `json:"totalNodes"`
+	TotalNodesAllTime     int            `json:"totalNodesAllTime"`
+	TotalObservers        int            `json:"totalObservers"`
+	PacketsLastHour       int            `json:"packetsLastHour"`
+	PacketsLast24h        int            `json:"packetsLast24h"`
+	Engine                string         `json:"engine"`
+	Version               string         `json:"version"`
+	Commit                string         `json:"commit"`
+	BuildTime             string         `json:"buildTime"`
+	Counts                api.RoleCounts `json:"counts"`
+	SignatureDrops        int64          `json:"signatureDrops,omitempty"`
+	HashMigrationComplete bool           `json:"hashMigrationComplete"`
 
 	// Memory accounting (issue #832). All values in MB.
 	//
@@ -415,27 +416,8 @@ type DecodeResponse struct {
 
 // ─── Nodes ─────────────────────────────────────────────────────────────────────
 
-type NodeResp struct {
-	PublicKey            string      `json:"public_key"`
-	Name                 interface{} `json:"name"`
-	Role                 interface{} `json:"role"`
-	Lat                  interface{} `json:"lat"`
-	Lon                  interface{} `json:"lon"`
-	LastSeen             interface{} `json:"last_seen"`
-	FirstSeen            interface{} `json:"first_seen"`
-	AdvertCount          int         `json:"advert_count"`
-	HashSize             interface{} `json:"hash_size,omitempty"`
-	HashSizeInconsistent bool        `json:"hash_size_inconsistent,omitempty"`
-	HashSizesSeen        []int       `json:"hash_sizes_seen,omitempty"`
-	LastHeard            interface{} `json:"last_heard,omitempty"`
-}
-
-type NodeSearchResponse struct {
-	Nodes []NodeResponse `json:"nodes"`
-}
-
 type NodeDetailResponse struct {
-	Node          NodeResponse         `json:"node"`
+	Node          api.Node             `json:"node"`
 	RecentAdverts []NodeAdvertResponse `json:"recentAdverts"`
 }
 
@@ -556,7 +538,7 @@ type ComputedNodeStats struct {
 }
 
 type NodeAnalyticsResponse struct {
-	Node                NodeResponse            `json:"node"`
+	Node                api.Node                `json:"node"`
 	TimeRange           TimeRangeResp           `json:"timeRange"`
 	ActivityTimeline    []TimeBucket            `json:"activityTimeline"`
 	SnrTrend            []SnrTrendEntry         `json:"snrTrend"`

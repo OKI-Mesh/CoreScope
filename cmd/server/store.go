@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
@@ -8408,7 +8409,7 @@ func recentAdvertsAgree(seq []int, n int) bool {
 
 // EnrichNodeWithHashSize populates hash_size, hash_size_inconsistent, and
 // hash_sizes_seen on a node map using precomputed hash size info.
-func EnrichNodeWithHashSize(node *NodeResponse, info *hashSizeNodeInfo) {
+func EnrichNodeWithHashSize(node *api.Node, info *hashSizeNodeInfo) {
 	if info == nil {
 		return
 	}
@@ -8422,19 +8423,6 @@ func EnrichNodeWithHashSize(node *NodeResponse, info *hashSizeNodeInfo) {
 		}
 		sort.Ints(sizes)
 		node.HashSizesSeen = sizes
-	}
-}
-
-// EnrichNodeWithMultiByte attaches the multi-byte capability group to a node
-// response. A nil entry leaves the group nil, so its keys are omitted.
-func EnrichNodeWithMultiByte(node *NodeResponse, entry *MultiByteCapEntry) {
-	if entry == nil {
-		return
-	}
-	node.NodeMultiByte = &NodeMultiByte{
-		Status:      entry.Status,
-		Evidence:    entry.Evidence,
-		MaxHashSize: entry.MaxHashSize,
 	}
 }
 

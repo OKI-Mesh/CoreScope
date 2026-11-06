@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -2261,7 +2262,7 @@ func TestAnalyticsChannelsNoNullArrays(t *testing.T) {
 
 func TestNodeHashSizeEnrichment(t *testing.T) {
 	t.Run("nil info leaves defaults", func(t *testing.T) {
-		node := NodeResponse{PublicKey: "abc123"}
+		node := api.Node{PublicKey: "abc123"}
 		EnrichNodeWithHashSize(&node, nil)
 		if node.HashSize != nil {
 			t.Error("expected hash_size to remain nil with nil info")
@@ -2269,7 +2270,7 @@ func TestNodeHashSizeEnrichment(t *testing.T) {
 	})
 
 	t.Run("enriches with computed data", func(t *testing.T) {
-		node := NodeResponse{PublicKey: "abc123"}
+		node := api.Node{PublicKey: "abc123"}
 		info := &hashSizeNodeInfo{
 			HashSize:     2,
 			AllSizes:     map[int]bool{1: true, 2: true},
@@ -2293,7 +2294,7 @@ func TestNodeHashSizeEnrichment(t *testing.T) {
 	})
 
 	t.Run("single size omits sizes_seen", func(t *testing.T) {
-		node := NodeResponse{PublicKey: "abc123"}
+		node := api.Node{PublicKey: "abc123"}
 		info := &hashSizeNodeInfo{
 			HashSize: 3,
 			AllSizes: map[int]bool{3: true},

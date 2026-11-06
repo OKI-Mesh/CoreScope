@@ -22,8 +22,8 @@ type WireTime struct {
 	time.Time
 }
 
-// NewUTCTimePtr wraps an optional time. A nil input stays nil (JSON null).
-func NewUTCTimePtr(t *time.Time) *WireTime {
+// NewWireTimePtr wraps an optional time. A nil input stays nil (JSON null).
+func NewWireTimePtr(t *time.Time) *WireTime {
 	if t == nil {
 		return nil
 	}

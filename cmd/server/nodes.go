@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
@@ -36,13 +37,6 @@ type NodeAdvertResponse struct {
 	Observations []NodeAdvertObservation `json:"observations"`
 }
 
-type RoleCountsResponse struct {
-	Repeaters  int `json:"repeaters"`
-	Rooms      int `json:"rooms"`
-	Companions int `json:"companions"`
-	Sensors    int `json:"sensors"`
-}
-
 type NodeHealthStats struct {
 	TotalTransmissions int      `json:"totalTransmissions"`
 	TotalObservations  int      `json:"totalObservations"`
@@ -54,7 +48,7 @@ type NodeHealthStats struct {
 }
 
 type NodeHealthResponse struct {
-	Node               NodeResponse             `json:"node"`      // becomes NodeResponse with the nodes conversion
+	Node               api.Node                 `json:"node"`      // becomes NodeResponse with the nodes conversion
 	Observers          []map[string]interface{} `json:"observers"` // use the type buildDirectObserverRows returns
 	RelayObserverCount int                      `json:"relayObserverCount"`
 	Stats              NodeHealthStats          `json:"stats"`
@@ -69,8 +63,8 @@ func nodeAdvertResponse(p database.Packet, observations []database.Observation) 
 	return NodeAdvertResponse{PacketResponse: packetResponse(p), Observations: out}
 }
 
-func roleCountsToResponse(c database.RoleCounts) RoleCountsResponse {
-	return RoleCountsResponse{Repeaters: c.Repeaters, Rooms: c.Rooms, Companions: c.Companions, Sensors: c.Sensors}
+func roleCountsToResponse(c database.RoleCounts) api.RoleCounts {
+	return api.RoleCounts{Repeaters: c.Repeaters, Rooms: c.Rooms, Companions: c.Companions, Sensors: c.Sensors}
 }
 
 // geoFilter converts the configured area into the geofilter shape.
@@ -84,34 +78,25 @@ func (e AreaEntry) geoFilter() *geofilter.Config {
 	}
 }
 
-func nodeToResponse(n *database.Node) NodeResponse {
-	lastSeen := formatTSPtr(n.LastSeen)
-	return NodeResponse{
+func nodeToResponse(n *database.Node) api.Node {
+	out := api.Node{
 		PublicKey:         n.PublicKey,
 		Name:              n.Name,
 		Role:              n.Role,
 		Lat:               n.Lat,
 		Lon:               n.Lon,
-		LastSeen:          lastSeen,
-		FirstSeen:         formatTSPtr(n.FirstSeen),
+		LastSeen:          types.NewWireTimePtr(n.LastSeen),
+		FirstSeen:         types.NewWireTimePtr(n.FirstSeen),
 		AdvertCount:       int(n.AdvertCount),
-		LastHeard:         lastSeen, // same value as last_seen, as nodeMap had it
 		Foreign:           n.Foreign,
 		BatteryMv:         n.BatteryMv,
 		TemperatureC:      n.TemperatureC,
 		DefaultScope:      n.DefaultScope,
 		ConfiguredScope:   n.ConfiguredScope,
-		ConfiguredScopeAt: formatTSPtr(n.ConfiguredScopeAt),
+		ConfiguredScopeAt: types.NewWireTimePtr(n.ConfiguredScopeAt),
+		LastHeard:         types.NewWireTimePtr(n.LastSeen), // same value as last_seen, as nodeMap had it
 	}
-}
-
-// formatTSPtr formats an optional time; nil stays nil (JSON null).
-func formatTSPtr(t *time.Time) *string {
-	if t == nil {
-		return nil
-	}
-	s := formatTS(*t)
-	return &s
+	return out
 }
 
 var lastHeardWindows = map[string]time.Duration{
@@ -229,14 +214,13 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 
 	if s.store != nil {
 		hashInfo := s.store.GetNodeHashSizeInfo()
-		node.SetHashSize(hashInfo[pubkey])
+		enrichNodeWithHashSize(&node, hashInfo[pubkey])
 		mbEntry, _ := s.store.GetMultibyteCapFor(pubkey)
-		node.SetMultiByte(mbEntry)
+		enrichNodeWithMultiByte(&node, mbEntry)
 		if node.Role.RelaysTraffic() {
 			ht := s.cfg.GetHealthThresholds()
 			info := s.store.GetRepeaterRelayInfo(pubkey, ht.RelayActiveHours)
-			relay := info
-			node.RepeaterRelayInfo = &relay
+			enrichNodeWithRelayInfo(&node, &info)
 			usefulMap := s.store.GetRepeaterUsefulnessScoreMap()
 			trafficRaw := lookupUsefulnessScore(usefulMap, pubkey)
 			trafficNorm := 0.0
@@ -250,7 +234,7 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 				Coverage:   s.store.GetCoverageScore(pubkey),
 				Redundancy: s.store.GetRedundancyScore(pubkey),
 			}, s.store.UsefulnessAxesComputed())
-			node.NodeUsefulness = &u
+			enrichNodeWithUsefulness(&node, &u)
 
 			// #1751: region scopes this repeater has transported.
 			if len(info.TransportedScopes) > 0 {
@@ -259,7 +243,7 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 			// #2001: same field, same rules as handleNodes.
 			if declaredCSV, ok := s.declaredRegionsCSV(ctx); ok {
 				answer, has := declaredCSV[strings.ToLower(pubkey)]
-				node.SetDeclaredScope(answer, has, info.TransportedScopes)
+				enrichNodeWithDeclaredScope(&node, answer, has, info.TransportedScopes)
 			}
 
 		}
@@ -329,7 +313,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	nodes := make([]NodeResponse, 0, len(dbNodes))
+	nodes := make([]api.Node, 0, len(dbNodes))
 	for i := range dbNodes {
 		nodes = append(nodes, nodeToResponse(&dbNodes[i]))
 	}
@@ -392,22 +376,21 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		for i := range nodes {
 			node := &nodes[i] // index, not a copy: the setters must change the slice element
 			pk := node.PublicKey
-			node.SetHashSize(hashInfo[pk])
+			enrichNodeWithHashSize(node, hashInfo[pk])
 			mbEntry, _ := s.store.GetMultibyteCapFor(pk)
-			node.SetMultiByte(mbEntry)
+			enrichNodeWithMultiByte(node, mbEntry)
 			if !node.Role.RelaysTraffic() {
 				continue
 			}
 			info, _ := lookupRelayInfo(relayMap, pk)
 			info.WindowHours = relayWindow
-			relay := info
-			node.RepeaterRelayInfo = &relay // also carries TransportedScopes (#1751)
+			enrichNodeWithRelayInfo(node, &info)
 
 			// #2001: how this repeater's region config reads. Omitted entirely
 			// when the declared lookup failed; see declaredRegionsCSV.
 			if declaredOK {
 				answer, has := declaredCSV[strings.ToLower(pk)]
-				node.SetDeclaredScope(answer, has, info.TransportedScopes)
+				enrichNodeWithDeclaredScope(node, answer, has, info.TransportedScopes)
 			}
 			// #672 4-axis usefulness. traffic_share_score keeps the raw
 			// per-axis Traffic value (#1456); the composite uses the
@@ -423,7 +406,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 				Coverage:   lookupUsefulnessScore(coverageMap, pk),
 				Redundancy: lookupUsefulnessScore(redundancyMap, pk),
 			}, axesComputed)
-			node.NodeUsefulness = &u
+			enrichNodeWithUsefulness(node, &u)
 		}
 	}
 	if s.cfg.GeoFilter != nil {
@@ -463,7 +446,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if areaNodes != nil {
-			filtered := make([]NodeResponse, 0, len(nodes))
+			filtered := make([]api.Node, 0, len(nodes))
 			for _, n := range nodes {
 				if areaNodes[n.PublicKey] {
 					filtered = append(filtered, n)
@@ -473,7 +456,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			total = len(filtered)
 		}
 	}
-	writeJSON(w, NodeListResponse{Nodes: nodes, Total: total, Counts: counts, HasMore: hasMore})
+	writeJSON(w, api.NodeListResponse{Nodes: nodes, Total: total, Counts: counts, HasMore: hasMore})
 
 }
 
@@ -481,7 +464,7 @@ func (s *Server) handleNodeSearch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q == "" {
-		writeJSON(w, NodeSearchResponse{Nodes: []NodeResponse{}})
+		writeJSON(w, api.NodeSearchResponse{Nodes: []api.Node{}})
 		return
 	}
 	found, err := s.db.SearchNodes(ctx, q, 10)
@@ -490,7 +473,7 @@ func (s *Server) handleNodeSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Filter blacklisted nodes and drop hidden-prefix nodes (#1181) from the results.
-	nodes := make([]NodeResponse, 0, len(found))
+	nodes := make([]api.Node, 0, len(found))
 	for i := range found {
 		n := &found[i]
 		if s.cfg.IsBlacklisted(n.PublicKey) {
@@ -505,7 +488,7 @@ func (s *Server) handleNodeSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		nodes = append(nodes, nodeToResponse(n))
 	}
-	writeJSON(w, NodeSearchResponse{Nodes: nodes})
+	writeJSON(w, api.NodeSearchResponse{Nodes: nodes})
 }
 
 func (s *Server) handleNodeHealth(w http.ResponseWriter, r *http.Request) {
@@ -1130,7 +1113,7 @@ func classifyNetworkStatus(nodes []database.NodeHealth, th HealthThresholds, now
 func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[string]interface{}, error) {
 	// Fetch node info from DB (fast single-row lookup)
 	dbNode, err := s.db.GetNodeByPubkey(ctx, pubkey)
-	var node NodeResponse
+	var node api.Node
 	switch {
 	case err == nil:
 		node = nodeToResponse(dbNode)
@@ -1145,7 +1128,7 @@ func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[str
 		}
 		// Synthetic node stub so the rest of the function works.
 		unknown := types.RoleUnknown
-		node = NodeResponse{PublicKey: pubkey, Name: ptr("Unknown"), Role: &unknown}
+		node = api.Node{PublicKey: pubkey, Name: ptr("Unknown"), Role: &unknown}
 	default:
 		return nil, err
 	}

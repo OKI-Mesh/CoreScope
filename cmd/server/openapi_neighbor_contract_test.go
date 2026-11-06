@@ -91,7 +91,7 @@ func TestResponsesMatchCommittedSpec(t *testing.T) {
 
 	listRec := httptest.NewRecorder()
 	router.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/nodes", nil))
-	var list NodeListResponse
+	var list api.NodeListResponse
 	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode /api/nodes: %v", err)
 	}

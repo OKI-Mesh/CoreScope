@@ -15,32 +15,32 @@ import (
 //
 // See issue #662.
 type RepeaterRelayInfo struct {
-	// LastRelayed is the ISO-8601 timestamp of the most recent non-advert
-	// packet where this pubkey appeared as a relay hop. Empty if never.
-	LastRelayed time.Time `json:"lastRelayed,omitempty"`
+	// LastRelayed is the time of the most recent non-advert packet where this
+	// pubkey appeared as a relay hop. Zero if it has never relayed.
+	LastRelayed time.Time
 	// RelayActive is true if LastRelayed falls within the configured
 	// activity window (default 24h).
-	RelayActive bool `json:"relayActive"`
+	RelayActive bool
 	// WindowHours is the active-window threshold actually used.
-	WindowHours float64 `json:"windowHours"`
+	WindowHours float64
 	// RelayCount1h is the count of distinct non-advert packets where this
 	// pubkey appeared as a relay hop in the last 1 hour.
-	RelayCount1h int `json:"relayCount1h"`
+	RelayCount1h int
 	// RelayCount24h is the count of distinct non-advert packets where this
 	// pubkey appeared as a relay hop in the last 24 hours.
-	RelayCount24h int `json:"relayCount24h"`
+	RelayCount24h int
 	// UnscopedRelayCount24h is the subset of RelayCount24h that were UNSCOPED
 	// floods (route_type == ROUTE_TYPE_FLOOD). A well-configured repeater runs
 	// `flood.max.unscoped 0` and should not forward these, so a non-trivial
 	// count flags a base-config problem (consumed by the ArcScope advisor).
-	UnscopedRelayCount24h int `json:"unscopedRelayCount24h"`
+	UnscopedRelayCount24h int
 	// TransportedScopes is the deduplicated, sorted set of region scope
 	// names (transmissions.scope_name) across ALL non-advert packets in
 	// which this pubkey appears as a path hop. Unlike RelayCount1h/24h this
 	// is NOT time-windowed — it answers "which region scopes has this
 	// repeater carried traffic for, ever (within the in-memory window)".
-	// Empty/absent on schemas without scope_name (#1751).
-	TransportedScopes []string `json:"transportedScopes,omitempty"`
+	// Empty on schemas without scope_name (#1751).
+	TransportedScopes []string
 }
 
 // maxTransportedScopes bounds the per-node TransportedScopes list so a

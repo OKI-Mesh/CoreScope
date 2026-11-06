@@ -120,6 +120,123 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/nodes:
+    get:
+      tags: [nodes]
+      operationId: listNodes
+      summary: List nodes
+      description: >-
+        Returns known mesh nodes with status and metadata, one page at a time.
+        Repeater and room rows also carry relay activity, the usefulness scores,
+        and the declared-region state. Paginate until has_more is false: the
+        geo-filter and area passes drop rows after the page is cut, so neither
+        the page length nor total says whether another page exists.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Clamped to the server's configured maximum.
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: role
+          in: query
+          required: false
+          description: Keep only nodes with this role.
+          schema:
+            $ref: "#/components/schemas/FilterableRole"
+        - name: search
+          in: query
+          required: false
+          description: Case-insensitive substring of the node name.
+          schema:
+            type: string
+        - name: region
+          in: query
+          required: false
+          description: Comma-separated region codes. Keep only nodes heard in these regions.
+          schema:
+            type: string
+        - name: area
+          in: query
+          required: false
+          description: Name of a configured area. Keep only nodes inside it.
+          schema:
+            type: string
+        - name: sortBy
+          in: query
+          required: false
+          description: Sort order.
+          schema:
+            type: string
+            enum: [lastSeen, name, packetCount]
+            default: lastSeen
+        - name: lastHeard
+          in: query
+          required: false
+          description: Keep only nodes heard within this window. Any other value is ignored.
+          schema:
+            type: string
+            enum: [1h, 6h, 24h, 7d, 30d]
+        - name: before
+          in: query
+          required: false
+          description: Keep only nodes first seen at or before this time. RFC 3339 or YYYY-MM-DD.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeListResponse"
+        "400":
+          description: A query parameter could not be parsed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: The node query failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/nodes/search:
+    get:
+      tags: [nodes]
+      operationId: searchNodes
+      summary: Search nodes
+      description: Search nodes by name or public key prefix. Returns at most 10 nodes. An empty query returns an empty list.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Search text.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeSearchResponse"
+        "500":
+          description: The search failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     NodeRole:
@@ -324,6 +441,231 @@ components:
       format: date-time
       description: UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
-      x-go-type: types.UTCTime
+      x-go-type: types.WireTime
       x-go-type-import:
         path: github.com/OKI-Mesh/CoreScope/internal/types
+    UsefulnessGrade:
+      type: string
+      description: Letter grade derived from usefulness_score.
+      enum: [A, B, C, D, F]
+    ScopeConfigState:
+      type: string
+      description: >-
+        How a repeater's region configuration reads. full: named regions and
+        the * wildcard. no-scopes: * only. no-unscoped: named regions, no *.
+        no-flood: neither. observed: no declared answer, but scoped traffic was
+        seen through it. none: no declared answer and no scoped traffic seen;
+        this means "not told", not a fault.
+      enum: [full, no-scopes, no-unscoped, no-flood, observed, none]
+    RoleCounts:
+      type: object
+      description: All-time node counts per role.
+      required: [repeaters, rooms, companions, sensors]
+      properties:
+        repeaters:
+          type: integer
+        rooms:
+          type: integer
+        companions:
+          type: integer
+        sensors:
+          type: integer
+    NodeListResponse:
+      type: object
+      required: [nodes, total, counts, has_more]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+        total:
+          type: integer
+          description: Total nodes matching the query after filtering.
+        counts:
+          $ref: "#/components/schemas/RoleCounts"
+        has_more:
+          type: boolean
+          description: True when rows exist past this page. Paginate until this is false.
+    NodeSearchResponse:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+    Node:
+      type: object
+      additionalProperties: false
+      description: >-
+        A mesh node. Fields marked repeater/room only are absent on other
+        roles. A field that is absent is not the same as null: null means the
+        server looked and has no value.
+      required:
+        - public_key
+        - name
+        - role
+        - lat
+        - lon
+        - last_seen
+        - first_seen
+        - advert_count
+        - last_heard
+        - hash_size
+        - hash_size_inconsistent
+        - foreign
+        - battery_mv
+        - temperature_c
+        - default_scope
+        - configured_scope
+        - configured_scope_at
+      properties:
+        public_key:
+          type: string
+          description: Node public key (hex).
+        name:
+          type: string
+          nullable: true
+          description: Most recent advert name.
+        role:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/NodeRole"
+        lat:
+          type: number
+          format: double
+          nullable: true
+        lon:
+          type: number
+          format: double
+          nullable: true
+        last_seen:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+        first_seen:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+        advert_count:
+          type: integer
+        last_heard:
+          nullable: true
+          description: Same value as last_seen.
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+        hash_size:
+          type: integer
+          nullable: true
+          description: Null until the node's hash size is known.
+        hash_size_inconsistent:
+          type: boolean
+        foreign:
+          type: boolean
+          description: Flagged by the ingestor's geo filter as bridged or leaked from outside the configured area.
+        battery_mv:
+          type: integer
+          nullable: true
+        temperature_c:
+          type: number
+          format: double
+          nullable: true
+        default_scope:
+          type: string
+          nullable: true
+        configured_scope:
+          type: string
+          nullable: true
+        configured_scope_at:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+        hash_sizes_seen:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Present only when the node has advertised more than one hash size.
+          items:
+            type: integer
+        flood_advert_count_7d:
+          type: integer
+          description: Distinct flood adverts originated in the last 7 days. Present on the node detail endpoint.
+        multi_byte_status:
+          type: string
+          description: Present on any node with a multi-byte capability entry.
+        multi_byte_evidence:
+          type: string
+        multi_byte_max_hash_size:
+          type: integer
+        last_relayed:
+          description: Repeater/room only. Time this node last appeared as a relay hop. Absent if it never has.
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+        relay_active:
+          type: boolean
+          description: Repeater/room only. Relayed traffic within the active window.
+        relay_window_hours:
+          type: number
+          format: double
+          description: Repeater/room only. Width of the active window in hours.
+        relay_count_1h:
+          type: integer
+          description: Repeater/room only. Relay-hop appearances in the last hour.
+        relay_count_24h:
+          type: integer
+          description: Repeater/room only. Relay-hop appearances in the last 24 hours.
+        unscoped_relay_count_24h:
+          type: integer
+          description: Repeater/room only. Subset of relay_count_24h that were unscoped floods. A well-configured repeater should show zero.
+        transported_scopes:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Repeater/room only. Region scopes of traffic that named this node as a hop, over the in-memory window. Absent when none.
+          items:
+            type: string
+        traffic_share_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. Share of non-advert traffic relayed through this repeater.
+        bridge_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. Normalized betweenness centrality (chokepoint importance).
+        coverage_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. Normalized harmonic reach centrality.
+        redundancy_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Repeater/room only. 1 means removing the node fragments the mesh; 0 means alternate paths exist.
+        usefulness_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: "Repeater/room only. Composite: 0.30 bridge + 0.25 coverage + 0.25 redundancy + 0.20 traffic."
+        usefulness_grade:
+          $ref: "#/components/schemas/UsefulnessGrade"
+        scope_config_state:
+          $ref: "#/components/schemas/ScopeConfigState"
+        declared_regions:
+          type: array
+          description: >-
+            Repeater/room only. Regions from the node's newest declared-regions
+            answer, without a leading # and without the * wildcard. An empty
+            array means it answered and named none. Absent means it never
+            answered, or the lookup failed; absence is not evidence the node
+            has no region.
+          items:
+            type: string
+        declared_regions_truncated:
+          type: boolean
+          description: Present, and true, only when the answer behind declared_regions was flagged as cut off.

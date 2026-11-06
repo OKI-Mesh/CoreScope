@@ -7,6 +7,111 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
+// Defines values for ScopeConfigState.
+const (
+	Full       ScopeConfigState = "full"
+	NoFlood    ScopeConfigState = "no-flood"
+	NoScopes   ScopeConfigState = "no-scopes"
+	NoUnscoped ScopeConfigState = "no-unscoped"
+	None       ScopeConfigState = "none"
+	Observed   ScopeConfigState = "observed"
+)
+
+// Valid indicates whether the value is a known member of the ScopeConfigState enum.
+func (e ScopeConfigState) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case NoFlood:
+		return true
+	case NoScopes:
+		return true
+	case NoUnscoped:
+		return true
+	case None:
+		return true
+	case Observed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UsefulnessGrade.
+const (
+	A UsefulnessGrade = "A"
+	B UsefulnessGrade = "B"
+	C UsefulnessGrade = "C"
+	D UsefulnessGrade = "D"
+	F UsefulnessGrade = "F"
+)
+
+// Valid indicates whether the value is a known member of the UsefulnessGrade enum.
+func (e UsefulnessGrade) Valid() bool {
+	switch e {
+	case A:
+		return true
+	case B:
+		return true
+	case C:
+		return true
+	case D:
+		return true
+	case F:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListNodesParamsSortBy.
+const (
+	LastSeen    ListNodesParamsSortBy = "lastSeen"
+	Name        ListNodesParamsSortBy = "name"
+	PacketCount ListNodesParamsSortBy = "packetCount"
+)
+
+// Valid indicates whether the value is a known member of the ListNodesParamsSortBy enum.
+func (e ListNodesParamsSortBy) Valid() bool {
+	switch e {
+	case LastSeen:
+		return true
+	case Name:
+		return true
+	case PacketCount:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListNodesParamsLastHeard.
+const (
+	N1h  ListNodesParamsLastHeard = "1h"
+	N24h ListNodesParamsLastHeard = "24h"
+	N30d ListNodesParamsLastHeard = "30d"
+	N6h  ListNodesParamsLastHeard = "6h"
+	N7d  ListNodesParamsLastHeard = "7d"
+)
+
+// Valid indicates whether the value is a known member of the ListNodesParamsLastHeard enum.
+func (e ListNodesParamsLastHeard) Valid() bool {
+	switch e {
+	case N1h:
+		return true
+	case N24h:
+		return true
+	case N30d:
+		return true
+	case N6h:
+		return true
+	case N7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // CandidateEntry A candidate node offered when a neighbor edge is ambiguous.
 type CandidateEntry struct {
 	// Name Empty when the node is not known.
@@ -110,6 +215,109 @@ type NeighborGraphResponse struct {
 	Stats GraphStats  `json:"stats"`
 }
 
+// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
+type Node struct {
+	AdvertCount int  `json:"advert_count"`
+	BatteryMv   *int `json:"battery_mv"`
+
+	// BridgeScore Repeater/room only. Normalized betweenness centrality (chokepoint importance).
+	BridgeScore       *float64   `json:"bridge_score,omitempty"`
+	ConfiguredScope   *string    `json:"configured_scope"`
+	ConfiguredScopeAt *Timestamp `json:"configured_scope_at"`
+
+	// CoverageScore Repeater/room only. Normalized harmonic reach centrality.
+	CoverageScore *float64 `json:"coverage_score,omitempty"`
+
+	// DeclaredRegions Repeater/room only. Regions from the node's newest declared-regions answer, without a leading # and without the * wildcard. An empty array means it answered and named none. Absent means it never answered, or the lookup failed; absence is not evidence the node has no region.
+	DeclaredRegions *[]string `json:"declared_regions,omitempty"`
+
+	// DeclaredRegionsTruncated Present, and true, only when the answer behind declared_regions was flagged as cut off.
+	DeclaredRegionsTruncated *bool      `json:"declared_regions_truncated,omitempty"`
+	DefaultScope             *string    `json:"default_scope"`
+	FirstSeen                *Timestamp `json:"first_seen"`
+
+	// FloodAdvertCount7d Distinct flood adverts originated in the last 7 days. Present on the node detail endpoint.
+	FloodAdvertCount7d *int `json:"flood_advert_count_7d,omitempty"`
+
+	// Foreign Flagged by the ingestor's geo filter as bridged or leaked from outside the configured area.
+	Foreign bool `json:"foreign"`
+
+	// HashSize Null until the node's hash size is known.
+	HashSize             *int `json:"hash_size"`
+	HashSizeInconsistent bool `json:"hash_size_inconsistent"`
+
+	// HashSizesSeen Present only when the node has advertised more than one hash size.
+	HashSizesSeen []int `json:"hash_sizes_seen,omitempty"`
+
+	// LastHeard Same value as last_seen.
+	LastHeard *Timestamp `json:"last_heard"`
+
+	// LastRelayed Repeater/room only. Time this node last appeared as a relay hop. Absent if it never has.
+	LastRelayed          *Timestamp `json:"last_relayed,omitempty"`
+	LastSeen             *Timestamp `json:"last_seen"`
+	Lat                  *float64   `json:"lat"`
+	Lon                  *float64   `json:"lon"`
+	MultiByteEvidence    *string    `json:"multi_byte_evidence,omitempty"`
+	MultiByteMaxHashSize *int       `json:"multi_byte_max_hash_size,omitempty"`
+
+	// MultiByteStatus Present on any node with a multi-byte capability entry.
+	MultiByteStatus *string `json:"multi_byte_status,omitempty"`
+
+	// Name Most recent advert name.
+	Name *string `json:"name"`
+
+	// PublicKey Node public key (hex).
+	PublicKey string `json:"public_key"`
+
+	// RedundancyScore Repeater/room only. 1 means removing the node fragments the mesh; 0 means alternate paths exist.
+	RedundancyScore *float64 `json:"redundancy_score,omitempty"`
+
+	// RelayActive Repeater/room only. Relayed traffic within the active window.
+	RelayActive *bool `json:"relay_active,omitempty"`
+
+	// RelayCount1h Repeater/room only. Relay-hop appearances in the last hour.
+	RelayCount1h *int `json:"relay_count_1h,omitempty"`
+
+	// RelayCount24h Repeater/room only. Relay-hop appearances in the last 24 hours.
+	RelayCount24h *int `json:"relay_count_24h,omitempty"`
+
+	// RelayWindowHours Repeater/room only. Width of the active window in hours.
+	RelayWindowHours *float64  `json:"relay_window_hours,omitempty"`
+	Role             *NodeRole `json:"role"`
+
+	// ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
+	ScopeConfigState *ScopeConfigState `json:"scope_config_state,omitempty"`
+	TemperatureC     *float64          `json:"temperature_c"`
+
+	// TrafficShareScore Repeater/room only. Share of non-advert traffic relayed through this repeater.
+	TrafficShareScore *float64 `json:"traffic_share_score,omitempty"`
+
+	// TransportedScopes Repeater/room only. Region scopes of traffic that named this node as a hop, over the in-memory window. Absent when none.
+	TransportedScopes []string `json:"transported_scopes,omitempty"`
+
+	// UnscopedRelayCount24h Repeater/room only. Subset of relay_count_24h that were unscoped floods. A well-configured repeater should show zero.
+	UnscopedRelayCount24h *int `json:"unscoped_relay_count_24h,omitempty"`
+
+	// UsefulnessGrade Letter grade derived from usefulness_score.
+	UsefulnessGrade *UsefulnessGrade `json:"usefulness_grade,omitempty"`
+
+	// UsefulnessScore Repeater/room only. Composite: 0.30 bridge + 0.25 coverage + 0.25 redundancy + 0.20 traffic.
+	UsefulnessScore *float64 `json:"usefulness_score,omitempty"`
+}
+
+// NodeListResponse defines model for NodeListResponse.
+type NodeListResponse struct {
+	// Counts All-time node counts per role.
+	Counts RoleCounts `json:"counts"`
+
+	// HasMore True when rows exist past this page. Paginate until this is false.
+	HasMore bool   `json:"has_more"`
+	Nodes   []Node `json:"nodes"`
+
+	// Total Total nodes matching the query after filtering.
+	Total int `json:"total"`
+}
+
 // NodeNeighborsResponse defines model for NodeNeighborsResponse.
 type NodeNeighborsResponse struct {
 	Neighbors []NeighborEntry `json:"neighbors"`
@@ -124,8 +332,27 @@ type NodeNeighborsResponse struct {
 // NodeRole MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
 type NodeRole = types.NodeRole
 
+// NodeSearchResponse defines model for NodeSearchResponse.
+type NodeSearchResponse struct {
+	Nodes []Node `json:"nodes"`
+}
+
+// RoleCounts All-time node counts per role.
+type RoleCounts struct {
+	Companions int `json:"companions"`
+	Repeaters  int `json:"repeaters"`
+	Rooms      int `json:"rooms"`
+	Sensors    int `json:"sensors"`
+}
+
+// ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
+type ScopeConfigState string
+
 // Timestamp UTC with millisecond precision, for example 2026-11-06T13:00:00.123Z.
 type Timestamp = types.WireTime
+
+// UsefulnessGrade Letter grade derived from usefulness_score.
+type UsefulnessGrade string
 
 // GetNeighborGraphParams defines parameters for GetNeighborGraph.
 type GetNeighborGraphParams struct {
@@ -140,6 +367,46 @@ type GetNeighborGraphParams struct {
 
 	// Role Keep only edges where at least one endpoint has this role. Matched case-insensitively.
 	Role *FilterableRole `form:"role,omitempty" json:"role,omitempty"`
+}
+
+// ListNodesParams defines parameters for ListNodes.
+type ListNodesParams struct {
+	// Limit Page size. Clamped to the server's configured maximum.
+	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// Role Keep only nodes with this role.
+	Role *FilterableRole `form:"role,omitempty" json:"role,omitempty"`
+
+	// Search Case-insensitive substring of the node name.
+	Search *string `form:"search,omitempty" json:"search,omitempty"`
+
+	// Region Comma-separated region codes. Keep only nodes heard in these regions.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Name of a configured area. Keep only nodes inside it.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+
+	// SortBy Sort order.
+	SortBy *ListNodesParamsSortBy `form:"sortBy,omitempty" json:"sortBy,omitempty"`
+
+	// LastHeard Keep only nodes heard within this window. Any other value is ignored.
+	LastHeard *ListNodesParamsLastHeard `form:"lastHeard,omitempty" json:"lastHeard,omitempty"`
+
+	// Before Keep only nodes first seen at or before this time. RFC 3339 or YYYY-MM-DD.
+	Before *string `form:"before,omitempty" json:"before,omitempty"`
+}
+
+// ListNodesParamsSortBy defines parameters for ListNodes.
+type ListNodesParamsSortBy string
+
+// ListNodesParamsLastHeard defines parameters for ListNodes.
+type ListNodesParamsLastHeard string
+
+// SearchNodesParams defines parameters for SearchNodes.
+type SearchNodesParams struct {
+	// Q Search text.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 
 // GetNodeNeighborsParams defines parameters for GetNodeNeighbors.
