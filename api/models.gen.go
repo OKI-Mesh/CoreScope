@@ -215,6 +215,17 @@ type NeighborGraphResponse struct {
 	Stats GraphStats  `json:"stats"`
 }
 
+// NetworkStatusResponse defines model for NetworkStatusResponse.
+type NetworkStatusResponse struct {
+	Active   int `json:"active"`
+	Degraded int `json:"degraded"`
+
+	// RoleCounts Node count per role as stored. Keys are role names and can include values outside NodeRole (for example "type-7").
+	RoleCounts map[string]int `json:"roleCounts"`
+	Silent     int            `json:"silent"`
+	Total      int            `json:"total"`
+}
+
 // Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
 type Node struct {
 	AdvertCount int  `json:"advert_count"`
@@ -307,7 +318,7 @@ type Node struct {
 
 // NodeAdvert defines model for NodeAdvert.
 type NodeAdvert struct {
-	UnderscoreParsedPath *[]string               `json:"_parsedPath"`
+	UnderscoreParsedPath *[]string               `json:"_parsedPath,omitempty"`
 	DecodedJson          *string                 `json:"decoded_json"`
 	Direction            *string                 `json:"direction"`
 	FirstSeen            *TimestampSeconds       `json:"first_seen"`
@@ -332,14 +343,14 @@ type NodeAdvert struct {
 
 // NodeAdvertObservation defines model for NodeAdvertObservation.
 type NodeAdvertObservation struct {
-	Direction    *string  `json:"direction"`
+	Direction    *string  `json:"direction,omitempty"`
 	Id           int64    `json:"id"`
 	ObserverIata string   `json:"observer_iata"`
 	ObserverId   *string  `json:"observer_id"`
 	ObserverName *string  `json:"observer_name"`
 	PathJson     string   `json:"path_json"`
 	Rssi         *float64 `json:"rssi"`
-	Score        *float64 `json:"score"`
+	Score        *float64 `json:"score,omitempty"`
 	Snr          *float64 `json:"snr"`
 
 	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
@@ -388,7 +399,7 @@ type NodeSearchResponse struct {
 
 // PacketCore defines model for PacketCore.
 type PacketCore struct {
-	UnderscoreParsedPath *[]string          `json:"_parsedPath"`
+	UnderscoreParsedPath *[]string          `json:"_parsedPath,omitempty"`
 	DecodedJson          *string            `json:"decoded_json"`
 	Direction            *string            `json:"direction"`
 	FirstSeen            *TimestampSeconds  `json:"first_seen"`

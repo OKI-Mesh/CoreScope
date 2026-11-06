@@ -1140,21 +1140,12 @@ func pubkeysInArea(positions []database.NodePosition, entry AreaEntry) []string 
 	return result
 }
 
-// NetworkStatus mirrors the /api/network-status payload.
-type NetworkStatus struct {
-	Total      int                    `json:"total"`
-	Active     int                    `json:"active"`
-	Degraded   int                    `json:"degraded"`
-	Silent     int                    `json:"silent"`
-	RoleCounts map[types.NodeRole]int `json:"roleCounts"`
-}
-
 // classifyNetworkStatus buckets nodes by how long ago they were last seen, using the
 // per-role degraded and silent thresholds. Never-seen nodes count as silent.
-func classifyNetworkStatus(nodes []database.NodeHealth, th HealthThresholds, now time.Time) NetworkStatus {
-	st := NetworkStatus{Total: len(nodes), RoleCounts: map[types.NodeRole]int{}}
+func classifyNetworkStatus(nodes []database.NodeHealth, th HealthThresholds, now time.Time) api.NetworkStatusResponse {
+	st := api.NetworkStatusResponse{Total: len(nodes), RoleCounts: map[string]int{}}
 	for _, n := range nodes {
-		st.RoleCounts[n.Role]++
+		st.RoleCounts[string(n.Role)]++
 
 		degradedMs, silentMs := th.GetHealthMs(n.Role)
 		if n.LastSeen == nil {
@@ -1313,8 +1304,6 @@ func nodeAdvertObservation(o database.Observation) api.NodeAdvertObservation {
 		ObserverIata:   o.ObserverIATA,
 		Snr:            o.SNR,
 		Rssi:           o.RSSI,
-		Score:          o.Score,
-		Direction:      optString(o.Direction),
 		PathJson:       prefixesJSON(prefixes),
 		Timestamp:      types.WireTimeMillis{Time: o.Timestamp},
 	}

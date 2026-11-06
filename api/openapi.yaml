@@ -278,6 +278,21 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/network-status:
+    get:
+      operationId: getNetworkStatus
+      summary: Fleet-wide node activity summary
+      responses:
+        "200":
+          description: Counts of nodes by activity bucket and by role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NetworkStatusResponse' }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   schemas:
     NodeRole:
@@ -727,7 +742,6 @@ components:
         recentAdverts:
           type: array
           items: { $ref: '#/components/schemas/NodeAdvert' }
-
     PacketCore:
       type: object
       required:
@@ -748,7 +762,6 @@ components:
         - path_json
         - direction
         - scope_name
-        - _parsedPath
       properties:
         id: { type: integer }
         raw_hex: { type: string, nullable: true }
@@ -782,7 +795,6 @@ components:
         scope_name: { type: string, nullable: true }
         _parsedPath:
           type: array
-          nullable: true
           items: { type: string }
         resolved_path:
           type: array
@@ -792,7 +804,7 @@ components:
       type: object
       additionalProperties: false
       required:
-        [id, transmission_id, observer_id, observer_name, observer_iata, snr, rssi, score, direction, path_json, timestamp]
+        [id, transmission_id, observer_id, observer_name, observer_iata, snr, rssi, path_json, timestamp]
       properties:
         id: { type: integer, format: int64 }
         transmission_id: { type: integer, format: int64 }
@@ -801,8 +813,8 @@ components:
         observer_iata: { type: string }
         snr: { type: number, format: double, nullable: true }
         rssi: { type: number, format: double, nullable: true }
-        score: { type: number, format: double, nullable: true }
-        direction: { type: string, nullable: true }
+        score: { type: number, format: double }
+        direction: { type: string }
         path_json: { type: string }
         timestamp: { $ref: '#/components/schemas/TimestampMillis' }
 
@@ -815,3 +827,19 @@ components:
             observations:
               type: array
               items: { $ref: '#/components/schemas/NodeAdvertObservation' }
+    NetworkStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [active, degraded, silent, total, roleCounts]
+      properties:
+        active: { type: integer }
+        degraded: { type: integer }
+        silent: { type: integer }
+        total: { type: integer }
+        roleCounts:
+          type: object
+          description: >
+            Node count per role as stored. Keys are role names and can include
+            values outside NodeRole (for example "type-7").
+          additionalProperties: { type: integer }
+          

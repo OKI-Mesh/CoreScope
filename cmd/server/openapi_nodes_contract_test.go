@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -133,6 +134,7 @@ func TestNodeEndpointsMatchSpec(t *testing.T) {
 		"/api/nodes?role=repeater&lastHeard=7d",
 		"/api/nodes/search?q=a",
 		"/api/nodes/search",
+		"/api/nodes/network-status",
 	} {
 		t.Run(path, func(t *testing.T) {
 			checker.check(t, router, path)
@@ -172,4 +174,30 @@ func TestNodeDetailMatchesSpec(t *testing.T) {
 	t.Run("ambiguous prefix is a 409", func(t *testing.T) {
 		checker.checkStatus(t, router, "/api/nodes/deadbeef", http.StatusConflict)
 	})
+}
+
+// TestProdNodeDetailFixtureMatchesSpec validates a trimmed copy of a real
+// production /api/nodes/{pubkey} response against the spec. The contract has to
+// accept exactly what the live frontend receives today, so a field the spec
+// requires but production does not send fails here.
+func TestProdNodeDetailFixtureMatchesSpec(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
+	if err != nil {
+		t.Fatalf("load spec: %v", err)
+	}
+	schema, ok := doc.Components.Schemas["NodeDetailResponse"]
+	if !ok {
+		t.Fatal("NodeDetailResponse is not in the spec")
+	}
+	raw, err := os.ReadFile("testdata/node_details_prod.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if err := schema.Value.VisitJSON(decoded); err != nil {
+		t.Errorf("production response does not match NodeDetailResponse: %v", err)
+	}
 }
