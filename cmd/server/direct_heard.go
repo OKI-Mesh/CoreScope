@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -266,21 +267,21 @@ func relayOnlyObserverCount(seenObservers map[string]struct{}, direct map[string
 
 // buildDirectObserverRows renders one node's aggregate as sorted API rows.
 // nonRelay and seen carry the can_relay tri-state; both may be nil.
-func buildDirectObserverRows(byObs map[string]*directHeardAgg, nonRelay, seen map[string]struct{}) []HealthObserverRow {
-	rows := make([]HealthObserverRow, 0, len(byObs))
+func buildDirectObserverRows(byObs map[string]*directHeardAgg, nonRelay, seen map[string]struct{}) []api.DirectObserverStats {
+	rows := make([]api.DirectObserverStats, 0, len(byObs))
 	for id, agg := range byObs {
-		row := HealthObserverRow{
-			ObserverID:   id,
+		row := api.DirectObserverStats{
+			ObserverId:   id,
 			ObserverName: agg.ObserverName,
 			PacketCount:  agg.Count,
 		}
 		if agg.SNRCount > 0 {
 			v := agg.SNRSum / float64(agg.SNRCount)
-			row.AvgSNR = &v
+			row.AvgSnr = &v
 		}
 		if agg.RSSICount > 0 {
 			v := agg.RSSISum / float64(agg.RSSICount)
-			row.AvgRSSI = &v
+			row.AvgRssi = &v
 		}
 		idLower := strings.ToLower(id)
 		if _, ok := seen[idLower]; ok {
@@ -290,13 +291,11 @@ func buildDirectObserverRows(byObs map[string]*directHeardAgg, nonRelay, seen ma
 		}
 		rows = append(rows, row)
 	}
-	// Packet count descending, observer id ascending as a deterministic
-	// tiebreak so repeated requests return a stable order.
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].PacketCount != rows[j].PacketCount {
 			return rows[i].PacketCount > rows[j].PacketCount
 		}
-		return rows[i].ObserverID < rows[j].ObserverID
+		return rows[i].ObserverId < rows[j].ObserverId
 	})
 	return rows
 }

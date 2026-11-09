@@ -583,35 +583,40 @@ func (s *Server) handleBulkHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	lim := queryLimit(r, 50, s.cfg.ListLimits.BulkHealthMax)
 
-	if s.store != nil {
-		region := r.URL.Query().Get("region")
-		area := r.URL.Query().Get("area")
-		results := s.store.GetBulkHealth(ctx, lim, region, area)
-		// Filter blacklisted nodes + hidden-prefix nodes (#1181).
-		needsBlacklist := len(s.cfg.NodeBlacklist) > 0
-		needsHidden := len(s.cfg.HiddenNamePrefixes) > 0
-		if needsBlacklist || needsHidden {
-			filtered := make([]map[string]interface{}, 0, len(results))
-			for _, entry := range results {
-				if pk, ok := entry["public_key"].(string); ok && needsBlacklist && s.cfg.IsBlacklisted(pk) {
-					continue
-				}
-				if needsHidden {
-					name, _ := entry["name"].(string)
-					if s.cfg.IsNameHidden(name) {
-						continue
-					}
-				}
-				filtered = append(filtered, entry)
-			}
-			writeJSON(w, filtered)
-			return
-		}
+	if s.store == nil {
+		writeJSON(w, []api.BulkHealthEntry{})
+		return
+	}
+
+	region := r.URL.Query().Get("region")
+	area := r.URL.Query().Get("area")
+	results := s.store.GetBulkHealth(ctx, lim, region, area)
+
+	// Filter blacklisted nodes + hidden-prefix nodes (#1181).
+	needsBlacklist := len(s.cfg.NodeBlacklist) > 0
+	needsHidden := len(s.cfg.HiddenNamePrefixes) > 0
+	if !needsBlacklist && !needsHidden {
 		writeJSON(w, results)
 		return
 	}
 
-	writeJSON(w, []BulkHealthEntry{})
+	filtered := make([]api.BulkHealthEntry, 0, len(results))
+	for _, entry := range results {
+		if needsBlacklist && s.cfg.IsBlacklisted(entry.PublicKey) {
+			continue
+		}
+		if needsHidden {
+			name := ""
+			if entry.Name != nil {
+				name = *entry.Name
+			}
+			if s.cfg.IsNameHidden(name) {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	writeJSON(w, filtered)
 }
 
 func (s *Server) handleNetworkStatus(w http.ResponseWriter, r *http.Request) {

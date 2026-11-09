@@ -271,16 +271,16 @@ func TestBuildDirectObserverRowsSortedAndAveraged(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	if rows[0].ObserverID != "high" || rows[1].ObserverID != "none" || rows[2].ObserverID != "low" {
+	if rows[0].ObserverId != "high" || rows[1].ObserverId != "none" || rows[2].ObserverId != "low" {
 		t.Fatalf("rows not sorted by packet count desc: %#v", rows)
 	}
-	if rows[0].AvgSNR == nil || *rows[0].AvgSNR != 9 {
-		t.Fatalf("avgSnr = %v, want 9", rows[0].AvgSNR)
+	if rows[0].AvgSnr == nil || *rows[0].AvgSnr != 9 {
+		t.Fatalf("avgSnr = %v, want 9", rows[0].AvgSnr)
 	}
-	if rows[0].AvgRSSI == nil || *rows[0].AvgRSSI != -50 {
-		t.Fatalf("avgRssi = %v, want -50", rows[0].AvgRSSI)
+	if rows[0].AvgRssi == nil || *rows[0].AvgRssi != -50 {
+		t.Fatalf("avgRssi = %v, want -50", rows[0].AvgRssi)
 	}
-	if rows[1].AvgSNR != nil || rows[1].AvgRSSI != nil {
+	if rows[1].AvgSnr != nil || rows[1].AvgRssi != nil {
 		t.Fatalf("observer with no signal samples must report null, got %#v", rows[1])
 	}
 }
@@ -300,7 +300,7 @@ func TestBuildDirectObserverRows_CanRelayTriState(t *testing.T) {
 
 	got := map[string]*bool{}
 	for _, r := range rows {
-		got[r.ObserverID] = r.CanRelay
+		got[r.ObserverId] = r.CanRelay
 	}
 	if got["unknown"] != nil {
 		t.Fatalf("unknown observer must report nil can_relay, got %v", *got["unknown"])

@@ -8697,7 +8697,7 @@ func (s *PacketStore) computeMultiByteCapability(adopterHashSizes map[string]int
 
 // --- Bulk Health (in-memory) ---
 
-func (s *PacketStore) GetBulkHealth(ctx context.Context, limit int, region, area string) []map[string]interface{} {
+func (s *PacketStore) GetBulkHealth(ctx context.Context, limit int, region, area string) []api.BulkHealthEntry {
 	// Everything that can touch the database happens before s.mu is taken.
 	var areaNodes map[string]bool
 	if area != "" {
@@ -8774,7 +8774,7 @@ func (s *PacketStore) GetBulkHealth(ctx context.Context, limit int, region, area
 	}
 
 	todayStart := time.Now().UTC().Truncate(24 * time.Hour)
-	results := make([]map[string]interface{}, 0, len(nodes))
+	results := make([]api.BulkHealthEntry, 0, len(nodes))
 
 	for _, n := range nodes {
 		packets := s.byNode[n.PublicKey]
@@ -8812,35 +8812,40 @@ func (s *PacketStore) GetBulkHealth(ctx context.Context, limit int, region, area
 		observerRows := buildDirectObserverRows(directByObs, nonRelaySet, seenSet)
 		relayObserverCount := relayOnlyObserverCount(relayObservers, directByObs)
 
-		var avgSnr interface{}
+		var avgSnr *float64
 		if snrCount > 0 {
-			avgSnr = snrSum / float64(snrCount)
+			v := snrSum / float64(snrCount)
+			avgSnr = &v
 		}
-		var lhVal interface{}
+		var lastHeardPtr *types.WireTimeSeconds
 		if !lastHeard.IsZero() {
-			lhVal = formatTS(lastHeard)
+			lastHeardPtr = &types.WireTimeSeconds{Time: lastHeard}
 		}
-		var lat, lon interface{}
+		var lat, lon *float64
 		if n.HasGPS {
-			lat, lon = n.Lat, n.Lon
+			lat, lon = ptr(n.Lat), ptr(n.Lon)
+		}
+		var name *string
+		if n.Name != "" {
+			name = ptr(n.Name)
 		}
 
-		results = append(results, map[string]interface{}{
-			"public_key": n.PublicKey,
-			"name":       nilIfEmpty(n.Name),
-			"role":       n.Role,
-			"lat":        lat,
-			"lon":        lon,
-			"stats": map[string]interface{}{
-				"totalTransmissions": len(packets),
-				"totalObservations":  totalObservations,
-				"totalPackets":       len(packets),
-				"packetsToday":       packetsToday,
-				"avgSnr":             avgSnr,
-				"lastHeard":          lhVal,
+		results = append(results, api.BulkHealthEntry{
+			PublicKey: n.PublicKey,
+			Name:      name,
+			Role:      string(n.Role),
+			Lat:       lat,
+			Lon:       lon,
+			Stats: api.BulkHealthStats{
+				TotalTransmissions: len(packets),
+				TotalObservations:  totalObservations,
+				TotalPackets:       len(packets),
+				PacketsToday:       packetsToday,
+				AvgSnr:             avgSnr,
+				LastHeard:          lastHeardPtr,
 			},
-			"observers":          observerRows,
-			"relayObserverCount": relayObserverCount,
+			Observers:          observerRows,
+			RelayObserverCount: relayObserverCount,
 		})
 	}
 

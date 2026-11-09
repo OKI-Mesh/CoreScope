@@ -112,12 +112,51 @@ func (e ListNodesParamsLastHeard) Valid() bool {
 	}
 }
 
+// BulkHealthEntry defines model for BulkHealthEntry.
+type BulkHealthEntry struct {
+	Lat       *float64              `json:"lat"`
+	Lon       *float64              `json:"lon"`
+	Name      *string               `json:"name"`
+	Observers []DirectObserverStats `json:"observers"`
+	PublicKey string                `json:"public_key"`
+
+	// RelayObserverCount Observers that saw traffic involving this node but did not hear it directly.
+	RelayObserverCount int             `json:"relayObserverCount"`
+	Role               string          `json:"role"`
+	Stats              BulkHealthStats `json:"stats"`
+}
+
+// BulkHealthResponse defines model for BulkHealthResponse.
+type BulkHealthResponse = []BulkHealthEntry
+
+// BulkHealthStats defines model for BulkHealthStats.
+type BulkHealthStats struct {
+	AvgSnr             *float64          `json:"avgSnr"`
+	LastHeard          *TimestampSeconds `json:"lastHeard"`
+	PacketsToday       int               `json:"packetsToday"`
+	TotalObservations  int               `json:"totalObservations"`
+	TotalPackets       int               `json:"totalPackets"`
+	TotalTransmissions int               `json:"totalTransmissions"`
+}
+
 // CandidateEntry A candidate node offered when a neighbor edge is ambiguous.
 type CandidateEntry struct {
 	// Name Empty when the node is not known.
 	Name   string    `json:"name"`
 	Pubkey string    `json:"pubkey"`
 	Role   *NodeRole `json:"role"`
+}
+
+// DirectObserverStats defines model for DirectObserverStats.
+type DirectObserverStats struct {
+	AvgRssi *float64 `json:"avgRssi"`
+	AvgSnr  *float64 `json:"avgSnr"`
+
+	// CanRelay Null when no repeat field was ever reported for this observer.
+	CanRelay     *bool  `json:"can_relay"`
+	ObserverId   string `json:"observer_id"`
+	ObserverName string `json:"observer_name"`
+	PacketCount  int    `json:"packetCount"`
 }
 
 // ErrorResponse defines model for ErrorResponse.
@@ -489,6 +528,18 @@ type ListNodesParamsSortBy string
 
 // ListNodesParamsLastHeard defines parameters for ListNodes.
 type ListNodesParamsLastHeard string
+
+// GetBulkHealthParams defines parameters for GetBulkHealth.
+type GetBulkHealthParams struct {
+	// Limit Capped by the configured BulkHealthMax.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Region Only nodes whose packets were seen by an observer in this region; returns up to limit.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Only nodes inside this area; returns the full filtered set.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+}
 
 // SearchNodesParams defines parameters for SearchNodes.
 type SearchNodesParams struct {

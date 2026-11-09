@@ -1942,14 +1942,10 @@ func TestStoreGetBulkHealthWithStore(t *testing.T) {
 	}
 	unfiltered := make(map[string]bool, len(results))
 	for _, r := range results {
-		pk, ok := r["public_key"].(string)
-		if !ok {
-			t.Fatalf("public_key has type %T, want string", r["public_key"])
+		if r.PublicKey == "" {
+			t.Error("expected a non-empty public_key")
 		}
-		unfiltered[pk] = true
-		if _, ok := r["stats"]; !ok {
-			t.Error("expected stats field")
-		}
+		unfiltered[r.PublicKey] = true
 	}
 
 	t.Run("with region filter", func(t *testing.T) {
@@ -1958,7 +1954,7 @@ func TestStoreGetBulkHealthWithStore(t *testing.T) {
 			t.Fatalf("region filter returned %d nodes, more than the %d unfiltered", len(filtered), len(results))
 		}
 		for _, r := range filtered {
-			pk, _ := r["public_key"].(string)
+			pk := r.PublicKey
 			if !unfiltered[pk] {
 				t.Errorf("region result %q is not in the unfiltered set", pk)
 			}

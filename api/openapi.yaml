@@ -293,6 +293,20 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/bulk-health:
+    get:
+      operationId: getBulkHealth
+      summary: Per-node traffic and observer summary for the most recently heard nodes
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50 }, description: "Capped by the configured BulkHealthMax." }
+        - { name: region, in: query, schema: { type: string }, description: "Only nodes whose packets were seen by an observer in this region; returns up to limit." }
+        - { name: area, in: query, schema: { type: string }, description: "Only nodes inside this area; returns the full filtered set." }
+      responses:
+        "200":
+          description: Entries, most recently heard first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BulkHealthResponse' }
 components:
   schemas:
     NodeRole:
@@ -842,4 +856,54 @@ components:
             Node count per role as stored. Keys are role names and can include
             values outside NodeRole (for example "type-7").
           additionalProperties: { type: integer }
+    BulkHealthResponse:
+      type: array
+      items: { $ref: '#/components/schemas/BulkHealthEntry' }
+
+    BulkHealthEntry:
+      type: object
+      additionalProperties: false
+      required: [public_key, name, role, lat, lon, stats, observers, relayObserverCount]
+      properties:
+        public_key: { type: string }
+        name: { type: string, nullable: true }
+        role: { type: string }
+        lat: { type: number, format: double, nullable: true }
+        lon: { type: number, format: double, nullable: true }
+        stats: { $ref: '#/components/schemas/BulkHealthStats' }
+        observers:
+          type: array
+          items: { $ref: '#/components/schemas/DirectObserverStats' }
+        relayObserverCount:
+          type: integer
+          description: Observers that saw traffic involving this node but did not hear it directly.
+
+    BulkHealthStats:
+      type: object
+      additionalProperties: false
+      required: [totalTransmissions, totalObservations, totalPackets, packetsToday, avgSnr, lastHeard]
+      properties:
+        totalTransmissions: { type: integer }
+        totalObservations: { type: integer }
+        totalPackets: { type: integer }
+        packetsToday: { type: integer }
+        avgSnr: { type: number, format: double, nullable: true }
+        lastHeard:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+
+    DirectObserverStats:
+      type: object
+      additionalProperties: false
+      required: [observer_id, observer_name, avgSnr, avgRssi, packetCount, can_relay]
+      properties:
+        observer_id: { type: string }
+        observer_name: { type: string }
+        avgSnr: { type: number, format: double, nullable: true }
+        avgRssi: { type: number, format: double, nullable: true }
+        packetCount: { type: integer }
+        can_relay:
+          type: boolean
+          nullable: true
+          description: Null when no repeat field was ever reported for this observer.
           
