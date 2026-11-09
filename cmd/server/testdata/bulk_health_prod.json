@@ -1,0 +1,70 @@
+[
+  {
+    "lat": 39.656111,
+    "lon": -96.672256,
+    "name": "Fixture Repeater One",
+    "observers": [],
+    "public_key": "f6063249037dfc0d631b5c018a557a6013e3364d49586f2fcbcacaa167e08ca7",
+    "relayObserverCount": 63,
+    "role": "repeater",
+    "stats": {
+      "avgSnr": 9.612355103194805,
+      "lastHeard": "2026-07-29T23:34:03Z",
+      "packetsToday": 537,
+      "totalObservations": 133387,
+      "totalPackets": 3547,
+      "totalTransmissions": 3547
+    }
+  },
+  {
+    "lat": 0,
+    "lon": 0,
+    "name": "Fixture Repeater Two",
+    "observers": [
+      {
+        "avgRssi": -66.80571238791099,
+        "avgSnr": 12.022550647625376,
+        "can_relay": false,
+        "observer_id": "5C8D4CD04C3B438D06C20D464E2424F5B080457B258983B68D0773ED0F7EAF31",
+        "observer_name": "Fixture Observer 1",
+        "packetCount": 3011
+      },
+      {
+        "avgRssi": null,
+        "avgSnr": null,
+        "can_relay": null,
+        "observer_id": "F959FE9554EE1BB7015B63AD725716807DF537D9AAE4A452716F3690632687C2",
+        "observer_name": "Fixture Observer 2",
+        "packetCount": 4
+      }
+    ],
+    "public_key": "dbb8e7672930cbabf7af146a921195669c0dc721f8e16d36a95c611463269725",
+    "relayObserverCount": 80,
+    "role": "repeater",
+    "stats": {
+      "avgSnr": 8.707852228537233,
+      "lastHeard": "2026-07-29T23:33:42Z",
+      "packetsToday": 430,
+      "totalObservations": 459081,
+      "totalPackets": 3750,
+      "totalTransmissions": 3750
+    }
+  },
+  {
+    "lat": null,
+    "lon": null,
+    "name": null,
+    "observers": [],
+    "public_key": "3a230d1ef15978a049e10ea235db0cf0b95a59b829cc68ea1288fd878af37402",
+    "relayObserverCount": 0,
+    "role": "companion",
+    "stats": {
+      "avgSnr": null,
+      "lastHeard": null,
+      "packetsToday": 0,
+      "totalObservations": 0,
+      "totalPackets": 0,
+      "totalTransmissions": 0
+    }
+  }
+]

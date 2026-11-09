@@ -307,6 +307,70 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BulkHealthResponse' }
+  /api/nodes/resolve:
+    get:
+      operationId: resolveNodePrefix
+      summary: Resolve a heard path prefix (or full pubkey) to a node name
+      description: >-
+        Returns the node name when exactly one visible node matches. An
+        ambiguous prefix returns ambiguous=true with no pubkey or name; an
+        unknown, blacklisted or hidden node also returns no pubkey or name.
+        Client errors are plain text, not ErrorResponse.
+      parameters:
+        - name: prefix
+          in: query
+          required: true
+          description: Hex prefix of at least 4 characters.
+          schema: { type: string, pattern: '^[0-9a-fA-F]{4,64}$' }
+      responses:
+        "200":
+          description: Resolution result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolvePrefixResponse' }
+        "400":
+          description: Prefix is not hex or is shorter than 4 characters
+          content:
+            text/plain:
+              schema: { type: string }
+        "500":
+          description: Query failed
+          content:
+            text/plain:
+              schema: { type: string }
+        "503":
+          description: Database unavailable
+          content:
+            text/plain:
+              schema: { type: string }
+  /api/nodes/{pubkey}/battery:
+    get:
+      operationId: getNodeBattery
+      summary: Battery voltage history for a node, from its observer metrics
+      parameters:
+        - { name: pubkey, in: path, required: true, schema: { type: string } }
+        - { name: days, in: query, description: "Look-back window; values outside 1..365 fall back to 7.", schema: { type: integer, minimum: 1, maximum: 365, default: 7 } }
+      responses:
+        "200":
+          description: Samples oldest first, with the status derived from the latest one
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeBatteryResponse' }
+        "400":
+          description: Missing pubkey
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Node not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   schemas:
     NodeRole:
@@ -907,3 +971,53 @@ components:
           nullable: true
           description: Null when no repeat field was ever reported for this observer.
           
+
+    ResolvePrefixResponse:
+      type: object
+      additionalProperties: false
+      required: [prefix, ambiguous]
+      properties:
+        prefix: { type: string }
+        pubkey: { type: string, description: Present only when exactly one visible node matches. }
+        name: { type: string, description: Present only when the matched node has a name. }
+        ambiguous: { type: boolean }
+
+    BatteryStatus:
+      type: string
+      description: Derived from the latest sample against the configured thresholds; unknown when there are no samples.
+      enum: [ok, low, critical, unknown]
+
+    BatterySample:
+      type: object
+      additionalProperties: false
+      required: [timestamp, battery_mv]
+      properties:
+        # Not yet observed in production (no node reports battery there);
+        # milliseconds are what the repo's formatter emits.
+        timestamp: { $ref: '#/components/schemas/TimestampMillis' }
+        battery_mv: { type: integer }
+
+    BatteryThresholds:
+      type: object
+      additionalProperties: false
+      required: [low_mv, critical_mv]
+      properties:
+        low_mv: { type: integer }
+        critical_mv: { type: integer }
+
+    NodeBatteryResponse:
+      type: object
+      additionalProperties: false
+      required: [public_key, days, samples, latest_mv, latest_ts, status, thresholds]
+      properties:
+        public_key: { type: string, description: Lowercased. }
+        days: { type: integer }
+        samples:
+          type: array
+          items: { $ref: '#/components/schemas/BatterySample' }
+        latest_mv: { type: integer, nullable: true }
+        latest_ts:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampMillis' }]
+        status: { $ref: '#/components/schemas/BatteryStatus' }
+        thresholds: { $ref: '#/components/schemas/BatteryThresholds' }

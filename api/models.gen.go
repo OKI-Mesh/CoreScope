@@ -7,6 +7,30 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
+// Defines values for BatteryStatus.
+const (
+	Critical BatteryStatus = "critical"
+	Low      BatteryStatus = "low"
+	Ok       BatteryStatus = "ok"
+	Unknown  BatteryStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the BatteryStatus enum.
+func (e BatteryStatus) Valid() bool {
+	switch e {
+	case Critical:
+		return true
+	case Low:
+		return true
+	case Ok:
+		return true
+	case Unknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScopeConfigState.
 const (
 	Full       ScopeConfigState = "full"
@@ -110,6 +134,23 @@ func (e ListNodesParamsLastHeard) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// BatterySample defines model for BatterySample.
+type BatterySample struct {
+	BatteryMv int `json:"battery_mv"`
+
+	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Timestamp TimestampMillis `json:"timestamp"`
+}
+
+// BatteryStatus Derived from the latest sample against the configured thresholds; unknown when there are no samples.
+type BatteryStatus string
+
+// BatteryThresholds defines model for BatteryThresholds.
+type BatteryThresholds struct {
+	CriticalMv int `json:"critical_mv"`
+	LowMv      int `json:"low_mv"`
 }
 
 // BulkHealthEntry defines model for BulkHealthEntry.
@@ -397,6 +438,21 @@ type NodeAdvertObservation struct {
 	TransmissionId int64           `json:"transmission_id"`
 }
 
+// NodeBatteryResponse defines model for NodeBatteryResponse.
+type NodeBatteryResponse struct {
+	Days     int              `json:"days"`
+	LatestMv *int             `json:"latest_mv"`
+	LatestTs *TimestampMillis `json:"latest_ts"`
+
+	// PublicKey Lowercased.
+	PublicKey string          `json:"public_key"`
+	Samples   []BatterySample `json:"samples"`
+
+	// Status Derived from the latest sample against the configured thresholds; unknown when there are no samples.
+	Status     BatteryStatus     `json:"status"`
+	Thresholds BatteryThresholds `json:"thresholds"`
+}
+
 // NodeDetailResponse defines model for NodeDetailResponse.
 type NodeDetailResponse struct {
 	// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
@@ -458,6 +514,18 @@ type PacketCore struct {
 	Score                *float64           `json:"score,omitempty"`
 	Snr                  *float64           `json:"snr"`
 	Timestamp            *TimestampSeconds  `json:"timestamp"`
+}
+
+// ResolvePrefixResponse defines model for ResolvePrefixResponse.
+type ResolvePrefixResponse struct {
+	Ambiguous bool `json:"ambiguous"`
+
+	// Name Present only when the matched node has a name.
+	Name   *string `json:"name,omitempty"`
+	Prefix string  `json:"prefix"`
+
+	// Pubkey Present only when exactly one visible node matches.
+	Pubkey *string `json:"pubkey,omitempty"`
 }
 
 // RoleCounts All-time node counts per role.
@@ -541,10 +609,22 @@ type GetBulkHealthParams struct {
 	Area *string `form:"area,omitempty" json:"area,omitempty"`
 }
 
+// ResolveNodePrefixParams defines parameters for ResolveNodePrefix.
+type ResolveNodePrefixParams struct {
+	// Prefix Hex prefix of at least 4 characters.
+	Prefix string `form:"prefix" json:"prefix"`
+}
+
 // SearchNodesParams defines parameters for SearchNodes.
 type SearchNodesParams struct {
 	// Q Search text.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
+}
+
+// GetNodeBatteryParams defines parameters for GetNodeBattery.
+type GetNodeBatteryParams struct {
+	// Days Look-back window; values outside 1..365 fall back to 7.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
 
 // GetNodeNeighborsParams defines parameters for GetNodeNeighbors.

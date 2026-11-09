@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -35,15 +37,10 @@ func (c *Config) CriticalBatteryMv() int {
 	return 3000
 }
 
-type NodeBatterySampleResponse struct {
-	Timestamp string `json:"timestamp"`
-	BatteryMv int    `json:"battery_mv"`
-}
-
-func nodeBatteryToResponse(rows []database.NodeBatterySample) []NodeBatterySampleResponse {
-	out := make([]NodeBatterySampleResponse, 0, len(rows))
+func nodeBatteryToResponse(rows []database.NodeBatterySample) []api.BatterySample {
+	out := make([]api.BatterySample, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, NodeBatterySampleResponse{Timestamp: formatTS(r.Timestamp), BatteryMv: r.BatteryMv})
+		out = append(out, api.BatterySample{Timestamp: types.WireTimeMillis{Time: r.Timestamp}, BatteryMv: r.BatteryMv})
 	}
 	return out
 }
@@ -91,33 +88,30 @@ func (s *Server) handleNodeBattery(w http.ResponseWriter, r *http.Request) {
 	low := s.cfg.LowBatteryMv()
 	crit := s.cfg.CriticalBatteryMv()
 
-	status := "unknown"
-	var latestMv interface{}
-	var latestTs interface{}
+	status := api.BatteryStatus("unknown")
+	var latestMv *int
+	var latestTs *types.WireTimeMillis
 	if n := len(samples); n > 0 {
-		mv := samples[n-1].BatteryMv
-		latestMv = mv
-		latestTs = samples[n-1].Timestamp
+		last := samples[n-1]
+		latestMv = ptr(last.BatteryMv)
+		latestTs = ptr(last.Timestamp)
 		switch {
-		case mv < crit:
+		case last.BatteryMv < crit:
 			status = "critical"
-		case mv < low:
+		case last.BatteryMv < low:
 			status = "low"
 		default:
 			status = "ok"
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"public_key": strings.ToLower(pubkey),
-		"days":       days,
-		"samples":    samples,
-		"latest_mv":  latestMv,
-		"latest_ts":  latestTs,
-		"status":     status,
-		"thresholds": map[string]interface{}{
-			"low_mv":      low,
-			"critical_mv": crit,
-		},
+	writeJSON(w, api.NodeBatteryResponse{
+		PublicKey:  strings.ToLower(pubkey),
+		Days:       days,
+		Samples:    samples,
+		LatestMv:   latestMv,
+		LatestTs:   latestTs,
+		Status:     status,
+		Thresholds: api.BatteryThresholds{LowMv: low, CriticalMv: crit},
 	})
 }

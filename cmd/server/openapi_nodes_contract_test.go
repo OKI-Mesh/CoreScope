@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/gorilla/mux"
 )
 
 // validateAgainstSchema marshals value the way a handler would and checks the
@@ -135,6 +138,7 @@ func TestNodeEndpointsMatchSpec(t *testing.T) {
 		"/api/nodes/search?q=a",
 		"/api/nodes/search",
 		"/api/nodes/network-status",
+		"/api/nodes/bulk-health?limit=2",
 	} {
 		t.Run(path, func(t *testing.T) {
 			checker.check(t, router, path)
@@ -176,28 +180,110 @@ func TestNodeDetailMatchesSpec(t *testing.T) {
 	})
 }
 
-// TestProdNodeDetailFixtureMatchesSpec validates a trimmed copy of a real
-// production /api/nodes/{pubkey} response against the spec. The contract has to
-// accept exactly what the live frontend receives today, so a field the spec
-// requires but production does not send fails here.
-func TestProdNodeDetailFixtureMatchesSpec(t *testing.T) {
+// TestProdFixturesMatchSpec validates trimmed, anonymized copies of real
+// production responses against the spec. The contract has to accept exactly
+// what the live frontend receives today, so a field the spec requires but
+// production does not send fails here.
+func TestProdFixturesMatchSpec(t *testing.T) {
 	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
 	if err != nil {
 		t.Fatalf("load spec: %v", err)
 	}
-	schema, ok := doc.Components.Schemas["NodeDetailResponse"]
-	if !ok {
-		t.Fatal("NodeDetailResponse is not in the spec")
+	for _, tc := range []struct{ schema, file string }{
+		{"NodeDetailResponse", "node_details_prod.json"},
+		{"NetworkStatusResponse", "network_status_prod.json"},
+		{"BulkHealthResponse", "bulk_health_prod.json"},
+		{"ResolvePrefixResponse", "resolve_prod.json"},
+		{"NodeBatteryResponse", "battery_empty_prod.json"},
+	} {
+		t.Run(tc.schema, func(t *testing.T) {
+			schema, ok := doc.Components.Schemas[tc.schema]
+			if !ok {
+				t.Fatalf("%s is not in the spec", tc.schema)
+			}
+			raw, err := os.ReadFile("testdata/" + tc.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded interface{}
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			if err := schema.Value.VisitJSON(decoded); err != nil {
+				t.Errorf("production response does not match %s: %v", tc.schema, err)
+			}
+		})
 	}
-	raw, err := os.ReadFile("testdata/node_details_prod.json")
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestResolveMatchesSpec(t *testing.T) {
+	ctx := t.Context()
+	checker := newSpecChecker(t)
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+	for _, n := range []database.NodeInput{
+		{PublicKey: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", Name: "lone-rp", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: "deadbeef00000000000000000000000000000000000000000000000000000001", Name: "twin-one", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: "deadbeef00000000000000000000000000000000000000000000000000000002", Name: "twin-two", Role: "repeater", RxTime: now, IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
 	}
-	var decoded interface{}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("decode fixture: %v", err)
+	router := mux.NewRouter()
+	NewServer(db, &Config{Port: 3000}, NewHub()).RegisterRoutes(router)
+
+	t.Run("unique prefix", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/resolve?prefix=a1b2c3d4")
+	})
+	t.Run("ambiguous prefix", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/resolve?prefix=deadbeef")
+	})
+	t.Run("unknown prefix", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/resolve?prefix=0000")
+	})
+	t.Run("non-hex prefix is a plain-text 400", func(t *testing.T) {
+		checker.checkStatus(t, router, "/api/nodes/resolve?prefix=xyzq", http.StatusBadRequest)
+	})
+	t.Run("short prefix is a plain-text 400", func(t *testing.T) {
+		checker.checkStatus(t, router, "/api/nodes/resolve?prefix=abc", http.StatusBadRequest)
+	})
+}
+
+func TestNodeBatteryMatchesSpec(t *testing.T) {
+	ctx := t.Context()
+	checker := newSpecChecker(t)
+	db := setupTestDB(t)
+	seedTestData(t, db)
+
+	now := time.Now().UTC()
+	const pubkey = "aabbccdd11223344"
+	mustCreateTestObserver(t, ctx, db, strings.ToUpper(pubkey), "TestRepeater", "", now)
+	for i, mv := range []int{3800, 3600, 3200} {
+		if err := db.CreateOrUpdateObserverMetrics(ctx, database.ObserverMetricsInput{
+			ObserverID: pubkey,
+			Timestamp:  now.Add(time.Duration(-2+i) * time.Hour),
+			BatteryMv:  &mv,
+		}); err != nil {
+			t.Fatalf("CreateOrUpdateObserverMetrics: %v", err)
+		}
 	}
-	if err := schema.Value.VisitJSON(decoded); err != nil {
-		t.Errorf("production response does not match NodeDetailResponse: %v", err)
+	srv := NewServer(db, &Config{Port: 3000}, NewHub())
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
+	srv.store = store
+	router := mux.NewRouter()
+	srv.RegisterRoutes(router)
+
+	t.Run("node with samples", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/"+pubkey+"/battery?days=7")
+	})
+	t.Run("default window", func(t *testing.T) {
+		checker.check(t, router, "/api/nodes/"+pubkey+"/battery")
+	})
+	t.Run("unknown node is a 404", func(t *testing.T) {
+		checker.checkStatus(t, router, "/api/nodes/notarealnode00000000/battery", http.StatusNotFound)
+	})
 }

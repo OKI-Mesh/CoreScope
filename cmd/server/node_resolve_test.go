@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
@@ -34,25 +35,25 @@ func TestResolvePrefix(t *testing.T) {
 	}
 	srv := &Server{db: db}
 
-	var r1 ResolvePrefixResp
+	var r1 api.ResolvePrefixResponse
 	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=efef79").Body.Bytes(), &r1); err != nil {
 		t.Fatalf("decode unique: %v", err)
 	}
-	if r1.Name != "NodeUnique" || r1.Ambiguous {
+	if r1.Name == nil || *r1.Name != "NodeUnique" || r1.Ambiguous {
 		t.Fatalf("unique: %+v", r1)
 	}
-	var r2 ResolvePrefixResp
+	var r2 api.ResolvePrefixResponse
 	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=aabb").Body.Bytes(), &r2); err != nil {
 		t.Fatalf("decode ambiguous: %v", err)
 	}
-	if !r2.Ambiguous || r2.Name != "" {
+	if !r2.Ambiguous || r2.Name != nil || r2.Pubkey != nil {
 		t.Fatalf("ambiguous: %+v", r2)
 	}
-	var r3 ResolvePrefixResp
+	var r3 api.ResolvePrefixResponse
 	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=dead").Body.Bytes(), &r3); err != nil {
 		t.Fatalf("decode notfound: %v", err)
 	}
-	if r3.Name != "" || r3.Ambiguous {
+	if r3.Name != nil || r3.Pubkey != nil || r3.Ambiguous {
 		t.Fatalf("notfound: %+v", r3)
 	}
 	if serveResolve(srv, "/api/nodes/resolve?prefix=xyz").Code != 400 {
@@ -85,18 +86,18 @@ func TestResolvePrefixHidesBlacklistedAndHidden(t *testing.T) {
 		HiddenNamePrefixes: []string{"🚫"},
 	}}
 
-	var rb ResolvePrefixResp
+	var rb api.ResolvePrefixResponse
 	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=bbcc11").Body.Bytes(), &rb); err != nil {
 		t.Fatalf("decode blacklisted: %v", err)
 	}
-	if rb.Name != "" || rb.Pubkey != "" || rb.Ambiguous {
+	if rb.Name != nil || rb.Pubkey != nil || rb.Ambiguous {
 		t.Fatalf("blacklisted node must resolve as not-found: %+v", rb)
 	}
-	var rh ResolvePrefixResp
+	var rh api.ResolvePrefixResponse
 	if err := json.Unmarshal(serveResolve(srv, "/api/nodes/resolve?prefix=ddee22").Body.Bytes(), &rh); err != nil {
 		t.Fatalf("decode hidden: %v", err)
 	}
-	if rh.Name != "" || rh.Pubkey != "" || rh.Ambiguous {
+	if rh.Name != nil || rh.Pubkey != nil || rh.Ambiguous {
 		t.Fatalf("hidden-prefix node must resolve as not-found: %+v", rh)
 	}
 }
