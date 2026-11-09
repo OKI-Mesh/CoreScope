@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -23,12 +24,12 @@ func newChannelTestStore(packets []*StoreTx) *PacketStore {
 		nodeHashes:     make(map[string]map[string]bool),
 		byPayloadType:  make(map[types.PayloadType][]*StoreTx),
 		rfCache:        make(map[string]*cachedRF),
-		topoCache:      make(map[string]*cachedResult),
+		topoCache:      make(map[string]*cachedTopology),
 		hashCache:      make(map[string]*cachedHashSizes),
 		collisionCache: make(map[string]*cachedHashCollisions),
-		chanCache:      make(map[string]*cachedResult),
+		chanCache:      make(map[string]*cachedChannels),
 		distCache:      make(map[string]*cachedDistance),
-		subpathCache:   make(map[string]*cachedResult),
+		subpathCache:   make(map[string]*cachedSubpaths),
 		spIndex:        make(map[string]int),
 		spTxIndex:      make(map[string][]*StoreTx),
 		advertPubkeys:  make(map[string]int),
@@ -83,19 +84,19 @@ func TestComputeAnalyticsChannels_MergesEncryptedAndDecrypted(t *testing.T) {
 	store := newChannelTestStore(packets)
 	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
-	channels := result["channels"].([]map[string]interface{})
+	channels := result.Channels
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel bucket, got %d: %+v", len(channels), channels)
 	}
 	ch := channels[0]
-	if ch["name"] != "#wardriving" {
-		t.Errorf("expected name '#wardriving', got %q", ch["name"])
+	if ch.Name != "#wardriving" {
+		t.Errorf("expected name '#wardriving', got %q", ch.Name)
 	}
-	if ch["messages"] != 4 {
-		t.Errorf("expected 4 messages, got %v", ch["messages"])
+	if ch.Messages != 4 {
+		t.Errorf("expected 4 messages, got %v", ch.Messages)
 	}
-	if ch["encrypted"] != false {
-		t.Errorf("expected encrypted=false (some packets decrypted), got %v", ch["encrypted"])
+	if ch.Encrypted {
+		t.Errorf("expected encrypted=false (some packets decrypted), got %v", ch.Encrypted)
 	}
 }
 
@@ -114,18 +115,18 @@ func TestComputeAnalyticsChannels_RejectsRainbowTableMismatch(t *testing.T) {
 	store := newChannelTestStore(packets)
 	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
-	channels := result["channels"].([]map[string]interface{})
+	channels := result.Channels
 	if len(channels) != 2 {
 		t.Fatalf("expected 2 channel buckets, got %d: %+v", len(channels), channels)
 	}
 
 	// Find the buckets
-	var ch72, ch129 map[string]interface{}
-	for _, ch := range channels {
-		if ch["hash"] == "72" {
-			ch72 = ch
-		} else if ch["hash"] == "129" {
-			ch129 = ch
+	var ch72, ch129 *api.ChannelSummary
+	for i := range channels {
+		if channels[i].Hash == "72" {
+			ch72 = &channels[i]
+		} else if channels[i].Hash == "129" {
+			ch129 = &channels[i]
 		}
 	}
 
@@ -137,16 +138,16 @@ func TestComputeAnalyticsChannels_RejectsRainbowTableMismatch(t *testing.T) {
 	}
 
 	// ch72 should NOT be named "#wardriving" — it should be the placeholder
-	if ch72["name"] == "#wardriving" {
+	if ch72.Name == "#wardriving" {
 		t.Errorf("hash 72 bucket should NOT be named '#wardriving' (rainbow-table mismatch rejected)")
 	}
-	if ch72["name"] != "ch72" {
-		t.Errorf("expected hash 72 bucket named 'ch72', got %q", ch72["name"])
+	if ch72.Name != "ch72" {
+		t.Errorf("expected hash 72 bucket named 'ch72', got %q", ch72.Name)
 	}
 
 	// ch129 should be named "#wardriving"
-	if ch129["name"] != "#wardriving" {
-		t.Errorf("expected hash 129 bucket named '#wardriving', got %q", ch129["name"])
+	if ch129.Name != "#wardriving" {
+		t.Errorf("expected hash 129 bucket named '#wardriving', got %q", ch129.Name)
 	}
 }
 
@@ -198,19 +199,19 @@ func TestComputeAnalyticsChannels_PublicChannelPreserved(t *testing.T) {
 	store := newChannelTestStore(packets)
 	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
-	channels := result["channels"].([]map[string]interface{})
+	channels := result.Channels
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel bucket, got %d: %+v", len(channels), channels)
 	}
 	ch := channels[0]
-	if ch["name"] != "Public" {
-		t.Errorf("expected name 'Public' preserved, got %q (must not be downgraded to ch17)", ch["name"])
+	if ch.Name != "Public" {
+		t.Errorf("expected name 'Public' preserved, got %q (must not be downgraded to ch17)", ch.Name)
 	}
-	if ch["encrypted"] != false {
-		t.Errorf("expected encrypted=false for decrypted Public channel, got %v", ch["encrypted"])
+	if ch.Encrypted {
+		t.Errorf("expected encrypted=false for decrypted Public channel, got %v", ch.Encrypted)
 	}
-	if ch["hash"] != "17" {
-		t.Errorf("expected hash '17', got %v", ch["hash"])
+	if ch.Hash != "17" {
+		t.Errorf("expected hash '17', got %v", ch.Hash)
 	}
 }
 
@@ -230,15 +231,15 @@ func TestComputeAnalyticsChannels_UndecryptedNameStillValidated(t *testing.T) {
 	store := newChannelTestStore(packets)
 	result := store.computeAnalyticsChannels(ctx, "", "", TimeWindow{})
 
-	channels := result["channels"].([]map[string]interface{})
+	channels := result.Channels
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel bucket, got %d: %+v", len(channels), channels)
 	}
 	ch := channels[0]
-	if ch["name"] != "ch17" {
-		t.Errorf("expected undecrypted mismatch downgraded to 'ch17', got %q", ch["name"])
+	if ch.Name != "ch17" {
+		t.Errorf("expected undecrypted mismatch downgraded to 'ch17', got %q", ch.Name)
 	}
-	if ch["encrypted"] != true {
-		t.Errorf("expected encrypted=true for rejected rainbow-table name, got %v", ch["encrypted"])
+	if !ch.Encrypted {
+		t.Errorf("expected encrypted=true for rejected rainbow-table name, got %v", ch.Encrypted)
 	}
 }

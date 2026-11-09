@@ -598,16 +598,8 @@ paths:
         An unknown region applies no filter. With any region the attribution
         method switches to repeater.
       parameters:
-        - name: region
-          in: query
-          required: false
-          description: Region (observer IATA) filter.
-          schema: { type: string }
-        - name: area
-          in: query
-          required: false
-          description: Area key; filters adverts by the transmitting node's position.
-          schema: { type: string }
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Area'
       responses:
         "200":
           description: Success
@@ -625,16 +617,8 @@ paths:
         between them, plus the prefix matrices used by the collision view. An
         unknown region applies no filter.
       parameters:
-        - name: region
-          in: query
-          required: false
-          description: Region (observer IATA) filter.
-          schema: { type: string }
-        - name: area
-          in: query
-          required: false
-          description: Area key; keeps only nodes inside the area.
-          schema: { type: string }
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Area'
       responses:
         "200":
           description: Success
@@ -669,31 +653,11 @@ paths:
         snapshot is still warming up after a restart, the unfiltered query
         answers 503.
       parameters:
-        - name: region
-          in: query
-          required: false
-          description: Region (observer IATA) filter.
-          schema: { type: string }
-        - name: area
-          in: query
-          required: false
-          description: Area key; filters by the transmitting node's position.
-          schema: { type: string }
-        - name: window
-          in: query
-          required: false
-          description: Only data from this long ago until now.
-          schema: { type: string, enum: [1h, 24h, 1d, 3d, 7d, 1w, 30d] }
-        - name: from
-          in: query
-          required: false
-          description: Start of an explicit range, RFC 3339.
-          schema: { type: string, format: date-time }
-        - name: to
-          in: query
-          required: false
-          description: End of an explicit range, RFC 3339.
-          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Area'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
       responses:
         "200":
           description: Success
@@ -702,15 +666,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/RFAnalyticsResponse'
         "503":
-          description: The analytics snapshot is still warming up.
-          headers:
-            Retry-After:
-              description: Seconds to wait before retrying.
-              schema: { type: integer }
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AnalyticsWarmupResponse'
+          $ref: '#/components/responses/AnalyticsWarmingUp'
   /api/analytics/distance:
     get:
       tags: [analytics]
@@ -722,16 +678,8 @@ paths:
         unknown region applies no filter. The first request after a restart
         starts the index build and answers 202 until it is ready.
       parameters:
-        - name: region
-          in: query
-          required: false
-          description: Region (observer IATA) filter.
-          schema: { type: string }
-        - name: area
-          in: query
-          required: false
-          description: Area key; filters by the transmitting node's position.
-          schema: { type: string }
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Area'
       responses:
         "200":
           description: Success
@@ -743,14 +691,276 @@ paths:
           description: The distance index is still being built.
           headers:
             Retry-After:
-              description: Seconds to wait before retrying.
-              schema: { type: integer }
+              $ref: '#/components/headers/RetryAfter'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DistanceBuildingResponse'
+  /api/analytics/topology:
+    get:
+      tags: [analytics]
+      operationId: getTopologyAnalytics
+      summary: Path topology analytics
+      description: >-
+        Hop-count statistics, the busiest repeaters and repeater pairs, what each
+        observer can reach, and the repeaters several observers hear. An unknown
+        region applies no filter. Blacklisted and hidden nodes are left out when
+        the instance configures them. While the background snapshot is still
+        warming up, the unfiltered query answers 503.
+      parameters:
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Area'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopologyResponse'
+        "503":
+          $ref: '#/components/responses/AnalyticsWarmingUp'
+  /api/analytics/channels:
+    get:
+      tags: [analytics]
+      operationId: getChannelAnalytics
+      summary: Channel analytics
+      description: >-
+        Group channel activity: message and sender counts per channel, the most
+        active senders, an hourly timeline and message lengths. While the
+        background snapshot is still warming up, the unfiltered query answers 503.
+      parameters:
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Area'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelAnalyticsResponse'
+        "503":
+          $ref: '#/components/responses/AnalyticsWarmingUp'
+  /api/analytics/relay-airtime-share:
+    get:
+      tags: [analytics]
+      operationId: getRelayAirtimeShare
+      summary: Relay airtime share
+      description: >-
+        Each payload type's share of relayed LoRa airtime: time on air for the
+        configured radio preset multiplied by the distinct repeaters that
+        forwarded each packet. Originator transmissions are not counted.
+      parameters:
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayAirtimeShareResponse'
+  /api/analytics/retransmissions:
+    get:
+      tags: [analytics]
+      operationId: getRetransmissionPressure
+      summary: Retransmission pressure
+      description: >-
+        How many distinct repeaters carried each flood event, per time bucket and
+        overall. While the background snapshot is still warming up, the default
+        query answers 503.
+      parameters:
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: bucket
+          in: query
+          required: false
+          description: Bucket width. Any other value selects 1h.
+          schema: { type: string, enum: [5m, 15m, 1h, 6h, 1d], default: 1h }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetransmissionResponse'
+        "503":
+          $ref: '#/components/responses/AnalyticsWarmingUp'
+  /api/analytics/subpaths:
+    get:
+      tags: [analytics]
+      operationId: getSubpathAnalytics
+      summary: Common route patterns
+      description: >-
+        The most frequent sub-sequences of hops, named where the hop resolves to a
+        node. Answers 503 while the subpath index is loading.
+      parameters:
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: minLen
+          in: query
+          required: false
+          description: Shortest sub-sequence, in hops. Values below 2 are raised to 2.
+          schema: { type: integer, default: 2 }
+        - name: maxLen
+          in: query
+          required: false
+          description: Longest sub-sequence, in hops.
+          schema: { type: integer, default: 8 }
+        - name: limit
+          in: query
+          required: false
+          description: Most entries to return, capped by the instance's analytics limit.
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubpathList'
+        "503":
+          $ref: '#/components/responses/SubpathIndexLoading'
+  /api/analytics/subpaths-bulk:
+    get:
+      tags: [analytics]
+      operationId: getSubpathAnalyticsBulk
+      summary: Common route patterns for several length ranges
+      description: >-
+        One subpaths result per requested group, from a single scan. Each group
+        is min-max:limit, with min at least 2 and limit capped at 200. Answers 503
+        while the subpath index is loading.
+      parameters:
+        - $ref: '#/components/parameters/Region'
+        - $ref: '#/components/parameters/Window'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: groups
+          in: query
+          required: true
+          description: Comma-separated groups, for example 2-3:50,4-8:50.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubpathBulkResponse'
+        "400":
+          description: The groups parameter is missing or malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          $ref: '#/components/responses/SubpathIndexLoading'
+  /api/analytics/subpath-detail:
+    get:
+      tags: [analytics]
+      operationId: getSubpathDetail
+      summary: One route pattern in detail
+      description: >-
+        Who and what sits on one exact hop sequence: the nodes, signal, hour of
+        day distribution, longer paths that contain it and the observers that
+        heard it. Answers 503 while the subpath index is loading.
+      parameters:
+        - name: hops
+          in: query
+          required: true
+          description: Comma-separated hop prefixes, at least two.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubpathDetailResponse'
+        "400":
+          description: Fewer than two hops were given.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: A hop belongs to a blacklisted or hidden node.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          $ref: '#/components/responses/SubpathIndexLoading'
 components:
+  parameters:
+    Region:
+      name: region
+      in: query
+      required: false
+      description: Region (observer IATA) filter. An unknown region applies no filter.
+      schema: { type: string }
+    Area:
+      name: area
+      in: query
+      required: false
+      description: Area key. Narrows the result to nodes inside the area.
+      schema: { type: string }
+    Window:
+      name: window
+      in: query
+      required: false
+      description: Only data from this long ago until now. An unrecognised value is ignored.
+      schema: { $ref: '#/components/schemas/AnalyticsWindow' }
+    From:
+      name: from
+      in: query
+      required: false
+      description: Start of an explicit range, RFC 3339.
+      schema: { type: string, format: date-time }
+    To:
+      name: to
+      in: query
+      required: false
+      description: End of an explicit range, RFC 3339.
+      schema: { type: string, format: date-time }
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer }
+  responses:
+    AnalyticsWarmingUp:
+      description: The background snapshot is still warming up after a restart.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AnalyticsWarmupResponse'
+    SubpathIndexLoading:
+      description: The subpath index is still loading.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IndexLoadingResponse'
   schemas:
+    AnalyticsWindow:
+      type: string
+      description: A trailing time window.
+      enum: [1h, 24h, 1d, 3d, 7d, 1w, 30d]
     NodeRole:
       type: string
       description: >-
@@ -2080,7 +2290,6 @@ components:
         stddev: { type: number, format: double }
     HourlyCount:
       type: object
-      additionalProperties: false
       required: [hour, count]
       properties:
         hour: { type: string, description: "UTC hour bucket, 2026-11-05T15." }
@@ -2261,3 +2470,369 @@ components:
           type: array
           description: Average distance over time, bucketed by hour.
           items: { $ref: '#/components/schemas/DistOverTimeEntry' }
+    IndexLoadingResponse:
+      type: object
+      additionalProperties: false
+      required: [error, retryAfter]
+      properties:
+        error: { type: string }
+        retryAfter: { type: integer }
+    NameCount:
+      type: object
+      additionalProperties: false
+      required: [name, count]
+      properties:
+        name: { type: string }
+        count: { type: integer }
+    PathCount:
+      type: object
+      additionalProperties: false
+      required: [path, count]
+      properties:
+        path: { type: string, description: "Node names joined by arrows; unresolved hops show as hex." }
+        count: { type: integer }
+    HopRef:
+      type: object
+      description: A hop prefix and the node it resolves to, if any.
+      required: [hop, name, pubkey]
+      properties:
+        hop: { type: string, description: "The hop's hash prefix as hex." }
+        name: { type: string, nullable: true, description: "The resolved node's name; null when the hop does not resolve." }
+        pubkey: { type: string, nullable: true, description: "The resolved node's public key; null when the hop does not resolve." }
+    HopCount:
+      type: object
+      required: [hops, count]
+      properties:
+        hops: { type: integer }
+        count: { type: integer }
+    HopSnr:
+      description: Packets with a given hop count and their mean SNR.
+      allOf:
+        - $ref: '#/components/schemas/HopCount'
+        - type: object
+          required: [avgSnr]
+          properties:
+            avgSnr: { type: number, format: double }
+    TopRepeater:
+      description: A repeater and how often it appears in paths.
+      allOf:
+        - $ref: '#/components/schemas/HopRef'
+        - type: object
+          required: [count]
+          properties:
+            count: { type: integer }
+    TopPair:
+      type: object
+      additionalProperties: false
+      required: [hopA, hopB, count, nameA, nameB, pubkeyA, pubkeyB]
+      properties:
+        hopA: { type: string }
+        hopB: { type: string }
+        count: { type: integer, description: "Times the two hops appeared next to each other." }
+        nameA: { type: string, nullable: true }
+        nameB: { type: string, nullable: true }
+        pubkeyA: { type: string, nullable: true }
+        pubkeyB: { type: string, nullable: true }
+    TopologyObserver:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string, description: "The observer's name; its ID when it has none." }
+    TopologyReachNode:
+      description: A repeater an observer hears at a given distance.
+      allOf:
+        - $ref: '#/components/schemas/HopRef'
+        - type: object
+          required: [count, distRange]
+          properties:
+            count: { type: integer }
+            distRange: { type: string, nullable: true, description: "Fewest-most hops, for example 1-7; null when it was always at the ring's distance." }
+    ReachRing:
+      type: object
+      additionalProperties: false
+      required: [hops, nodes]
+      properties:
+        hops: { type: integer, description: "Distance from the observer, in hops." }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/TopologyReachNode' }
+    ObserverReach:
+      type: object
+      additionalProperties: false
+      required: [observer_name, rings]
+      properties:
+        observer_name: { type: string }
+        rings:
+          type: array
+          description: Nearest ring first.
+          items: { $ref: '#/components/schemas/ReachRing' }
+    MultiObsObserver:
+      type: object
+      additionalProperties: false
+      required: [observer_id, observer_name, minDist, count]
+      properties:
+        observer_id: { type: string }
+        observer_name: { type: string }
+        minDist: { type: integer, description: "Fewest hops between the repeater and this observer." }
+        count: { type: integer }
+    MultiObsNode:
+      description: A repeater heard by more than one observer.
+      allOf:
+        - $ref: '#/components/schemas/HopRef'
+        - type: object
+          required: [observers]
+          properties:
+            observers:
+              type: array
+              description: Nearest observer first.
+              items: { $ref: '#/components/schemas/MultiObsObserver' }
+    BestPathEntry:
+      description: A repeater and the observer that hears it over the fewest hops.
+      allOf:
+        - $ref: '#/components/schemas/HopRef'
+        - type: object
+          required: [minDist, observer_id, observer_name]
+          properties:
+            minDist: { type: integer }
+            observer_id: { type: string }
+            observer_name: { type: string }
+    TopologyResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - uniqueNodes
+        - avgHops
+        - medianHops
+        - maxHops
+        - hopDistribution
+        - topRepeaters
+        - topPairs
+        - hopsVsSnr
+        - observers
+        - perObserverReach
+        - multiObsNodes
+        - bestPathList
+      properties:
+        uniqueNodes: { type: integer, description: "Nodes active in the last seven days." }
+        avgHops: { type: number, format: double }
+        medianHops: { type: integer }
+        maxHops: { type: integer }
+        hopDistribution:
+          type: array
+          description: Packets per hop count, up to 25 hops.
+          items: { $ref: '#/components/schemas/HopCount' }
+        topRepeaters:
+          type: array
+          description: The 20 busiest repeaters.
+          items: { $ref: '#/components/schemas/TopRepeater' }
+        topPairs:
+          type: array
+          description: The 15 busiest adjacent repeater pairs.
+          items: { $ref: '#/components/schemas/TopPair' }
+        hopsVsSnr:
+          type: array
+          description: Up to 20 hops.
+          items: { $ref: '#/components/schemas/HopSnr' }
+        observers:
+          type: array
+          items: { $ref: '#/components/schemas/TopologyObserver' }
+        perObserverReach:
+          type: object
+          description: Reach per observer, keyed by observer ID.
+          additionalProperties: { $ref: '#/components/schemas/ObserverReach' }
+        multiObsNodes:
+          type: array
+          description: The 50 repeaters heard by the most observers.
+          items: { $ref: '#/components/schemas/MultiObsNode' }
+        bestPathList:
+          type: array
+          description: The 50 repeaters closest to an observer.
+          items: { $ref: '#/components/schemas/BestPathEntry' }
+    ChannelSummary:
+      type: object
+      additionalProperties: false
+      required: [hash, name, messages, senders, lastActivity, encrypted]
+      properties:
+        hash: { type: string, description: "The one-byte channel hash, in decimal." }
+        name: { type: string, description: "The decrypted name, or ch followed by the hash." }
+        messages: { type: integer }
+        senders: { type: integer }
+        lastActivity: { $ref: '#/components/schemas/TimestampSeconds' }
+        encrypted: { type: boolean }
+    ChannelTimelineEntry:
+      description: Messages on one channel in one hour.
+      allOf:
+        - $ref: '#/components/schemas/HourlyCount'
+        - type: object
+          required: [channel]
+          properties:
+            channel: { type: string }
+    ChannelAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required: [activeChannels, decryptable, channels, topSenders, channelTimeline, msgLengths]
+      properties:
+        activeChannels: { type: integer }
+        decryptable: { type: integer, description: "Channels whose name was decrypted." }
+        channels:
+          type: array
+          description: Most messages first.
+          items: { $ref: '#/components/schemas/ChannelSummary' }
+        topSenders:
+          type: array
+          description: The 15 most active senders.
+          items: { $ref: '#/components/schemas/NameCount' }
+        channelTimeline:
+          type: array
+          items: { $ref: '#/components/schemas/ChannelTimelineEntry' }
+        msgLengths:
+          type: array
+          items: { type: integer }
+    RelayPreset:
+      type: object
+      additionalProperties: false
+      required: [freq_hz, bw_khz, sf, cr, preamble]
+      properties:
+        freq_hz: { type: number, format: double, description: "Informational only; 0 when not configured." }
+        bw_khz: { type: number, format: double }
+        sf: { type: integer, description: "Spreading factor." }
+        cr: { type: integer, description: "Coding rate denominator, 5 for 4/5." }
+        preamble: { type: integer, description: "Preamble symbols." }
+    RelayAirtimeRow:
+      type: object
+      additionalProperties: false
+      required: [payload_type, type, count, count_pct, score, airtime_pct]
+      properties:
+        payload_type: { type: string, description: "The payload type name; UNK for an unknown type." }
+        type:
+          type: integer
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        count: { type: integer, description: "Distinct packets of this type." }
+        count_pct: { type: number, format: double }
+        score: { type: integer, format: int64, description: "Time on air in nanoseconds multiplied by distinct relays, summed over the packets." }
+        airtime_pct: { type: number, format: double }
+    RelayAirtimeShareResponse:
+      type: object
+      additionalProperties: false
+      required: [rows, total_count, total_score, preset, window, cached]
+      properties:
+        rows:
+          type: array
+          description: Largest airtime share first.
+          items: { $ref: '#/components/schemas/RelayAirtimeRow' }
+        total_count: { type: integer }
+        total_score: { type: integer, format: int64 }
+        preset: { $ref: '#/components/schemas/RelayPreset' }
+        window: { type: string, description: "The window label; empty when no window was given." }
+        cached: { type: boolean, description: "True when the result came from the cache." }
+    RetransmissionBucket:
+      type: object
+      additionalProperties: false
+      required: [start, packets, repeater_sum, avg_repeaters, observers]
+      properties:
+        start: { $ref: '#/components/schemas/TimestampSeconds' }
+        packets: { type: integer, description: "Flood events that started in the bucket." }
+        repeater_sum: { type: integer, description: "Distinct repeaters summed over those events." }
+        avg_repeaters: { type: number, format: double }
+        observers: { type: integer, description: "Distinct observers that heard those events." }
+    RetransmissionSummary:
+      type: object
+      additionalProperties: false
+      required: [packets, avg_repeaters, observers, one_byte_packets, no_repeater_packets]
+      properties:
+        packets: { type: integer }
+        avg_repeaters: { type: number, format: double }
+        observers: { type: integer }
+        one_byte_packets: { type: integer, description: "Events whose hops are 1-byte hashes, the most ambiguous." }
+        no_repeater_packets: { type: integer, description: "Events heard with an empty path only." }
+    RetransmissionResponse:
+      type: object
+      additionalProperties: false
+      required: [bucket_seconds, window, region, summary, buckets]
+      properties:
+        bucket_seconds: { type: integer }
+        window: { type: string, description: "The window label; empty when no window was given." }
+        region: { type: string, description: "The region filter as given; empty when none." }
+        summary: { $ref: '#/components/schemas/RetransmissionSummary' }
+        buckets:
+          type: array
+          items: { $ref: '#/components/schemas/RetransmissionBucket' }
+    SubpathEntry:
+      type: object
+      additionalProperties: false
+      required: [path, rawHops, count, hops, pct]
+      properties:
+        path: { type: string, description: "Node names joined by arrows; unresolved hops show as hex." }
+        rawHops:
+          type: array
+          items: { type: string }
+        count: { type: integer }
+        hops: { type: integer }
+        pct: { type: number, format: double, description: "Share of all paths, one decimal place." }
+    SubpathList:
+      type: object
+      additionalProperties: false
+      required: [subpaths, totalPaths]
+      properties:
+        subpaths:
+          type: array
+          description: Most frequent first.
+          items: { $ref: '#/components/schemas/SubpathEntry' }
+        totalPaths: { type: integer }
+    SubpathBulkResponse:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results:
+          type: array
+          description: One list per requested group, in request order.
+          items: { $ref: '#/components/schemas/SubpathList' }
+    SubpathNode:
+      description: A hop in the requested sequence. The name falls back to the hex hop when it does not resolve.
+      allOf:
+        - $ref: '#/components/schemas/HopRef'
+        - type: object
+          required: [lat, lon]
+          properties:
+            lat: { type: number, format: double, nullable: true }
+            lon: { type: number, format: double, nullable: true }
+    SubpathSignal:
+      type: object
+      additionalProperties: false
+      required: [avgSnr, avgRssi, samples]
+      properties:
+        avgSnr: { type: number, format: double, nullable: true }
+        avgRssi: { type: number, format: double, nullable: true }
+        samples: { type: integer, description: "Packets with an SNR." }
+    SubpathDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [hops, nodes, totalMatches, firstSeen, lastSeen, signal, hourDistribution, parentPaths, observers]
+      properties:
+        hops:
+          type: array
+          items: { type: string }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/SubpathNode' }
+        totalMatches: { type: integer }
+        firstSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+        lastSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+        signal: { $ref: '#/components/schemas/SubpathSignal' }
+        hourDistribution:
+          type: array
+          description: Packets per UTC hour of day, 24 entries.
+          items: { type: integer }
+        parentPaths:
+          type: array
+          description: The 15 longer paths that contain the sequence most often.
+          items: { $ref: '#/components/schemas/PathCount' }
+        observers:
+          type: array
+          description: The 10 observers that heard it most.
+          items: { $ref: '#/components/schemas/NameCount' }
+          

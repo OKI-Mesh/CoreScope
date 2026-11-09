@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/lora"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
@@ -24,12 +25,12 @@ func newRelayAirtimeShareTestStore(packets []*StoreTx) *PacketStore {
 		nodeHashes:     make(map[string]map[string]bool),
 		byPayloadType:  make(map[types.PayloadType][]*StoreTx),
 		rfCache:        make(map[string]*cachedRF),
-		topoCache:      make(map[string]*cachedResult),
+		topoCache:      make(map[string]*cachedTopology),
 		hashCache:      make(map[string]*cachedHashSizes),
 		collisionCache: make(map[string]*cachedHashCollisions),
-		chanCache:      make(map[string]*cachedResult),
+		chanCache:      make(map[string]*cachedChannels),
 		distCache:      make(map[string]*cachedDistance),
-		subpathCache:   make(map[string]*cachedResult),
+		subpathCache:   make(map[string]*cachedSubpaths),
 		spIndex:        make(map[string]int),
 		spTxIndex:      make(map[string][]*StoreTx),
 		advertPubkeys:  make(map[string]int),
@@ -92,34 +93,28 @@ func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 
 	// New: preset must be in the response so the client can render the
 	// caption per issue #1768 (caller cannot interpret "Airtime %"
-	// without knowing the assumed SF/BW/CR). The shape is a typed
-	// presetResponse struct (PR #1776 review round-1: no
-	// map[string]interface{} in API surfaces).
-	preset, ok := result["preset"].(presetResponse)
-	if !ok {
-		t.Fatalf("result['preset'] missing or wrong type: %T", result["preset"])
-	}
-	if preset.SF == 0 || preset.BWkHz == 0 || preset.CR == 0 || preset.Preamble == 0 {
-		t.Errorf("result['preset'] has zero fields: %+v", preset)
+	// without knowing the assumed SF/BW/CR.
+	preset := result.Preset
+	if preset.Sf == 0 || preset.BwKhz == 0 || preset.Cr == 0 || preset.Preamble == 0 {
+		t.Errorf("result preset has zero fields: %+v", preset)
 	}
 
-	rows, ok := result["rows"].([]map[string]interface{})
-	if !ok || len(rows) < 2 {
-		t.Fatalf("unexpected rows: %T %+v", result["rows"], result["rows"])
+	rows := result.Rows
+	if len(rows) < 2 {
+		t.Fatalf("unexpected rows: %+v", rows)
 	}
-	byType := make(map[string]map[string]interface{})
+	byType := make(map[string]api.RelayAirtimeRow)
 	for _, r := range rows {
-		name, _ := r["payload_type"].(string)
-		byType[name] = r
+		byType[r.PayloadType] = r
 	}
-	advertRow := byType["ADVERT"]
-	ackRow := byType["ACK"]
-	if advertRow == nil || ackRow == nil {
+	advertRow, haveAdvert := byType["ADVERT"]
+	ackRow, haveAck := byType["ACK"]
+	if !haveAdvert || !haveAck {
 		t.Fatalf("missing rows: %+v", rows)
 	}
 
-	advertAirtimePct, _ := advertRow["airtime_pct"].(float64)
-	ackAirtimePct, _ := ackRow["airtime_pct"].(float64)
+	advertAirtimePct := advertRow.AirtimePct
+	ackAirtimePct := ackRow.AirtimePct
 	if advertAirtimePct < 99.5 || advertAirtimePct > 100.001 {
 		t.Errorf("ADVERT airtime_pct = %.4f, want 100.0", advertAirtimePct)
 	}
@@ -130,16 +125,16 @@ func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 	// Count-side assertions prove the divergence story: ACK dominates
 	// by raw packet count (≈99.9%) but ADVERT dominates by airtime
 	// (100%). Without these the test only proves half the chart.
-	advertCount, _ := advertRow["count"].(int)
-	ackCount, _ := ackRow["count"].(int)
+	advertCount := advertRow.Count
+	ackCount := ackRow.Count
 	if advertCount != 1 {
 		t.Errorf("ADVERT count = %d, want 1", advertCount)
 	}
 	if ackCount != 1000 {
 		t.Errorf("ACK count = %d, want 1000", ackCount)
 	}
-	advertCountPct, _ := advertRow["count_pct"].(float64)
-	ackCountPct, _ := ackRow["count_pct"].(float64)
+	advertCountPct := advertRow.CountPct
+	ackCountPct := ackRow.CountPct
 	// 1 of 1001 = 0.0999 %; 1000 of 1001 = 99.9001 %.
 	if math.Abs(advertCountPct-(1.0/1001.0*100.0)) > 0.001 {
 		t.Errorf("ADVERT count_pct = %.4f, want %.4f", advertCountPct, 1.0/1001.0*100.0)
@@ -153,8 +148,8 @@ func TestRelayAirtimeShare_ADVERTvsACKDivergence(t *testing.T) {
 		t.Errorf("expected count/airtime inversion: ackCountPct=%.4f advertCountPct=%.4f advertAirtimePct=%.4f ackAirtimePct=%.4f",
 			ackCountPct, advertCountPct, advertAirtimePct, ackAirtimePct)
 	}
-	if rows[0]["payload_type"] != "ADVERT" {
-		t.Errorf("rows[0] = %v, want ADVERT (sort by airtime desc)", rows[0]["payload_type"])
+	if rows[0].PayloadType != "ADVERT" {
+		t.Errorf("rows[0] = %v, want ADVERT (sort by airtime desc)", rows[0].PayloadType)
 	}
 }
 
@@ -193,17 +188,16 @@ func TestRelayAirtimeShare_ToAReplacesByteProxy(t *testing.T) {
 	store.addToResolvedPubkeyIndex(ack.ID, []string{"relay-B"})
 
 	result := store.computeRelayAirtimeShare(TimeWindow{})
-	rows, ok := result["rows"].([]map[string]interface{})
-	if !ok || len(rows) != 2 {
-		t.Fatalf("unexpected rows: %T %+v", result["rows"], result["rows"])
+	rows := result.Rows
+	if len(rows) != 2 {
+		t.Fatalf("unexpected rows: %+v", rows)
 	}
-	byType := make(map[string]map[string]interface{})
+	byType := make(map[string]api.RelayAirtimeRow)
 	for _, r := range rows {
-		name, _ := r["payload_type"].(string)
-		byType[name] = r
+		byType[r.PayloadType] = r
 	}
-	advertPct, _ := byType["ADVERT"]["airtime_pct"].(float64)
-	ackPct, _ := byType["ACK"]["airtime_pct"].(float64)
+	advertPct := byType["ADVERT"].AirtimePct
+	ackPct := byType["ACK"].AirtimePct
 
 	// True ToA acceptance bands derived INDEPENDENTLY from the
 	// implementation under test, by computing each row's ToA via

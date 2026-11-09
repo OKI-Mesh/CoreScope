@@ -11,6 +11,39 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for AnalyticsWindow.
+const (
+	AnalyticsWindowN1d  AnalyticsWindow = "1d"
+	AnalyticsWindowN1h  AnalyticsWindow = "1h"
+	AnalyticsWindowN1w  AnalyticsWindow = "1w"
+	AnalyticsWindowN24h AnalyticsWindow = "24h"
+	AnalyticsWindowN30d AnalyticsWindow = "30d"
+	AnalyticsWindowN3d  AnalyticsWindow = "3d"
+	AnalyticsWindowN7d  AnalyticsWindow = "7d"
+)
+
+// Valid indicates whether the value is a known member of the AnalyticsWindow enum.
+func (e AnalyticsWindow) Valid() bool {
+	switch e {
+	case AnalyticsWindowN1d:
+		return true
+	case AnalyticsWindowN1h:
+		return true
+	case AnalyticsWindowN1w:
+		return true
+	case AnalyticsWindowN24h:
+		return true
+	case AnalyticsWindowN30d:
+		return true
+	case AnalyticsWindowN3d:
+		return true
+	case AnalyticsWindowN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AttributionMethod.
 const (
 	Observer AttributionMethod = "observer"
@@ -179,33 +212,27 @@ func (e UsefulnessGrade) Valid() bool {
 	}
 }
 
-// Defines values for GetRFAnalyticsParamsWindow.
+// Defines values for GetRetransmissionPressureParamsBucket.
 const (
-	GetRFAnalyticsParamsWindowN1d  GetRFAnalyticsParamsWindow = "1d"
-	GetRFAnalyticsParamsWindowN1h  GetRFAnalyticsParamsWindow = "1h"
-	GetRFAnalyticsParamsWindowN1w  GetRFAnalyticsParamsWindow = "1w"
-	GetRFAnalyticsParamsWindowN24h GetRFAnalyticsParamsWindow = "24h"
-	GetRFAnalyticsParamsWindowN30d GetRFAnalyticsParamsWindow = "30d"
-	GetRFAnalyticsParamsWindowN3d  GetRFAnalyticsParamsWindow = "3d"
-	GetRFAnalyticsParamsWindowN7d  GetRFAnalyticsParamsWindow = "7d"
+	GetRetransmissionPressureParamsBucketN15m GetRetransmissionPressureParamsBucket = "15m"
+	GetRetransmissionPressureParamsBucketN1d  GetRetransmissionPressureParamsBucket = "1d"
+	GetRetransmissionPressureParamsBucketN1h  GetRetransmissionPressureParamsBucket = "1h"
+	GetRetransmissionPressureParamsBucketN5m  GetRetransmissionPressureParamsBucket = "5m"
+	GetRetransmissionPressureParamsBucketN6h  GetRetransmissionPressureParamsBucket = "6h"
 )
 
-// Valid indicates whether the value is a known member of the GetRFAnalyticsParamsWindow enum.
-func (e GetRFAnalyticsParamsWindow) Valid() bool {
+// Valid indicates whether the value is a known member of the GetRetransmissionPressureParamsBucket enum.
+func (e GetRetransmissionPressureParamsBucket) Valid() bool {
 	switch e {
-	case GetRFAnalyticsParamsWindowN1d:
+	case GetRetransmissionPressureParamsBucketN15m:
 		return true
-	case GetRFAnalyticsParamsWindowN1h:
+	case GetRetransmissionPressureParamsBucketN1d:
 		return true
-	case GetRFAnalyticsParamsWindowN1w:
+	case GetRetransmissionPressureParamsBucketN1h:
 		return true
-	case GetRFAnalyticsParamsWindowN24h:
+	case GetRetransmissionPressureParamsBucketN5m:
 		return true
-	case GetRFAnalyticsParamsWindowN30d:
-		return true
-	case GetRFAnalyticsParamsWindowN3d:
-		return true
-	case GetRFAnalyticsParamsWindowN7d:
+	case GetRetransmissionPressureParamsBucketN6h:
 		return true
 	default:
 		return false
@@ -281,6 +308,9 @@ type AnalyticsWarmupResponse struct {
 	RetryAfterS int    `json:"retry_after_s"`
 }
 
+// AnalyticsWindow A trailing time window.
+type AnalyticsWindow string
+
 // AttributionMethod observer: multi-byte nodes are attributed to the observers that heard them. repeater: to the repeater's home region, used whenever a region filter is given.
 type AttributionMethod string
 
@@ -307,6 +337,21 @@ type BatteryStatus string
 type BatteryThresholds struct {
 	CriticalMv int `json:"critical_mv"`
 	LowMv      int `json:"low_mv"`
+}
+
+// BestPathEntry A repeater and the observer that hears it over the fewest hops.
+type BestPathEntry struct {
+	// Hop The hop's hash prefix as hex.
+	Hop     string `json:"hop"`
+	MinDist int    `json:"minDist"`
+
+	// Name The resolved node's name; null when the hop does not resolve.
+	Name         *string `json:"name"`
+	ObserverId   string  `json:"observer_id"`
+	ObserverName string  `json:"observer_name"`
+
+	// Pubkey The resolved node's public key; null when the hop does not resolve.
+	Pubkey *string `json:"pubkey"`
 }
 
 // BulkHealthEntry defines model for BulkHealthEntry.
@@ -364,6 +409,47 @@ type CategoryDistStats struct {
 	Max    float64 `json:"max"`
 	Median float64 `json:"median"`
 	Min    float64 `json:"min"`
+}
+
+// ChannelAnalyticsResponse defines model for ChannelAnalyticsResponse.
+type ChannelAnalyticsResponse struct {
+	ActiveChannels  int                    `json:"activeChannels"`
+	ChannelTimeline []ChannelTimelineEntry `json:"channelTimeline"`
+
+	// Channels Most messages first.
+	Channels []ChannelSummary `json:"channels"`
+
+	// Decryptable Channels whose name was decrypted.
+	Decryptable int   `json:"decryptable"`
+	MsgLengths  []int `json:"msgLengths"`
+
+	// TopSenders The 15 most active senders.
+	TopSenders []NameCount `json:"topSenders"`
+}
+
+// ChannelSummary defines model for ChannelSummary.
+type ChannelSummary struct {
+	Encrypted bool `json:"encrypted"`
+
+	// Hash The one-byte channel hash, in decimal.
+	Hash string `json:"hash"`
+
+	// LastActivity UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastActivity TimestampSeconds `json:"lastActivity"`
+	Messages     int              `json:"messages"`
+
+	// Name The decrypted name, or ch followed by the hash.
+	Name    string `json:"name"`
+	Senders int    `json:"senders"`
+}
+
+// ChannelTimelineEntry Messages on one channel in one hour.
+type ChannelTimelineEntry struct {
+	Channel string `json:"channel"`
+	Count   int    `json:"count"`
+
+	// Hour UTC hour bucket, 2026-11-05T15.
+	Hour string `json:"hour"`
 }
 
 // CollisionClass local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
@@ -729,12 +815,43 @@ type HistogramBin struct {
 	X float64 `json:"x"`
 }
 
+// HopCount defines model for HopCount.
+type HopCount struct {
+	Count int `json:"count"`
+	Hops  int `json:"hops"`
+}
+
+// HopRef A hop prefix and the node it resolves to, if any.
+type HopRef struct {
+	// Hop The hop's hash prefix as hex.
+	Hop string `json:"hop"`
+
+	// Name The resolved node's name; null when the hop does not resolve.
+	Name *string `json:"name"`
+
+	// Pubkey The resolved node's public key; null when the hop does not resolve.
+	Pubkey *string `json:"pubkey"`
+}
+
+// HopSnr Packets with a given hop count and their mean SNR.
+type HopSnr struct {
+	AvgSnr float64 `json:"avgSnr"`
+	Count  int     `json:"count"`
+	Hops   int     `json:"hops"`
+}
+
 // HourlyCount defines model for HourlyCount.
 type HourlyCount struct {
 	Count int `json:"count"`
 
 	// Hour UTC hour bucket, 2026-11-05T15.
 	Hour string `json:"hour"`
+}
+
+// IndexLoadingResponse defines model for IndexLoadingResponse.
+type IndexLoadingResponse struct {
+	Error      string `json:"error"`
+	RetryAfter int    `json:"retryAfter"`
 }
 
 // MultiByteCapability defines model for MultiByteCapability.
@@ -770,6 +887,37 @@ type MultiByteNode struct {
 
 	// Role MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
 	Role NodeRole `json:"role"`
+}
+
+// MultiObsNode A repeater heard by more than one observer.
+type MultiObsNode struct {
+	// Hop The hop's hash prefix as hex.
+	Hop string `json:"hop"`
+
+	// Name The resolved node's name; null when the hop does not resolve.
+	Name *string `json:"name"`
+
+	// Observers Nearest observer first.
+	Observers []MultiObsObserver `json:"observers"`
+
+	// Pubkey The resolved node's public key; null when the hop does not resolve.
+	Pubkey *string `json:"pubkey"`
+}
+
+// MultiObsObserver defines model for MultiObsObserver.
+type MultiObsObserver struct {
+	Count int `json:"count"`
+
+	// MinDist Fewest hops between the repeater and this observer.
+	MinDist      int    `json:"minDist"`
+	ObserverId   string `json:"observer_id"`
+	ObserverName string `json:"observer_name"`
+}
+
+// NameCount defines model for NameCount.
+type NameCount struct {
+	Count int    `json:"count"`
+	Name  string `json:"name"`
 }
 
 // NeighborEntry One neighbor of the queried node, with affinity score and observation metadata.
@@ -1134,6 +1282,14 @@ type ObserverCalibration struct {
 	Samples int `json:"samples"`
 }
 
+// ObserverReach defines model for ObserverReach.
+type ObserverReach struct {
+	ObserverName string `json:"observer_name"`
+
+	// Rings Nearest ring first.
+	Rings []ReachRing `json:"rings"`
+}
+
 // Packet A packet with the display fields of its representative observation. observations is present only when requested (expand=observations) or on the detail route.
 type Packet struct {
 	// UnderscoreParsedPath Hop prefixes of the representative observation, null when it has none.
@@ -1225,6 +1381,14 @@ type PacketObservation struct {
 
 	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
 	Timestamp TimestampMillis `json:"timestamp"`
+}
+
+// PathCount defines model for PathCount.
+type PathCount struct {
+	Count int `json:"count"`
+
+	// Path Node names joined by arrows; unresolved hops show as hex.
+	Path string `json:"path"`
 }
 
 // PayloadTypeEntry defines model for PayloadTypeEntry.
@@ -1346,6 +1510,13 @@ type ReachObserver struct {
 	Pubkey     string   `json:"pubkey"`
 }
 
+// ReachRing defines model for ReachRing.
+type ReachRing struct {
+	// Hops Distance from the observer, in hops.
+	Hops  int                 `json:"hops"`
+	Nodes []TopologyReachNode `json:"nodes"`
+}
+
 // ReachRole A node role, or empty when the peer is not a known node.
 type ReachRole = types.NodeRole
 
@@ -1358,6 +1529,54 @@ type ReachWindow struct {
 	Since TimestampSeconds `json:"since"`
 }
 
+// RelayAirtimeRow defines model for RelayAirtimeRow.
+type RelayAirtimeRow struct {
+	AirtimePct float64 `json:"airtime_pct"`
+
+	// Count Distinct packets of this type.
+	Count    int     `json:"count"`
+	CountPct float64 `json:"count_pct"`
+
+	// PayloadType The payload type name; UNK for an unknown type.
+	PayloadType string `json:"payload_type"`
+
+	// Score Time on air in nanoseconds multiplied by distinct relays, summed over the packets.
+	Score int64             `json:"score"`
+	Type  types.PayloadType `json:"type"`
+}
+
+// RelayAirtimeShareResponse defines model for RelayAirtimeShareResponse.
+type RelayAirtimeShareResponse struct {
+	// Cached True when the result came from the cache.
+	Cached bool        `json:"cached"`
+	Preset RelayPreset `json:"preset"`
+
+	// Rows Largest airtime share first.
+	Rows       []RelayAirtimeRow `json:"rows"`
+	TotalCount int               `json:"total_count"`
+	TotalScore int64             `json:"total_score"`
+
+	// Window The window label; empty when no window was given.
+	Window string `json:"window"`
+}
+
+// RelayPreset defines model for RelayPreset.
+type RelayPreset struct {
+	BwKhz float64 `json:"bw_khz"`
+
+	// Cr Coding rate denominator, 5 for 4/5.
+	Cr int `json:"cr"`
+
+	// FreqHz Informational only; 0 when not configured.
+	FreqHz float64 `json:"freq_hz"`
+
+	// Preamble Preamble symbols.
+	Preamble int `json:"preamble"`
+
+	// Sf Spreading factor.
+	Sf int `json:"sf"`
+}
+
 // ResolvePrefixResponse defines model for ResolvePrefixResponse.
 type ResolvePrefixResponse struct {
 	Ambiguous bool `json:"ambiguous"`
@@ -1368,6 +1587,49 @@ type ResolvePrefixResponse struct {
 
 	// Pubkey Present only when exactly one visible node matches.
 	Pubkey *string `json:"pubkey,omitempty"`
+}
+
+// RetransmissionBucket defines model for RetransmissionBucket.
+type RetransmissionBucket struct {
+	AvgRepeaters float64 `json:"avg_repeaters"`
+
+	// Observers Distinct observers that heard those events.
+	Observers int `json:"observers"`
+
+	// Packets Flood events that started in the bucket.
+	Packets int `json:"packets"`
+
+	// RepeaterSum Distinct repeaters summed over those events.
+	RepeaterSum int `json:"repeater_sum"`
+
+	// Start UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Start TimestampSeconds `json:"start"`
+}
+
+// RetransmissionResponse defines model for RetransmissionResponse.
+type RetransmissionResponse struct {
+	BucketSeconds int                    `json:"bucket_seconds"`
+	Buckets       []RetransmissionBucket `json:"buckets"`
+
+	// Region The region filter as given; empty when none.
+	Region  string                `json:"region"`
+	Summary RetransmissionSummary `json:"summary"`
+
+	// Window The window label; empty when no window was given.
+	Window string `json:"window"`
+}
+
+// RetransmissionSummary defines model for RetransmissionSummary.
+type RetransmissionSummary struct {
+	AvgRepeaters float64 `json:"avg_repeaters"`
+
+	// NoRepeaterPackets Events heard with an empty path only.
+	NoRepeaterPackets int `json:"no_repeater_packets"`
+	Observers         int `json:"observers"`
+
+	// OneBytePackets Events whose hops are 1-byte hashes, the most ambiguous.
+	OneBytePackets int `json:"one_byte_packets"`
+	Packets        int `json:"packets"`
 }
 
 // RoleAnalyticsResponse defines model for RoleAnalyticsResponse.
@@ -1442,11 +1704,165 @@ type SkewSample struct {
 // SkewSeverity Derived from the recent median skew. ok is under 5 minutes, warning under 1 hour, critical under 30 days, absurd under 365 days and no_clock beyond that (an uninitialized RTC). bimodal_clock marks a node whose recent adverts mix good and nonsense timestamps.
 type SkewSeverity = types.SkewSeverity
 
+// SubpathBulkResponse defines model for SubpathBulkResponse.
+type SubpathBulkResponse struct {
+	// Results One list per requested group, in request order.
+	Results []SubpathList `json:"results"`
+}
+
+// SubpathDetailResponse defines model for SubpathDetailResponse.
+type SubpathDetailResponse struct {
+	// FirstSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	FirstSeen TimestampSeconds `json:"firstSeen"`
+	Hops      []string         `json:"hops"`
+
+	// HourDistribution Packets per UTC hour of day, 24 entries.
+	HourDistribution []int `json:"hourDistribution"`
+
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen TimestampSeconds `json:"lastSeen"`
+	Nodes    []SubpathNode    `json:"nodes"`
+
+	// Observers The 10 observers that heard it most.
+	Observers []NameCount `json:"observers"`
+
+	// ParentPaths The 15 longer paths that contain the sequence most often.
+	ParentPaths  []PathCount   `json:"parentPaths"`
+	Signal       SubpathSignal `json:"signal"`
+	TotalMatches int           `json:"totalMatches"`
+}
+
+// SubpathEntry defines model for SubpathEntry.
+type SubpathEntry struct {
+	Count int `json:"count"`
+	Hops  int `json:"hops"`
+
+	// Path Node names joined by arrows; unresolved hops show as hex.
+	Path string `json:"path"`
+
+	// Pct Share of all paths, one decimal place.
+	Pct     float64  `json:"pct"`
+	RawHops []string `json:"rawHops"`
+}
+
+// SubpathList defines model for SubpathList.
+type SubpathList struct {
+	// Subpaths Most frequent first.
+	Subpaths   []SubpathEntry `json:"subpaths"`
+	TotalPaths int            `json:"totalPaths"`
+}
+
+// SubpathNode A hop in the requested sequence. The name falls back to the hex hop when it does not resolve.
+type SubpathNode struct {
+	// Hop The hop's hash prefix as hex.
+	Hop string   `json:"hop"`
+	Lat *float64 `json:"lat"`
+	Lon *float64 `json:"lon"`
+
+	// Name The resolved node's name; null when the hop does not resolve.
+	Name *string `json:"name"`
+
+	// Pubkey The resolved node's public key; null when the hop does not resolve.
+	Pubkey *string `json:"pubkey"`
+}
+
+// SubpathSignal defines model for SubpathSignal.
+type SubpathSignal struct {
+	AvgRssi *float64 `json:"avgRssi"`
+	AvgSnr  *float64 `json:"avgSnr"`
+
+	// Samples Packets with an SNR.
+	Samples int `json:"samples"`
+}
+
 // TimestampMillis UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
 type TimestampMillis = types.WireTimeMillis
 
 // TimestampSeconds UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
 type TimestampSeconds = types.WireTimeSeconds
+
+// TopPair defines model for TopPair.
+type TopPair struct {
+	// Count Times the two hops appeared next to each other.
+	Count   int     `json:"count"`
+	HopA    string  `json:"hopA"`
+	HopB    string  `json:"hopB"`
+	NameA   *string `json:"nameA"`
+	NameB   *string `json:"nameB"`
+	PubkeyA *string `json:"pubkeyA"`
+	PubkeyB *string `json:"pubkeyB"`
+}
+
+// TopRepeater A repeater and how often it appears in paths.
+type TopRepeater struct {
+	Count int `json:"count"`
+
+	// Hop The hop's hash prefix as hex.
+	Hop string `json:"hop"`
+
+	// Name The resolved node's name; null when the hop does not resolve.
+	Name *string `json:"name"`
+
+	// Pubkey The resolved node's public key; null when the hop does not resolve.
+	Pubkey *string `json:"pubkey"`
+}
+
+// TopologyObserver defines model for TopologyObserver.
+type TopologyObserver struct {
+	Id string `json:"id"`
+
+	// Name The observer's name; its ID when it has none.
+	Name string `json:"name"`
+}
+
+// TopologyReachNode A repeater an observer hears at a given distance.
+type TopologyReachNode struct {
+	Count int `json:"count"`
+
+	// DistRange Fewest-most hops, for example 1-7; null when it was always at the ring's distance.
+	DistRange *string `json:"distRange"`
+
+	// Hop The hop's hash prefix as hex.
+	Hop string `json:"hop"`
+
+	// Name The resolved node's name; null when the hop does not resolve.
+	Name *string `json:"name"`
+
+	// Pubkey The resolved node's public key; null when the hop does not resolve.
+	Pubkey *string `json:"pubkey"`
+}
+
+// TopologyResponse defines model for TopologyResponse.
+type TopologyResponse struct {
+	AvgHops float64 `json:"avgHops"`
+
+	// BestPathList The 50 repeaters closest to an observer.
+	BestPathList []BestPathEntry `json:"bestPathList"`
+
+	// HopDistribution Packets per hop count, up to 25 hops.
+	HopDistribution []HopCount `json:"hopDistribution"`
+
+	// HopsVsSnr Up to 20 hops.
+	HopsVsSnr  []HopSnr `json:"hopsVsSnr"`
+	MaxHops    int      `json:"maxHops"`
+	MedianHops int      `json:"medianHops"`
+
+	// MultiObsNodes The 50 repeaters heard by the most observers.
+	MultiObsNodes []MultiObsNode     `json:"multiObsNodes"`
+	Observers     []TopologyObserver `json:"observers"`
+
+	// PerObserverReach Reach per observer, keyed by observer ID.
+	PerObserverReach map[string]ObserverReach `json:"perObserverReach"`
+
+	// TopPairs The 15 busiest adjacent repeater pairs.
+	TopPairs []TopPair `json:"topPairs"`
+
+	// TopRepeaters The 20 busiest repeaters.
+	TopRepeaters []TopRepeater `json:"topRepeaters"`
+
+	// UniqueNodes Nodes active in the last seven days.
+	UniqueNodes int `json:"uniqueNodes"`
+}
 
 // TwoByteCell defines model for TwoByteCell.
 type TwoByteCell struct {
@@ -1466,31 +1882,70 @@ type TwoByteCell struct {
 // UsefulnessGrade Letter grade derived from usefulness_score.
 type UsefulnessGrade string
 
+// Area defines model for Area.
+type Area = string
+
+// From defines model for From.
+type From = time.Time
+
+// Region defines model for Region.
+type Region = string
+
+// To defines model for To.
+type To = time.Time
+
+// Window A trailing time window.
+type Window = AnalyticsWindow
+
+// AnalyticsWarmingUp defines model for AnalyticsWarmingUp.
+type AnalyticsWarmingUp = AnalyticsWarmupResponse
+
+// SubpathIndexLoading defines model for SubpathIndexLoading.
+type SubpathIndexLoading = IndexLoadingResponse
+
+// GetChannelAnalyticsParams defines parameters for GetChannelAnalytics.
+type GetChannelAnalyticsParams struct {
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key. Narrows the result to nodes inside the area.
+	Area *Area `form:"area,omitempty" json:"area,omitempty"`
+
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *From `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *To `form:"to,omitempty" json:"to,omitempty"`
+}
+
 // GetDistanceAnalyticsParams defines parameters for GetDistanceAnalytics.
 type GetDistanceAnalyticsParams struct {
-	// Region Region (observer IATA) filter.
-	Region *string `form:"region,omitempty" json:"region,omitempty"`
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
 
-	// Area Area key; filters by the transmitting node's position.
-	Area *string `form:"area,omitempty" json:"area,omitempty"`
+	// Area Area key. Narrows the result to nodes inside the area.
+	Area *Area `form:"area,omitempty" json:"area,omitempty"`
 }
 
 // GetHashCollisionAnalyticsParams defines parameters for GetHashCollisionAnalytics.
 type GetHashCollisionAnalyticsParams struct {
-	// Region Region (observer IATA) filter.
-	Region *string `form:"region,omitempty" json:"region,omitempty"`
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
 
-	// Area Area key; keeps only nodes inside the area.
-	Area *string `form:"area,omitempty" json:"area,omitempty"`
+	// Area Area key. Narrows the result to nodes inside the area.
+	Area *Area `form:"area,omitempty" json:"area,omitempty"`
 }
 
 // GetHashSizeAnalyticsParams defines parameters for GetHashSizeAnalytics.
 type GetHashSizeAnalyticsParams struct {
-	// Region Region (observer IATA) filter.
-	Region *string `form:"region,omitempty" json:"region,omitempty"`
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
 
-	// Area Area key; filters adverts by the transmitting node's position.
-	Area *string `form:"area,omitempty" json:"area,omitempty"`
+	// Area Area key. Narrows the result to nodes inside the area.
+	Area *Area `form:"area,omitempty" json:"area,omitempty"`
 }
 
 // GetNeighborGraphParams defines parameters for GetNeighborGraph.
@@ -1508,26 +1963,122 @@ type GetNeighborGraphParams struct {
 	Role *FilterableRole `form:"role,omitempty" json:"role,omitempty"`
 }
 
-// GetRFAnalyticsParams defines parameters for GetRFAnalytics.
-type GetRFAnalyticsParams struct {
-	// Region Region (observer IATA) filter.
-	Region *string `form:"region,omitempty" json:"region,omitempty"`
-
-	// Area Area key; filters by the transmitting node's position.
-	Area *string `form:"area,omitempty" json:"area,omitempty"`
-
-	// Window Only data from this long ago until now.
-	Window *GetRFAnalyticsParamsWindow `form:"window,omitempty" json:"window,omitempty"`
+// GetRelayAirtimeShareParams defines parameters for GetRelayAirtimeShare.
+type GetRelayAirtimeShareParams struct {
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
 
 	// From Start of an explicit range, RFC 3339.
-	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	From *From `form:"from,omitempty" json:"from,omitempty"`
 
 	// To End of an explicit range, RFC 3339.
-	To *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	To *To `form:"to,omitempty" json:"to,omitempty"`
 }
 
-// GetRFAnalyticsParamsWindow defines parameters for GetRFAnalytics.
-type GetRFAnalyticsParamsWindow string
+// GetRetransmissionPressureParams defines parameters for GetRetransmissionPressure.
+type GetRetransmissionPressureParams struct {
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
+
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *From `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *To `form:"to,omitempty" json:"to,omitempty"`
+
+	// Bucket Bucket width. Any other value selects 1h.
+	Bucket *GetRetransmissionPressureParamsBucket `form:"bucket,omitempty" json:"bucket,omitempty"`
+}
+
+// GetRetransmissionPressureParamsBucket defines parameters for GetRetransmissionPressure.
+type GetRetransmissionPressureParamsBucket string
+
+// GetRFAnalyticsParams defines parameters for GetRFAnalytics.
+type GetRFAnalyticsParams struct {
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key. Narrows the result to nodes inside the area.
+	Area *Area `form:"area,omitempty" json:"area,omitempty"`
+
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *From `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *To `form:"to,omitempty" json:"to,omitempty"`
+}
+
+// GetSubpathDetailParams defines parameters for GetSubpathDetail.
+type GetSubpathDetailParams struct {
+	// Hops Comma-separated hop prefixes, at least two.
+	Hops string `form:"hops" json:"hops"`
+}
+
+// GetSubpathAnalyticsParams defines parameters for GetSubpathAnalytics.
+type GetSubpathAnalyticsParams struct {
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
+
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *From `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *To `form:"to,omitempty" json:"to,omitempty"`
+
+	// MinLen Shortest sub-sequence, in hops. Values below 2 are raised to 2.
+	MinLen *int `form:"minLen,omitempty" json:"minLen,omitempty"`
+
+	// MaxLen Longest sub-sequence, in hops.
+	MaxLen *int `form:"maxLen,omitempty" json:"maxLen,omitempty"`
+
+	// Limit Most entries to return, capped by the instance's analytics limit.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetSubpathAnalyticsBulkParams defines parameters for GetSubpathAnalyticsBulk.
+type GetSubpathAnalyticsBulkParams struct {
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
+
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *From `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *To `form:"to,omitempty" json:"to,omitempty"`
+
+	// Groups Comma-separated groups, for example 2-3:50,4-8:50.
+	Groups string `form:"groups" json:"groups"`
+}
+
+// GetTopologyAnalyticsParams defines parameters for GetTopologyAnalytics.
+type GetTopologyAnalyticsParams struct {
+	// Region Region (observer IATA) filter. An unknown region applies no filter.
+	Region *Region `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key. Narrows the result to nodes inside the area.
+	Area *Area `form:"area,omitempty" json:"area,omitempty"`
+
+	// Window Only data from this long ago until now. An unrecognised value is ignored.
+	Window *Window `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *From `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *To `form:"to,omitempty" json:"to,omitempty"`
+}
 
 // ListNodesParams defines parameters for ListNodes.
 type ListNodesParams struct {

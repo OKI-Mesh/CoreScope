@@ -74,26 +74,22 @@ func TestSubpathsHonorsTimeWindow_StoreLevel(t *testing.T) {
 
 	// Unbounded: should see both transmissions and their subpaths.
 	all := store.GetAnalyticsSubpathsWithWindow(ctx, "", 2, 8, 100, TimeWindow{})
-	allTotal, _ := all["totalPaths"].(int)
-	if allTotal != 2 {
-		t.Fatalf("unbounded: expected totalPaths=2, got %d (subpaths=%v)", allTotal, all["subpaths"])
+	if all.TotalPaths != 2 {
+		t.Fatalf("unbounded: expected totalPaths=2, got %d (subpaths=%v)", all.TotalPaths, all.Subpaths)
 	}
 
 	// 24h window: should exclude the 30d-old transmission.
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	w := TimeWindow{Since: since, Label: "24h"}
 	windowed := store.GetAnalyticsSubpathsWithWindow(ctx, "", 2, 8, 100, w)
-	winTotal, _ := windowed["totalPaths"].(int)
-	if winTotal != 1 {
-		t.Errorf("windowed (24h): expected totalPaths=1, got %d (subpaths=%v)", winTotal, windowed["subpaths"])
+	if windowed.TotalPaths != 1 {
+		t.Errorf("windowed (24h): expected totalPaths=1, got %d (subpaths=%v)", windowed.TotalPaths, windowed.Subpaths)
 	}
 
 	// And the old path "cc → dd" must NOT appear in the windowed response.
-	if subs, ok := windowed["subpaths"].([]map[string]interface{}); ok {
-		for _, s := range subs {
-			if p, _ := s["path"].(string); p == "cc → dd" {
-				t.Errorf("windowed (24h) leaked the old path %q", p)
-			}
+	for _, sp := range windowed.Subpaths {
+		if sp.Path == "cc → dd" {
+			t.Errorf("windowed (24h) leaked the old path %q", sp.Path)
 		}
 	}
 }

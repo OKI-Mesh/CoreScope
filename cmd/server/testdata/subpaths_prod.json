@@ -1,0 +1,86 @@
+{
+  "subpaths": [
+    {
+      "count": 4766,
+      "hops": 2,
+      "path": "e70b → 9e90",
+      "pct": 4.1,
+      "rawHops": [
+        "e70b",
+        "9e90"
+      ]
+    },
+    {
+      "count": 4061,
+      "hops": 2,
+      "path": "Node 06 → Node 02",
+      "pct": 3.5,
+      "rawHops": [
+        "1b85",
+        "a3a7"
+      ]
+    },
+    {
+      "count": 3404,
+      "hops": 2,
+      "path": "Node 04 → Node 05",
+      "pct": 2.9,
+      "rawHops": [
+        "2710",
+        "5531"
+      ]
+    },
+    {
+      "count": 3279,
+      "hops": 2,
+      "path": "Node 02 → Node 38",
+      "pct": 2.8,
+      "rawHops": [
+        "a3a7",
+        "35c5"
+      ]
+    },
+    {
+      "count": 3265,
+      "hops": 3,
+      "path": "Node 06 → Node 02 → Node 38",
+      "pct": 2.8,
+      "rawHops": [
+        "1b85",
+        "a3a7",
+        "35c5"
+      ]
+    },
+    {
+      "count": 3166,
+      "hops": 2,
+      "path": "Node 03 → Node 02",
+      "pct": 2.7,
+      "rawHops": [
+        "974c6d",
+        "61295d"
+      ]
+    },
+    {
+      "count": 2839,
+      "hops": 2,
+      "path": "Node 05 → Node 04",
+      "pct": 2.4,
+      "rawHops": [
+        "c98f6b",
+        "ac64e2"
+      ]
+    },
+    {
+      "count": 1611,
+      "hops": 2,
+      "path": "Node 39 → Node 40",
+      "pct": 1.4,
+      "rawHops": [
+        "3adb64",
+        "e87523"
+      ]
+    }
+  ],
+  "totalPaths": 116313
+}

@@ -1558,12 +1558,12 @@ func TestAnalyticsSubpathsBulk(t *testing.T) {
 		}
 	}
 
-	// Missing groups param → error.
+	// Missing groups param → 400 with an error body.
 	req2 := httptest.NewRequest("GET", "/api/analytics/subpaths-bulk", nil)
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
-	if w2.Code != 200 {
-		t.Fatalf("expected 200 with error body, got %d", w2.Code)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 with error body, got %d", w2.Code)
 	}
 	var errBody map[string]interface{}
 	json.Unmarshal(w2.Body.Bytes(), &errBody)
@@ -1575,6 +1575,9 @@ func TestAnalyticsSubpathsBulk(t *testing.T) {
 	req3 := httptest.NewRequest("GET", "/api/analytics/subpaths-bulk?groups=bad", nil)
 	w3 := httptest.NewRecorder()
 	router.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid group format, got %d", w3.Code)
+	}
 	var errBody3 map[string]interface{}
 	json.Unmarshal(w3.Body.Bytes(), &errBody3)
 	if _, ok := errBody3["error"]; !ok {
@@ -1608,8 +1611,8 @@ func TestAnalyticsSubpathDetailNoHops(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 	var body map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &body)

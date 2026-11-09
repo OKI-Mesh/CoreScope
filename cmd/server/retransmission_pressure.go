@@ -82,44 +82,17 @@ import (
 	"cmp"
 	"context"
 	"math/bits"
-	"net/http"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// RetransmissionBucket is one time bucket of the series.
-type RetransmissionBucket struct {
-	Start        string  `json:"start"`         // bucket start, RFC3339 UTC
-	Packets      int     `json:"packets"`       // flood events that started in the bucket
-	RepeaterSum  int     `json:"repeater_sum"`  // sum of distinct repeaters over those events
-	AvgRepeaters float64 `json:"avg_repeaters"` // repeater_sum / packets
-	Observers    int     `json:"observers"`     // distinct observers that heard those events
-}
-
-// RetransmissionSummary aggregates the whole response window.
-type RetransmissionSummary struct {
-	Packets           int     `json:"packets"`
-	AvgRepeaters      float64 `json:"avg_repeaters"`
-	Observers         int     `json:"observers"`
-	OneBytePackets    int     `json:"one_byte_packets"`    // events whose hops are 1-byte hashes (most ambiguous)
-	NoRepeaterPackets int     `json:"no_repeater_packets"` // events heard with an empty path only
-}
-
-// RetransmissionResponse is the /api/analytics/retransmissions body.
-type RetransmissionResponse struct {
-	BucketSeconds int                    `json:"bucket_seconds"`
-	Window        string                 `json:"window"`
-	Region        string                 `json:"region"`
-	Summary       RetransmissionSummary  `json:"summary"`
-	Buckets       []RetransmissionBucket `json:"buckets"`
-}
-
 type retransmissionCacheEntry struct {
-	data      RetransmissionResponse
+	data      api.RetransmissionResponse
 	expiresAt time.Time
 }
 
@@ -314,7 +287,7 @@ type retransmissionPass struct {
 	obsIndex       map[string]int
 	allObservers   []uint64
 	union          repeaterUnion
-	summary        RetransmissionSummary
+	summary        api.RetransmissionSummary
 	totalRepeaters int
 }
 
@@ -367,7 +340,7 @@ func (p *retransmissionPass) addEvent(ev []timedObs) {
 
 // computeRetransmissionPressure builds the series (see the file header for
 // flood events, the retention floor, the counting rule and region).
-func (s *PacketStore) computeRetransmissionPressure(ctx context.Context, region string, window TimeWindow, bucket time.Duration) RetransmissionResponse {
+func (s *PacketStore) computeRetransmissionPressure(ctx context.Context, region string, window TimeWindow, bucket time.Duration) api.RetransmissionResponse {
 	if bucket <= 0 {
 		bucket = retransmissionDefaultBucket
 	}
@@ -418,11 +391,11 @@ func (s *PacketStore) computeRetransmissionPressure(ctx context.Context, region 
 		starts = append(starts, st)
 	}
 	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
-	buckets := make([]RetransmissionBucket, 0, len(starts))
+	buckets := make([]api.RetransmissionBucket, 0, len(starts))
 	for _, st := range starts {
 		a := p.aggs[st]
-		buckets = append(buckets, RetransmissionBucket{
-			Start:        time.Unix(st, 0).UTC().Format(time.RFC3339),
+		buckets = append(buckets, api.RetransmissionBucket{
+			Start:        types.WireTimeSeconds{Time: time.Unix(st, 0)},
 			Packets:      a.packets,
 			RepeaterSum:  a.repeaterSum,
 			AvgRepeaters: float64(a.repeaterSum) / float64(a.packets),
@@ -439,7 +412,7 @@ func (s *PacketStore) computeRetransmissionPressure(ctx context.Context, region 
 	if label == "" && !window.IsZero() {
 		label = cacheKeyBound(window.Since) + "/" + cacheKeyBound(window.Until)
 	}
-	return RetransmissionResponse{
+	return api.RetransmissionResponse{
 		BucketSeconds: int(p.bucketSec),
 		Window:        label,
 		Region:        region,
@@ -454,23 +427,23 @@ func isDefaultRetransmissionShape(region string, window TimeWindow, bucket time.
 
 // retransCacheGet returns a fresh cached result for key. Caller must hold
 // s.cacheMu.
-func (s *PacketStore) retransCacheGet(key string) (RetransmissionResponse, bool) {
+func (s *PacketStore) retransCacheGet(key string) (api.RetransmissionResponse, bool) {
 	if e, ok := s.retransCache[key]; ok && time.Now().Before(e.expiresAt) {
 		return e.data, true
 	}
-	return RetransmissionResponse{}, false
+	return api.RetransmissionResponse{}, false
 }
 
 // GetRetransmissionPressure serves the default shape from the recomputer
 // snapshot and every other shape from the TTL cache (compute on miss,
 // concurrent misses on one key share the compute).
-func (s *PacketStore) GetRetransmissionPressure(ctx context.Context, region string, window TimeWindow, bucket time.Duration) RetransmissionResponse {
+func (s *PacketStore) GetRetransmissionPressure(ctx context.Context, region string, window TimeWindow, bucket time.Duration) api.RetransmissionResponse {
 	if isDefaultRetransmissionShape(region, window, bucket) {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompRetransmissions
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
-			if r, ok := rc.Load().(RetransmissionResponse); ok {
+			if r, ok := rc.Load().(api.RetransmissionResponse); ok {
 				s.cacheMu.Lock()
 				s.cacheHits++
 				s.cacheMu.Unlock()
@@ -506,27 +479,5 @@ func (s *PacketStore) GetRetransmissionPressure(ctx context.Context, region stri
 		s.cacheMu.Unlock()
 		return result, nil
 	})
-	return v.(RetransmissionResponse)
-}
-
-func (s *Server) handleAnalyticsRetransmissions(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	region := r.URL.Query().Get("region")
-	window := ParseTimeWindow(r)
-	bucket := parseRetransmissionBucket(r.URL.Query().Get("bucket"))
-	if s.store == nil {
-		writeJSON(w, RetransmissionResponse{BucketSeconds: int(bucket / time.Second), Buckets: []RetransmissionBucket{}})
-		return
-	}
-	// #1659 warmup gate (see handleAnalyticsRF for rationale).
-	if isDefaultRetransmissionShape(region, window, bucket) {
-		s.store.analyticsRecomputerMu.RLock()
-		rc := s.store.recompRetransmissions
-		s.store.analyticsRecomputerMu.RUnlock()
-		if rc != nil && rc.IsWarmingUp_1659() {
-			writeAnalyticsWarmup503(w)
-			return
-		}
-	}
-	writeJSON(w, s.store.GetRetransmissionPressure(ctx, region, window, bucket))
+	return v.(api.RetransmissionResponse)
 }

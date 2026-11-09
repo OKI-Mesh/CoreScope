@@ -26,9 +26,9 @@ import (
 
 func TestPR1589_AnalyticsSubpathsDefaultIs100(t *testing.T) {
 	// MAJOR-1: regression guard.
-	src, err := os.ReadFile("routes.go")
+	src, err := os.ReadFile("analytics_api.go")
 	if err != nil {
-		t.Fatalf("read routes.go: %v", err)
+		t.Fatalf("read analytics_api.go: %v", err)
 	}
 	if !strings.Contains(string(src), "queryLimit(r, 100, s.cfg.ListLimits.AnalyticsMax)") {
 		t.Error("handleAnalyticsSubpaths must use def=100 in queryLimit; " +

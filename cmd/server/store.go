@@ -207,13 +207,13 @@ type PacketStore struct {
 	// Response caches (separate mutex to avoid contention with store RWMutex)
 	cacheMu           sync.RWMutex
 	rfCache           map[string]*cachedRF             // region → cached RF result
-	topoCache         map[string]*cachedResult         // region → cached topology result
+	topoCache         map[string]*cachedTopology       // region → cached topology result
 	hashCache         map[string]*cachedHashSizes      // region → cached hash-sizes result
 	collisionCache    map[string]*cachedHashCollisions // cached hash-collisions result keyed by region ("" = global)
-	chanCache         map[string]*cachedResult         // region → cached channels result
+	chanCache         map[string]*cachedChannels       // region → cached channels result
 	distCache         map[string]*cachedDistance       // region → cached distance result
-	relayAirtimeCache map[string]*cachedResult         // window → cached relay airtime share; created on first use, cleared with rfCache
-	subpathCache      map[string]*cachedResult         // params → cached subpaths result
+	relayAirtimeCache map[string]*cachedRelayAirtime   // window → cached relay airtime share; created on first use, cleared with rfCache
+	subpathCache      map[string]*cachedSubpaths       // params → cached subpaths result
 	rfCacheTTL        time.Duration
 	collisionCacheTTL time.Duration
 
@@ -651,8 +651,30 @@ type distHopDetail struct {
 	Dist     float64
 }
 
-type cachedResult struct {
-	data      map[string]interface{}
+// cachedTopology is a topology analytics result held in topoCache until it
+// expires.
+type cachedTopology struct {
+	data      api.TopologyResponse
+	expiresAt time.Time
+}
+
+// cachedChannels is a channel analytics result held in chanCache until it
+// expires.
+type cachedChannels struct {
+	data      api.ChannelAnalyticsResponse
+	expiresAt time.Time
+}
+
+// cachedRelayAirtime is a relay airtime share result held in relayAirtimeCache
+// until it expires.
+type cachedRelayAirtime struct {
+	data      api.RelayAirtimeShareResponse
+	expiresAt time.Time
+}
+
+// cachedSubpaths is a subpaths result held in subpathCache until it expires.
+type cachedSubpaths struct {
+	data      api.SubpathList
 	expiresAt time.Time
 }
 
@@ -721,13 +743,13 @@ func NewPacketStore(db *database.DB, cfg *PacketStoreConfig, cacheTTLs ...map[st
 		nodeHashes:    make(map[string]map[string]bool),
 		byPayloadType: make(map[types.PayloadType][]*StoreTx),
 		rfCache:       make(map[string]*cachedRF),
-		topoCache:     make(map[string]*cachedResult),
+		topoCache:     make(map[string]*cachedTopology),
 		hashCache:     make(map[string]*cachedHashSizes),
 
 		collisionCache: make(map[string]*cachedHashCollisions),
-		chanCache:      make(map[string]*cachedResult),
+		chanCache:      make(map[string]*cachedChannels),
 		distCache:      make(map[string]*cachedDistance),
-		subpathCache:   make(map[string]*cachedResult),
+		subpathCache:   make(map[string]*cachedSubpaths),
 		// #1239: 60 seconds by default. rfCacheTTL is the shared TTL for
 		// the RF, topology, distance, hash-sizes, subpath, and channel
 		// analytics caches. Distance analytics IS viewed live during
@@ -1868,12 +1890,12 @@ func (s *PacketStore) invalidateCachesFor(inv cacheInvalidation) {
 	if inv.eviction {
 		s.rfCache = make(map[string]*cachedRF)
 		s.relayAirtimeCache = nil
-		s.topoCache = make(map[string]*cachedResult)
+		s.topoCache = make(map[string]*cachedTopology)
 		s.hashCache = make(map[string]*cachedHashSizes)
 		s.collisionCache = make(map[string]*cachedHashCollisions)
-		s.chanCache = make(map[string]*cachedResult)
+		s.chanCache = make(map[string]*cachedChannels)
 		s.distCache = make(map[string]*cachedDistance)
-		s.subpathCache = make(map[string]*cachedResult)
+		s.subpathCache = make(map[string]*cachedSubpaths)
 		s.retransCache = nil
 		s.channelsCacheMu.Lock()
 		s.channelsCacheRes = nil
@@ -1919,9 +1941,9 @@ func (s *PacketStore) applyCacheInvalidation(inv cacheInvalidation) {
 		s.relayAirtimeCache = nil
 	}
 	if inv.hasNewPaths {
-		s.topoCache = make(map[string]*cachedResult)
+		s.topoCache = make(map[string]*cachedTopology)
 		s.distCache = make(map[string]*cachedDistance)
-		s.subpathCache = make(map[string]*cachedResult)
+		s.subpathCache = make(map[string]*cachedSubpaths)
 		s.retransCache = nil
 	}
 	if inv.hasNewTransmissions {
@@ -1931,7 +1953,7 @@ func (s *PacketStore) applyCacheInvalidation(inv cacheInvalidation) {
 		s.collisionCache = make(map[string]*cachedHashCollisions)
 	}
 	if inv.hasChannelData {
-		s.chanCache = make(map[string]*cachedResult)
+		s.chanCache = make(map[string]*cachedChannels)
 		s.channelsCacheMu.Lock()
 		s.channelsCacheRes = nil
 		s.channelsCacheMu.Unlock()
@@ -5115,24 +5137,24 @@ func (s *PacketStore) GetChannelMessages(ctx context.Context, channelHash string
 }
 
 // GetAnalyticsChannels returns full channel analytics computed from in-memory packets.
-func (s *PacketStore) GetAnalyticsChannels(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsChannels(ctx context.Context, region, area string) api.ChannelAnalyticsResponse {
 	return s.GetAnalyticsChannelsWithWindow(ctx, region, area, TimeWindow{})
 }
 
 // GetAnalyticsChannelsWithWindow returns channel analytics for the given region,
 // optionally bounded to a time window (issue #842). Zero TimeWindow = all data.
-func (s *PacketStore) GetAnalyticsChannelsWithWindow(ctx context.Context, region, area string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsChannelsWithWindow(ctx context.Context, region, area string, window TimeWindow) api.ChannelAnalyticsResponse {
 	if region == "" && area == "" && window.IsZero() {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompChannels
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
 			if v := rc.Load(); v != nil {
-				if m, ok := v.(map[string]interface{}); ok {
+				if r, ok := v.(api.ChannelAnalyticsResponse); ok {
 					s.cacheMu.Lock()
 					s.cacheHits++
 					s.cacheMu.Unlock()
-					return m
+					return r
 				}
 			}
 		}
@@ -5153,7 +5175,7 @@ func (s *PacketStore) GetAnalyticsChannelsWithWindow(ctx context.Context, region
 	result := s.computeAnalyticsChannels(ctx, region, area, window)
 
 	s.cacheMu.Lock()
-	s.chanCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.chanCache[cacheKey] = &cachedChannels{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -5186,7 +5208,7 @@ func isPlaceholderName(name string) bool {
 	return err == nil
 }
 
-func (s *PacketStore) computeAnalyticsChannels(ctx context.Context, region, area string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsChannels(ctx context.Context, region, area string, window TimeWindow) api.ChannelAnalyticsResponse {
 	var areaNodes map[string]bool
 	if area != "" {
 		areaNodes = s.resolveAreaNodes(ctx, area)
@@ -5336,67 +5358,52 @@ func (s *PacketStore) computeAnalyticsChannels(ctx context.Context, region, area
 		}
 	}
 
-	channelList := make([]map[string]interface{}, 0, len(channelMap))
+	channelList := make([]api.ChannelSummary, 0, len(channelMap))
 	decryptable := 0
 	for _, c := range channelMap {
 		if !c.Encrypted {
 			decryptable++
 		}
-		channelList = append(channelList, map[string]interface{}{
-			"hash": c.Hash, "name": c.Name,
-			"messages": c.Messages, "senders": len(c.Senders),
-			"lastActivity": c.LastActivity, "encrypted": c.Encrypted,
+		channelList = append(channelList, api.ChannelSummary{
+			Hash:         c.Hash,
+			Name:         c.Name,
+			Messages:     c.Messages,
+			Senders:      len(c.Senders),
+			LastActivity: types.WireTimeSeconds{Time: c.LastActivity},
+			Encrypted:    c.Encrypted,
 		})
 	}
 	sort.Slice(channelList, func(i, j int) bool {
-		return channelList[i]["messages"].(int) > channelList[j]["messages"].(int)
+		return channelList[i].Messages > channelList[j].Messages
 	})
 
 	// Top senders
-	type senderEntry struct {
-		name  string
-		count int
-	}
-	senderList := make([]senderEntry, 0, len(senderCounts))
+	senderList := make([]api.NameCount, 0, len(senderCounts))
 	for n, c := range senderCounts {
-		senderList = append(senderList, senderEntry{n, c})
+		senderList = append(senderList, api.NameCount{Name: n, Count: c})
 	}
-	sort.Slice(senderList, func(i, j int) bool { return senderList[i].count > senderList[j].count })
-	topSenders := make([]map[string]interface{}, 0)
-	for i, e := range senderList {
-		if i >= 15 {
-			break
-		}
-		topSenders = append(topSenders, map[string]interface{}{"name": e.name, "count": e.count})
+	sort.Slice(senderList, func(i, j int) bool { return senderList[i].Count > senderList[j].Count })
+	if len(senderList) > 15 {
+		senderList = senderList[:15]
 	}
 
 	// Channel timeline
-	type tlEntry struct {
-		hour, channel string
-		count         int
-	}
-	var tlList []tlEntry
+	channelTimeline := make([]api.ChannelTimelineEntry, 0, len(timeline))
 	for key, count := range timeline {
 		parts := strings.SplitN(key, "|", 2)
 		if len(parts) == 2 {
-			tlList = append(tlList, tlEntry{parts[0], parts[1], count})
+			channelTimeline = append(channelTimeline, api.ChannelTimelineEntry{Hour: parts[0], Channel: parts[1], Count: count})
 		}
 	}
-	sort.Slice(tlList, func(i, j int) bool { return tlList[i].hour < tlList[j].hour })
-	channelTimeline := make([]map[string]interface{}, 0, len(tlList))
-	for _, e := range tlList {
-		channelTimeline = append(channelTimeline, map[string]interface{}{
-			"hour": e.hour, "channel": e.channel, "count": e.count,
-		})
-	}
+	sort.Slice(channelTimeline, func(i, j int) bool { return channelTimeline[i].Hour < channelTimeline[j].Hour })
 
-	return map[string]interface{}{
-		"activeChannels":  len(channelList),
-		"decryptable":     decryptable,
-		"channels":        channelList,
-		"topSenders":      topSenders,
-		"channelTimeline": channelTimeline,
-		"msgLengths":      msgLengths,
+	return api.ChannelAnalyticsResponse{
+		ActiveChannels:  len(channelList),
+		Decryptable:     decryptable,
+		Channels:        channelList,
+		TopSenders:      senderList,
+		ChannelTimeline: channelTimeline,
+		MsgLengths:      msgLengths,
 	}
 }
 
@@ -6438,25 +6445,25 @@ func parsePathJSON(pathJSON string) []string {
 	return hops
 }
 
-func (s *PacketStore) GetAnalyticsTopology(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsTopology(ctx context.Context, region, area string) api.TopologyResponse {
 	return s.GetAnalyticsTopologyWithWindow(ctx, region, area, TimeWindow{})
 }
 
 // GetAnalyticsTopologyWithWindow — see issue #842.
 // For default (region="", area="", zero window), prefer the steady-state
 // recomputer snapshot if registered (issue #1240).
-func (s *PacketStore) GetAnalyticsTopologyWithWindow(ctx context.Context, region, area string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsTopologyWithWindow(ctx context.Context, region, area string, window TimeWindow) api.TopologyResponse {
 	if region == "" && area == "" && window.IsZero() {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompTopology
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
 			if v := rc.Load(); v != nil {
-				if m, ok := v.(map[string]interface{}); ok {
+				if r, ok := v.(api.TopologyResponse); ok {
 					s.cacheMu.Lock()
 					s.cacheHits++
 					s.cacheMu.Unlock()
-					return m
+					return r
 				}
 			}
 		}
@@ -6477,13 +6484,23 @@ func (s *PacketStore) GetAnalyticsTopologyWithWindow(ctx context.Context, region
 	result := s.computeAnalyticsTopology(ctx, region, area, window)
 
 	s.cacheMu.Lock()
-	s.topoCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.topoCache[cacheKey] = &cachedTopology{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
 }
 
-func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area string, window TimeWindow) map[string]interface{} {
+// nodeNameKey returns copies of the resolved node's name and public key, both
+// nil when the hop did not resolve.
+func nodeNameKey(r *nodeInfo) (name, pubkey *string) {
+	if r == nil {
+		return nil, nil
+	}
+	n, pk := r.Name, r.PublicKey
+	return &n, &pk
+}
+
+func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area string, window TimeWindow) api.TopologyResponse {
 	var areaNodes map[string]bool
 	if area != "" {
 		areaNodes = s.resolveAreaNodes(ctx, area)
@@ -6572,7 +6589,8 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 	hopFreq := map[string]int{}
 	pairFreq := map[string]int{}
 	observerMap := map[string]string{} // observer_id → observer_name
-	perObserver := map[string]map[string]*struct{ minDist, maxDist, count int }{}
+	type hopReach struct{ minDist, maxDist, count int }
+	perObserver := map[string]map[string]*hopReach{}
 
 	for _, tx := range filteredTxs {
 		hops := txGetParsedPath(tx)
@@ -6634,7 +6652,7 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 			observerMap[obsID] = tx.ObserverName
 		}
 		if _, ok := perObserver[obsID]; !ok {
-			perObserver[obsID] = map[string]*struct{ minDist, maxDist, count int }{}
+			perObserver[obsID] = map[string]*hopReach{}
 		}
 		for i, h := range hops {
 			if areaNodes != nil {
@@ -6646,7 +6664,7 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 			dist := n - i
 			entry := perObserver[obsID][h]
 			if entry == nil {
-				entry = &struct{ minDist, maxDist, count int }{dist, dist, 0}
+				entry = &hopReach{dist, dist, 0}
 				perObserver[obsID][h] = entry
 			}
 			if dist < entry.minDist {
@@ -6660,15 +6678,13 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 	}
 
 	// Hop distribution
-	hopDist := make([]map[string]interface{}, 0)
+	hopDist := make([]api.HopCount, 0)
 	for h, c := range hopCounts {
 		if h <= 25 {
-			hopDist = append(hopDist, map[string]interface{}{"hops": h, "count": c})
+			hopDist = append(hopDist, api.HopCount{Hops: h, Count: c})
 		}
 	}
-	sort.Slice(hopDist, func(i, j int) bool {
-		return hopDist[i]["hops"].(int) < hopDist[j]["hops"].(int)
-	})
+	sort.Slice(hopDist, func(i, j int) bool { return hopDist[i].Hops < hopDist[j].Hops })
 
 	avgHops := 0.0
 	if len(allHopsList) > 0 {
@@ -6799,18 +6815,13 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 		freqList = append(freqList, freqEntry{h, c})
 	}
 	sort.Slice(freqList, func(i, j int) bool { return freqList[i].count > freqList[j].count })
-	topRepeaters := make([]map[string]interface{}, 0)
+	topRepeaters := make([]api.TopRepeater, 0)
 	for i, e := range freqList {
 		if i >= 20 {
 			break
 		}
-		r := resolveHop(e.hop)
-		entry := map[string]interface{}{"hop": e.hop, "count": e.count, "name": nil, "pubkey": nil}
-		if r != nil {
-			entry["name"] = r.Name
-			entry["pubkey"] = r.PublicKey
-		}
-		topRepeaters = append(topRepeaters, entry)
+		name, pubkey := nodeNameKey(resolveHop(e.hop))
+		topRepeaters = append(topRepeaters, api.TopRepeater{Hop: e.hop, Count: e.count, Name: name, Pubkey: pubkey})
 	}
 
 	// Top pairs
@@ -6819,31 +6830,22 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 		pairList = append(pairList, freqEntry{p, c})
 	}
 	sort.Slice(pairList, func(i, j int) bool { return pairList[i].count > pairList[j].count })
-	topPairs := make([]map[string]interface{}, 0)
+	topPairs := make([]api.TopPair, 0)
 	for i, e := range pairList {
 		if i >= 15 {
 			break
 		}
 		parts := strings.SplitN(e.hop, "|", 2)
-		rA := resolveHop(parts[0])
-		rB := resolveHop(parts[1])
-		entry := map[string]interface{}{
-			"hopA": parts[0], "hopB": parts[1], "count": e.count,
-			"nameA": nil, "nameB": nil, "pubkeyA": nil, "pubkeyB": nil,
-		}
-		if rA != nil {
-			entry["nameA"] = rA.Name
-			entry["pubkeyA"] = rA.PublicKey
-		}
-		if rB != nil {
-			entry["nameB"] = rB.Name
-			entry["pubkeyB"] = rB.PublicKey
-		}
-		topPairs = append(topPairs, entry)
+		nameA, pubkeyA := nodeNameKey(resolveHop(parts[0]))
+		nameB, pubkeyB := nodeNameKey(resolveHop(parts[1]))
+		topPairs = append(topPairs, api.TopPair{
+			HopA: parts[0], HopB: parts[1], Count: e.count,
+			NameA: nameA, NameB: nameB, PubkeyA: pubkeyA, PubkeyB: pubkeyB,
+		})
 	}
 
 	// Hops vs SNR
-	hopsVsSnr := make([]map[string]interface{}, 0)
+	hopsVsSnr := make([]api.HopSnr, 0)
 	for h, snrs := range hopSnr {
 		if h > 20 {
 			continue
@@ -6852,150 +6854,110 @@ func (s *PacketStore) computeAnalyticsTopology(ctx context.Context, region, area
 		for _, v := range snrs {
 			sum += v
 		}
-		hopsVsSnr = append(hopsVsSnr, map[string]interface{}{
-			"hops": h, "count": len(snrs), "avgSnr": sum / float64(len(snrs)),
-		})
+		hopsVsSnr = append(hopsVsSnr, api.HopSnr{Hops: h, Count: len(snrs), AvgSnr: sum / float64(len(snrs))})
 	}
-	sort.Slice(hopsVsSnr, func(i, j int) bool {
-		return hopsVsSnr[i]["hops"].(int) < hopsVsSnr[j]["hops"].(int)
-	})
+	sort.Slice(hopsVsSnr, func(i, j int) bool { return hopsVsSnr[i].Hops < hopsVsSnr[j].Hops })
 
 	// Observers list
-	observers := make([]map[string]interface{}, 0)
+	observers := make([]api.TopologyObserver, 0)
 	for id, name := range observerMap {
 		n := name
 		if n == "" {
 			n = id
 		}
-		observers = append(observers, map[string]interface{}{"id": id, "name": n})
+		observers = append(observers, api.TopologyObserver{Id: id, Name: n})
 	}
 
 	// Per-observer reachability
-	perObserverReach := map[string]interface{}{}
+	perObserverReach := map[string]api.ObserverReach{}
 	for obsID, nodes := range perObserver {
 		obsName := observerMap[obsID]
 		if obsName == "" {
 			obsName = obsID
 		}
-		byDist := map[int][]map[string]interface{}{}
+		byDist := map[int][]api.TopologyReachNode{}
 		for hop, data := range nodes {
 			d := data.minDist
 			if d > 15 {
 				continue
 			}
-			r := resolveHop(hop)
-			entry := map[string]interface{}{
-				"hop": hop, "name": nil, "pubkey": nil,
-				"count": data.count, "distRange": nil,
-			}
-			if r != nil {
-				entry["name"] = r.Name
-				entry["pubkey"] = r.PublicKey
-			}
+			name, pubkey := nodeNameKey(resolveHop(hop))
+			entry := api.TopologyReachNode{Hop: hop, Name: name, Pubkey: pubkey, Count: data.count}
 			if data.minDist != data.maxDist {
-				entry["distRange"] = fmt.Sprintf("%d-%d", data.minDist, data.maxDist)
+				dr := fmt.Sprintf("%d-%d", data.minDist, data.maxDist)
+				entry.DistRange = &dr
 			}
 			byDist[d] = append(byDist[d], entry)
 		}
-		rings := make([]map[string]interface{}, 0)
+		rings := make([]api.ReachRing, 0)
 		for dist, nodeList := range byDist {
-			sort.Slice(nodeList, func(i, j int) bool {
-				return nodeList[i]["count"].(int) > nodeList[j]["count"].(int)
-			})
-			rings = append(rings, map[string]interface{}{"hops": dist, "nodes": nodeList})
+			sort.Slice(nodeList, func(i, j int) bool { return nodeList[i].Count > nodeList[j].Count })
+			rings = append(rings, api.ReachRing{Hops: dist, Nodes: nodeList})
 		}
-		sort.Slice(rings, func(i, j int) bool {
-			return rings[i]["hops"].(int) < rings[j]["hops"].(int)
-		})
-		perObserverReach[obsID] = map[string]interface{}{
-			"observer_name": obsName,
-			"rings":         rings,
-		}
+		sort.Slice(rings, func(i, j int) bool { return rings[i].Hops < rings[j].Hops })
+		perObserverReach[obsID] = api.ObserverReach{ObserverName: obsName, Rings: rings}
 	}
 
 	// Cross-observer: build from perObserver
-	crossObserver := map[string][]map[string]interface{}{}
-	bestPath := map[string]map[string]interface{}{}
+	crossObserver := map[string][]api.MultiObsObserver{}
+	bestPath := map[string]api.BestPathEntry{}
 	for obsID, nodes := range perObserver {
 		obsName := observerMap[obsID]
 		if obsName == "" {
 			obsName = obsID
 		}
 		for hop, data := range nodes {
-			crossObserver[hop] = append(crossObserver[hop], map[string]interface{}{
-				"observer_id": obsID, "observer_name": obsName,
-				"minDist": data.minDist, "count": data.count,
+			crossObserver[hop] = append(crossObserver[hop], api.MultiObsObserver{
+				ObserverId: obsID, ObserverName: obsName,
+				MinDist: data.minDist, Count: data.count,
 			})
-			if bp, ok := bestPath[hop]; !ok || data.minDist < bp["minDist"].(int) {
-				bestPath[hop] = map[string]interface{}{
-					"minDist": data.minDist, "observer_id": obsID, "observer_name": obsName,
-				}
+			if bp, ok := bestPath[hop]; !ok || data.minDist < bp.MinDist {
+				bestPath[hop] = api.BestPathEntry{Hop: hop, MinDist: data.minDist, ObserverId: obsID, ObserverName: obsName}
 			}
 		}
 	}
 
 	// Multi-observer nodes
-	multiObsNodes := make([]map[string]interface{}, 0)
+	multiObsNodes := make([]api.MultiObsNode, 0)
 	for hop, obs := range crossObserver {
 		if len(obs) <= 1 {
 			continue
 		}
-		sort.Slice(obs, func(i, j int) bool {
-			return obs[i]["minDist"].(int) < obs[j]["minDist"].(int)
-		})
-		r := resolveHop(hop)
-		entry := map[string]interface{}{
-			"hop": hop, "name": nil, "pubkey": nil, "observers": obs,
-		}
-		if r != nil {
-			entry["name"] = r.Name
-			entry["pubkey"] = r.PublicKey
-		}
-		multiObsNodes = append(multiObsNodes, entry)
+		sort.Slice(obs, func(i, j int) bool { return obs[i].MinDist < obs[j].MinDist })
+		name, pubkey := nodeNameKey(resolveHop(hop))
+		multiObsNodes = append(multiObsNodes, api.MultiObsNode{Hop: hop, Name: name, Pubkey: pubkey, Observers: obs})
 	}
 	sort.Slice(multiObsNodes, func(i, j int) bool {
-		return len(multiObsNodes[i]["observers"].([]map[string]interface{})) >
-			len(multiObsNodes[j]["observers"].([]map[string]interface{}))
+		return len(multiObsNodes[i].Observers) > len(multiObsNodes[j].Observers)
 	})
 	if len(multiObsNodes) > 50 {
 		multiObsNodes = multiObsNodes[:50]
 	}
 
 	// Best path list
-	bestPathList := make([]map[string]interface{}, 0, len(bestPath))
-	for hop, data := range bestPath {
-		r := resolveHop(hop)
-		entry := map[string]interface{}{
-			"hop": hop, "name": nil, "pubkey": nil,
-			"minDist": data["minDist"], "observer_id": data["observer_id"],
-			"observer_name": data["observer_name"],
-		}
-		if r != nil {
-			entry["name"] = r.Name
-			entry["pubkey"] = r.PublicKey
-		}
+	bestPathList := make([]api.BestPathEntry, 0, len(bestPath))
+	for hop, entry := range bestPath {
+		entry.Name, entry.Pubkey = nodeNameKey(resolveHop(hop))
 		bestPathList = append(bestPathList, entry)
 	}
-	sort.Slice(bestPathList, func(i, j int) bool {
-		return bestPathList[i]["minDist"].(int) < bestPathList[j]["minDist"].(int)
-	})
+	sort.Slice(bestPathList, func(i, j int) bool { return bestPathList[i].MinDist < bestPathList[j].MinDist })
 	if len(bestPathList) > 50 {
 		bestPathList = bestPathList[:50]
 	}
 
-	return map[string]interface{}{
-		"uniqueNodes":      uniqueNodes,
-		"avgHops":          avgHops,
-		"medianHops":       medianHops,
-		"maxHops":          maxHops,
-		"hopDistribution":  hopDist,
-		"topRepeaters":     topRepeaters,
-		"topPairs":         topPairs,
-		"hopsVsSnr":        hopsVsSnr,
-		"observers":        observers,
-		"perObserverReach": perObserverReach,
-		"multiObsNodes":    multiObsNodes,
-		"bestPathList":     bestPathList,
+	return api.TopologyResponse{
+		UniqueNodes:      uniqueNodes,
+		AvgHops:          avgHops,
+		MedianHops:       medianHops,
+		MaxHops:          maxHops,
+		HopDistribution:  hopDist,
+		TopRepeaters:     topRepeaters,
+		TopPairs:         topPairs,
+		HopsVsSnr:        hopsVsSnr,
+		Observers:        observers,
+		PerObserverReach: perObserverReach,
+		MultiObsNodes:    multiObsNodes,
+		BestPathList:     bestPathList,
 	}
 }
 
@@ -9132,7 +9094,7 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 // this matches the slow region-filtered path and keeps the fast unbounded
 // hot path untouched. Results are cached by (region|area|window) so repeated
 // renders of the same window don't re-scan.
-func (s *PacketStore) GetAnalyticsSubpathsWithWindow(ctx context.Context, region string, minLen, maxLen, limit int, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsSubpathsWithWindow(ctx context.Context, region string, minLen, maxLen, limit int, window TimeWindow) api.SubpathList {
 	if window.IsZero() {
 		return s.GetAnalyticsSubpaths(ctx, region, minLen, maxLen, limit)
 	}
@@ -9150,7 +9112,7 @@ func (s *PacketStore) GetAnalyticsSubpathsWithWindow(ctx context.Context, region
 	result := s.computeAnalyticsSubpathsWindowed(ctx, region, minLen, maxLen, limit, window)
 
 	s.cacheMu.Lock()
-	s.subpathCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.subpathCache[cacheKey] = &cachedSubpaths{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -9160,7 +9122,7 @@ func (s *PacketStore) GetAnalyticsSubpathsWithWindow(ctx context.Context, region
 // to transmissions whose FirstSeen falls inside `window`. Optionally also
 // region-filters. Mirrors computeSubpathsSlow but with the window predicate
 // inlined and without requiring a non-empty region.
-func (s *PacketStore) computeAnalyticsSubpathsWindowed(ctx context.Context, region string, minLen, maxLen, limit int, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsSubpathsWindowed(ctx context.Context, region string, minLen, maxLen, limit int, window TimeWindow) api.SubpathList {
 	var regionObs map[string]bool
 	if region != "" {
 		regionObs = s.resolveRegionObservers(ctx, region)
@@ -9235,7 +9197,7 @@ func (s *PacketStore) computeAnalyticsSubpathsWindowed(ctx context.Context, regi
 	return s.rankSubpaths(subpathCounts, totalPaths, limit)
 }
 
-func (s *PacketStore) GetAnalyticsSubpaths(ctx context.Context, region string, minLen, maxLen, limit int) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsSubpaths(ctx context.Context, region string, minLen, maxLen, limit int) api.SubpathList {
 	cacheKey := fmt.Sprintf("%s|%d|%d|%d", region, minLen, maxLen, limit)
 
 	s.cacheMu.Lock()
@@ -9250,7 +9212,7 @@ func (s *PacketStore) GetAnalyticsSubpaths(ctx context.Context, region string, m
 	result := s.computeAnalyticsSubpaths(ctx, region, minLen, maxLen, limit)
 
 	s.cacheMu.Lock()
-	s.subpathCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.subpathCache[cacheKey] = &cachedSubpaths{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -9260,11 +9222,11 @@ func (s *PacketStore) GetAnalyticsSubpaths(ctx context.Context, region string, m
 // TimeWindow it is byte-equivalent to GetAnalyticsSubpathsBulk; for a non-
 // zero window it delegates to GetAnalyticsSubpathsWithWindow per group so
 // the `tx.FirstSeen` filter is honored (issue #1217).
-func (s *PacketStore) GetAnalyticsSubpathsBulkWithWindow(ctx context.Context, region string, groups []subpathGroup, window TimeWindow) []map[string]interface{} {
+func (s *PacketStore) GetAnalyticsSubpathsBulkWithWindow(ctx context.Context, region string, groups []subpathGroup, window TimeWindow) []api.SubpathList {
 	if window.IsZero() {
 		return s.GetAnalyticsSubpathsBulk(ctx, region, groups)
 	}
-	results := make([]map[string]interface{}, len(groups))
+	results := make([]api.SubpathList, len(groups))
 	for i, g := range groups {
 		results[i] = s.GetAnalyticsSubpathsWithWindow(ctx, region, g.MinLen, g.MaxLen, g.Limit, window)
 	}
@@ -9273,11 +9235,11 @@ func (s *PacketStore) GetAnalyticsSubpathsBulkWithWindow(ctx context.Context, re
 
 // GetAnalyticsSubpathsBulk returns multiple length-range buckets from a single
 // scan of the subpath index, avoiding repeated iterations.
-func (s *PacketStore) GetAnalyticsSubpathsBulk(ctx context.Context, region string, groups []subpathGroup) []map[string]interface{} {
+func (s *PacketStore) GetAnalyticsSubpathsBulk(ctx context.Context, region string, groups []subpathGroup) []api.SubpathList {
 	// For region queries or when there are few groups, fall back to individual calls
 	// which benefit from per-key caching.
 	if region != "" {
-		results := make([]map[string]interface{}, len(groups))
+		results := make([]api.SubpathList, len(groups))
 		for i, g := range groups {
 			results[i] = s.GetAnalyticsSubpaths(ctx, region, g.MinLen, g.MaxLen, g.Limit)
 		}
@@ -9286,7 +9248,7 @@ func (s *PacketStore) GetAnalyticsSubpathsBulk(ctx context.Context, region strin
 
 	// Check if all groups are cached.
 	allCached := true
-	cachedResults := make([]map[string]interface{}, len(groups))
+	cachedResults := make([]api.SubpathList, len(groups))
 	s.cacheMu.Lock()
 	for i, g := range groups {
 		cacheKey := fmt.Sprintf("|%d|%d|%d", g.MinLen, g.MaxLen, g.Limit)
@@ -9365,7 +9327,7 @@ func (s *PacketStore) GetAnalyticsSubpathsBulk(ctx context.Context, region strin
 	totalPaths := s.spTotalPaths
 	s.mu.RUnlock()
 
-	results := make([]map[string]interface{}, len(groups))
+	results := make([]api.SubpathList, len(groups))
 	for i, g := range groups {
 		results[i] = s.rankSubpaths(perGroup[i], totalPaths, g.Limit)
 	}
@@ -9374,7 +9336,7 @@ func (s *PacketStore) GetAnalyticsSubpathsBulk(ctx context.Context, region strin
 	s.cacheMu.Lock()
 	for i, g := range groups {
 		cacheKey := fmt.Sprintf("|%d|%d|%d", g.MinLen, g.MaxLen, g.Limit)
-		s.subpathCache[cacheKey] = &cachedResult{data: results[i], expiresAt: time.Now().Add(s.rfCacheTTL)}
+		s.subpathCache[cacheKey] = &cachedSubpaths{data: results[i], expiresAt: time.Now().Add(s.rfCacheTTL)}
 	}
 	s.cacheMu.Unlock()
 
@@ -9387,7 +9349,7 @@ type subpathAccum struct {
 	raw   string // first raw-hop key seen (used for rawHops in the API response)
 }
 
-func (s *PacketStore) computeAnalyticsSubpaths(ctx context.Context, region string, minLen, maxLen, limit int) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsSubpaths(ctx context.Context, region string, minLen, maxLen, limit int) api.SubpathList {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -9445,7 +9407,7 @@ func (s *PacketStore) computeAnalyticsSubpaths(ctx context.Context, region strin
 
 // computeSubpathsSlow is the original O(N) packet-iteration path, used only
 // for region-filtered queries where we must check per-transmission observers.
-func (s *PacketStore) computeSubpathsSlow(ctx context.Context, region string, minLen, maxLen, limit int, resolveHop func(string) string) map[string]interface{} {
+func (s *PacketStore) computeSubpathsSlow(ctx context.Context, region string, minLen, maxLen, limit int, resolveHop func(string) string) api.SubpathList {
 	regionObs := s.resolveRegionObservers(ctx, region)
 
 	subpathCounts := make(map[string]*subpathAccum)
@@ -9492,47 +9454,44 @@ func (s *PacketStore) computeSubpathsSlow(ctx context.Context, region string, mi
 	return s.rankSubpaths(subpathCounts, totalPaths, limit)
 }
 
-// rankSubpaths sorts accumulated subpath counts by frequency, truncates to
-// limit, and builds the API response map.
-func (s *PacketStore) rankSubpaths(counts map[string]*subpathAccum, totalPaths, limit int) map[string]interface{} {
-	type subpathEntry struct {
+// rankSubpaths sorts accumulated subpath counts by frequency and truncates
+// to limit.
+func (s *PacketStore) rankSubpaths(counts map[string]*subpathAccum, totalPaths, limit int) api.SubpathList {
+	type rankedSubpath struct {
 		path  string
 		count int
 		raw   string
 	}
-	ranked := make([]subpathEntry, 0, len(counts))
+	ranked := make([]rankedSubpath, 0, len(counts))
 	for path, data := range counts {
-		ranked = append(ranked, subpathEntry{path, data.count, data.raw})
+		ranked = append(ranked, rankedSubpath{path, data.count, data.raw})
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].count > ranked[j].count })
 	if len(ranked) > limit {
 		ranked = ranked[:limit]
 	}
 
-	subpaths := make([]map[string]interface{}, 0, len(ranked))
+	subpaths := make([]api.SubpathEntry, 0, len(ranked))
 	for _, e := range ranked {
 		pct := 0.0
 		if totalPaths > 0 {
 			pct = math.Round(float64(e.count)/float64(totalPaths)*1000) / 10
 		}
-		subpaths = append(subpaths, map[string]interface{}{
-			"path":    e.path,
-			"rawHops": strings.Split(e.raw, ","),
-			"count":   e.count,
-			"hops":    len(strings.Split(e.path, " → ")),
-			"pct":     pct,
+		subpaths = append(subpaths, api.SubpathEntry{
+			Path:    e.path,
+			RawHops: strings.Split(e.raw, ","),
+			Count:   e.count,
+			Hops:    len(strings.Split(e.path, " → ")),
+			Pct:     pct,
 		})
 	}
 
-	return map[string]interface{}{
-		"subpaths":   subpaths,
-		"totalPaths": totalPaths,
-	}
+	return api.SubpathList{Subpaths: subpaths, TotalPaths: totalPaths}
 }
 
 // --- Subpath Detail ---
 
-func (s *PacketStore) GetSubpathDetail(rawHops []string) map[string]interface{} {
+func (s *PacketStore) GetSubpathDetail(rawHops []string) api.SubpathDetailResponse {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -9553,16 +9512,17 @@ func (s *PacketStore) GetSubpathDetail(rawHops []string) map[string]interface{} 
 	graph := s.graph.Load()
 
 	// Resolve the requested hops
-	nodes := make([]map[string]interface{}, len(rawHops))
+	nodes := make([]api.SubpathNode, len(rawHops))
 	for i, hop := range rawHops {
 		r, _, _ := pm.resolveWithContext(hop, contextPubkeys, graph)
-		entry := map[string]interface{}{"hop": hop, "name": hop, "lat": nil, "lon": nil, "pubkey": nil}
+		// An unresolved hop is named by its hex prefix and has no public key.
+		name := hop
+		entry := api.SubpathNode{Hop: hop, Name: &name}
 		if r != nil {
-			entry["name"] = r.Name
-			entry["pubkey"] = r.PublicKey
+			entry.Name, entry.Pubkey = nodeNameKey(r)
 			if r.HasGPS {
-				entry["lat"] = r.Lat
-				entry["lon"] = r.Lon
+				lat, lon := r.Lat, r.Lon
+				entry.Lat, entry.Lon = &lat, &lon
 			}
 		}
 		nodes[i] = entry
@@ -9616,46 +9576,44 @@ func (s *PacketStore) GetSubpathDetail(rawHops []string) map[string]interface{} 
 		parentPaths[fullPath]++
 	}
 
-	var avgSnr, avgRssi interface{}
+	signal := api.SubpathSignal{Samples: snrCount}
 	if snrCount > 0 {
-		avgSnr = snrSum / float64(snrCount)
+		avg := snrSum / float64(snrCount)
+		signal.AvgSnr = &avg
 	}
 	if rssiCount > 0 {
-		avgRssi = rssiSum / float64(rssiCount)
+		avg := rssiSum / float64(rssiCount)
+		signal.AvgRssi = &avg
 	}
 
-	topParents := make([]map[string]interface{}, 0)
+	topParents := make([]api.PathCount, 0, len(parentPaths))
 	for path, count := range parentPaths {
-		topParents = append(topParents, map[string]interface{}{"path": path, "count": count})
+		topParents = append(topParents, api.PathCount{Path: path, Count: count})
 	}
-	sort.Slice(topParents, func(i, j int) bool {
-		return topParents[i]["count"].(int) > topParents[j]["count"].(int)
-	})
+	sort.Slice(topParents, func(i, j int) bool { return topParents[i].Count > topParents[j].Count })
 	if len(topParents) > 15 {
 		topParents = topParents[:15]
 	}
 
-	topObs := make([]map[string]interface{}, 0)
+	topObs := make([]api.NameCount, 0, len(observers))
 	for name, count := range observers {
-		topObs = append(topObs, map[string]interface{}{"name": name, "count": count})
+		topObs = append(topObs, api.NameCount{Name: name, Count: count})
 	}
-	sort.Slice(topObs, func(i, j int) bool {
-		return topObs[i]["count"].(int) > topObs[j]["count"].(int)
-	})
+	sort.Slice(topObs, func(i, j int) bool { return topObs[i].Count > topObs[j].Count })
 	if len(topObs) > 10 {
 		topObs = topObs[:10]
 	}
 
-	return map[string]interface{}{
-		"hops":             rawHops,
-		"nodes":            nodes,
-		"totalMatches":     matchCount,
-		"firstSeen":        firstSeen,
-		"lastSeen":         lastSeen,
-		"signal":           map[string]interface{}{"avgSnr": avgSnr, "avgRssi": avgRssi, "samples": snrCount},
-		"hourDistribution": hourBuckets,
-		"parentPaths":      topParents,
-		"observers":        topObs,
+	return api.SubpathDetailResponse{
+		Hops:             rawHops,
+		Nodes:            nodes,
+		TotalMatches:     matchCount,
+		FirstSeen:        types.WireTimeSeconds{Time: firstSeen},
+		LastSeen:         types.WireTimeSeconds{Time: lastSeen},
+		Signal:           signal,
+		HourDistribution: hourBuckets,
+		ParentPaths:      topParents,
+		Observers:        topObs,
 	}
 }
 

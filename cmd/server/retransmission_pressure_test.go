@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -158,15 +159,15 @@ func rtxStore(packets ...*StoreTx) *PacketStore {
 	return &PacketStore{packets: packets}
 }
 
-func bucketByStart(t *testing.T, r RetransmissionResponse, start string) RetransmissionBucket {
+func bucketByStart(t *testing.T, r api.RetransmissionResponse, start string) api.RetransmissionBucket {
 	t.Helper()
 	for _, b := range r.Buckets {
-		if b.Start == start {
+		if types.FormatWireTimeSeconds(b.Start.Time) == start {
 			return b
 		}
 	}
 	t.Fatalf("no bucket %s in %+v", start, r.Buckets)
-	return RetransmissionBucket{}
+	return api.RetransmissionBucket{}
 }
 
 func TestComputeRetransmissionPressure_RouteAndPayloadFilter(t *testing.T) {
@@ -219,7 +220,7 @@ func TestComputeRetransmissionPressure_Bucketing(t *testing.T) {
 	if len(r.Buckets) != 2 {
 		t.Fatalf("buckets = %+v, want 2", r.Buckets)
 	}
-	if r.Buckets[0].Start != "2026-09-13T10:00:00Z" || r.Buckets[1].Start != "2026-09-13T11:00:00Z" {
+	if types.FormatWireTimeSeconds(r.Buckets[0].Start.Time) != "2026-09-13T10:00:00Z" || types.FormatWireTimeSeconds(r.Buckets[1].Start.Time) != "2026-09-13T11:00:00Z" {
 		t.Fatalf("bucket order/starts wrong: %+v", r.Buckets)
 	}
 	b10 := r.Buckets[0]
@@ -473,7 +474,7 @@ func TestParseRetransmissionBucket(t *testing.T) {
 func TestGetRetransmissionPressure_DefaultShapeServedFromRecomputer(t *testing.T) {
 	ctx := t.Context()
 	s := rtxStore(rtxTx(1, types.RouteFlood, types.PayloadADVERT, "2026-09-13T10:00:00Z", rtxObs("o1", `["A1"]`)))
-	sentinel := RetransmissionResponse{BucketSeconds: 3600, Buckets: []RetransmissionBucket{}, Window: "sentinel"}
+	sentinel := api.RetransmissionResponse{BucketSeconds: 3600, Buckets: []api.RetransmissionBucket{}, Window: "sentinel"}
 	rc := newAnalyticsRecomputer(ctx, "retransmissions", time.Hour, func(context.Context) interface{} { return sentinel })
 	rc.runOnce(ctx)
 	s.recompRetransmissions = rc
@@ -552,7 +553,7 @@ func TestGetRetransmissionPressure_CollapsesConcurrentMisses(t *testing.T) {
 	w := TimeWindow{Since: rtxTime("2026-09-13T00:00:00Z"), Label: "fixture"}
 
 	const n = 16
-	results := make([]RetransmissionResponse, n)
+	results := make([]api.RetransmissionResponse, n)
 	var wg sync.WaitGroup
 	s.mu.Lock() // park every compute on the store lock
 	for i := 0; i < n; i++ {
@@ -605,7 +606,7 @@ func TestHandleAnalyticsRetransmissions(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
 	}
-	var body RetransmissionResponse
+	var body api.RetransmissionResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v (%s)", err, w.Body.String())
 	}

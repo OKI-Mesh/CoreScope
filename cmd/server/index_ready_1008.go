@@ -73,8 +73,11 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // writeIndexLoading503 emits the standard 503 response used by handlers
@@ -85,7 +88,8 @@ func writeIndexLoading503(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(`{"error":"index loading","retryAfter":5}`))
+	body, _ := json.Marshal(api.IndexLoadingResponse{Error: "index loading", RetryAfter: 5})
+	_, _ = w.Write(body)
 }
 
 // SubpathIndexReady reports whether the subpath index build kicked off

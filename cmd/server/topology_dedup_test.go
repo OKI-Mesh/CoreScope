@@ -69,21 +69,21 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 	store := loadedStore(t, db)
 
 	result := store.computeAnalyticsTopology(ctx, "", "", TimeWindow{})
-	topRepeaters := result["topRepeaters"].([]map[string]interface{})
+	topRepeaters := result.TopRepeaters
 
 	pubkeyCounts := map[string]int{}
 	for _, entry := range topRepeaters {
-		pk, _ := entry["pubkey"].(string)
+		pk := deref(entry.Pubkey)
 		if pk == "" {
 			continue
 		}
-		pubkeyCounts[pk] += entry["count"].(int)
+		pubkeyCounts[pk] += entry.Count
 	}
 
 	aquaEntries := 0
 	betaEntries := 0
 	for _, entry := range topRepeaters {
-		pk, _ := entry["pubkey"].(string)
+		pk := deref(entry.Pubkey)
 		if pk == topoAquaPK {
 			aquaEntries++
 		}
@@ -95,7 +95,7 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 	if aquaEntries != 1 {
 		t.Errorf("AQUA should appear exactly once in topRepeaters after dedup, got %d entries", aquaEntries)
 		for _, e := range topRepeaters {
-			t.Logf("  entry: hop=%v name=%v pubkey=%v count=%v", e["hop"], e["name"], e["pubkey"], e["count"])
+			t.Logf("  entry: hop=%v name=%q pubkey=%q count=%v", e.Hop, deref(e.Name), deref(e.Pubkey), e.Count)
 		}
 	}
 	if betaEntries != 1 {
@@ -129,7 +129,7 @@ func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
 
 	result := store.computeAnalyticsTopology(ctx, "", "", TimeWindow{})
 
-	topRepeaters := result["topRepeaters"].([]map[string]interface{})
+	topRepeaters := result.TopRepeaters
 
 	for _, e := range topRepeaters {
 		t.Logf("entry: %#v", e)
@@ -139,8 +139,8 @@ func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
 	foundAb := false
 	foundAb1122 := false
 	for _, entry := range topRepeaters {
-		hop := entry["hop"].(string)
-		count := entry["count"].(int)
+		hop := entry.Hop
+		count := entry.Count
 		if hop == strings.ToUpper("ab") {
 			foundAb = true
 			if count != 10 {
@@ -180,23 +180,23 @@ func TestTopologyDedup_PairsMergeByPubkey(t *testing.T) {
 	store := loadedStore(t, db)
 
 	result := store.computeAnalyticsTopology(ctx, "", "", TimeWindow{})
-	topPairs := result["topPairs"].([]map[string]interface{})
+	topPairs := result.TopPairs
 
 	aquaBetaPairs := 0
 	totalCount := 0
 	for _, entry := range topPairs {
-		pkA, _ := entry["pubkeyA"].(string)
-		pkB, _ := entry["pubkeyB"].(string)
+		pkA := deref(entry.PubkeyA)
+		pkB := deref(entry.PubkeyB)
 		if (pkA == topoAquaPK && pkB == topoBetaPK) || (pkA == topoBetaPK && pkB == topoAquaPK) {
 			aquaBetaPairs++
-			totalCount += entry["count"].(int)
+			totalCount += entry.Count
 		}
 	}
 
 	if aquaBetaPairs != 1 {
 		t.Errorf("AQUA-BETA pair should appear exactly once after dedup, got %d entries", aquaBetaPairs)
 		for _, e := range topPairs {
-			t.Logf("  pair: hopA=%v hopB=%v count=%v pkA=%v pkB=%v", e["hopA"], e["hopB"], e["count"], e["pubkeyA"], e["pubkeyB"])
+			t.Logf("  pair: hopA=%v hopB=%v count=%v pkA=%q pkB=%q", e.HopA, e.HopB, e.Count, deref(e.PubkeyA), deref(e.PubkeyB))
 		}
 	}
 	if totalCount != 15 {

@@ -236,16 +236,11 @@ func TestAnalyticsChannelsAreaFilter(t *testing.T) {
 
 	unfiltered := s.GetAnalyticsChannels(ctx, "", "")
 	filtered := s.GetAnalyticsChannels(ctx, "", "BEL")
-	if filtered == nil {
-		t.Fatal("GetAnalyticsChannels returned nil")
+	if unfiltered.ActiveChannels != 2 {
+		t.Errorf("want 2 active channels unfiltered, got %d", unfiltered.ActiveChannels)
 	}
-	unfilteredCount, _ := unfiltered["activeChannels"].(int)
-	filteredCount, _ := filtered["activeChannels"].(int)
-	if unfilteredCount != 2 {
-		t.Errorf("want 2 active channels unfiltered, got %d", unfilteredCount)
-	}
-	if filteredCount != 1 {
-		t.Errorf("want 1 active channel for BEL, got %d", filteredCount)
+	if filtered.ActiveChannels != 1 {
+		t.Errorf("want 1 active channel for BEL, got %d", filtered.ActiveChannels)
 	}
 }
 

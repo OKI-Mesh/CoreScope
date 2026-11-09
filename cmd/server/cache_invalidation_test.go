@@ -10,12 +10,12 @@ func newTestStore(t *testing.T) *PacketStore {
 	t.Helper()
 	return &PacketStore{
 		rfCache:        make(map[string]*cachedRF),
-		topoCache:      make(map[string]*cachedResult),
+		topoCache:      make(map[string]*cachedTopology),
 		hashCache:      make(map[string]*cachedHashSizes),
 		collisionCache: make(map[string]*cachedHashCollisions),
-		chanCache:      make(map[string]*cachedResult),
+		chanCache:      make(map[string]*cachedChannels),
 		distCache:      make(map[string]*cachedDistance),
-		subpathCache:   make(map[string]*cachedResult),
+		subpathCache:   make(map[string]*cachedSubpaths),
 		rfCacheTTL:     15 * time.Second,
 		invCooldown:    10 * time.Second,
 	}
@@ -26,14 +26,13 @@ func newTestStore(t *testing.T) *PacketStore {
 func populateAllCaches(s *PacketStore) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	dummy := &cachedResult{data: map[string]interface{}{"test": true}, expiresAt: time.Now().Add(time.Hour)}
 	s.rfCache["global"] = &cachedRF{expiresAt: time.Now().Add(time.Hour)}
-	s.topoCache["global"] = dummy
+	s.topoCache["global"] = &cachedTopology{expiresAt: time.Now().Add(time.Hour)}
 	s.hashCache["global"] = &cachedHashSizes{expiresAt: time.Now().Add(time.Hour)}
 	s.collisionCache["global"] = &cachedHashCollisions{expiresAt: time.Now().Add(time.Hour)}
-	s.chanCache["global"] = dummy
+	s.chanCache["global"] = &cachedChannels{expiresAt: time.Now().Add(time.Hour)}
 	s.distCache["global"] = &cachedDistance{expiresAt: time.Now().Add(time.Hour)}
-	s.subpathCache["global"] = dummy
+	s.subpathCache["global"] = &cachedSubpaths{expiresAt: time.Now().Add(time.Hour)}
 }
 
 // cachePopulated returns which caches still have their "global" entry.
@@ -295,11 +294,11 @@ func TestEvictionBypassesCooldown(t *testing.T) {
 func BenchmarkCacheHitDuringIngestion(b *testing.B) {
 	s := &PacketStore{
 		rfCache:      make(map[string]*cachedRF),
-		topoCache:    make(map[string]*cachedResult),
+		topoCache:    make(map[string]*cachedTopology),
 		hashCache:    make(map[string]*cachedHashSizes),
-		chanCache:    make(map[string]*cachedResult),
+		chanCache:    make(map[string]*cachedChannels),
 		distCache:    make(map[string]*cachedDistance),
-		subpathCache: make(map[string]*cachedResult),
+		subpathCache: make(map[string]*cachedSubpaths),
 		rfCacheTTL:   15 * time.Second,
 		invCooldown:  50 * time.Millisecond,
 	}
@@ -459,12 +458,12 @@ func TestNewNodesAccumulatedDuringCooldown(t *testing.T) {
 func BenchmarkAnalyticsLatencyCacheHitVsMiss(b *testing.B) {
 	s := &PacketStore{
 		rfCache:        make(map[string]*cachedRF),
-		topoCache:      make(map[string]*cachedResult),
+		topoCache:      make(map[string]*cachedTopology),
 		hashCache:      make(map[string]*cachedHashSizes),
 		collisionCache: make(map[string]*cachedHashCollisions),
-		chanCache:      make(map[string]*cachedResult),
+		chanCache:      make(map[string]*cachedChannels),
 		distCache:      make(map[string]*cachedDistance),
-		subpathCache:   make(map[string]*cachedResult),
+		subpathCache:   make(map[string]*cachedSubpaths),
 		rfCacheTTL:     1800 * time.Second,
 		invCooldown:    300 * time.Second,
 	}

@@ -1179,8 +1179,8 @@ func TestHandleAnalyticsSubpathDetailNoStore(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/analytics/subpath-detail", nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatalf("expected 200, got %d", w.Code)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
 		}
 	})
 
@@ -1188,8 +1188,8 @@ func TestHandleAnalyticsSubpathDetailNoStore(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/analytics/subpath-detail?hops=aa", nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatalf("expected 200, got %d", w.Code)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
 		}
 	})
 }
@@ -2037,8 +2037,8 @@ func TestStoreGetAnalyticsSubpaths(t *testing.T) {
 	}
 
 	result := store.GetAnalyticsSubpaths(ctx, "", 2, 8, 100)
-	if _, ok := result["subpaths"]; !ok {
-		t.Error("expected subpaths field")
+	if result.Subpaths == nil {
+		t.Error("expected subpaths to be a non-nil list")
 	}
 
 	t.Run("with region", func(t *testing.T) {
@@ -2100,18 +2100,15 @@ func TestSubpathPrecomputedIndex(t *testing.T) {
 	// same shape.
 	fast := store.GetAnalyticsSubpaths(ctx, "", 2, 8, 100)
 	slow := store.GetAnalyticsSubpaths(ctx, "SJC", 2, 4, 50)
-	for _, r := range []map[string]interface{}{fast, slow} {
-		if _, ok := r["subpaths"]; !ok {
-			t.Error("missing subpaths in result")
-		}
-		if _, ok := r["totalPaths"]; !ok {
-			t.Error("missing totalPaths in result")
+	for _, r := range []api.SubpathList{fast, slow} {
+		if r.Subpaths == nil {
+			t.Error("subpaths must be a non-nil list")
 		}
 	}
 
 	// Verify fast path totalPaths matches index.
-	if tp, ok := fast["totalPaths"].(int); ok && tp != store.spTotalPaths {
-		t.Errorf("fast totalPaths=%d, spTotalPaths=%d", tp, store.spTotalPaths)
+	if fast.TotalPaths != store.spTotalPaths {
+		t.Errorf("fast totalPaths=%d, spTotalPaths=%d", fast.TotalPaths, store.spTotalPaths)
 	}
 }
 
@@ -2148,22 +2145,14 @@ func TestSubpathTxIndexPopulated(t *testing.T) {
 
 	// GetSubpathDetail should return correct match count via indexed lookup
 	detail := store.GetSubpathDetail([]string{"eeff", "0011"})
-	if detail == nil {
-		t.Fatal("expected non-nil detail for existing subpath")
-	}
-	matches, _ := detail["totalMatches"].(int)
-	if matches != 1 {
-		t.Errorf("totalMatches = %d, want 1", matches)
+	if detail.TotalMatches != 1 {
+		t.Errorf("totalMatches = %d, want 1", detail.TotalMatches)
 	}
 
 	// Non-existent subpath should return 0 matches
 	detail2 := store.GetSubpathDetail([]string{"zzzz", "yyyy"})
-	if detail2 == nil {
-		t.Fatal("expected non-nil result even for non-existent subpath")
-	}
-	matches2, _ := detail2["totalMatches"].(int)
-	if matches2 != 0 {
-		t.Errorf("totalMatches for non-existent subpath = %d, want 0", matches2)
+	if detail2.TotalMatches != 0 {
+		t.Errorf("totalMatches for non-existent subpath = %d, want 0", detail2.TotalMatches)
 	}
 }
 
@@ -2183,27 +2172,21 @@ func TestSubpathDetailMixedCaseHops(t *testing.T) {
 
 	// Query with lowercase hops to establish baseline
 	lower := store.GetSubpathDetail([]string{"eeff", "0011"})
-	if lower == nil {
-		t.Fatal("expected non-nil detail for lowercase subpath")
-	}
-	lowerMatches, _ := lower["totalMatches"].(int)
+	lowerMatches := lower.TotalMatches
 	if lowerMatches == 0 {
 		t.Fatal("expected >0 matches for lowercase subpath")
 	}
 
 	// Query with mixed-case hops — must return the same results (case-insensitive)
 	mixed := store.GetSubpathDetail([]string{"EEFF", "0011"})
-	if mixed == nil {
-		t.Fatal("expected non-nil detail for mixed-case subpath")
-	}
-	mixedMatches, _ := mixed["totalMatches"].(int)
+	mixedMatches := mixed.TotalMatches
 	if mixedMatches != lowerMatches {
 		t.Errorf("mixed-case totalMatches = %d, want %d (same as lowercase)", mixedMatches, lowerMatches)
 	}
 
 	// All-uppercase should also match
 	upper := store.GetSubpathDetail([]string{"EEFF", "0011"})
-	upperMatches, _ := upper["totalMatches"].(int)
+	upperMatches := upper.TotalMatches
 	if upperMatches != lowerMatches {
 		t.Errorf("uppercase totalMatches = %d, want %d", upperMatches, lowerMatches)
 	}
@@ -2251,21 +2234,14 @@ func TestStoreGetAnalyticsTopology(t *testing.T) {
 	activeNodeWindow := time.Now().Add(-7 * 24 * time.Hour)
 
 	result := store.GetAnalyticsTopology(ctx, "", "")
-	if result == nil {
-		t.Error("expected non-nil result")
-	}
 
 	// #155: uniqueNodes must match DB 7-day active count, not hop resolution
 	stats, err := db.GetStats(ctx, activeNodeWindow)
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
 	}
-	un, ok := result["uniqueNodes"].(int)
-	if !ok {
-		t.Fatalf("uniqueNodes is not int: %T", result["uniqueNodes"])
-	}
-	if un != stats.TotalNodes {
-		t.Errorf("uniqueNodes=%d should match stats totalNodes=%d", un, stats.TotalNodes)
+	if result.UniqueNodes != stats.TotalNodes {
+		t.Errorf("uniqueNodes=%d should match stats totalNodes=%d", result.UniqueNodes, stats.TotalNodes)
 	}
 
 	t.Run("with region", func(t *testing.T) {
@@ -2285,14 +2261,11 @@ func TestStoreGetAnalyticsChannels(t *testing.T) {
 	}
 
 	result := store.GetAnalyticsChannels(ctx, "", "")
-	if _, ok := result["activeChannels"]; !ok {
-		t.Error("expected activeChannels")
+	if result.Channels == nil || result.TopSenders == nil || result.ChannelTimeline == nil {
+		t.Error("expected non-nil lists in the result")
 	}
-	if _, ok := result["topSenders"]; !ok {
-		t.Error("expected topSenders")
-	}
-	if _, ok := result["channelTimeline"]; !ok {
-		t.Error("expected channelTimeline")
+	if result.ActiveChannels != len(result.Channels) {
+		t.Errorf("activeChannels = %d, want %d", result.ActiveChannels, len(result.Channels))
 	}
 
 	t.Run("with region", func(t *testing.T) {
@@ -2342,10 +2315,7 @@ func TestStoreGetAnalyticsChannelsNumericHash(t *testing.T) {
 	}
 	result := store.GetAnalyticsChannels(ctx, "", "")
 
-	channels, ok := result["channels"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("channels has type %T, want []map[string]interface{}", result["channels"])
-	}
+	channels := result.Channels
 	if len(channels) < 3 {
 		t.Errorf("expected at least 3 channels (hash 97 + hash 42 + hash 198), got %d", len(channels))
 	}
@@ -2354,10 +2324,10 @@ func TestStoreGetAnalyticsChannelsNumericHash(t *testing.T) {
 	found97 := false
 	found42 := false
 	for _, ch := range channels {
-		if ch["hash"] == "97" {
+		if ch.Hash == "97" {
 			found97 = true
 		}
-		if ch["hash"] == "42" {
+		if ch.Hash == "42" {
 			found42 = true
 		}
 	}
@@ -2371,10 +2341,10 @@ func TestStoreGetAnalyticsChannelsNumericHash(t *testing.T) {
 	// Verify the decrypted CHAN channel has the correct name (now at hash 198)
 	foundGeneral := false
 	for _, ch := range channels {
-		if ch["name"] == "general" {
+		if ch.Name == "general" {
 			foundGeneral = true
-			if ch["hash"] != "198" {
-				t.Errorf("expected hash '198' for general channel, got %v", ch["hash"])
+			if ch.Hash != "198" {
+				t.Errorf("expected hash '198' for general channel, got %v", ch.Hash)
 			}
 		}
 	}
@@ -2417,11 +2387,8 @@ func TestStoreGetSubpathDetail(t *testing.T) {
 	}
 
 	result := store.GetSubpathDetail([]string{"aabb", "ccdd"})
-	if result == nil {
-		t.Error("expected non-nil result")
-	}
-	if _, ok := result["hops"]; !ok {
-		t.Error("expected hops field")
+	if len(result.Hops) != 2 {
+		t.Errorf("hops = %v, want the two requested hops", result.Hops)
 	}
 }
 
@@ -2852,13 +2819,13 @@ func TestCacheHitTopology(t *testing.T) {
 
 	// First call — cache miss
 	r1 := store.GetAnalyticsTopology(ctx, "", "")
-	if r1 == nil {
+	if r1.HopDistribution == nil {
 		t.Fatal("expected topology result")
 	}
 
 	// Second call — cache hit
 	r2 := store.GetAnalyticsTopology(ctx, "", "")
-	if r2 == nil {
+	if r2.HopDistribution == nil {
 		t.Fatal("expected cached topology result")
 	}
 
@@ -2907,12 +2874,12 @@ func TestCacheHitChannels(t *testing.T) {
 	}
 
 	r1 := store.GetAnalyticsChannels(ctx, "", "")
-	if r1 == nil {
+	if r1.Channels == nil {
 		t.Fatal("expected channels result")
 	}
 
 	r2 := store.GetAnalyticsChannels(ctx, "", "")
-	if r2 == nil {
+	if r2.Channels == nil {
 		t.Fatal("expected cached channels result")
 	}
 
