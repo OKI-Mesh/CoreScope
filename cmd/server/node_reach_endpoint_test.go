@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -190,7 +191,7 @@ func TestNodeReach_AttributionAndCacheHit(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
-	var resp NodeReachResponse
+	var resp api.NodeReachResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad json: %v", err)
 	}
@@ -243,7 +244,7 @@ func TestNodeReach_ZeroReach(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("zero-reach must be 200 not 404, got %d (body=%s)", rr.Code, rr.Body.String())
 	}
-	var resp NodeReachResponse
+	var resp api.NodeReachResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad json: %v", err)
 	}
@@ -288,7 +289,7 @@ func TestNodeReach_ShapeAndClamp(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200 (body=%s)", rr.Code, rr.Body.String())
 	}
-	var resp NodeReachResponse
+	var resp api.NodeReachResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad json: %v", err)
 	}
@@ -301,8 +302,8 @@ func TestNodeReach_ShapeAndClamp(t *testing.T) {
 	if !contains(resp.ReliableTokens, "01FA") {
 		t.Fatalf("expected 01FA reliable token, got %v", resp.ReliableTokens)
 	}
-	if resp.Node.FirstSeen != time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) {
-		t.Fatalf("first_seen not sourced from nodes table: %q", resp.Node.FirstSeen)
+	if resp.Node.FirstSeen == nil || !resp.Node.FirstSeen.Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("first_seen not sourced from nodes table: %v", resp.Node.FirstSeen)
 	}
 }
 

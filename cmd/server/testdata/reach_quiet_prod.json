@@ -1,0 +1,75 @@
+{
+    "node": {
+        "pubkey": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+        "name": "Temple Repeater",
+        "role": "repeater",
+        "lat": 39.36,
+        "lon": -84.42,
+        "first_seen": "2026-11-05T12:00:31Z"
+    },
+    "window": {
+        "days": 7,
+        "since": "2026-11-02T02:10:34Z"
+    },
+    "reliable_tokens": [
+        "D1E2",
+        "D1E2F3"
+    ],
+    "importance": {
+        "neighbor_degree": 2,
+        "degree_rank": 581,
+        "nodes_with_edges": 1020,
+        "relay_observations": 3,
+        "bidirectional_links": 1,
+        "direct_observers": 1
+    },
+    "direct_observers": [
+        {
+            "pubkey": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+            "name": "Observer Three",
+            "count": 3,
+            "avg_snr": 0.83,
+            "lat": 39.35,
+            "lon": -84.44,
+            "distance_km": 1.87
+        }
+    ],
+    "links": [
+        {
+            "pubkey": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+            "name": "Observer Three",
+            "role": "repeater",
+            "lat": 39.35,
+            "lon": -84.44,
+            "we_hear": 1,
+            "they_hear": 3,
+            "bottleneck": 1,
+            "bidir": true,
+            "distance_km": 1.87
+        },
+        {
+            "pubkey": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+            "name": "Neighbor One",
+            "role": "repeater",
+            "lat": 39.27,
+            "lon": -84.53,
+            "we_hear": 1,
+            "they_hear": 0,
+            "bottleneck": 0,
+            "bidir": false,
+            "distance_km": 13.4
+        },
+        {
+            "pubkey": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+            "name": "Neighbor Four",
+            "role": "repeater",
+            "lat": 39.03,
+            "lon": -84.51,
+            "we_hear": 1,
+            "they_hear": 0,
+            "bottleneck": 0,
+            "bidir": false,
+            "distance_km": 37.6
+        }
+    ]
+}

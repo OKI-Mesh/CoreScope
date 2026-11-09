@@ -1,0 +1,95 @@
+{
+    "node": {
+        "pubkey": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "name": "Hill Repeater",
+        "role": "repeater",
+        "lat": 39.03,
+        "lon": -84.51,
+        "first_seen": "2026-09-02T04:09:09Z",
+        "configured_scope": "*,#region-a,#region-b",
+        "configured_scope_at": "2026-11-08T04:15:49Z"
+    },
+    "window": {
+        "days": 7,
+        "since": "2026-11-02T02:08:51Z"
+    },
+    "reliable_tokens": [
+        "A1B2",
+        "A1B2C3"
+    ],
+    "importance": {
+        "neighbor_degree": 133,
+        "degree_rank": 3,
+        "nodes_with_edges": 1020,
+        "relay_observations": 200000,
+        "bidirectional_links": 48,
+        "direct_observers": 31
+    },
+    "direct_observers": [
+        {
+            "pubkey": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+            "name": "Observer One",
+            "count": 6002,
+            "avg_snr": 6.48,
+            "lat": null,
+            "lon": null,
+            "distance_km": null
+        },
+        {
+            "pubkey": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            "name": "Observer Two",
+            "count": 5486,
+            "avg_snr": 3.39,
+            "lat": 39.1,
+            "lon": -84.38,
+            "distance_km": 13.2
+        },
+        {
+            "pubkey": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+            "name": "Observer Three",
+            "count": 5315,
+            "avg_snr": -1.08,
+            "lat": 38.97,
+            "lon": -84.79,
+            "distance_km": 25.1
+        }
+    ],
+    "links": [
+        {
+            "pubkey": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+            "name": "Neighbor One",
+            "role": "repeater",
+            "lat": 39.27,
+            "lon": -84.53,
+            "we_hear": 812,
+            "they_hear": 790,
+            "bottleneck": 790,
+            "bidir": true,
+            "distance_km": 27.1
+        },
+        {
+            "pubkey": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+            "name": "Neighbor Two",
+            "role": "repeater",
+            "lat": null,
+            "lon": null,
+            "we_hear": 40,
+            "they_hear": 0,
+            "bottleneck": 0,
+            "bidir": false,
+            "distance_km": null
+        },
+        {
+            "pubkey": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+            "name": "Unresolved Peer",
+            "role": "",
+            "lat": null,
+            "lon": null,
+            "we_hear": 0,
+            "they_hear": 3,
+            "bottleneck": 0,
+            "bidir": false,
+            "distance_km": null
+        }
+    ]
+}

@@ -417,6 +417,38 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/ObserverCalibration' }
+  /api/nodes/{pubkey}/reach:
+    get:
+      operationId: getNodeReach
+      summary: Two-way RF link reach for a node, from the paths its traffic took
+      description: >-
+        Counts come from observed packet paths over the window. Scans are
+        capped at 200000 observations, so a very busy relay reports
+        relay_observations of exactly 200000 and its counts are partial.
+      parameters:
+        - { name: pubkey, in: path, required: true, description: "Full 64-character hex pubkey.", schema: { type: string } }
+        - { name: days, in: query, description: "Look-back window in days; clamped to 1..30. Non-numeric values use 7.", schema: { type: integer, default: 7 } }
+      responses:
+        "200":
+          description: Reach report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeReachResponse' }
+        "400":
+          description: Pubkey is not 64 hex characters
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Unknown, blacklisted or hidden node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Computation failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   schemas:
     NodeRole:
@@ -1197,3 +1229,98 @@ components:
         nodeRole:
           description: "Fleet entries only, when the node is known."
           allOf: [{ $ref: '#/components/schemas/NodeRole' }]
+
+    ReachRole:
+      type: string
+      description: A node role, or empty when the peer is not a known node.
+      enum: [repeater, companion, room, sensor, observer, unknown, ""]
+      x-go-type: types.NodeRole
+      x-go-type-import:
+        path: github.com/OKI-Mesh/CoreScope/internal/types
+
+    ReachNode:
+      type: object
+      additionalProperties: false
+      required: [pubkey, name, role, lat, lon]
+      properties:
+        pubkey: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/ReachRole' }
+        lat: { type: number, format: double, nullable: true }
+        lon: { type: number, format: double, nullable: true }
+        first_seen:
+          description: Omitted when the node has no recorded first-seen.
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        default_scope: { type: string, description: "Inferred from the transport scope of observed adverts. Omitted when unknown." }
+        configured_scope: { type: string, description: "Confirmed by an observer neighbors report. Omitted when never confirmed." }
+        configured_scope_at:
+          description: When the configured scope was confirmed. Omitted with configured_scope.
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+
+    ReachWindow:
+      type: object
+      additionalProperties: false
+      required: [days, since]
+      properties:
+        days: { type: integer, description: "The clamped window, 1..30." }
+        since: { $ref: '#/components/schemas/TimestampSeconds' }
+
+    ReachImportance:
+      type: object
+      additionalProperties: false
+      required: [neighbor_degree, degree_rank, nodes_with_edges, relay_observations, bidirectional_links, direct_observers]
+      properties:
+        neighbor_degree: { type: integer }
+        degree_rank: { type: integer, description: "0 when the node has no neighbor edges." }
+        nodes_with_edges: { type: integer }
+        relay_observations: { type: integer, description: "Observations whose path includes this node. 200000 means the scan was capped." }
+        bidirectional_links: { type: integer }
+        direct_observers: { type: integer }
+
+    ReachObserver:
+      type: object
+      additionalProperties: false
+      required: [pubkey, name, count, avg_snr, lat, lon, distance_km]
+      properties:
+        pubkey: { type: string }
+        name: { type: string }
+        count: { type: integer }
+        avg_snr: { type: number, format: double, nullable: true }
+        lat: { type: number, format: double, nullable: true }
+        lon: { type: number, format: double, nullable: true }
+        distance_km: { type: number, format: double, nullable: true }
+
+    ReachLink:
+      type: object
+      additionalProperties: false
+      required: [pubkey, name, role, lat, lon, we_hear, they_hear, bottleneck, bidir, distance_km]
+      properties:
+        pubkey: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/ReachRole' }
+        lat: { type: number, format: double, nullable: true }
+        lon: { type: number, format: double, nullable: true }
+        we_hear: { type: integer }
+        they_hear: { type: integer }
+        bottleneck: { type: integer, description: The smaller of we_hear and they_hear. }
+        bidir: { type: boolean }
+        distance_km: { type: number, format: double, nullable: true }
+
+    NodeReachResponse:
+      type: object
+      additionalProperties: false
+      required: [node, window, reliable_tokens, importance, direct_observers, links]
+      properties:
+        node: { $ref: '#/components/schemas/ReachNode' }
+        window: { $ref: '#/components/schemas/ReachWindow' }
+        reliable_tokens:
+          type: array
+          description: Uppercase hex hop prefixes that identify this node uniquely among relays.
+          items: { type: string }
+        importance: { $ref: '#/components/schemas/ReachImportance' }
+        direct_observers:
+          type: array
+          items: { $ref: '#/components/schemas/ReachObserver' }
+        links:
+          type: array
+          items: { $ref: '#/components/schemas/ReachLink' }

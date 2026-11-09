@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -195,91 +196,41 @@ func newResolver(pm *prefixMap) func(string) string {
 // instant that confirmation was reported (#1865).
 //
 // Every return value is best-effort — a missing node or a read error yields
-// empty strings, because a reach report must still render for a node we know
-// nothing else about.
-func (s *Server) reachNodeScopes(ctx context.Context, pubkey string) (defaultScope, configuredScope, configuredAt string) {
+// nil, because a reach report must still render for a node we know nothing
+// else about.
+func (s *Server) reachNodeScopes(ctx context.Context, pubkey string) (defaultScope, configuredScope *string, configuredAt *time.Time) {
 	if s.db == nil {
-		return "", "", ""
+		return nil, nil, nil
 	}
 	n, err := s.db.GetNodeByPubkey(ctx, pubkey)
 	if err != nil {
 		if !errors.Is(err, database.ErrNotFound) {
 			log.Printf("[reach] node scopes for %s: %v", pubkey, err)
 		}
-		return "", "", ""
+		return nil, nil, nil
 	}
-	if n.DefaultScope != nil {
-		defaultScope = *n.DefaultScope
-	}
-	if n.ConfiguredScope != nil {
-		configuredScope = *n.ConfiguredScope
-	}
-	if n.ConfiguredScopeAt != nil {
-		configuredAt = formatTS(*n.ConfiguredScopeAt)
-	}
-	return defaultScope, configuredScope, configuredAt
-}
-
-type NodeReachInfo struct {
-	Pubkey    string         `json:"pubkey"`
-	Name      string         `json:"name"`
-	Role      types.NodeRole `json:"role"`
-	Lat       *float64       `json:"lat"`
-	Lon       *float64       `json:"lon"`
-	FirstSeen time.Time      `json:"first_seen"`
-	// #1865: region scopes, so a printed reach report says which region the
-	// node actually serves. DefaultScope is INFERRED from the transport scope
-	// of observed adverts; ConfiguredScope is CONFIRMED, read back off the node
-	// itself via an observer /neighbors report. Both omitempty: an instance
-	// whose schema predates either column, or a node that has never been
-	// confirmed, sends neither field and the UI shows nothing.
-	DefaultScope      string `json:"default_scope,omitempty"`
-	ConfiguredScope   string `json:"configured_scope,omitempty"`
-	ConfiguredScopeAt string `json:"configured_scope_at,omitempty"`
-}
-type NodeReachWindow struct {
-	Days  int    `json:"days"`
-	Since string `json:"since"`
-}
-type NodeReachImportance struct {
-	NeighborDegree     int `json:"neighbor_degree"`
-	DegreeRank         int `json:"degree_rank"`
-	NodesWithEdges     int `json:"nodes_with_edges"`
-	RelayObservations  int `json:"relay_observations"`
-	BidirectionalLinks int `json:"bidirectional_links"`
-	DirectObservers    int `json:"direct_observers"`
-}
-type NodeReachObserver struct {
-	Pubkey     string   `json:"pubkey"`
-	Name       string   `json:"name"`
-	Count      int      `json:"count"`
-	AvgSNR     *float64 `json:"avg_snr"`
-	Lat        *float64 `json:"lat"`
-	Lon        *float64 `json:"lon"`
-	DistanceKm *float64 `json:"distance_km"`
-}
-type NodeReachLink struct {
-	Pubkey     string         `json:"pubkey"`
-	Name       string         `json:"name"`
-	Role       types.NodeRole `json:"role"`
-	Lat        *float64       `json:"lat"`
-	Lon        *float64       `json:"lon"`
-	WeHear     int            `json:"we_hear"`
-	TheyHear   int            `json:"they_hear"`
-	Bottleneck int            `json:"bottleneck"`
-	Bidir      bool           `json:"bidir"`
-	DistanceKm *float64       `json:"distance_km"`
-}
-type NodeReachResponse struct {
-	Node            NodeReachInfo       `json:"node"`
-	Window          NodeReachWindow     `json:"window"`
-	ReliableTokens  []string            `json:"reliable_tokens"`
-	Importance      NodeReachImportance `json:"importance"`
-	DirectObservers []NodeReachObserver `json:"direct_observers"`
-	Links           []NodeReachLink     `json:"links"`
+	return n.DefaultScope, n.ConfiguredScope, n.ConfiguredScopeAt
 }
 
 func fptr(v float64) *float64 { return &v }
+
+// nonEmpty returns nil for a nil or empty string so the optional scope fields
+// are omitted from the response instead of being sent as "".
+func nonEmpty(p *string) *string {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return p
+}
+
+// optionalWireSeconds is nil for a nil or zero time (a node with no recorded
+// first-seen), so the field is omitted rather than sent as year 1.
+func optionalWireSeconds(t *time.Time) *types.WireTimeSeconds {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	return &types.WireTimeSeconds{Time: *t}
+}
 
 // gpsPtrs returns (lat,lon) pointers, nil when the node has no GPS.
 func gpsPtrs(info nodeInfo) (*float64, *float64) {
@@ -514,14 +465,14 @@ func (s *Server) handleNodeReach(w http.ResponseWriter, r *http.Request) {
 // (target node not present / inputs unavailable). A non-nil error signals a
 // real backend failure (e.g. DB scan exploded) — caller should render 500,
 // not 404 (issue #1631).
-func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) (NodeReachResponse, bool, error) {
+func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) (api.NodeReachResponse, bool, error) {
 	if s.store == nil || s.db == nil {
-		return NodeReachResponse{}, false, nil
+		return api.NodeReachResponse{}, false, nil
 	}
 	nodeMap := s.buildNodeInfoMap(ctx)
 	self, found := nodeMap[pubkey]
 	if !found {
-		return NodeReachResponse{}, false, nil
+		return api.NodeReachResponse{}, false, nil
 	}
 	_, pm := s.store.getCachedNodesAndPM()
 	tokens := reliableTokens(pubkey, pm)
@@ -532,7 +483,7 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	if len(tokens) > 0 {
 		rows, err := s.scanReachRows(ctx, tokens, since)
 		if err != nil {
-			return NodeReachResponse{}, false, err
+			return api.NodeReachResponse{}, false, err
 		}
 		d = attributeDirections(rows, tokens, pubkey, newResolver(pm))
 	} else {
@@ -545,7 +496,7 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	degree, rank, nodesWithEdges := s.reachDegreeRank(ctx, pubkey)
 
 	// node first_seen comes from nodeInfo (buildNodeInfoMap folds it in via a
-	// single bulk SELECT). Missing → empty string (the node may be
+	// single bulk SELECT). Missing → omitted (the node may be
 	// observer-only or pre-first_seen-schema).
 	firstSeen := self.FirstSeen
 
@@ -554,7 +505,7 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	defScope, confScope, confAt := s.reachNodeScopes(ctx, pubkey)
 
 	// assemble links
-	links := make([]NodeReachLink, 0, len(d.we)+len(d.they))
+	links := make([]api.ReachLink, 0, len(d.we)+len(d.they))
 	bidir := 0
 	seen := make(map[string]bool, len(d.we)+len(d.they))
 	for pk := range d.we {
@@ -575,7 +526,7 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 		if b {
 			bidir++
 		}
-		links = append(links, NodeReachLink{
+		links = append(links, api.ReachLink{
 			Pubkey: pk, Name: info.Name, Role: info.Role, Lat: lat, Lon: lon,
 			WeHear: we, TheyHear: they, Bottleneck: min(we, they), Bidir: b, DistanceKm: dist,
 		})
@@ -591,7 +542,7 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	})
 
 	// direct observers
-	directObs := make([]NodeReachObserver, 0, len(d.obs))
+	directObs := make([]api.ReachObserver, 0, len(d.obs))
 	for pk, a := range d.obs {
 		info := nodeMap[pk]
 		lat, lon := gpsPtrs(info)
@@ -602,8 +553,8 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 		if self.HasGPS && info.HasGPS {
 			dist = fptr(haversineKm(self.Lat, self.Lon, info.Lat, info.Lon))
 		}
-		directObs = append(directObs, NodeReachObserver{
-			Pubkey: pk, Name: info.Name, Count: a.count, AvgSNR: avg, Lat: lat, Lon: lon, DistanceKm: dist,
+		directObs = append(directObs, api.ReachObserver{
+			Pubkey: pk, Name: info.Name, Count: a.count, AvgSnr: avg, Lat: lat, Lon: lon, DistanceKm: dist,
 		})
 	}
 	sort.Slice(directObs, func(i, j int) bool { return directObs[i].Count > directObs[j].Count })
@@ -615,13 +566,13 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	sort.Strings(toks)
 
 	selfLat, selfLon := gpsPtrs(self)
-	return NodeReachResponse{
-		Node: NodeReachInfo{Pubkey: pubkey, Name: self.Name, Role: self.Role,
-			Lat: selfLat, Lon: selfLon, FirstSeen: firstSeen,
-			DefaultScope: defScope, ConfiguredScope: confScope, ConfiguredScopeAt: confAt},
-		Window:         NodeReachWindow{Days: days, Since: since.Format(time.RFC3339)},
+	return api.NodeReachResponse{
+		Node: api.ReachNode{Pubkey: pubkey, Name: self.Name, Role: self.Role,
+			Lat: selfLat, Lon: selfLon, FirstSeen: optionalWireSeconds(&firstSeen),
+			DefaultScope: nonEmpty(defScope), ConfiguredScope: nonEmpty(confScope), ConfiguredScopeAt: optionalWireSeconds(confAt)},
+		Window:         api.ReachWindow{Days: days, Since: types.WireTimeSeconds{Time: since}},
 		ReliableTokens: toks,
-		Importance: NodeReachImportance{
+		Importance: api.ReachImportance{
 			NeighborDegree: degree, DegreeRank: rank, NodesWithEdges: nodesWithEdges,
 			RelayObservations: d.relay, BidirectionalLinks: bidir, DirectObservers: len(directObs),
 		},

@@ -566,6 +566,18 @@ type NodeNeighborsResponse struct {
 	TotalObservations int `json:"total_observations"`
 }
 
+// NodeReachResponse defines model for NodeReachResponse.
+type NodeReachResponse struct {
+	DirectObservers []ReachObserver `json:"direct_observers"`
+	Importance      ReachImportance `json:"importance"`
+	Links           []ReachLink     `json:"links"`
+	Node            ReachNode       `json:"node"`
+
+	// ReliableTokens Uppercase hex hop prefixes that identify this node uniquely among relays.
+	ReliableTokens []string    `json:"reliable_tokens"`
+	Window         ReachWindow `json:"window"`
+}
+
 // NodeRole MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
 type NodeRole = types.NodeRole
 
@@ -607,6 +619,83 @@ type PacketCore struct {
 	Score                *float64           `json:"score,omitempty"`
 	Snr                  *float64           `json:"snr"`
 	Timestamp            *TimestampSeconds  `json:"timestamp"`
+}
+
+// ReachImportance defines model for ReachImportance.
+type ReachImportance struct {
+	BidirectionalLinks int `json:"bidirectional_links"`
+
+	// DegreeRank 0 when the node has no neighbor edges.
+	DegreeRank      int `json:"degree_rank"`
+	DirectObservers int `json:"direct_observers"`
+	NeighborDegree  int `json:"neighbor_degree"`
+	NodesWithEdges  int `json:"nodes_with_edges"`
+
+	// RelayObservations Observations whose path includes this node. 200000 means the scan was capped.
+	RelayObservations int `json:"relay_observations"`
+}
+
+// ReachLink defines model for ReachLink.
+type ReachLink struct {
+	Bidir bool `json:"bidir"`
+
+	// Bottleneck The smaller of we_hear and they_hear.
+	Bottleneck int      `json:"bottleneck"`
+	DistanceKm *float64 `json:"distance_km"`
+	Lat        *float64 `json:"lat"`
+	Lon        *float64 `json:"lon"`
+	Name       string   `json:"name"`
+	Pubkey     string   `json:"pubkey"`
+
+	// Role A node role, or empty when the peer is not a known node.
+	Role     ReachRole `json:"role"`
+	TheyHear int       `json:"they_hear"`
+	WeHear   int       `json:"we_hear"`
+}
+
+// ReachNode defines model for ReachNode.
+type ReachNode struct {
+	// ConfiguredScope Confirmed by an observer neighbors report. Omitted when never confirmed.
+	ConfiguredScope *string `json:"configured_scope,omitempty"`
+
+	// ConfiguredScopeAt When the configured scope was confirmed. Omitted with configured_scope.
+	ConfiguredScopeAt *TimestampSeconds `json:"configured_scope_at,omitempty"`
+
+	// DefaultScope Inferred from the transport scope of observed adverts. Omitted when unknown.
+	DefaultScope *string `json:"default_scope,omitempty"`
+
+	// FirstSeen Omitted when the node has no recorded first-seen.
+	FirstSeen *TimestampSeconds `json:"first_seen,omitempty"`
+	Lat       *float64          `json:"lat"`
+	Lon       *float64          `json:"lon"`
+	Name      string            `json:"name"`
+	Pubkey    string            `json:"pubkey"`
+
+	// Role A node role, or empty when the peer is not a known node.
+	Role ReachRole `json:"role"`
+}
+
+// ReachObserver defines model for ReachObserver.
+type ReachObserver struct {
+	AvgSnr     *float64 `json:"avg_snr"`
+	Count      int      `json:"count"`
+	DistanceKm *float64 `json:"distance_km"`
+	Lat        *float64 `json:"lat"`
+	Lon        *float64 `json:"lon"`
+	Name       string   `json:"name"`
+	Pubkey     string   `json:"pubkey"`
+}
+
+// ReachRole A node role, or empty when the peer is not a known node.
+type ReachRole = types.NodeRole
+
+// ReachWindow defines model for ReachWindow.
+type ReachWindow struct {
+	// Days The clamped window, 1..30.
+	Days int `json:"days"`
+
+	// Since UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Since TimestampSeconds `json:"since"`
 }
 
 // ResolvePrefixResponse defines model for ResolvePrefixResponse.
@@ -748,4 +837,10 @@ type GetNodeNeighborsParams struct {
 
 	// IncludeAmbiguous Set to false to drop edges that could not be resolved to a single node. Any other value keeps them.
 	IncludeAmbiguous *bool `form:"include_ambiguous,omitempty" json:"include_ambiguous,omitempty"`
+}
+
+// GetNodeReachParams defines parameters for GetNodeReach.
+type GetNodeReachParams struct {
+	// Days Look-back window in days; clamped to 1..30. Non-numeric values use 7.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
