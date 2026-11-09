@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +12,6 @@ import (
 
 	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/gorilla/mux"
 )
 
@@ -36,24 +33,7 @@ func (c specChecker) checkAsAdmin(t *testing.T, router *mux.Router, method, path
 		t.Fatalf("%s %s: status %d, want %d; body=%s", method, path, rec.Code, want, rec.Body.String())
 	}
 
-	route, pathParams, err := c.routes.FindRoute(req)
-	if err != nil {
-		t.Fatalf("%s %s: route is not in the spec: %v", method, path, err)
-	}
-	input := &openapi3filter.ResponseValidationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request:    req,
-			PathParams: pathParams,
-			Route:      route,
-		},
-		Status:  rec.Code,
-		Header:  rec.Header(),
-		Options: &openapi3filter.Options{IncludeResponseStatus: true},
-	}
-	input.SetBodyBytes(rec.Body.Bytes())
-	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-		t.Errorf("%s %s: status %d does not match the spec: %v", method, path, rec.Code, err)
-	}
+	c.validate(t, req, rec)
 	return rec
 }
 
@@ -206,29 +186,13 @@ func TestAdminRoutesRejectMissingKey(t *testing.T) {
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("status %d, want 401", rec.Code)
 			}
-			route, pathParams, err := checker.routes.FindRoute(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			input := &openapi3filter.ResponseValidationInput{
-				RequestValidationInput: &openapi3filter.RequestValidationInput{Request: req, PathParams: pathParams, Route: route},
-				Status:                 rec.Code,
-				Header:                 rec.Header(),
-				Options:                &openapi3filter.Options{IncludeResponseStatus: true},
-			}
-			input.SetBodyBytes(rec.Body.Bytes())
-			if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-				t.Errorf("401 does not match the spec: %v", err)
-			}
+			checker.validate(t, req, rec)
 		})
 	}
 }
 
 func TestProdAdminFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 	fixtures := []struct{ file, schema string }{
 		{"debug_affinity_prod.json", "DebugAffinityResponse"},
 		{"dropped_packets_prod.json", "DroppedPacket"},

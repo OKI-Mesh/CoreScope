@@ -3,13 +3,11 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	"github.com/getkin/kin-openapi/openapi3"
 )
 
 func TestObserverEndpointsMatchSpec(t *testing.T) {
@@ -253,38 +251,11 @@ func TestObserverAnalyticsRecentPacketsMatchSpec(t *testing.T) {
 }
 
 func TestProdObserverFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-
-	fixtures := []struct {
-		file   string
-		schema string
-	}{
+	checkProdFixtures(t, []prodFixture{
 		{"observers_prod.json", "ObserverListResponse"},
 		{"observer_detail_prod.json", "Observer"},
 		{"observer_analytics_prod.json", "ObserverAnalyticsResponse"},
 		{"observer_metrics_prod.json", "ObserverMetricsResponse"},
 		{"metrics_summary_prod.json", "MetricsSummaryResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }

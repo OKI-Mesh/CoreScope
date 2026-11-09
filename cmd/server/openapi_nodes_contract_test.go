@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -39,10 +38,7 @@ func validateAgainstSchema[T any](t *testing.T, doc *openapi3.T, name string, va
 }
 
 func TestNodeMatchesSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 
 	heard := time.Date(2026, 11, 6, 13, 0, 0, 123456789, time.UTC)
 	stamp := types.WireTimeSeconds{Time: heard}
@@ -185,35 +181,13 @@ func TestNodeDetailMatchesSpec(t *testing.T) {
 // what the live frontend receives today, so a field the spec requires but
 // production does not send fails here.
 func TestProdFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	for _, tc := range []struct{ schema, file string }{
-		{"NodeDetailResponse", "node_details_prod.json"},
-		{"NetworkStatusResponse", "network_status_prod.json"},
-		{"BulkHealthResponse", "bulk_health_prod.json"},
-		{"ResolvePrefixResponse", "resolve_prod.json"},
-		{"NodeBatteryResponse", "battery_empty_prod.json"},
-	} {
-		t.Run(tc.schema, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[tc.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", tc.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + tc.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", tc.schema, err)
-			}
-		})
-	}
+	checkProdFixtures(t, []prodFixture{
+		{"node_details_prod.json", "NodeDetailResponse"},
+		{"network_status_prod.json", "NetworkStatusResponse"},
+		{"bulk_health_prod.json", "BulkHealthResponse"},
+		{"resolve_prod.json", "ResolvePrefixResponse"},
+		{"battery_empty_prod.json", "NodeBatteryResponse"},
+	})
 }
 
 func TestResolveMatchesSpec(t *testing.T) {

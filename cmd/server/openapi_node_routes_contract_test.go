@@ -1,16 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gorilla/mux"
 )
 
@@ -213,10 +210,7 @@ func TestNodeRoutesHideBlacklistedNodes(t *testing.T) {
 // database never produces, so every nullable and optional field of the node
 // route schemas is exercised in both states.
 func TestNodeRouteSchemasAcceptOptionalValues(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 	at := types.WireTimeSeconds{Time: time.Date(2026, 11, 9, 19, 44, 50, 987654321, time.UTC)}
 	snr, rssi, lat, lon := 9.5, -84.0, 39.1, -84.5
 	pubkey, observer := padKey("c3c3"), "OBS"
@@ -252,32 +246,10 @@ func TestNodeRouteSchemasAcceptOptionalValues(t *testing.T) {
 // real production responses. The spec has to accept exactly what the live
 // frontend receives, so a field it requires but production omits fails here.
 func TestNodeRouteProdFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	for _, tc := range []struct{ schema, file string }{
-		{"NodeHealthResponse", "node_health_prod.json"},
-		{"NodePathsResponse", "node_paths_prod.json"},
-		{"NodeAnalyticsResponse", "node_analytics_prod.json"},
-		{"NodeHopAnalyticsResponse", "node_hop_analytics_prod.json"},
-	} {
-		t.Run(tc.schema, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[tc.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", tc.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + tc.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", tc.schema, err)
-			}
-		})
-	}
+	checkProdFixtures(t, []prodFixture{
+		{"node_health_prod.json", "NodeHealthResponse"},
+		{"node_paths_prod.json", "NodePathsResponse"},
+		{"node_analytics_prod.json", "NodeAnalyticsResponse"},
+		{"node_hop_analytics_prod.json", "NodeHopAnalyticsResponse"},
+	})
 }

@@ -4,12 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/api"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gorilla/mux"
 )
 
@@ -97,10 +94,7 @@ func TestDistanceBuildingResponseMatchesSpec(t *testing.T) {
 // empty store, where the histograms and lists must still be present.
 func TestRFAndDistanceOutputMatchesSpec(t *testing.T) {
 	ctx := t.Context()
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 
 	richDB := setupRichTestDB(t)
 	defer richDB.Close()
@@ -186,36 +180,9 @@ func windowFromQuery(t *testing.T, name string) TimeWindow {
 }
 
 func TestProdRFAndDistanceFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-
-	fixtures := []struct {
-		file   string
-		schema string
-	}{
+	checkProdFixtures(t, []prodFixture{
 		{"rf_prod.json", "RFAnalyticsResponse"},
 		{"rf_window_prod.json", "RFAnalyticsResponse"},
 		{"distance_prod.json", "DistanceAnalyticsResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }

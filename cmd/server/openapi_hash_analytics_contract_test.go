@@ -2,13 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
-	"github.com/getkin/kin-openapi/openapi3"
 )
 
 func TestHashAnalyticsEndpointsMatchSpec(t *testing.T) {
@@ -43,10 +40,7 @@ func TestHashAnalyticsEndpointsMatchSpec(t *testing.T) {
 // and a collision, and checks the marshaled responses against the spec.
 func TestHashAnalyticsOutputMatchesSpec(t *testing.T) {
 	ctx := t.Context()
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 
 	db := setupTestDB(t)
 	recent := time.Now().UTC().Add(-1 * time.Hour)
@@ -112,37 +106,10 @@ func TestHashAnalyticsOutputMatchesSpec(t *testing.T) {
 }
 
 func TestProdHashAnalyticsFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-
-	fixtures := []struct {
-		file   string
-		schema string
-	}{
+	checkProdFixtures(t, []prodFixture{
 		{"hash_sizes_prod.json", "HashSizeAnalyticsResponse"},
 		{"hash_sizes_region_prod.json", "HashSizeAnalyticsResponse"},
 		{"hash_collisions_prod.json", "HashCollisionResponse"},
 		{"roles_prod.json", "RoleAnalyticsResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }

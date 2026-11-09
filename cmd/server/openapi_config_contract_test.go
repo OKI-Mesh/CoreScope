@@ -2,17 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/OKI-Mesh/CoreScope/api"
-	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/gorilla/mux"
 )
 
@@ -253,24 +248,7 @@ func putGeoFilter(t *testing.T, checker specChecker, router *mux.Router, key, bo
 	if rec.Code != wantStatus {
 		t.Fatalf("PUT %s: status %d, want %d; body=%s", body, rec.Code, wantStatus, rec.Body.String())
 	}
-	route, pathParams, err := checker.routes.FindRoute(req)
-	if err != nil {
-		t.Fatalf("PUT route is not in the spec: %v", err)
-	}
-	input := &openapi3filter.ResponseValidationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request:    req,
-			PathParams: pathParams,
-			Route:      route,
-		},
-		Status:  rec.Code,
-		Header:  rec.Header(),
-		Options: &openapi3filter.Options{IncludeResponseStatus: true},
-	}
-	input.SetBodyBytes(rec.Body.Bytes())
-	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-		t.Errorf("PUT %s: status %d does not match the spec: %v", body, rec.Code, err)
-	}
+	checker.validate(t, req, rec)
 	return rec
 }
 
@@ -356,35 +334,12 @@ func TestPutGeoFilterDisabledMatchesSpec(t *testing.T) {
 }
 
 func TestProdConfigFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	fixtures := []struct{ file, schema string }{
+	checkProdFixtures(t, []prodFixture{
 		{"config_cache_prod.json", "CacheTTLConfig"},
 		{"config_client_prod.json", "ClientConfigResponse"},
 		{"config_regions_prod.json", "RegionsResponse"},
 		{"config_theme_prod.json", "ThemeResponse"},
 		{"config_map_prod.json", "MapConfigResponse"},
 		{"config_geo_filter_prod.json", "GeoFilterResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }

@@ -266,10 +266,7 @@ func TestPathInspectColdStartBodyMatchesSpec(t *testing.T) {
 }
 
 func TestProdMiscFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 	read := func(t *testing.T, file string) any {
 		t.Helper()
 		raw, err := os.ReadFile("testdata/" + file)

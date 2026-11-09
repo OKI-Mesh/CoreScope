@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/OKI-Mesh/CoreScope/api"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gorilla/mux"
 )
 
@@ -56,10 +54,7 @@ func TestClockSkewRoutesAreNotShadowed(t *testing.T) {
 }
 
 func TestProdClockSkewFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 	for _, tc := range []struct{ name, file string }{
 		{"NodeClockSkew", "node_clock_skew_prod.json"},
 		{"FleetClockSkew", "fleet_clock_skew_prod.json"},

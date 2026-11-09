@@ -10,7 +10,6 @@ import (
 
 	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
-	"github.com/getkin/kin-openapi/openapi3"
 )
 
 // pointStatsFileAt makes the ingestor-backed endpoints read path, and drops
@@ -22,31 +21,16 @@ func pointStatsFileAt(t *testing.T, path string) {
 	resetSourceLivenessCache()
 }
 
-func TestSystemEndpointsMatchSpec(t *testing.T) {
+// TestHealthzNotReadyMatchesSpec checks the 503 /api/healthz answers while the
+// server is still starting. TestSystemResponsesDecodeAsSpecTypes covers every
+// system endpoint once it is ready.
+func TestHealthzNotReadyMatchesSpec(t *testing.T) {
 	checker := newSpecChecker(t)
 	_, router := setupTestServer(t)
-	pointStatsFileAt(t, filepath.Join(t.TempDir(), "no-such-file.json"))
 
 	readiness.Store(0)
 	t.Cleanup(func() { readiness.Store(0) })
 	checker.checkStatus(t, router, "/api/healthz", http.StatusServiceUnavailable)
-	readiness.Store(1)
-
-	for _, path := range []string{
-		"/api/stats",
-		"/api/health",
-		"/api/healthz",
-		"/api/perf",
-		"/api/perf?mem=1",
-		"/api/perf/io",
-		"/api/perf/io",
-		"/api/perf/write-sources",
-		"/api/mqtt/status",
-	} {
-		t.Run(path, func(t *testing.T) {
-			checker.check(t, router, path)
-		})
-	}
 }
 
 func TestSystemResponsesDecodeAsSpecTypes(t *testing.T) {
@@ -219,11 +203,7 @@ func decodeInto(t *testing.T, body []byte, v any) {
 }
 
 func TestProdSystemFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	fixtures := []struct{ file, schema string }{
+	checkProdFixtures(t, []prodFixture{
 		{"stats_prod.json", "StatsResponse"},
 		{"health_prod.json", "HealthResponse"},
 		{"healthz_prod.json", "HealthzResponse"},
@@ -232,24 +212,5 @@ func TestProdSystemFixturesMatchSpec(t *testing.T) {
 		{"perf_io_prod.json", "PerfIOResponse"},
 		{"perf_write_sources_prod.json", "PerfWriteSourcesResponse"},
 		{"mqtt_status_prod.json", "MqttStatusResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }

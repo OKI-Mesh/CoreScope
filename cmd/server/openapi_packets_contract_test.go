@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/OKI-Mesh/CoreScope/api"
-	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/gorilla/mux"
 )
 
@@ -28,24 +24,7 @@ func (c specChecker) checkPost(t *testing.T, router *mux.Router, path, body stri
 		t.Fatalf("POST %s: status %d, want %d; body=%s", path, rec.Code, want, rec.Body.String())
 	}
 
-	route, pathParams, err := c.routes.FindRoute(req)
-	if err != nil {
-		t.Fatalf("POST %s: route is not in the spec: %v", path, err)
-	}
-	input := &openapi3filter.ResponseValidationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request:    req,
-			PathParams: pathParams,
-			Route:      route,
-		},
-		Status:  rec.Code,
-		Header:  rec.Header(),
-		Options: &openapi3filter.Options{IncludeResponseStatus: true},
-	}
-	input.SetBodyBytes(rec.Body.Bytes())
-	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-		t.Errorf("POST %s: status %d does not match the spec: %v", path, rec.Code, err)
-	}
+	c.validate(t, req, rec)
 }
 
 func TestPacketEndpointsMatchSpec(t *testing.T) {
@@ -160,44 +139,17 @@ func TestPacketRoutesAreNotShadowed(t *testing.T) {
 }
 
 func TestProdPacketFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-
-	fixtures := []struct {
-		file   string
-		schema string
-	}{
+	checkProdFixtures(t, []prodFixture{
 		{"packets_list_prod.json", "PacketListResponse"},
 		{"packets_expanded_prod.json", "PacketListResponse"},
 		{"packets_grouped_prod.json", "GroupedPacketListResponse"},
 		{"packet_detail_prod.json", "PacketDetailResponse"},
 		{"packet_detail_observation_prod.json", "PacketDetailResponse"},
 		{"observations_batch_prod.json", "ObservationBatchResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 
 	t.Run("packet_timestamps_prod.json", func(t *testing.T) {
-		schema, ok := doc.Components.Schemas["TimestampSeconds"]
+		schema, ok := loadSpec(t).Components.Schemas["TimestampSeconds"]
 		if !ok {
 			t.Fatal("TimestampSeconds is not in the spec")
 		}

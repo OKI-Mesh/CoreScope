@@ -1,13 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
 	"testing"
 
-	"github.com/OKI-Mesh/CoreScope/api"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gorilla/mux"
 )
 
@@ -48,27 +44,8 @@ func TestNodeReachMatchesSpec(t *testing.T) {
 }
 
 func TestProdReachFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	schema, ok := doc.Components.Schemas["NodeReachResponse"]
-	if !ok {
-		t.Fatal("NodeReachResponse is not in the spec")
-	}
-	for _, file := range []string{"reach_busy_prod.json", "reach_quiet_prod.json"} {
-		t.Run(file, func(t *testing.T) {
-			raw, err := os.ReadFile("testdata/" + file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match NodeReachResponse: %v", err)
-			}
-		})
-	}
+	checkProdFixtures(t, []prodFixture{
+		{"reach_busy_prod.json", "NodeReachResponse"},
+		{"reach_quiet_prod.json", "NodeReachResponse"},
+	})
 }

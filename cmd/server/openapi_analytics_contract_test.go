@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gorilla/mux"
 )
 
@@ -143,10 +141,7 @@ func TestAnalyticsWarmupResponsesMatchSpec(t *testing.T) {
 // lists must still be present.
 func TestAnalyticsOutputMatchesSpec(t *testing.T) {
 	ctx := t.Context()
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 
 	richDB := setupRichTestDB(t)
 	defer richDB.Close()
@@ -221,10 +216,7 @@ func TestAnalyticsOutputMatchesSpec(t *testing.T) {
 // database leaves empty: unresolved and resolved hops, a ring distance range,
 // the relay preset and a channel timeline.
 func TestPopulatedAnalyticsResponsesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
+	doc := loadSpec(t)
 	name := "Repeater 01"
 	pubkey := "aa01"
 	distRange := "1-3"
@@ -403,15 +395,7 @@ func TestTopologyFilterDropsHiddenNodes(t *testing.T) {
 }
 
 func TestProdAnalyticsFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-
-	fixtures := []struct {
-		file   string
-		schema string
-	}{
+	checkProdFixtures(t, []prodFixture{
 		{"topology_prod.json", "TopologyResponse"},
 		{"channels_prod.json", "ChannelAnalyticsResponse"},
 		{"relay_airtime_prod.json", "RelayAirtimeShareResponse"},
@@ -421,24 +405,5 @@ func TestProdAnalyticsFixturesMatchSpec(t *testing.T) {
 		{"subpaths_prod.json", "SubpathList"},
 		{"subpaths_bulk_prod.json", "SubpathBulkResponse"},
 		{"subpath_detail_prod.json", "SubpathDetailResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }

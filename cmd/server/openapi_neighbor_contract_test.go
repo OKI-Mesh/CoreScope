@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/OKI-Mesh/CoreScope/api"
@@ -22,12 +23,19 @@ type specChecker struct {
 	routes routers.Router
 }
 
-func newSpecChecker(t *testing.T) specChecker {
+// loadSpec parses the embedded api/openapi.yaml.
+func loadSpec(t *testing.T) *openapi3.T {
 	t.Helper()
 	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
 	if err != nil {
 		t.Fatalf("load spec: %v", err)
 	}
+	return doc
+}
+
+func newSpecChecker(t *testing.T) specChecker {
+	t.Helper()
+	doc := loadSpec(t)
 	if err := doc.Validate(context.Background()); err != nil {
 		t.Fatalf("spec is not valid OpenAPI: %v", err)
 	}
@@ -57,9 +65,17 @@ func (c specChecker) checkStatus(t *testing.T, router *mux.Router, path string, 
 		t.Fatalf("%s: status %d, want %d; body=%s", path, rec.Code, want, rec.Body.String())
 	}
 
+	c.validate(t, req, rec)
+	return rec
+}
+
+// validate fails the test if the recorded response to req does not match the
+// spec for its route and status.
+func (c specChecker) validate(t *testing.T, req *http.Request, rec *httptest.ResponseRecorder) {
+	t.Helper()
 	route, pathParams, err := c.routes.FindRoute(req)
 	if err != nil {
-		t.Fatalf("%s: route is not in the spec: %v", path, err)
+		t.Fatalf("%s %s: route is not in the spec: %v", req.Method, req.URL.RequestURI(), err)
 	}
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
@@ -73,9 +89,42 @@ func (c specChecker) checkStatus(t *testing.T, router *mux.Router, path string, 
 	}
 	input.SetBodyBytes(rec.Body.Bytes())
 	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
-		t.Errorf("%s: status %d does not match the spec: %v", path, rec.Code, err)
+		t.Errorf("%s %s: status %d does not match the spec: %v", req.Method, req.URL.RequestURI(), rec.Code, err)
 	}
-	return rec
+}
+
+// prodFixture names an anonymized production response in testdata and the
+// schema in api/openapi.yaml that it has to satisfy.
+type prodFixture struct {
+	file   string
+	schema string
+}
+
+// checkProdFixtures validates each production capture against its schema. The
+// contract has to accept exactly what the live frontend receives today, so a
+// field the spec requires but production does not send fails here.
+func checkProdFixtures(t *testing.T, fixtures []prodFixture) {
+	t.Helper()
+	doc := loadSpec(t)
+	for _, f := range fixtures {
+		t.Run(f.file, func(t *testing.T) {
+			schema, ok := doc.Components.Schemas[f.schema]
+			if !ok {
+				t.Fatalf("%s is not in the spec", f.schema)
+			}
+			raw, err := os.ReadFile("testdata/" + f.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded interface{}
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			if err := schema.Value.VisitJSON(decoded); err != nil {
+				t.Errorf("production response does not match %s: %v", f.schema, err)
+			}
+		})
+	}
 }
 
 func TestInvalidRoleFilterMatchesSpec(t *testing.T) {

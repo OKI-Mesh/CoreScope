@@ -1,16 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gorilla/mux"
 )
 
@@ -249,35 +246,12 @@ func TestScopeAuditMatchesSpec(t *testing.T) {
 // /api/scope-audit responses (the audit is cut to 14 of 149 repeaters, covering
 // full, no-scopes and no-flood rows).
 func TestProdScopeFixturesMatchSpec(t *testing.T) {
-	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
-	if err != nil {
-		t.Fatalf("load spec: %v", err)
-	}
-	fixtures := []struct{ file, schema string }{
+	checkProdFixtures(t, []prodFixture{
 		{"scope_stats_1h_prod.json", "ScopeStatsResponse"},
 		{"scope_stats_24h_prod.json", "ScopeStatsResponse"},
 		{"scope_stats_7d_prod.json", "ScopeStatsResponse"},
 		{"scope_audit_1h_prod.json", "ScopeAuditResponse"},
 		{"scope_audit_24h_prod.json", "ScopeAuditResponse"},
 		{"scope_audit_7d_prod.json", "ScopeAuditResponse"},
-	}
-	for _, f := range fixtures {
-		t.Run(f.file, func(t *testing.T) {
-			schema, ok := doc.Components.Schemas[f.schema]
-			if !ok {
-				t.Fatalf("%s is not in the spec", f.schema)
-			}
-			raw, err := os.ReadFile("testdata/" + f.file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var decoded interface{}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode fixture: %v", err)
-			}
-			if err := schema.Value.VisitJSON(decoded); err != nil {
-				t.Errorf("production response does not match %s: %v", f.schema, err)
-			}
-		})
-	}
+	})
 }
