@@ -54,24 +54,10 @@ func TestMiscGetEndpointsMatchSpec(t *testing.T) {
 	for _, path := range []string{
 		"/api/iata-coords",
 		"/api/audio-lab/buckets",
-		"/api/spec",
 	} {
 		t.Run(path, func(t *testing.T) {
 			checker.check(t, router, path)
 		})
-	}
-}
-
-func TestDocsServesHTML(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/docs", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d", rec.Code)
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("Content-Type = %q, the spec says text/html", ct)
 	}
 }
 

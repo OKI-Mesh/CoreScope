@@ -3351,13 +3351,6 @@ func intPtrOrNil(p *int) interface{} {
 	return *p
 }
 
-func floatPtrOrNil(p *float64) interface{} {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
 // resolvePayloadTypeName returns the firmware-standard name for a payload_type.
 func resolvePayloadTypeName(pt *types.PayloadType) string {
 	if pt == nil {

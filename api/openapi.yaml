@@ -1756,22 +1756,18 @@ paths:
   /api/spec:
     get:
       tags: [system]
-      operationId: getRuntimeSpec
-      summary: The OpenAPI document built by the running server
-      description: >-
-        The older spec the server assembles from its routes at request time.
-        It is still served until every route is described in this document.
+      operationId: getOpenApiSpec
+      summary: This OpenAPI document
+      description: The committed api/openapi.yaml, served exactly as embedded in the binary.
       responses:
         "200":
-          description: An OpenAPI document. Its shape is the OpenAPI schema itself, not described here.
+          description: The OpenAPI document as YAML.
           headers:
             Access-Control-Allow-Origin:
               schema: { type: string }
           content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
+            application/yaml:
+              schema: { type: string }
   /api/docs:
     get:
       tags: [system]

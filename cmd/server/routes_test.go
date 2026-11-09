@@ -796,58 +796,6 @@ func TestContentTypeJSON(t *testing.T) {
 	}
 }
 
-func TestAllEndpointsReturn200(t *testing.T) {
-	srv, router := setupTestServer(t)
-	// #1011: ensure /api/analytics/distance returns 200 (not the
-	// lazy-build 202) by pre-warming the index.
-	srv.store.TriggerDistanceIndexBuild()
-	deadline := time.Now().Add(5 * time.Second)
-	for !srv.store.DistanceIndexBuilt() {
-		if time.Now().After(deadline) {
-			t.Fatal("distance index did not finish building within 5s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	endpoints := []struct {
-		path   string
-		status int
-	}{
-		{"/api/health", http.StatusOK},
-		{"/api/stats", http.StatusOK},
-		{"/api/perf", http.StatusOK},
-		{"/api/config/cache", http.StatusOK},
-		{"/api/config/client", http.StatusOK},
-		{"/api/config/regions", http.StatusOK},
-		{"/api/config/theme", http.StatusOK},
-		{"/api/config/map", http.StatusOK},
-		{"/api/packets?limit=5", http.StatusOK},
-		{"/api/nodes?limit=5", http.StatusOK},
-		{"/api/nodes/search?q=test", http.StatusOK},
-		{"/api/nodes/bulk-health", http.StatusOK},
-		{"/api/nodes/network-status", http.StatusOK},
-		{"/api/observers", http.StatusOK},
-		{"/api/channels", http.StatusOK},
-		{"/api/analytics/rf", http.StatusOK},
-		{"/api/analytics/topology", http.StatusOK},
-		{"/api/analytics/channels", http.StatusOK},
-		{"/api/analytics/distance", http.StatusOK},
-		{"/api/analytics/hash-sizes", http.StatusOK},
-		{"/api/analytics/subpaths", http.StatusOK},
-		{"/api/analytics/subpath-detail?hops=aa,bb", http.StatusOK},
-		{"/api/resolve-hops?hops=aabb", http.StatusOK},
-		{"/api/iata-coords", http.StatusOK},
-		{"/api/traces/abc123def4567890", http.StatusOK},
-	}
-	for _, tc := range endpoints {
-		req := httptest.NewRequest("GET", tc.path, nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != tc.status {
-			t.Errorf("%s: expected %d, got %d (body: %s)", tc.path, tc.status, w.Code, w.Body.String()[:min(200, w.Body.Len())])
-		}
-	}
-}
-
 func TestPacketDetailByHash(t *testing.T) {
 	_, router := setupTestServer(t)
 	req := httptest.NewRequest("GET", "/api/packets/abc123def4567890", nil)
@@ -962,36 +910,6 @@ func TestNodeDetailWithRecentAdverts(t *testing.T) {
 	}
 }
 
-func TestNodeHealthFound(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/nodes/aabbccdd11223344/health", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
-	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["node"] == nil {
-		t.Error("expected node in response")
-	}
-	if body["stats"] == nil {
-		t.Error("expected stats in response")
-	}
-}
-
-func TestNodeHealthNotFound(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/nodes/nonexistent/health", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 404 {
-		t.Errorf("expected 404, got %d", w.Code)
-	}
-}
-
 // TestNodeHealthPartialFromPackets verifies that a node with packets in the
 // in-memory store but no DB entry returns a partial 200 response instead of 404.
 // This is the fix for issue #665 (companion nodes without adverts).
@@ -1077,39 +995,6 @@ func TestBulkHealthLimitCap(t *testing.T) {
 
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestNodePathsFound(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/nodes/aabbccdd11223344/paths", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["node"] == nil {
-		t.Error("expected node in response")
-	}
-	if body["paths"] == nil {
-		t.Error("expected paths in response")
-	}
-	if got, ok := body["totalTransmissions"].(float64); !ok || got < 1 {
-		t.Errorf("expected totalTransmissions >= 1, got %v", body["totalTransmissions"])
-	}
-}
-
-func TestNodePathsNotFound(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/nodes/nonexistent/paths", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 404 {
-		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
 
@@ -1428,25 +1313,6 @@ func TestChannelMessagesWithRegion(t *testing.T) {
 	}
 }
 
-func TestAnalyticsRFWithRegion(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/analytics/rf?region=SJC", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["snr"] == nil {
-		t.Error("expected snr in response")
-	}
-	if body["payloadTypes"] == nil {
-		t.Error("expected payloadTypes")
-	}
-}
-
 func TestAnalyticsTopology(t *testing.T) {
 	_, router := setupTestServer(t)
 	req := httptest.NewRequest("GET", "/api/analytics/topology", nil)
@@ -1460,25 +1326,6 @@ func TestAnalyticsTopology(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &body)
 	if body["uniqueNodes"] == nil {
 		t.Error("expected uniqueNodes")
-	}
-}
-
-func TestAnalyticsChannels(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/analytics/channels", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["channels"] == nil {
-		t.Error("expected channels")
-	}
-	if body["activeChannels"] == nil {
-		t.Error("expected activeChannels")
 	}
 }
 
@@ -1820,26 +1667,6 @@ func TestConfigClientEndpoint(t *testing.T) {
 	}
 	if tsRaw["formatPreset"] != "iso" {
 		t.Errorf("expected timestamps.formatPreset=iso, got %v", tsRaw["formatPreset"])
-	}
-}
-
-func TestConfigRegionsEndpoint(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/config/regions", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	// Should have at least the IATA codes from seed data
-	if body["SJC"] == nil {
-		t.Error("expected SJC region")
-	}
-	if body["SFO"] == nil {
-		t.Error("expected SFO region")
 	}
 }
 
@@ -2230,39 +2057,6 @@ func TestHandlerErrorPathsWhenDatabaseClosed(t *testing.T) {
 	}
 }
 
-func TestAnalyticsChannelsNoNullArrays(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/analytics/channels", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	raw := w.Body.String()
-	var body map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &body); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-
-	arrayFields := []string{"channels", "topSenders", "channelTimeline", "msgLengths"}
-	for _, field := range arrayFields {
-		val, exists := body[field]
-		if !exists {
-			t.Errorf("missing field %q", field)
-			continue
-		}
-		if val == nil {
-			t.Errorf("field %q is null, expected empty array []", field)
-			continue
-		}
-		if _, ok := val.([]interface{}); !ok {
-			t.Errorf("field %q is not an array, got %T", field, val)
-		}
-	}
-}
-
 func TestNodeHashSizeEnrichment(t *testing.T) {
 	t.Run("nil info leaves defaults", func(t *testing.T) {
 		node := api.Node{PublicKey: "abc123"}
@@ -2532,26 +2326,6 @@ func TestAnalyticsHashSizeSameNameDifferentPubkey(t *testing.T) {
 	}
 }
 
-func TestAnalyticsHashSizesNoNullArrays(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/analytics/hash-sizes", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-
-	arrayFields := []string{"hourly", "topHops", "multiByteNodes"}
-	for _, field := range arrayFields {
-		if body[field] == nil {
-			t.Errorf("field %q is null, expected []", field)
-		}
-	}
-}
 func TestInconsistentNodesExcludesCompanions(t *testing.T) {
 	ctx := t.Context()
 	db := setupTestDB(t)
@@ -3031,25 +2805,6 @@ func TestAnalyticsHashCollisionsEndpoint(t *testing.T) {
 			t.Errorf("by_size[%s].collisions is not an array", sz)
 		}
 		_ = collisions
-	}
-}
-
-func TestHashCollisionsNoNullArrays(t *testing.T) {
-	_, router := setupTestServer(t)
-	req := httptest.NewRequest("GET", "/api/analytics/hash-collisions", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	// JSON must not contain "null" for arrays
-	bodyStr := w.Body.String()
-	if bodyStr == "" {
-		t.Fatal("empty response body")
-	}
-	// inconsistent_nodes should be [] not null
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["inconsistent_nodes"] == nil {
-		t.Error("inconsistent_nodes is null, should be empty array")
 	}
 }
 

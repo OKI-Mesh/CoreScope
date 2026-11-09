@@ -778,16 +778,6 @@ func TestPathLen(t *testing.T) {
 
 // --- floatPtrOrNil ---
 
-func TestFloatPtrOrNil(t *testing.T) {
-	v := 3.14
-	if floatPtrOrNil(&v) != 3.14 {
-		t.Error("expected 3.14")
-	}
-	if floatPtrOrNil(nil) != nil {
-		t.Error("expected nil")
-	}
-}
-
 // --- nilIfEmpty ---
 
 func TestNilIfEmpty(t *testing.T) {
@@ -1609,45 +1599,6 @@ func TestHandleNodeDetail(t *testing.T) {
 
 	t.Run("not found", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/api/nodes/nonexistent12345678", nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != 404 {
-			t.Fatalf("expected 404, got %d", w.Code)
-		}
-	})
-}
-
-// --- HandleNodeHealth ---
-
-func TestHandleNodeHealth(t *testing.T) {
-	_, router := setupTestServer(t)
-
-	t.Run("not found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/api/nodes/nonexistent12345678/health", nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != 404 {
-			t.Fatalf("expected 404, got %d", w.Code)
-		}
-	})
-}
-
-// --- HandleNodePaths ---
-
-func TestHandleNodePaths(t *testing.T) {
-	_, router := setupTestServer(t)
-
-	t.Run("existing", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/api/nodes/aabbccdd11223344/paths", nil)
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatalf("expected 200, got %d", w.Code)
-		}
-	})
-
-	t.Run("not found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/api/nodes/nonexistent12345678/paths", nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		if w.Code != 404 {

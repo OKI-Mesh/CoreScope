@@ -101,7 +101,7 @@ type Server struct {
 	// rather than once per request. Lives in scope_audit.go.
 	scopes scopesState
 
-	// Router reference for OpenAPI spec generation
+	// Router the routes are registered on; the blacklist tests serve requests through it.
 	router *mux.Router
 
 	// Cached default (no-filter) /api/observers response, served from an
