@@ -224,18 +224,6 @@ func NewServer(db *database.DB, cfg *Config, hub *Hub) *Server {
 
 const memStatsTTL = 5 * time.Second
 
-func mapInt(v interface{}) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int32:
-		return int(n), true
-	case int64:
-		return int(n), true
-	}
-	return 0, false
-}
-
 // getMemStats returns cached runtime.MemStats, refreshing at most every 5 seconds.
 // runtime.ReadMemStats() stops the world; caching prevents per-request GC pauses.
 func (s *Server) getMemStats() runtime.MemStats {
@@ -349,10 +337,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.Handle("/api/dropped-packets", s.requireAPIKey(http.HandlerFunc(s.handleDroppedPackets))).Methods("GET")
 
 	// Packet endpoints
-	r.HandleFunc("/api/packets/observations", s.handleBatchObservations).Methods("POST")
-	r.HandleFunc("/api/packets/timestamps", s.handlePacketTimestamps).Methods("GET")
-	r.HandleFunc("/api/packets/{id}", s.handlePacketDetail).Methods("GET")
-	r.HandleFunc("/api/packets", s.handlePackets).Methods("GET")
+	s.registerPacketRoutes(r)
 
 	// Decode endpoint
 	r.HandleFunc("/api/decode", s.handleDecode).Methods("POST")
@@ -1095,116 +1080,6 @@ func splitObserverIDs(raw string) []string {
 	return out
 }
 
-// --- Packet Handlers ---
-
-func (s *Server) handlePackets(w http.ResponseWriter, r *http.Request) {
-	qs := r.URL.Query()
-	since, err := parsePacketTimeBound(r.URL.Query().Get("since"))
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	until, err := parsePacketTimeBound(r.URL.Query().Get("until"))
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	lim := queryLimit(r, 50, s.cfg.ListLimits.PacketsMax)
-	offset := queryInt(r, "offset", 0)
-
-	// Multi-node filter: comma-separated pubkeys (Node.js parity)
-	if nodesParam := qs.Get("nodes"); nodesParam != "" {
-		var cleaned []string
-		for _, pk := range strings.Split(nodesParam, ",") {
-			if pk = strings.TrimSpace(pk); pk != "" {
-				cleaned = append(cleaned, pk)
-			}
-		}
-		order := "DESC"
-		if qs.Get("order") == "asc" {
-			order = "ASC"
-		}
-		result, err := s.store.QueryMultiNodePackets(r.Context(), cleaned, lim, offset, order, since, until)
-		if err != nil {
-			writeError(w, 500, err.Error())
-			return
-		}
-		result.Limit = lim
-		result.Offset = offset
-		writeJSON(w, result)
-		return
-	}
-
-	q := database.PacketQuery{
-		Limit:              lim,
-		Offset:             offset,
-		Hash:               qs.Get("hash"),
-		Region:             qs.Get("region"),
-		Node:               qs.Get("node"),
-		Area:               qs.Get("area"),
-		Observers:          splitObserverIDs(qs.Get("observer")),
-		Channel:            qs.Get("channel"),
-		ChannelEncrypted:   qs.Get("encrypted") == "true",
-		Order:              "DESC",
-		ExpandObservations: qs.Get("expand") == "observations",
-	}
-
-	if !since.IsZero() {
-		q.ObsSince = &since
-	}
-	if !until.IsZero() {
-		q.ObsUntil = &until
-	}
-	if qs.Get("order") == "asc" {
-		q.Order = "ASC"
-	}
-	if v := qs.Get("type"); v != "" {
-		t, _ := strconv.Atoi(v)
-		q.Type = &t
-	}
-	if v := qs.Get("route"); v != "" {
-		t, _ := strconv.Atoi(v)
-		q.Route = &t
-	}
-
-	if qs.Get("groupByHash") == "true" {
-		result, err := s.store.QueryGroupedPackets(r.Context(), q)
-		if err != nil {
-			writeError(w, 500, err.Error())
-			return
-		}
-		result.Limit = q.Limit
-		result.Offset = q.Offset
-		writeJSON(w, result)
-		return
-	}
-
-	result, err := s.store.QueryPackets(r.Context(), q)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	result.Limit = q.Limit
-	result.Offset = q.Offset
-	writeJSON(w, result)
-}
-
-func (s *Server) handlePacketTimestamps(w http.ResponseWriter, r *http.Request) {
-	raw := r.URL.Query().Get("since")
-	if raw == "" {
-		writeError(w, 400, "since required")
-		return
-	}
-	since, err := parsePacketTimeBound(raw)
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	writeJSON(w, s.store.GetTimestamps(since))
-}
-
-var hashPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
-
 // muxBraceParam matches {param} in gorilla/mux route templates for normalization.
 var muxBraceParam = regexp.MustCompile(`\{([^}]+)\}`)
 
@@ -1215,155 +1090,6 @@ var perfHexFallback = regexp.MustCompile(`[0-9a-f]{8,}`)
 // POST /api/packets/observations with JSON body: {"hashes": ["abc123", "def456", ...]}
 // Response: {"results": {"abc123": [...observations...], "def456": [...], ...}}
 // Limited to 200 hashes per request to prevent abuse.
-func (s *Server) handleBatchObservations(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var body struct {
-		Hashes []string `json:"hashes"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, 400, "invalid JSON body")
-		return
-	}
-	const maxHashes = 200
-	if len(body.Hashes) > maxHashes {
-		writeError(w, 400, fmt.Sprintf("too many hashes (max %d)", maxHashes))
-		return
-	}
-	if len(body.Hashes) == 0 {
-		writeJSON(w, map[string]interface{}{"results": map[string]interface{}{}})
-		return
-	}
-
-	results := make(map[string][]ObservationResp, len(body.Hashes))
-	if s.store != nil {
-		for _, hash := range body.Hashes {
-			obs, _ := s.store.GetObservationsForHash(ctx, hash)
-			results[hash] = mapSliceToObservations(obs)
-		}
-	}
-	writeJSON(w, map[string]interface{}{"results": results})
-}
-
-func (s *Server) handlePacketDetail(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	param := mux.Vars(r)["id"]
-	isHash := hashPattern.MatchString(strings.ToLower(param))
-	id, idErr := strconv.Atoi(param)
-
-	var (
-		packet map[string]interface{}
-		fromDB bool
-		err    error
-	)
-	if isHash {
-		packet, err = s.store.GetPacketByHash(ctx, param)
-	}
-	if err == nil && packet == nil && idErr == nil {
-		packet, err = s.store.GetTransmissionByID(ctx, id)
-		if err == nil && packet == nil {
-			packet, err = s.store.GetPacketByID(ctx, id)
-		}
-	}
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-
-	// DB fallback: the in-memory store prunes old entries, the database keeps
-	// them. Without this, links from node-detail pages 404 once the packet ages out.
-	if packet == nil {
-		var row *database.Packet
-		if isHash {
-			row, err = s.db.GetPacketByHash(ctx, param)
-			if errors.Is(err, database.ErrNotFound) {
-				row, err = nil, nil
-			}
-		}
-		if err == nil && row == nil && idErr == nil {
-			row, err = s.db.GetPacketByID(ctx, int64(id))
-			if errors.Is(err, database.ErrNotFound) {
-				row, err = nil, nil
-			}
-		}
-		if err != nil {
-			writeError(w, 500, err.Error())
-			return
-		}
-		if row != nil {
-			packet = packetMap(*row)
-			fromDB = true
-		}
-	}
-	if packet == nil {
-		writeError(w, 404, "Not found")
-		return
-	}
-
-	hash, _ := packet["hash"].(string)
-	observations, err := s.store.GetObservationsForHash(ctx, hash)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	if len(observations) == 0 && fromDB && hash != "" {
-		rows, err := s.db.GetObservationsForHash(ctx, hash)
-		if err != nil {
-			writeError(w, 500, err.Error())
-			return
-		}
-		observations = make([]map[string]interface{}, len(rows))
-		for i, o := range rows {
-			observations[i] = observationMap(o)
-		}
-	}
-
-	// (keep the long #1999 comment here, unchanged)
-	canonicalHex, _ := packet["raw_hex"].(string)
-	if hash != "" && len(observations) > 0 {
-		byObsID, err := s.db.ObservationRawHexForHash(ctx, hash)
-		if err != nil {
-			// Non-fatal: the old code returned nil on error and the loop
-			// fell back to the canonical frame. Keep that, but say so.
-			log.Printf("[packets] per-observation raw_hex lookup failed for %.16s: %v", hash, err)
-		}
-		for _, obs := range observations {
-			if id, ok := mapInt(obs["id"]); ok {
-				if hx := byObsID[int64(id)]; hx != "" {
-					obs["raw_hex"] = hx
-					continue
-				}
-			}
-			if existing, ok := obs["raw_hex"].(string); ok && existing != "" {
-				continue
-			}
-			if canonicalHex != "" {
-				obs["raw_hex"] = canonicalHex
-			}
-		}
-	}
-	observationCount := len(observations)
-	if observationCount == 0 {
-		observationCount = 1
-	}
-
-	var pathHops []interface{}
-	if pj, ok := packet["path_json"]; ok && pj != nil {
-		if pjStr, ok := pj.(string); ok && pjStr != "" {
-			json.Unmarshal([]byte(pjStr), &pathHops)
-		}
-	}
-	if pathHops == nil {
-		pathHops = []interface{}{}
-	}
-
-	writeJSON(w, PacketDetailResponse{
-		Packet:           packet,
-		Path:             pathHops,
-		ObservationCount: observationCount,
-		Observations:     mapSliceToObservations(observations),
-	})
-}
-
 func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Hex string `json:"hex"`
@@ -1389,38 +1115,6 @@ func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
 			"payload": decoded.Payload,
 		},
 	})
-}
-
-// observationMap shapes a database observation like the maps the store's
-// enrichObsWithTx produces, so the packet-detail fallback and the store path
-// feed mapSliceToObservations identically.
-func observationMap(o database.Observation) map[string]interface{} {
-	m := map[string]interface{}{
-		"id":              int(o.ID), // must be int: mapSliceToObservations asserts .(int)
-		"transmission_id": int(o.TransmissionID),
-		"observer_id":     strOrNil(o.ObserverID),
-		"observer_name":   strOrNil(o.ObserverName),
-		"observer_iata":   strOrNil(o.ObserverIATA),
-		"direction":       strOrNil(o.Direction),
-		"snr":             floatPtrOrNil(o.SNR),
-		"rssi":            floatPtrOrNil(o.RSSI),
-		"path_json":       hopsJSON(o.HopPrefixes()),
-		"timestamp":       formatTS(o.Timestamp),
-	}
-
-	// resolved_path only when at least one hop resolved, as on the store path.
-	rp := make([]*string, len(o.Path))
-	any := false
-	for i, hop := range o.Path {
-		if hop.ResolvedPubkey != nil && *hop.ResolvedPubkey != "" {
-			rp[i] = hop.ResolvedPubkey
-			any = true
-		}
-	}
-	if any {
-		m["resolved_path"] = rp
-	}
-	return m
 }
 
 // --- Analytics Handlers ---
@@ -2514,31 +2208,6 @@ func lastN(arr []map[string]interface{}, n int) []map[string]interface{} {
 		return arr
 	}
 	return arr[len(arr)-n:]
-}
-
-// mapSliceToObservations converts []map[string]interface{} to []ObservationResp.
-func mapSliceToObservations(maps []map[string]interface{}) []ObservationResp {
-	result := make([]ObservationResp, 0, len(maps))
-	for _, m := range maps {
-		obs := ObservationResp{}
-		if v, ok := m["id"].(int); ok {
-			obs.ID = v
-		}
-		obs.TransmissionID = m["transmission_id"]
-		obs.Hash = m["hash"]
-		obs.ObserverID = m["observer_id"]
-		obs.ObserverName = m["observer_name"]
-		obs.ObserverIATA = m["observer_iata"]
-		obs.SNR = m["snr"]
-		obs.RSSI = m["rssi"]
-		obs.PathJSON = m["path_json"]
-		obs.ResolvedPath = m["resolved_path"]
-		obs.Direction = m["direction"]
-		obs.RawHex = m["raw_hex"]
-		obs.Timestamp = m["timestamp"]
-		result = append(result, obs)
-	}
-	return result
 }
 
 // hopCandidatesToConflicts converts typed candidates to interface slice for JSON.

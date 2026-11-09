@@ -139,15 +139,15 @@ func TestEnrichObsRawHexComesFromTransmission(t *testing.T) {
 		t.Errorf("obs.RawHex should be empty after load, got %q", obs.RawHex)
 	}
 
-	out, err := store.enrichObservations(ctx, []*StoreObs{obs})
+	out, err := store.observationDetails(ctx, []*StoreObs{obs})
 	if err != nil {
-		t.Fatalf("enrichObservations: %v", err)
+		t.Fatalf("observationDetails: %v", err)
 	}
 	if len(out) != 1 {
 		t.Fatalf("expected 1 enriched observation, got %d", len(out))
 	}
-	rh, _ := out[0]["raw_hex"].(string)
+	rh := deref(out[0].RawHex)
 	if rh != txHex {
-		t.Errorf("enrichObservations raw_hex: want parent tx fallback %q, got %q", txHex, rh)
+		t.Errorf("observationDetails raw_hex: want parent tx fallback %q, got %q", txHex, rh)
 	}
 }

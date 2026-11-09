@@ -1392,55 +1392,17 @@ func queryPredates(q database.PacketQuery, oldest time.Time) bool {
 	return false
 }
 
-// packetMap maps a DB row to the same response shape as the in-memory path
-// (txToMapWithRP). Keep the keys in sync with it; TestPacketMapMatchesStoreShape
-// enforces that.
-func packetMap(r database.Packet) map[string]interface{} {
-	// path_json is rebuilt from the hop prefixes of the representative observation.
-	var pathJSON interface{}
-	if r.ObserverPubkey != nil {
-		b, _ := json.Marshal(r.HopPrefixes) // []string cannot fail to marshal
-		pathJSON = string(b)                // "[]" when there are no hops
-	}
-
-	// timestamp: the representative observation's time, falling back to first_seen.
-	ts := formatTS(r.FirstSeen)
-	if r.ObsTimestamp != nil {
-		ts = formatTS(*r.ObsTimestamp)
-	}
-
-	return map[string]interface{}{
-		"id":                r.ID,
-		"hash":              r.Hash,
-		"raw_hex":           r.RawHex,
-		"first_seen":        formatTS(r.FirstSeen),
-		"timestamp":         ts,
-		"route_type":        r.RouteType,
-		"payload_type":      r.PayloadType,
-		"decoded_json":      r.DecodedJSON,
-		"scope_name":        r.ScopeName,
-		"observation_count": r.ObservationCount,
-		"observer_id":       r.ObserverPubkey,
-		"observer_name":     r.ObserverName,
-		"direction":         r.Direction,
-		"snr":               r.SNR,
-		"rssi":              r.RSSI,
-		"score":             r.Score,
-		"path_json":         pathJSON,
-	}
-}
-
-func packetResultFromPackets(packets []database.Packet, total int64) *PacketResult[PacketResponse] {
-	out := make([]PacketResponse, len(packets))
+func packetResultFromPackets(packets []database.Packet, total int64) *api.PacketListResponse {
+	out := make([]api.Packet, len(packets))
 	for i, p := range packets {
-		out[i] = packetResponse(p)
+		out[i] = dbPacket(p)
 	}
-	return &PacketResult[PacketResponse]{Packets: out, Total: int(total)}
+	return &api.PacketListResponse{Packets: out, Total: int(total)}
 }
 
 // QueryPackets returns filtered, paginated packets from memory.
 // QueryPackets returns filtered, paginated packets from memory.
-func (s *PacketStore) QueryPackets(ctx context.Context, q database.PacketQuery) (*PacketResult[PacketResponse], error) {
+func (s *PacketStore) QueryPackets(ctx context.Context, q database.PacketQuery) (*api.PacketListResponse, error) {
 	// SQL fallback: if the query window predates the in-memory window, delegate
 	// to the DB layer which covers the full retention period.
 	s.mu.RLock()
@@ -1481,7 +1443,7 @@ func (s *PacketStore) QueryPackets(ctx context.Context, q database.PacketQuery) 
 	start := q.Offset
 	if start >= total {
 		s.mu.RUnlock()
-		return &PacketResult[PacketResponse]{Packets: []PacketResponse{}, Total: total}, nil
+		return &api.PacketListResponse{Packets: []api.Packet{}, Total: total}, nil
 	}
 	pageSize := q.Limit
 	if start+pageSize > total {
@@ -1509,11 +1471,11 @@ func (s *PacketStore) QueryPackets(ctx context.Context, q database.PacketQuery) 
 	if err != nil {
 		return nil, err
 	}
-	return &PacketResult[PacketResponse]{Packets: packets, Total: total}, nil
+	return &api.PacketListResponse{Packets: packets, Total: total}, nil
 }
 
 // QueryGroupedPackets returns transmissions grouped by hash (already 1:1).
-func (s *PacketStore) QueryGroupedPackets(ctx context.Context, q database.PacketQuery) (*PacketResult[GroupedPacketResponse], error) {
+func (s *PacketStore) QueryGroupedPackets(ctx context.Context, q database.PacketQuery) (*api.GroupedPacketListResponse, error) {
 	atomic.AddInt64(&s.queryCount, 1)
 
 	if q.Limit <= 0 {
@@ -1578,9 +1540,9 @@ func timeKey(t *time.Time) string {
 
 // groupedTxsToPage builds responses only for the requested page of sorted StoreTx pointers.
 // This avoids allocating a response for all 30K+ transmissions when only 50 are needed.
-func groupedTxsToPage(txs []*StoreTx, total, offset, limit int) *PacketResult[GroupedPacketResponse] {
+func groupedTxsToPage(txs []*StoreTx, total, offset, limit int) *api.GroupedPacketListResponse {
 	if offset >= len(txs) {
-		return &PacketResult[GroupedPacketResponse]{Packets: []GroupedPacketResponse{}, Total: total}
+		return &api.GroupedPacketListResponse{Packets: []api.GroupedPacket{}, Total: total}
 	}
 	end := offset + limit
 	if end > len(txs) {
@@ -1588,11 +1550,11 @@ func groupedTxsToPage(txs []*StoreTx, total, offset, limit int) *PacketResult[Gr
 	}
 	page := txs[offset:end]
 
-	packets := make([]GroupedPacketResponse, len(page))
+	packets := make([]api.GroupedPacket, len(page))
 	for i, tx := range page {
-		packets[i] = groupedPacketResponse(tx)
+		packets[i] = groupedPacket(tx)
 	}
-	return &PacketResult[GroupedPacketResponse]{Packets: packets, Total: total}
+	return &api.GroupedPacketListResponse{Packets: packets, Total: total}
 }
 
 // storeTxDistinctIatas (#1189 R2) returns a sorted, deduped list of observer
@@ -2088,7 +2050,7 @@ func pageIDs(page []*StoreTx, expand bool) (txIDs, obsIDs []int) {
 // responsesFor builds the responses for page. The caller must NOT hold s.mu:
 // it takes the read lock to list ids, fetches the resolved paths with no lock
 // held, then takes the read lock again to read the packets.
-func (s *PacketStore) responsesFor(ctx context.Context, page []*StoreTx, expand bool) ([]PacketResponse, error) {
+func (s *PacketStore) responsesFor(ctx context.Context, page []*StoreTx, expand bool) ([]api.Packet, error) {
 	s.mu.RLock()
 	txIDs, obsIDs := pageIDs(page, expand)
 	s.mu.RUnlock()
@@ -2100,17 +2062,18 @@ func (s *PacketStore) responsesFor(ctx context.Context, page []*StoreTx, expand 
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]PacketResponse, len(page))
+	out := make([]api.Packet, len(page))
 	for i, tx := range page {
-		out[i] = txResponseWithRP(tx, paths, expand)
+		out[i] = txPacket(tx, paths, expand)
 	}
 	return out, nil
 }
 
-// txMapByLookup resolves a transmission under s.mu and returns its map. The
-// resolved paths are fetched between two short read-lock phases, so no
-// database read happens under s.mu. find must be called with s.mu held.
-func (s *PacketStore) txMapByLookup(ctx context.Context, find func() *StoreTx) (map[string]interface{}, error) {
+// txPacketByLookup resolves a transmission under s.mu and returns it with its
+// observations. The resolved paths are fetched between two short read-lock
+// phases, so no database read happens under s.mu. find must be called with
+// s.mu held.
+func (s *PacketStore) txPacketByLookup(ctx context.Context, find func() *StoreTx) (*api.Packet, error) {
 	// Phase 1 (lock): find the packet and note which ids need resolved paths.
 	s.mu.RLock()
 	tx := find()
@@ -2132,7 +2095,7 @@ func (s *PacketStore) txMapByLookup(ctx context.Context, find func() *StoreTx) (
 	}
 
 	// Phase 3 (lock): look the packet up again, since it may have been evicted
-	// meanwhile, and build the map. An observation that arrived between the
+	// meanwhile, and build the response. An observation that arrived between the
 	// phases simply has no resolved path in the response.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2140,22 +2103,24 @@ func (s *PacketStore) txMapByLookup(ctx context.Context, find func() *StoreTx) (
 	if tx == nil {
 		return nil, nil
 	}
-	return s.txToMapWithRP(tx, paths, true), nil
+	p := txPacket(tx, paths, true)
+	return &p, nil
 }
 
-// GetTransmissionByID returns a transmission by its DB ID, formatted as a map.
-func (s *PacketStore) GetTransmissionByID(ctx context.Context, id int) (map[string]interface{}, error) {
-	return s.txMapByLookup(ctx, func() *StoreTx { return s.byTxID[id] })
+// GetTransmissionByID returns a transmission by its DB ID, or nil when it is not in memory.
+func (s *PacketStore) GetTransmissionByID(ctx context.Context, id int) (*api.Packet, error) {
+	return s.txPacketByLookup(ctx, func() *StoreTx { return s.byTxID[id] })
 }
 
-// GetPacketByHash returns a transmission by content hash.
-func (s *PacketStore) GetPacketByHash(ctx context.Context, hash string) (map[string]interface{}, error) {
+// GetPacketByHash returns a transmission by content hash, or nil when it is not in memory.
+func (s *PacketStore) GetPacketByHash(ctx context.Context, hash string) (*api.Packet, error) {
 	hash = strings.ToLower(hash)
-	return s.txMapByLookup(ctx, func() *StoreTx { return s.byHash[hash] })
+	return s.txPacketByLookup(ctx, func() *StoreTx { return s.byHash[hash] })
 }
 
-// GetPacketByID returns an observation (enriched with transmission fields) by observation ID.
-func (s *PacketStore) GetPacketByID(ctx context.Context, id int) (map[string]interface{}, error) {
+// GetPacketByID returns an observation (with its transmission's payload fields)
+// by observation ID, or nil when it is not in memory.
+func (s *PacketStore) GetPacketByID(ctx context.Context, id int) (*api.ObservationPacket, error) {
 	// Phase 1 (lock): confirm the observation exists.
 	s.mu.RLock()
 	obs := s.byObsID[id]
@@ -2171,18 +2136,20 @@ func (s *PacketStore) GetPacketByID(ctx context.Context, id int) (map[string]int
 	}
 
 	// Phase 3 (lock): look it up again, since it may have been evicted, and
-	// build the map with the transmission resolved under the same lock.
+	// build the response with the transmission resolved under the same lock.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	obs = s.byObsID[id]
 	if obs == nil {
 		return nil, nil
 	}
-	return s.enrichObsWithTx(obs, s.byTxID[obs.TransmissionID], paths.ByObs[id]), nil
+	p := observationPacket(obs, s.byTxID[obs.TransmissionID], paths.ByObs[id])
+	return &p, nil
 }
 
-// GetObservationsForHash returns all observations for a hash, enriched with transmission fields.
-func (s *PacketStore) GetObservationsForHash(ctx context.Context, hash string) ([]map[string]interface{}, error) {
+// GetObservationsForHash returns all observations for a hash with the packet's
+// hash and frame. It is never nil.
+func (s *PacketStore) GetObservationsForHash(ctx context.Context, hash string) ([]api.ObservationDetail, error) {
 	// Copy the observations under the lock: the ingestor appends to the slice.
 	s.mu.RLock()
 	tx := s.byHash[strings.ToLower(hash)]
@@ -2193,30 +2160,35 @@ func (s *PacketStore) GetObservationsForHash(ctx context.Context, hash string) (
 	s.mu.RUnlock()
 
 	if len(obsList) == 0 {
-		return []map[string]interface{}{}, nil
+		return []api.ObservationDetail{}, nil
 	}
-	return s.enrichObservations(ctx, obsList)
+	return s.observationDetails(ctx, obsList)
 }
 
 // GetTimestamps returns transmission first_seen timestamps after since, in ASC order.
-func (s *PacketStore) GetTimestamps(since time.Time) []string {
+//
+// Production sends these as whole seconds, and the contract follows it. Clients
+// send the last one back as `since`, but first_seen has sub-second precision, so
+// a transmission that arrived in the same second as the last one returned is
+// returned again on the next poll. TODO: send milliseconds in the next release
+// (the comparison below is already at the millisecond).
+func (s *PacketStore) GetTimestamps(since time.Time) []types.WireTimeSeconds {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// The API hands out millisecond timestamps (formatTS) and clients send the
-	// last one back as `since`, but first_seen has microsecond precision in
-	// Postgres. Compare at the millisecond so a transmission whose first_seen is
-	// T+0.4ms (shown to the client as T) is not returned again on every poll.
+	// Compare at the millisecond so a transmission whose first_seen is T+0.4ms
+	// (microsecond precision in Postgres) is not returned again on every poll
+	// by a client that sends back a millisecond timestamp.
 	since = since.Truncate(time.Millisecond)
 
 	// packets sorted oldest-first: scan from tail until we reach items not after since
-	result := []string{}
+	result := []types.WireTimeSeconds{}
 	for i := len(s.packets) - 1; i >= 0; i-- {
 		tx := s.packets[i]
 		if !tx.FirstSeen.Truncate(time.Millisecond).After(since) {
 			break
 		}
-		result = append(result, formatTS(tx.FirstSeen))
+		result = append(result, types.WireTimeSeconds{Time: tx.FirstSeen})
 	}
 	// result is currently newest-first; reverse to return ASC order
 	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
@@ -2227,9 +2199,9 @@ func (s *PacketStore) GetTimestamps(since time.Time) []string {
 
 // QueryMultiNodePackets filters packets matching any of the given pubkeys.
 // QueryMultiNodePackets filters packets matching any of the given pubkeys or node names.
-func (s *PacketStore) QueryMultiNodePackets(ctx context.Context, pubkeys []string, limit, offset int, order string, since, until time.Time) (*PacketResult[PacketResponse], error) {
+func (s *PacketStore) QueryMultiNodePackets(ctx context.Context, pubkeys []string, limit, offset int, order string, since, until time.Time) (*api.PacketListResponse, error) {
 	if len(pubkeys) == 0 {
-		return &PacketResult[PacketResponse]{Packets: []PacketResponse{}}, nil
+		return &api.PacketListResponse{Packets: []api.Packet{}}, nil
 	}
 	if limit <= 0 {
 		limit = 50
@@ -2272,7 +2244,7 @@ func (s *PacketStore) QueryMultiNodePackets(ctx context.Context, pubkeys []strin
 	total := len(filtered)
 	if offset >= total {
 		s.mu.RUnlock()
-		return &PacketResult[PacketResponse]{Packets: []PacketResponse{}, Total: total}, nil
+		return &api.PacketListResponse{Packets: []api.Packet{}, Total: total}, nil
 	}
 	pageSize := limit
 	if offset+pageSize > total {
@@ -2300,22 +2272,22 @@ func (s *PacketStore) QueryMultiNodePackets(ctx context.Context, pubkeys []strin
 	if err != nil {
 		return nil, err
 	}
-	return &PacketResult[PacketResponse]{Packets: packets, Total: total}, nil
+	return &api.PacketListResponse{Packets: packets, Total: total}, nil
 }
 
 // BroadcastPacket is one live-feed message: the packet fields at the top level
 // (live.js reads them there), the same fields nested under "packet" (packets.js
 // reads them there), and the decoded payload.
 type BroadcastPacket struct {
-	PacketResponse
+	LivePacket
 	Decoded map[string]interface{} `json:"decoded"`
-	Packet  PacketResponse         `json:"packet"`
+	Packet  LivePacket             `json:"packet"`
 }
 
 // broadcastPacketResponse is the packet as one observer saw it. rp is the
 // freshly resolved path for that observation (nil when none).
-func broadcastPacketResponse(tx *StoreTx, obs *StoreObs, rp []*string) PacketResponse {
-	return PacketResponse{
+func broadcastPacketResponse(tx *StoreTx, obs *StoreObs, rp []*string) LivePacket {
+	return LivePacket{
 		ID:               tx.ID,
 		RawHex:           optString(tx.RawHex),
 		Hash:             optString(tx.Hash),
@@ -2513,7 +2485,7 @@ func (s *PacketStore) IngestNewFromDB(ctx context.Context, sinceID, limit int) (
 		}
 		for _, obs := range tx.Observations {
 			pkt := broadcastPacketResponse(tx, obs, broadcastRP[obs.ID])
-			result = append(result, BroadcastPacket{PacketResponse: pkt, Decoded: decoded, Packet: pkt})
+			result = append(result, BroadcastPacket{LivePacket: pkt, Decoded: decoded, Packet: pkt})
 		}
 	}
 
@@ -2650,9 +2622,9 @@ func (s *PacketStore) IngestNewObservations(ctx context.Context, sinceObsID int6
 
 		pkt := broadcastPacketResponse(tx, obs, obsRPMap[obs.ID])
 		broadcastMaps = append(broadcastMaps, BroadcastPacket{
-			PacketResponse: pkt,
-			Decoded:        broadcastDecoded(tx),
-			Packet:         pkt,
+			LivePacket: pkt,
+			Decoded:    broadcastDecoded(tx),
+			Packet:     pkt,
 		})
 	}
 
@@ -3221,10 +3193,10 @@ func (s *PacketStore) computeNodeHomeRegions(obsIATA map[string]string) map[stri
 	return out
 }
 
-// enrichObservations builds the enriched maps for obsList. The caller holds no
-// lock: it resolves each transmission under a short read lock, fetches the
-// resolved paths from the database, then builds the maps.
-func (s *PacketStore) enrichObservations(ctx context.Context, obsList []*StoreObs) ([]map[string]interface{}, error) {
+// observationDetails builds the observation responses for obsList. The caller
+// holds no lock: it resolves each transmission under a short read lock, fetches
+// the resolved paths from the database, then builds the responses.
+func (s *PacketStore) observationDetails(ctx context.Context, obsList []*StoreObs) ([]api.ObservationDetail, error) {
 	// Phase 1 (lock): byTxID is written by the ingestor (#134).
 	txs := make([]*StoreTx, len(obsList))
 	obsIDs := make([]int, len(obsList))
@@ -3243,9 +3215,9 @@ func (s *PacketStore) enrichObservations(ctx context.Context, obsList []*StoreOb
 
 	// Phase 3 (no lock): build. Same as the analytics handler (#1481): it
 	// reads fields of the *StoreTx it resolved under the lock.
-	out := make([]map[string]interface{}, len(obsList))
+	out := make([]api.ObservationDetail, len(obsList))
 	for i, o := range obsList {
-		out[i] = s.enrichObsWithTx(o, txs[i], paths.ByObs[o.ID])
+		out[i] = observationDetail(o, txs[i], paths.ByObs[o.ID])
 	}
 	return out, nil
 }
@@ -3301,76 +3273,6 @@ func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx, rp []*string) 
 }
 
 // --- Conversion helpers ---
-
-// txToMap converts a StoreTx to the map shape matching scanTransmissionRow output.
-func txToMap(tx *StoreTx, includeObservations ...bool) map[string]interface{} {
-	m := map[string]interface{}{
-		"id":                tx.ID,
-		"raw_hex":           strOrNil(tx.RawHex),
-		"hash":              strOrNil(tx.Hash),
-		"first_seen":        tx.FirstSeen,
-		"timestamp":         tx.FirstSeen,
-		"route_type":        tx.RouteType,
-		"payload_type":      tx.PayloadType,
-		"decoded_json":      strOrNil(tx.DecodedJSON),
-		"observation_count": tx.ObservationCount,
-		"observer_id":       strOrNil(tx.ObserverID),
-		"observer_name":     strOrNil(tx.ObserverName),
-		"observer_iata":     strOrNil(tx.ObserverIATA),
-		"snr":               floatPtrOrNil(tx.SNR),
-		"rssi":              floatPtrOrNil(tx.RSSI),
-		"path_json":         strOrNil(tx.PathJSON),
-		"direction":         strOrNil(tx.Direction),
-		"scope_name":        strPtrOrNil(tx.ScopeName),
-	}
-	// Include parsed path array to match Node.js output shape
-	if hops := txGetParsedPath(tx); len(hops) > 0 {
-		m["_parsedPath"] = hops
-	} else {
-		m["_parsedPath"] = nil
-	}
-	// Only build observation sub-maps when caller requests them (avoids allocations that get stripped)
-	if len(includeObservations) > 0 && includeObservations[0] {
-		obs := make([]map[string]interface{}, 0, len(tx.Observations))
-		for _, o := range tx.Observations {
-			om := map[string]interface{}{
-				"id":            o.ID,
-				"observer_id":   strOrNil(o.ObserverID),
-				"observer_name": strOrNil(o.ObserverName),
-				"observer_iata": strOrNil(o.ObserverIATA),
-				"snr":           floatPtrOrNil(o.SNR),
-				"rssi":          floatPtrOrNil(o.RSSI),
-				"path_json":     strOrNil(o.PathJSON),
-				"timestamp":     o.Timestamp,
-				"direction":     strOrNil(o.Direction),
-			}
-			obs = append(obs, om)
-		}
-		m["observations"] = obs
-	}
-	return m
-}
-
-// txToMapWithRP is like txToMap but adds resolved_path from paths, which the
-// caller fetched with DB.ResolvedPaths before building. It never queries.
-func (s *PacketStore) txToMapWithRP(tx *StoreTx, paths database.ResolvedPaths, includeObservations ...bool) map[string]interface{} {
-	m := txToMap(tx, includeObservations...)
-	if rp := paths.ByTx[tx.ID]; rp != nil {
-		m["resolved_path"] = rp
-	}
-	if len(includeObservations) > 0 && includeObservations[0] {
-		if obsList, ok := m["observations"].([]map[string]interface{}); ok {
-			for i, o := range tx.Observations {
-				if i < len(obsList) {
-					if obsRP := paths.ByObs[o.ID]; obsRP != nil {
-						obsList[i]["resolved_path"] = obsRP
-					}
-				}
-			}
-		}
-	}
-	return m
-}
 
 func strOrNil(s string) interface{} {
 	if s == "" {

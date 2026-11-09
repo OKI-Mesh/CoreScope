@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
@@ -14,37 +15,35 @@ import (
 // `pkt.scope_name != null`, distinguishing three states that transmissions.scope_name
 // encodes: SQL NULL (not transport-scoped, row hidden), "" (transport-scoped but the
 // region did not match a configured key → "unknown scope") and "#name" (matched
-// region). txToMap is the shape /api/packets and /api/packets/{id} serve from the
+// region). txPacket is the shape /api/packets and /api/packets/{id} serve from the
 // in-memory store, so it must carry all three states through.
 
-func TestTxToMapScopeNameMatchedRegion(t *testing.T) {
+func TestTxPacketScopeNameMatchedRegion(t *testing.T) {
 	scope := "#belgium"
-	m := txToMap(&StoreTx{ID: 1, Hash: "aa", ScopeName: &scope})
-	if m["scope_name"] != "#belgium" {
-		t.Errorf("scope_name = %#v, want %q", m["scope_name"], "#belgium")
+	p := txPacket(&StoreTx{ID: 1, Hash: "aa", ScopeName: &scope}, database.ResolvedPaths{}, false)
+	if p.ScopeName == nil || *p.ScopeName != "#belgium" {
+		t.Errorf("scope_name = %#v, want %q", p.ScopeName, "#belgium")
 	}
 }
 
-func TestTxToMapScopeNameUnknownScope(t *testing.T) {
+func TestTxPacketScopeNameUnknownScope(t *testing.T) {
 	scope := ""
-	m := txToMap(&StoreTx{ID: 1, Hash: "aa", ScopeName: &scope})
-	v, ok := m["scope_name"]
-	if !ok {
-		t.Fatal("scope_name key missing for a transport-scoped packet with an unmatched region")
+	p := txPacket(&StoreTx{ID: 1, Hash: "aa", ScopeName: &scope}, database.ResolvedPaths{}, false)
+	if p.ScopeName == nil {
+		t.Fatal("scope_name missing for a transport-scoped packet with an unmatched region")
 	}
-	if v != "" {
-		t.Errorf("scope_name = %#v, want %q (frontend renders this as 'unknown scope')", v, "")
+	if *p.ScopeName != "" {
+		t.Errorf("scope_name = %#v, want %q (frontend renders this as 'unknown scope')", *p.ScopeName, "")
 	}
 }
 
-func TestTxToMapScopeNameNotTransportScoped(t *testing.T) {
-	m := txToMap(&StoreTx{ID: 1, Hash: "aa", ScopeName: nil})
-	if m["scope_name"] != nil {
-		t.Errorf("scope_name = %#v, want nil for a non-transport-scoped packet", m["scope_name"])
+func TestTxPacketScopeNameNotTransportScoped(t *testing.T) {
+	p := txPacket(&StoreTx{ID: 1, Hash: "aa", ScopeName: nil}, database.ResolvedPaths{}, false)
+	if p.ScopeName != nil {
+		t.Errorf("scope_name = %#v, want nil for a non-transport-scoped packet", p.ScopeName)
 	}
-	// A typed nil *string in the map would marshal as null but compare non-nil in
-	// Go; assert the JSON the browser actually receives.
-	b, err := json.Marshal(m)
+	// Assert the JSON the browser actually receives: the key is present and null.
+	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -52,15 +51,16 @@ func TestTxToMapScopeNameNotTransportScoped(t *testing.T) {
 	if err := json.Unmarshal(b, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded["scope_name"] != nil {
-		t.Errorf("JSON scope_name = %#v, want null", decoded["scope_name"])
+	v, present := decoded["scope_name"]
+	if !present || v != nil {
+		t.Errorf("JSON scope_name = %#v (present %v), want null", v, present)
 	}
 }
 
 // TestPacketDetailExposesScopeName is the end-to-end guard: the packet-detail
 // endpoint is served from the in-memory store, so scope_name must survive the
-// SQL scan (nullStrPtr) and the map conversion (txToMap) with all three states
-// intact. Before this test, txToMap dropped the field entirely and the Scope row
+// SQL scan (nullStrPtr) and the response conversion (txPacket) with all three states
+// intact. Before this test, the conversion dropped the field entirely and the Scope row
 // only ever rendered for packets old enough to fall through to the DB.
 func TestPacketDetailExposesScopeName(t *testing.T) {
 	ctx := t.Context()

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
@@ -30,7 +31,7 @@ func newPacketStoreForTest(t testing.TB, db *database.DB) *PacketStore {
 	return store
 }
 
-func mustQueryPackets(t *testing.T, store *PacketStore, ctx context.Context, query database.PacketQuery) *PacketResult[PacketResponse] {
+func mustQueryPackets(t *testing.T, store *PacketStore, ctx context.Context, query database.PacketQuery) *api.PacketListResponse {
 	t.Helper()
 	result, err := store.QueryPackets(ctx, query)
 	if err != nil {
@@ -39,7 +40,7 @@ func mustQueryPackets(t *testing.T, store *PacketStore, ctx context.Context, que
 	return result
 }
 
-func mustQueryMultiNodePackets(t *testing.T, store *PacketStore, ctx context.Context, pubkeys []string, limit, offset int, order string, since, until time.Time) *PacketResult[PacketResponse] {
+func mustQueryMultiNodePackets(t *testing.T, store *PacketStore, ctx context.Context, pubkeys []string, limit, offset int, order string, since, until time.Time) *api.PacketListResponse {
 	t.Helper()
 	result, err := store.QueryMultiNodePackets(ctx, pubkeys, limit, offset, order, since, until)
 	if err != nil {
@@ -48,7 +49,7 @@ func mustQueryMultiNodePackets(t *testing.T, store *PacketStore, ctx context.Con
 	return result
 }
 
-func mustQueryGroupedPackets(t *testing.T, store *PacketStore, ctx context.Context, query database.PacketQuery) *PacketResult[GroupedPacketResponse] {
+func mustQueryGroupedPackets(t *testing.T, store *PacketStore, ctx context.Context, query database.PacketQuery) *api.GroupedPacketListResponse {
 	t.Helper()
 	result, err := store.QueryGroupedPackets(ctx, query)
 	if err != nil {
@@ -66,7 +67,7 @@ func mustIngestNewFromDB(t *testing.T, store *PacketStore, ctx context.Context, 
 	return packets, maxID
 }
 
-func mustGetPacketByHash(t *testing.T, store *PacketStore, ctx context.Context, hash string) map[string]interface{} {
+func mustGetPacketByHash(t *testing.T, store *PacketStore, ctx context.Context, hash string) *api.Packet {
 	t.Helper()
 	packet, err := store.GetPacketByHash(ctx, hash)
 	if err != nil {
@@ -75,7 +76,7 @@ func mustGetPacketByHash(t *testing.T, store *PacketStore, ctx context.Context, 
 	return packet
 }
 
-func mustGetTransmissionByID(t *testing.T, store *PacketStore, ctx context.Context, id int) map[string]interface{} {
+func mustGetTransmissionByID(t *testing.T, store *PacketStore, ctx context.Context, id int) *api.Packet {
 	t.Helper()
 	packet, err := store.GetTransmissionByID(ctx, id)
 	if err != nil {
@@ -84,7 +85,7 @@ func mustGetTransmissionByID(t *testing.T, store *PacketStore, ctx context.Conte
 	return packet
 }
 
-func mustGetPacketByID(t *testing.T, store *PacketStore, ctx context.Context, id int) map[string]interface{} {
+func mustGetPacketByID(t *testing.T, store *PacketStore, ctx context.Context, id int) *api.ObservationPacket {
 	t.Helper()
 	packet, err := store.GetPacketByID(ctx, id)
 	if err != nil {
@@ -93,7 +94,7 @@ func mustGetPacketByID(t *testing.T, store *PacketStore, ctx context.Context, id
 	return packet
 }
 
-func mustGetObservationsForHash(t *testing.T, store *PacketStore, ctx context.Context, hash string) []map[string]interface{} {
+func mustGetObservationsForHash(t *testing.T, store *PacketStore, ctx context.Context, hash string) []api.ObservationDetail {
 	t.Helper()
 	observations, err := store.GetObservationsForHash(ctx, hash)
 	if err != nil {
@@ -1559,11 +1560,11 @@ func TestEnrichObs(t *testing.T) {
 		t.Skip("no observations loaded")
 	}
 
-	enriched, err := store.enrichObservations(ctx, []*StoreObs{obs})
+	enriched, err := store.observationDetails(ctx, []*StoreObs{obs})
 	if err != nil {
-		t.Fatalf("enrichObservations(): %v", err)
+		t.Fatalf("observationDetails(): %v", err)
 	}
-	if len(enriched) != 1 || enriched[0]["observer_id"] == nil {
+	if len(enriched) != 1 || enriched[0].ObserverId == nil {
 		t.Error("expected observer_id")
 	}
 }
@@ -1746,9 +1747,9 @@ func TestHandleAudioLabBuckets(t *testing.T) {
 	}
 }
 
-// --- txToMap ---
+// --- txPacket ---
 
-func TestTxToMap(t *testing.T) {
+func TestTxPacket(t *testing.T) {
 	snr := 10.5
 	rssi := -90.0
 	pt := types.PayloadType(4)
@@ -1769,19 +1770,19 @@ func TestTxToMap(t *testing.T) {
 		PathJSON:         `["aa"]`,
 		Direction:        "RX",
 	}
-	m := txToMap(tx)
-	if m["id"] != 1 {
+	p := txPacket(tx, database.ResolvedPaths{}, false)
+	if p.Id != 1 {
 		t.Error("expected id 1")
 	}
-	if m["hash"] != "abc123" {
+	if p.Hash == nil || *p.Hash != "abc123" {
 		t.Error("expected hash abc123")
 	}
-	if m["snr"] != 10.5 {
+	if p.Snr == nil || *p.Snr != 10.5 {
 		t.Error("expected snr 10.5")
 	}
 }
 
-func TestTxToMapLazyObservations(t *testing.T) {
+func TestTxPacketLazyObservations(t *testing.T) {
 	snr := 10.5
 	rssi := -90.0
 	tx := &StoreTx{
@@ -1793,33 +1794,23 @@ func TestTxToMapLazyObservations(t *testing.T) {
 		},
 	}
 
-	// Without flag: no observations key
-	m := txToMap(tx)
-	if _, ok := m["observations"]; ok {
-		t.Error("txToMap without includeObservations should not include observations key")
+	// Not requested: no observations
+	p := txPacket(tx, database.ResolvedPaths{}, false)
+	if p.Observations != nil {
+		t.Error("txPacket without includeObservations should not include observations")
 	}
 
-	// With false: no observations key
-	m = txToMap(tx, false)
-	if _, ok := m["observations"]; ok {
-		t.Error("txToMap(tx, false) should not include observations key")
+	// Requested: observations included
+	p = txPacket(tx, database.ResolvedPaths{}, true)
+	if p.Observations == nil {
+		t.Fatal("txPacket with includeObservations should include observations")
 	}
-
-	// With true: observations included
-	m = txToMap(tx, true)
-	obs, ok := m["observations"]
-	if !ok {
-		t.Fatal("txToMap(tx, true) should include observations key")
-	}
-	obsList, ok := obs.([]map[string]interface{})
-	if !ok {
-		t.Fatal("observations should be []map[string]interface{}")
-	}
+	obsList := *p.Observations
 	if len(obsList) != 2 {
 		t.Errorf("expected 2 observations, got %d", len(obsList))
 	}
-	if obsList[0]["observer_id"] != "obs1" {
-		t.Errorf("expected observer_id obs1, got %v", obsList[0]["observer_id"])
+	if obsList[0].ObserverId == nil || *obsList[0].ObserverId != "obs1" {
+		t.Errorf("expected observer_id obs1, got %v", obsList[0].ObserverId)
 	}
 }
 
@@ -2825,8 +2816,8 @@ func TestStoreGetPacketByHash(t *testing.T) {
 	if pkt == nil {
 		t.Fatal("expected packet")
 	}
-	if pkt["hash"] != "abc123def4567890" {
-		t.Errorf("wrong hash: %v", pkt["hash"])
+	if pkt.Hash == nil || *pkt.Hash != "abc123def4567890" {
+		t.Errorf("wrong hash: %v", pkt.Hash)
 	}
 
 	t.Run("not found", func(t *testing.T) {

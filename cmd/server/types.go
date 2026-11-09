@@ -333,83 +333,6 @@ type GoRuntimeStats struct {
 	NumCPU       int     `json:"numCPU"`
 }
 
-// ─── Packets ───────────────────────────────────────────────────────────────────
-
-type TransmissionResp struct {
-	ID               int               `json:"id"`
-	RawHex           interface{}       `json:"raw_hex"`
-	Hash             string            `json:"hash"`
-	FirstSeen        string            `json:"first_seen"`
-	Timestamp        string            `json:"timestamp"`
-	RouteType        interface{}       `json:"route_type"`
-	PayloadType      interface{}       `json:"payload_type"`
-	PayloadVersion   interface{}       `json:"payload_version,omitempty"`
-	DecodedJSON      interface{}       `json:"decoded_json"`
-	ObservationCount int               `json:"observation_count"`
-	ObserverID       interface{}       `json:"observer_id"`
-	ObserverName     interface{}       `json:"observer_name"`
-	ObserverIATA     interface{}       `json:"observer_iata"`
-	SNR              interface{}       `json:"snr"`
-	RSSI             interface{}       `json:"rssi"`
-	PathJSON         interface{}       `json:"path_json"`
-	Direction        interface{}       `json:"direction"`
-	Score            interface{}       `json:"score,omitempty"`
-	Observations     []ObservationResp `json:"observations,omitempty"`
-}
-
-type ObservationResp struct {
-	ID             int         `json:"id"`
-	TransmissionID interface{} `json:"transmission_id,omitempty"`
-	Hash           interface{} `json:"hash,omitempty"`
-	ObserverID     interface{} `json:"observer_id"`
-	ObserverName   interface{} `json:"observer_name"`
-	ObserverIATA   interface{} `json:"observer_iata"`
-	SNR            interface{} `json:"snr"`
-	RSSI           interface{} `json:"rssi"`
-	PathJSON       interface{} `json:"path_json"`
-	ResolvedPath   interface{} `json:"resolved_path,omitempty"`
-	Direction      interface{} `json:"direction,omitempty"`
-	RawHex         interface{} `json:"raw_hex,omitempty"`
-	Timestamp      interface{} `json:"timestamp"`
-}
-
-type GroupedPacketResp struct {
-	Hash             string      `json:"hash"`
-	FirstSeen        string      `json:"first_seen"`
-	Count            int         `json:"count"`
-	ObserverCount    int         `json:"observer_count"`
-	Latest           string      `json:"latest"`
-	ObserverID       interface{} `json:"observer_id"`
-	ObserverName     interface{} `json:"observer_name"`
-	ObserverIATA     interface{} `json:"observer_iata"`
-	PathJSON         interface{} `json:"path_json"`
-	PayloadType      int         `json:"payload_type"`
-	RouteType        int         `json:"route_type"`
-	RawHex           string      `json:"raw_hex"`
-	DecodedJSON      interface{} `json:"decoded_json"`
-	ObservationCount int         `json:"observation_count"`
-	SNR              interface{} `json:"snr"`
-	RSSI             interface{} `json:"rssi"`
-}
-
-type PacketListResponse struct {
-	Packets []TransmissionResp `json:"packets"`
-	Total   int                `json:"total"`
-	Limit   int                `json:"limit,omitempty"`
-	Offset  int                `json:"offset,omitempty"`
-}
-
-type PacketTimestampsResponse struct {
-	Timestamps []string `json:"timestamps"`
-}
-
-type PacketDetailResponse struct {
-	Packet           interface{}       `json:"packet"`
-	Path             []interface{}     `json:"path"`
-	ObservationCount int               `json:"observation_count"`
-	Observations     []ObservationResp `json:"observations,omitempty"`
-}
-
 type DecodeResponse struct {
 	Decoded interface{} `json:"decoded"`
 }
@@ -418,7 +341,7 @@ type DecodeResponse struct {
 
 // type NodeDetailResponse struct {
 // 	Node          api.Node             `json:"node"`
-// 	RecentAdverts []NodeAdvertResponse `json:"recentAdverts"`
+// 	RecentAdverts []api.NodeAdvert `json:"recentAdverts"`
 // }
 
 type NodeStatsResp struct {

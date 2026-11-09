@@ -17,6 +17,8 @@ tags:
     description: Mesh node operations
   - name: analytics
     description: Network analytics and statistics
+  - name: packets
+    description: Packets, their observations and the live-poll timestamps
 paths:
   /api/nodes/{pubkey}/neighbors:
     get:
@@ -446,6 +448,143 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         "500":
           description: Computation failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/packets:
+    get:
+      tags: [packets]
+      operationId: listPackets
+      summary: List packets
+      description: >-
+        One page of packets, newest first unless order=asc. The body has one of
+        two shapes. By default each entry is a single packet with its
+        representative observation. With groupByHash=true each entry is one
+        row per packet hash with reception counts. Timestamps at packet level
+        are whole seconds. Observation timestamps (expand=observations) are
+        milliseconds. An unparsable since or until is rejected with 400; the
+        build running in production at the time of writing ignored it and
+        returned an empty list with 200.
+      parameters:
+        - { name: limit, in: query, description: "Page size. Default 50, clamped to the configured maximum.", schema: { type: integer, minimum: 1, default: 50 } }
+        - { name: offset, in: query, description: "Rows to skip.", schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: groupByHash, in: query, description: "Set to true for one row per packet hash (the grouped shape).", schema: { type: boolean, default: false } }
+        - { name: expand, in: query, description: "Set to observations to embed each packet's observations. Ignored when groupByHash is true.", schema: { type: string, enum: [observations] } }
+        - { name: order, in: query, description: "asc for oldest first. Any other value means newest first.", schema: { type: string, default: desc } }
+        - { name: type, in: query, description: "Payload type number.", schema: { type: integer } }
+        - { name: route, in: query, description: "Route type number.", schema: { type: integer } }
+        - { name: hash, in: query, description: "Exact packet hash.", schema: { type: string } }
+        - { name: node, in: query, description: "Node name or pubkey; only packets that involve the node.", schema: { type: string } }
+        - { name: nodes, in: query, description: "Comma-separated pubkeys. Takes precedence over every other filter except since, until, order, limit and offset.", schema: { type: string } }
+        - { name: observer, in: query, description: "Comma-separated observer pubkeys.", schema: { type: string } }
+        - { name: region, in: query, description: "Region (observer IATA) filter.", schema: { type: string } }
+        - { name: area, in: query, description: "Area key; filters by the transmitting node's position.", schema: { type: string } }
+        - { name: channel, in: query, description: "Channel hash filter.", schema: { type: string } }
+        - { name: encrypted, in: query, description: "true to match undecryptable channel messages.", schema: { type: boolean } }
+        - { name: since, in: query, description: "Lower bound: RFC 3339 time (any observation in range) or a date (first_seen).", schema: { type: string } }
+        - { name: until, in: query, description: "Upper bound, same formats as since.", schema: { type: string } }
+      responses:
+        "200":
+          description: A page of packets
+          content:
+            application/json:
+              schema:
+                x-go-type: json.RawMessage
+                x-go-type-import: { path: encoding/json }
+                oneOf:
+                  - $ref: '#/components/schemas/PacketListResponse'
+                  - $ref: '#/components/schemas/GroupedPacketListResponse'
+        "400":
+          description: since or until could not be parsed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Query failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/packets/timestamps:
+    get:
+      tags: [packets]
+      operationId: listPacketTimestamps
+      summary: First-seen times of packets newer than a point in time
+      description: >-
+        Oldest first, whole seconds. The live view polls this to learn whether
+        newer packets exist. Because the times are truncated to seconds, a
+        packet that arrived in the same second as since can be returned again.
+        The repository formats these in milliseconds; production sends seconds
+        and this contract follows production until the next release.
+      parameters:
+        - { name: since, in: query, required: true, description: "RFC 3339 time or date.", schema: { type: string } }
+      responses:
+        "200":
+          description: Timestamps, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TimestampSeconds' }
+        "400":
+          description: since is missing or could not be parsed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/packets/observations:
+    post:
+      tags: [packets]
+      operationId: batchPacketObservations
+      summary: Observations for several packet hashes
+      description: At most 200 hashes. A hash with no known packet maps to an empty array.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hashes]
+              properties:
+                hashes:
+                  type: array
+                  maxItems: 200
+                  items: { type: string }
+      responses:
+        "200":
+          description: Observations keyed by the requested hashes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObservationBatchResponse' }
+        "400":
+          description: Body is not valid JSON, or more than 200 hashes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/packets/{id}:
+    get:
+      tags: [packets]
+      operationId: getPacket
+      summary: One packet with all its observations
+      description: >-
+        id is a 16-character packet hash or a number. A number is tried as a
+        transmission id first, then as an observation id. A transmission or
+        hash lookup returns the packet shape; an observation id returns that
+        one observation with the packet's payload fields, whose timestamp is in
+        milliseconds and which has no first_seen or observation_count.
+      parameters:
+        - { name: id, in: path, required: true, description: "Packet hash, transmission id or observation id.", schema: { type: string } }
+      responses:
+        "200":
+          description: The packet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PacketDetailResponse' }
+        "404":
+          description: No such packet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Lookup failed
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -949,9 +1088,6 @@ components:
         path_json: { type: string, nullable: true }
         direction: { type: string, nullable: true }
         scope_name: { type: string, nullable: true }
-        _parsedPath:
-          type: array
-          items: { type: string }
         resolved_path:
           type: array
           items: { type: string, nullable: true }
@@ -1324,3 +1460,192 @@ components:
         links:
           type: array
           items: { $ref: '#/components/schemas/ReachLink' }
+
+    PacketObservation:
+      type: object
+      additionalProperties: false
+      description: One observer's copy of a packet, as nested inside a packet.
+      required: [id, observer_id, observer_name, observer_iata, direction, snr, rssi, path_json, timestamp]
+      properties:
+        id: { type: integer }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string, nullable: true }
+        direction: { type: string, nullable: true }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        path_json: { type: string, nullable: true }
+        timestamp: { $ref: '#/components/schemas/TimestampMillis' }
+        resolved_path:
+          type: array
+          items: { type: string, nullable: true }
+    Packet:
+      description: >-
+        A packet with the display fields of its representative observation.
+        observations is present only when requested (expand=observations) or
+        on the detail route.
+      allOf:
+        - $ref: '#/components/schemas/PacketCore'
+        - type: object
+          required: [_parsedPath]
+          properties:
+            _parsedPath:
+              type: array
+              nullable: true
+              description: Hop prefixes of the representative observation, null when it has none.
+              items: { type: string }
+            observations:
+              type: array
+              items: { $ref: '#/components/schemas/PacketObservation' }
+    GroupedPacket:
+      type: object
+      additionalProperties: false
+      description: One row of the groupByHash=true list.
+      required:
+        [hash, first_seen, latest, count, observer_count, observation_count, observer_id, observer_name, observer_iata, distinct_iatas, path_json, payload_type, route_type, raw_hex, decoded_json, snr, rssi, scope_name]
+      properties:
+        hash: { type: string, nullable: true }
+        first_seen:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        latest:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+        count: { type: integer, description: Same value as observation_count. }
+        observer_count: { type: integer }
+        observation_count: { type: integer }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string, nullable: true }
+        distinct_iatas:
+          type: array
+          description: Distinct observer IATA codes across all observations.
+          items: { type: string }
+        path_json: { type: string, nullable: true }
+        payload_type:
+          type: integer
+          nullable: true
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        route_type:
+          type: integer
+          nullable: true
+          x-go-type: types.RouteType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        raw_hex: { type: string, nullable: true }
+        decoded_json: { type: string, nullable: true }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        scope_name: { type: string, nullable: true }
+    PacketListResponse:
+      type: object
+      additionalProperties: false
+      required: [packets, total, limit, offset]
+      properties:
+        packets:
+          type: array
+          items: { $ref: '#/components/schemas/Packet' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    GroupedPacketListResponse:
+      type: object
+      additionalProperties: false
+      required: [packets, total, limit, offset]
+      properties:
+        packets:
+          type: array
+          items: { $ref: '#/components/schemas/GroupedPacket' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    ObservationDetail:
+      type: object
+      additionalProperties: false
+      description: One observation with its packet's hash and the frame it carried.
+      required: [id, observer_id, observer_name, observer_iata, snr, rssi, path_json, timestamp]
+      properties:
+        id: { type: integer }
+        hash: { type: string }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string, nullable: true }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        path_json: { type: string, nullable: true }
+        resolved_path:
+          type: array
+          items: { type: string, nullable: true }
+        direction: { type: string }
+        raw_hex: { type: string }
+        timestamp: { $ref: '#/components/schemas/TimestampMillis' }
+    ObservationPacket:
+      type: object
+      additionalProperties: false
+      description: >-
+        What /api/packets/{id} returns as packet when id is an observation id:
+        the observation with its packet's payload fields. hash, raw_hex,
+        payload_type, route_type and decoded_json are absent when the packet is
+        no longer in memory.
+      required: [id, observer_id, observer_name, observer_iata, direction, snr, rssi, score, path_json, timestamp]
+      properties:
+        id: { type: integer, description: The observation id. }
+        hash: { type: string }
+        raw_hex: { type: string }
+        decoded_json: { type: string }
+        payload_type:
+          type: integer
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        route_type:
+          type: integer
+          x-go-type: types.RouteType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        observer_id: { type: string, nullable: true }
+        observer_name: { type: string, nullable: true }
+        observer_iata: { type: string, nullable: true }
+        direction: { type: string, nullable: true }
+        snr: { type: number, format: double, nullable: true }
+        rssi: { type: number, format: double, nullable: true }
+        score: { type: number, format: double, nullable: true }
+        path_json: { type: string, nullable: true }
+        resolved_path:
+          type: array
+          items: { type: string, nullable: true }
+        timestamp: { $ref: '#/components/schemas/TimestampMillis' }
+    PacketDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [packet, path, observation_count]
+      properties:
+        packet:
+          description: >-
+            Packet when id was a hash or a transmission id, ObservationPacket
+            when it was an observation id. Generated as raw JSON so the models
+            need no union runtime package.
+          x-go-type: json.RawMessage
+          x-go-type-import: { path: encoding/json }
+          oneOf:
+            - $ref: '#/components/schemas/Packet'
+            - $ref: '#/components/schemas/ObservationPacket'
+        path:
+          type: array
+          description: Hop prefixes parsed from the packet's path_json; empty when it has none.
+          items: { type: string }
+        observation_count: { type: integer, description: "Number of observations returned, or 1 when none are known." }
+        observations:
+          type: array
+          description: Omitted when empty.
+          items: { $ref: '#/components/schemas/ObservationDetail' }
+    ObservationBatchResponse:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results:
+          type: object
+          description: Observations keyed by packet hash, exactly as requested.
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/ObservationDetail' }
+            

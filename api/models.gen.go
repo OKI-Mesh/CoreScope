@@ -4,6 +4,8 @@
 package api
 
 import (
+	"encoding/json"
+
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -136,6 +138,21 @@ func (e ListNodesParamsLastHeard) Valid() bool {
 	}
 }
 
+// Defines values for ListPacketsParamsExpand.
+const (
+	Observations ListPacketsParamsExpand = "observations"
+)
+
+// Valid indicates whether the value is a known member of the ListPacketsParamsExpand enum.
+func (e ListPacketsParamsExpand) Valid() bool {
+	switch e {
+	case Observations:
+		return true
+	default:
+		return false
+	}
+}
+
 // BadSample defines model for BadSample.
 type BadSample struct {
 	// AdvertTS The offending advert Unix timestamp.
@@ -262,6 +279,39 @@ type GraphStats struct {
 	RejectedEdgesGeoFar int64 `json:"rejected_edges_geo_far"`
 	TotalEdges          int   `json:"total_edges"`
 	TotalNodes          int   `json:"total_nodes"`
+}
+
+// GroupedPacket One row of the groupByHash=true list.
+type GroupedPacket struct {
+	// Count Same value as observation_count.
+	Count       int     `json:"count"`
+	DecodedJson *string `json:"decoded_json"`
+
+	// DistinctIatas Distinct observer IATA codes across all observations.
+	DistinctIatas    []string           `json:"distinct_iatas"`
+	FirstSeen        *TimestampSeconds  `json:"first_seen"`
+	Hash             *string            `json:"hash"`
+	Latest           *TimestampSeconds  `json:"latest"`
+	ObservationCount int                `json:"observation_count"`
+	ObserverCount    int                `json:"observer_count"`
+	ObserverIata     *string            `json:"observer_iata"`
+	ObserverId       *string            `json:"observer_id"`
+	ObserverName     *string            `json:"observer_name"`
+	PathJson         *string            `json:"path_json"`
+	PayloadType      *types.PayloadType `json:"payload_type"`
+	RawHex           *string            `json:"raw_hex"`
+	RouteType        *types.RouteType   `json:"route_type"`
+	Rssi             *float64           `json:"rssi"`
+	ScopeName        *string            `json:"scope_name"`
+	Snr              *float64           `json:"snr"`
+}
+
+// GroupedPacketListResponse defines model for GroupedPacketListResponse.
+type GroupedPacketListResponse struct {
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
+	Packets []GroupedPacket `json:"packets"`
+	Total   int             `json:"total"`
 }
 
 // HashEvidence defines model for HashEvidence.
@@ -431,27 +481,26 @@ type Node struct {
 
 // NodeAdvert defines model for NodeAdvert.
 type NodeAdvert struct {
-	UnderscoreParsedPath *[]string               `json:"_parsedPath,omitempty"`
-	DecodedJson          *string                 `json:"decoded_json"`
-	Direction            *string                 `json:"direction"`
-	FirstSeen            *TimestampSeconds       `json:"first_seen"`
-	Hash                 *string                 `json:"hash"`
-	Id                   int                     `json:"id"`
-	ObservationCount     int                     `json:"observation_count"`
-	Observations         []NodeAdvertObservation `json:"observations"`
-	ObserverIata         *string                 `json:"observer_iata"`
-	ObserverId           *string                 `json:"observer_id"`
-	ObserverName         *string                 `json:"observer_name"`
-	PathJson             *string                 `json:"path_json"`
-	PayloadType          *types.PayloadType      `json:"payload_type"`
-	RawHex               *string                 `json:"raw_hex"`
-	ResolvedPath         *[]*string              `json:"resolved_path,omitempty"`
-	RouteType            *types.RouteType        `json:"route_type"`
-	Rssi                 *float64                `json:"rssi"`
-	ScopeName            *string                 `json:"scope_name"`
-	Score                *float64                `json:"score,omitempty"`
-	Snr                  *float64                `json:"snr"`
-	Timestamp            *TimestampSeconds       `json:"timestamp"`
+	DecodedJson      *string                 `json:"decoded_json"`
+	Direction        *string                 `json:"direction"`
+	FirstSeen        *TimestampSeconds       `json:"first_seen"`
+	Hash             *string                 `json:"hash"`
+	Id               int                     `json:"id"`
+	ObservationCount int                     `json:"observation_count"`
+	Observations     []NodeAdvertObservation `json:"observations"`
+	ObserverIata     *string                 `json:"observer_iata"`
+	ObserverId       *string                 `json:"observer_id"`
+	ObserverName     *string                 `json:"observer_name"`
+	PathJson         *string                 `json:"path_json"`
+	PayloadType      *types.PayloadType      `json:"payload_type"`
+	RawHex           *string                 `json:"raw_hex"`
+	ResolvedPath     *[]*string              `json:"resolved_path,omitempty"`
+	RouteType        *types.RouteType        `json:"route_type"`
+	Rssi             *float64                `json:"rssi"`
+	ScopeName        *string                 `json:"scope_name"`
+	Score            *float64                `json:"score,omitempty"`
+	Snr              *float64                `json:"snr"`
+	Timestamp        *TimestampSeconds       `json:"timestamp"`
 }
 
 // NodeAdvertObservation defines model for NodeAdvertObservation.
@@ -586,6 +635,54 @@ type NodeSearchResponse struct {
 	Nodes []Node `json:"nodes"`
 }
 
+// ObservationBatchResponse defines model for ObservationBatchResponse.
+type ObservationBatchResponse struct {
+	// Results Observations keyed by packet hash, exactly as requested.
+	Results map[string][]ObservationDetail `json:"results"`
+}
+
+// ObservationDetail One observation with its packet's hash and the frame it carried.
+type ObservationDetail struct {
+	Direction    *string    `json:"direction,omitempty"`
+	Hash         *string    `json:"hash,omitempty"`
+	Id           int        `json:"id"`
+	ObserverIata *string    `json:"observer_iata"`
+	ObserverId   *string    `json:"observer_id"`
+	ObserverName *string    `json:"observer_name"`
+	PathJson     *string    `json:"path_json"`
+	RawHex       *string    `json:"raw_hex,omitempty"`
+	ResolvedPath *[]*string `json:"resolved_path,omitempty"`
+	Rssi         *float64   `json:"rssi"`
+	Snr          *float64   `json:"snr"`
+
+	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Timestamp TimestampMillis `json:"timestamp"`
+}
+
+// ObservationPacket What /api/packets/{id} returns as packet when id is an observation id: the observation with its packet's payload fields. hash, raw_hex, payload_type, route_type and decoded_json are absent when the packet is no longer in memory.
+type ObservationPacket struct {
+	DecodedJson *string `json:"decoded_json,omitempty"`
+	Direction   *string `json:"direction"`
+	Hash        *string `json:"hash,omitempty"`
+
+	// Id The observation id.
+	Id           int                `json:"id"`
+	ObserverIata *string            `json:"observer_iata"`
+	ObserverId   *string            `json:"observer_id"`
+	ObserverName *string            `json:"observer_name"`
+	PathJson     *string            `json:"path_json"`
+	PayloadType  *types.PayloadType `json:"payload_type,omitempty"`
+	RawHex       *string            `json:"raw_hex,omitempty"`
+	ResolvedPath *[]*string         `json:"resolved_path,omitempty"`
+	RouteType    *types.RouteType   `json:"route_type,omitempty"`
+	Rssi         *float64           `json:"rssi"`
+	Score        *float64           `json:"score"`
+	Snr          *float64           `json:"snr"`
+
+	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Timestamp TimestampMillis `json:"timestamp"`
+}
+
 // ObserverCalibration defines model for ObserverCalibration.
 type ObserverCalibration struct {
 	ObserverID string `json:"observerID"`
@@ -597,28 +694,92 @@ type ObserverCalibration struct {
 	Samples int `json:"samples"`
 }
 
+// Packet A packet with the display fields of its representative observation. observations is present only when requested (expand=observations) or on the detail route.
+type Packet struct {
+	// UnderscoreParsedPath Hop prefixes of the representative observation, null when it has none.
+	UnderscoreParsedPath *[]string            `json:"_parsedPath"`
+	DecodedJson          *string              `json:"decoded_json"`
+	Direction            *string              `json:"direction"`
+	FirstSeen            *TimestampSeconds    `json:"first_seen"`
+	Hash                 *string              `json:"hash"`
+	Id                   int                  `json:"id"`
+	ObservationCount     int                  `json:"observation_count"`
+	Observations         *[]PacketObservation `json:"observations,omitempty"`
+	ObserverIata         *string              `json:"observer_iata"`
+	ObserverId           *string              `json:"observer_id"`
+	ObserverName         *string              `json:"observer_name"`
+	PathJson             *string              `json:"path_json"`
+	PayloadType          *types.PayloadType   `json:"payload_type"`
+	RawHex               *string              `json:"raw_hex"`
+	ResolvedPath         *[]*string           `json:"resolved_path,omitempty"`
+	RouteType            *types.RouteType     `json:"route_type"`
+	Rssi                 *float64             `json:"rssi"`
+	ScopeName            *string              `json:"scope_name"`
+	Score                *float64             `json:"score,omitempty"`
+	Snr                  *float64             `json:"snr"`
+	Timestamp            *TimestampSeconds    `json:"timestamp"`
+}
+
 // PacketCore defines model for PacketCore.
 type PacketCore struct {
-	UnderscoreParsedPath *[]string          `json:"_parsedPath,omitempty"`
-	DecodedJson          *string            `json:"decoded_json"`
-	Direction            *string            `json:"direction"`
-	FirstSeen            *TimestampSeconds  `json:"first_seen"`
-	Hash                 *string            `json:"hash"`
-	Id                   int                `json:"id"`
-	ObservationCount     int                `json:"observation_count"`
-	ObserverIata         *string            `json:"observer_iata"`
-	ObserverId           *string            `json:"observer_id"`
-	ObserverName         *string            `json:"observer_name"`
-	PathJson             *string            `json:"path_json"`
-	PayloadType          *types.PayloadType `json:"payload_type"`
-	RawHex               *string            `json:"raw_hex"`
-	ResolvedPath         *[]*string         `json:"resolved_path,omitempty"`
-	RouteType            *types.RouteType   `json:"route_type"`
-	Rssi                 *float64           `json:"rssi"`
-	ScopeName            *string            `json:"scope_name"`
-	Score                *float64           `json:"score,omitempty"`
-	Snr                  *float64           `json:"snr"`
-	Timestamp            *TimestampSeconds  `json:"timestamp"`
+	DecodedJson      *string            `json:"decoded_json"`
+	Direction        *string            `json:"direction"`
+	FirstSeen        *TimestampSeconds  `json:"first_seen"`
+	Hash             *string            `json:"hash"`
+	Id               int                `json:"id"`
+	ObservationCount int                `json:"observation_count"`
+	ObserverIata     *string            `json:"observer_iata"`
+	ObserverId       *string            `json:"observer_id"`
+	ObserverName     *string            `json:"observer_name"`
+	PathJson         *string            `json:"path_json"`
+	PayloadType      *types.PayloadType `json:"payload_type"`
+	RawHex           *string            `json:"raw_hex"`
+	ResolvedPath     *[]*string         `json:"resolved_path,omitempty"`
+	RouteType        *types.RouteType   `json:"route_type"`
+	Rssi             *float64           `json:"rssi"`
+	ScopeName        *string            `json:"scope_name"`
+	Score            *float64           `json:"score,omitempty"`
+	Snr              *float64           `json:"snr"`
+	Timestamp        *TimestampSeconds  `json:"timestamp"`
+}
+
+// PacketDetailResponse defines model for PacketDetailResponse.
+type PacketDetailResponse struct {
+	// ObservationCount Number of observations returned, or 1 when none are known.
+	ObservationCount int `json:"observation_count"`
+
+	// Observations Omitted when empty.
+	Observations *[]ObservationDetail `json:"observations,omitempty"`
+
+	// Packet Packet when id was a hash or a transmission id, ObservationPacket when it was an observation id. Generated as raw JSON so the models need no union runtime package.
+	Packet json.RawMessage `json:"packet"`
+
+	// Path Hop prefixes parsed from the packet's path_json; empty when it has none.
+	Path []string `json:"path"`
+}
+
+// PacketListResponse defines model for PacketListResponse.
+type PacketListResponse struct {
+	Limit   int      `json:"limit"`
+	Offset  int      `json:"offset"`
+	Packets []Packet `json:"packets"`
+	Total   int      `json:"total"`
+}
+
+// PacketObservation One observer's copy of a packet, as nested inside a packet.
+type PacketObservation struct {
+	Direction    *string    `json:"direction"`
+	Id           int        `json:"id"`
+	ObserverIata *string    `json:"observer_iata"`
+	ObserverId   *string    `json:"observer_id"`
+	ObserverName *string    `json:"observer_name"`
+	PathJson     *string    `json:"path_json"`
+	ResolvedPath *[]*string `json:"resolved_path,omitempty"`
+	Rssi         *float64   `json:"rssi"`
+	Snr          *float64   `json:"snr"`
+
+	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Timestamp TimestampMillis `json:"timestamp"`
 }
 
 // ReachImportance defines model for ReachImportance.
@@ -844,3 +1005,74 @@ type GetNodeReachParams struct {
 	// Days Look-back window in days; clamped to 1..30. Non-numeric values use 7.
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
+
+// ListPacketsParams defines parameters for ListPackets.
+type ListPacketsParams struct {
+	// Limit Page size. Default 50, clamped to the configured maximum.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Offset Rows to skip.
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// GroupByHash Set to true for one row per packet hash (the grouped shape).
+	GroupByHash *bool `form:"groupByHash,omitempty" json:"groupByHash,omitempty"`
+
+	// Expand Set to observations to embed each packet's observations. Ignored when groupByHash is true.
+	Expand *ListPacketsParamsExpand `form:"expand,omitempty" json:"expand,omitempty"`
+
+	// Order asc for oldest first. Any other value means newest first.
+	Order *string `form:"order,omitempty" json:"order,omitempty"`
+
+	// Type Payload type number.
+	Type *int `form:"type,omitempty" json:"type,omitempty"`
+
+	// Route Route type number.
+	Route *int `form:"route,omitempty" json:"route,omitempty"`
+
+	// Hash Exact packet hash.
+	Hash *string `form:"hash,omitempty" json:"hash,omitempty"`
+
+	// Node Node name or pubkey; only packets that involve the node.
+	Node *string `form:"node,omitempty" json:"node,omitempty"`
+
+	// Nodes Comma-separated pubkeys. Takes precedence over every other filter except since, until, order, limit and offset.
+	Nodes *string `form:"nodes,omitempty" json:"nodes,omitempty"`
+
+	// Observer Comma-separated observer pubkeys.
+	Observer *string `form:"observer,omitempty" json:"observer,omitempty"`
+
+	// Region Region (observer IATA) filter.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key; filters by the transmitting node's position.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+
+	// Channel Channel hash filter.
+	Channel *string `form:"channel,omitempty" json:"channel,omitempty"`
+
+	// Encrypted true to match undecryptable channel messages.
+	Encrypted *bool `form:"encrypted,omitempty" json:"encrypted,omitempty"`
+
+	// Since Lower bound: RFC 3339 time (any observation in range) or a date (first_seen).
+	Since *string `form:"since,omitempty" json:"since,omitempty"`
+
+	// Until Upper bound, same formats as since.
+	Until *string `form:"until,omitempty" json:"until,omitempty"`
+}
+
+// ListPacketsParamsExpand defines parameters for ListPackets.
+type ListPacketsParamsExpand string
+
+// BatchPacketObservationsJSONBody defines parameters for BatchPacketObservations.
+type BatchPacketObservationsJSONBody struct {
+	Hashes []string `json:"hashes"`
+}
+
+// ListPacketTimestampsParams defines parameters for ListPacketTimestamps.
+type ListPacketTimestampsParams struct {
+	// Since RFC 3339 time or date.
+	Since string `form:"since" json:"since"`
+}
+
+// BatchPacketObservationsJSONRequestBody defines body for BatchPacketObservations for application/json ContentType.
+type BatchPacketObservationsJSONRequestBody BatchPacketObservationsJSONBody

@@ -1,0 +1,51 @@
+{
+  "limit": 2,
+  "offset": 0,
+  "packets": [
+    {
+      "count": 1,
+      "decoded_json": "{\"type\":\"CONTROL\",\"raw\":\"8004e9dff75300000000\",\"ctrlFlags\":\"80\",\"ctrlZeroHop\":true,\"ctrlLength\":10,\"ctrlSubtype\":\"DISCOVER_REQ\",\"ctrlFilter\":4,\"ctrlTag\":1408753641,\"ctrlSince\":0}",
+      "distinct_iatas": [
+        "AAA"
+      ],
+      "first_seen": "2026-11-09T02:41:39Z",
+      "hash": "490b421942e47d50",
+      "latest": "2026-11-09T02:41:39Z",
+      "observation_count": 1,
+      "observer_count": 1,
+      "observer_iata": "AAA",
+      "observer_id": "1CC6C5BBB11BD5C0565200DBBE62ED5618363D8A614585B80D8CECA26901F7D4",
+      "observer_name": "Fixture Observer A",
+      "path_json": "[]",
+      "payload_type": 11,
+      "raw_hex": "2e008004e9dff75300000000",
+      "route_type": 2,
+      "rssi": -45,
+      "scope_name": null,
+      "snr": 12
+    },
+    {
+      "count": 1,
+      "decoded_json": "{\"type\":\"REQ\",\"destHash\":\"b8\",\"srcHash\":\"03\",\"mac\":\"c4e5\",\"encryptedData\":\"d175247c5ce784c5c02338b63df7cd49\"}",
+      "distinct_iatas": [
+        "DDD"
+      ],
+      "first_seen": "2026-11-09T02:53:08Z",
+      "hash": "843605679d7a4362",
+      "latest": "2026-11-09T02:53:08Z",
+      "observation_count": 1,
+      "observer_count": 1,
+      "observer_iata": "DDD",
+      "observer_id": "60D0E23F59D492ED24B535F175938E50207811AC7F2F0579A3C5A5429BCF7394",
+      "observer_name": "Fixture Observer D",
+      "path_json": "[\"381E\",\"F76F\",\"90F6\",\"5E9F\",\"E0D1\",\"4E72\",\"7777\"]",
+      "payload_type": 0,
+      "raw_hex": "0114E662694A6895",
+      "route_type": 1,
+      "rssi": -94,
+      "scope_name": null,
+      "snr": 5.2
+    }
+  ],
+  "total": 125742
+}

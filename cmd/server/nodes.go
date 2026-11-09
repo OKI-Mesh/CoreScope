@@ -18,11 +18,6 @@ import (
 	"github.com/gorilla/mux"
 )
 
-type NodeAdvertResponse struct {
-	PacketResponse
-	Observations []api.NodeAdvertObservation `json:"observations"`
-}
-
 type NodeHealthStats struct {
 	TotalTransmissions int      `json:"totalTransmissions"`
 	TotalObservations  int      `json:"totalObservations"`
@@ -38,7 +33,7 @@ type NodeHealthResponse struct {
 	Observers          []map[string]interface{} `json:"observers"` // use the type buildDirectObserverRows returns
 	RelayObserverCount int                      `json:"relayObserverCount"`
 	Stats              NodeHealthStats          `json:"stats"`
-	RecentPackets      []map[string]interface{} `json:"recentPackets"` // becomes []PacketResponse with the packet responses
+	RecentPackets      []api.Packet             `json:"recentPackets"`
 }
 
 func (s *Server) registerNodeRoutes(r *mux.Router) {
@@ -1231,11 +1226,9 @@ func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[str
 	}
 
 	s.mu.RLock()
-	recentPackets := make([]map[string]interface{}, 0, len(recent))
+	recentPackets := make([]api.Packet, 0, len(recent))
 	for _, tx := range recent {
-		p := s.txToMapWithRP(tx, paths)
-		delete(p, "observations")
-		recentPackets = append(recentPackets, p)
+		recentPackets = append(recentPackets, txPacket(tx, paths, false))
 	}
 	s.mu.RUnlock()
 
