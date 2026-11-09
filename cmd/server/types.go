@@ -469,30 +469,6 @@ type NodeHopAnalyticsResponse struct {
 	Ambiguous int             `json:"ambiguous"`
 }
 
-// ─── Resolve Hops ──────────────────────────────────────────────────────────────
-
-type HopCandidate struct {
-	Name          interface{} `json:"name"`
-	Pubkey        string      `json:"pubkey"`
-	Lat           interface{} `json:"lat"`
-	Lon           interface{} `json:"lon"`
-	AffinityScore *float64    `json:"affinityScore"`
-}
-
-type HopResolution struct {
-	Name          interface{}    `json:"name"`
-	Pubkey        interface{}    `json:"pubkey,omitempty"`
-	Ambiguous     *bool          `json:"ambiguous,omitempty"`
-	Candidates    []HopCandidate `json:"candidates"`
-	Conflicts     []interface{}  `json:"conflicts"`
-	BestCandidate *string        `json:"bestCandidate,omitempty"`
-	Confidence    string         `json:"confidence,omitempty"`
-}
-
-type ResolveHopsResponse struct {
-	Resolved map[string]*HopResolution `json:"resolved"`
-}
-
 // ─── Config ────────────────────────────────────────────────────────────────────
 
 type ThemeResponse struct {

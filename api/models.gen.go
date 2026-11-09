@@ -155,6 +155,39 @@ func (e CollisionClass) Valid() bool {
 	}
 }
 
+// Defines values for HopConfidence.
+const (
+	Ambiguous                HopConfidence = "ambiguous"
+	GeoProximity             HopConfidence = "geo_proximity"
+	GpsPreference            HopConfidence = "gps_preference"
+	NeighborAffinity         HopConfidence = "neighbor_affinity"
+	NoMatch                  HopConfidence = "no_match"
+	ObservationCountFallback HopConfidence = "observation_count_fallback"
+	UniquePrefix             HopConfidence = "unique_prefix"
+)
+
+// Valid indicates whether the value is a known member of the HopConfidence enum.
+func (e HopConfidence) Valid() bool {
+	switch e {
+	case Ambiguous:
+		return true
+	case GeoProximity:
+		return true
+	case GpsPreference:
+		return true
+	case NeighborAffinity:
+		return true
+	case NoMatch:
+		return true
+	case ObservationCountFallback:
+		return true
+	case UniquePrefix:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScopeConfigState.
 const (
 	Full       ScopeConfigState = "full"
@@ -432,6 +465,26 @@ type CategoryDistStats struct {
 	Min    float64 `json:"min"`
 }
 
+// Channel One channel and its latest message.
+type Channel struct {
+	// Encrypted True for an encrypted channel. Absent otherwise.
+	Encrypted *bool `json:"encrypted,omitempty"`
+
+	// Hash The channel's identifier: its name for a hashtag channel such as #test, or enc_ and two hex digits for an encrypted one. Use it in /api/channels/{hash}/messages.
+	Hash string `json:"hash"`
+
+	// LastActivity UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastActivity TimestampSeconds `json:"lastActivity"`
+
+	// LastMessage The newest message's text without its sender prefix. Null when there is none or it is encrypted.
+	LastMessage  *string `json:"lastMessage"`
+	LastSender   *string `json:"lastSender"`
+	MessageCount int     `json:"messageCount"`
+
+	// Name Display name. Encrypted channels read Encrypted (0x43) for the hash enc_43.
+	Name string `json:"name"`
+}
+
 // ChannelAnalyticsResponse defines model for ChannelAnalyticsResponse.
 type ChannelAnalyticsResponse struct {
 	ActiveChannels  int                    `json:"activeChannels"`
@@ -446,6 +499,46 @@ type ChannelAnalyticsResponse struct {
 
 	// TopSenders The 15 most active senders.
 	TopSenders []NameCount `json:"topSenders"`
+}
+
+// ChannelListResponse defines model for ChannelListResponse.
+type ChannelListResponse struct {
+	Channels []Channel `json:"channels"`
+}
+
+// ChannelMessage defines model for ChannelMessage.
+type ChannelMessage struct {
+	// FirstSeen When the packet was first heard.
+	FirstSeen TimestampSeconds `json:"first_seen"`
+	Hops      int              `json:"hops"`
+
+	// Observers The observer that heard it, by name or key. Empty when unknown.
+	Observers  []string `json:"observers"`
+	PacketHash string   `json:"packetHash"`
+	PacketId   int64    `json:"packetId"`
+
+	// Repeats How many times the packet was heard.
+	Repeats   int     `json:"repeats"`
+	ScopeName *string `json:"scope_name"`
+	Sender    string  `json:"sender"`
+
+	// SenderTimestamp The sender's own clock in Unix seconds, as it put it in the message. Null when absent.
+	SenderTimestamp *int64   `json:"sender_timestamp"`
+	Snr             *float64 `json:"snr"`
+
+	// Text The message without a leading sender prefix.
+	Text string `json:"text"`
+
+	// Timestamp When the packet was last heard.
+	Timestamp TimestampSeconds `json:"timestamp"`
+}
+
+// ChannelMessagesResponse defines model for ChannelMessagesResponse.
+type ChannelMessagesResponse struct {
+	Messages []ChannelMessage `json:"messages"`
+
+	// Total Messages in the channel for this region filter, not only this page.
+	Total int `json:"total"`
 }
 
 // ChannelSummary defines model for ChannelSummary.
@@ -836,6 +929,23 @@ type HistogramBin struct {
 	X float64 `json:"x"`
 }
 
+// HopCandidate A node whose public key starts with the hop prefix.
+type HopCandidate struct {
+	// AffinityScore How strongly the node neighbors from_node or the observer. Null without that context or without a neighbor edge.
+	AffinityScore *float64 `json:"affinityScore"`
+
+	// Lat Null when the node has no position.
+	Lat *float64 `json:"lat"`
+	Lon *float64 `json:"lon"`
+
+	// Name Null when the node has no name.
+	Name   *string `json:"name"`
+	Pubkey string  `json:"pubkey"`
+}
+
+// HopConfidence How the node was chosen. no_match: no node has the prefix. unique_prefix: exactly one does. ambiguous: several do and none was preferred. neighbor_affinity, geo_proximity, gps_preference and observation_count_fallback: several do and the server chose by that rule.
+type HopConfidence string
+
 // HopCount defines model for HopCount.
 type HopCount struct {
 	Count int `json:"count"`
@@ -852,6 +962,28 @@ type HopRef struct {
 
 	// Pubkey The resolved node's public key; null when the hop does not resolve.
 	Pubkey *string `json:"pubkey"`
+}
+
+// HopResolution defines model for HopResolution.
+type HopResolution struct {
+	// Ambiguous True when several nodes share the prefix. Absent otherwise.
+	Ambiguous *bool `json:"ambiguous,omitempty"`
+
+	// BestCandidate Public key of the node neighbor affinity favored. Present only for neighbor_affinity.
+	BestCandidate *string        `json:"bestCandidate,omitempty"`
+	Candidates    []HopCandidate `json:"candidates"`
+
+	// Confidence How the node was chosen. no_match: no node has the prefix. unique_prefix: exactly one does. ambiguous: several do and none was preferred. neighbor_affinity, geo_proximity, gps_preference and observation_count_fallback: several do and the server chose by that rule.
+	Confidence HopConfidence `json:"confidence"`
+
+	// Conflicts The same nodes as candidates when the prefix is ambiguous. Empty otherwise.
+	Conflicts []HopCandidate `json:"conflicts"`
+
+	// Name The chosen node's name. Null when nothing matches or the node has no name.
+	Name *string `json:"name"`
+
+	// Pubkey The chosen node's public key. Absent when nothing matches.
+	Pubkey *string `json:"pubkey,omitempty"`
 }
 
 // HopSnr Packets with a given hop count and their mean SNR.
@@ -875,6 +1007,39 @@ type IndexLoadingResponse struct {
 	RetryAfter int    `json:"retryAfter"`
 }
 
+// KnownChannel defines model for KnownChannel.
+type KnownChannel struct {
+	// Channel The channel name with its # prefix, for example #antwerpen.
+	Channel string `json:"channel"`
+
+	// Description Absent when upstream has none.
+	Description *string `json:"description,omitempty"`
+
+	// Key The channel's pre-shared key in base64. Absent for most entries.
+	Key *string `json:"key,omitempty"`
+
+	// Region Lowercase two-letter country code.
+	Region string `json:"region"`
+
+	// RegionName Absent when upstream has no country names.
+	RegionName *string `json:"regionName,omitempty"`
+}
+
+// KnownChannelsResponse defines model for KnownChannelsResponse.
+type KnownChannelsResponse struct {
+	Entries []KnownChannel `json:"entries"`
+
+	// FetchedAt When the server fetched the catalogue. 0001-01-01T00:00:00Z while it has none.
+	FetchedAt time.Time `json:"fetchedAt"`
+
+	// GeneratedAt When upstream generated the catalogue. Absent when it did not say.
+	GeneratedAt *string `json:"generatedAt,omitempty"`
+	License     *string `json:"license,omitempty"`
+
+	// Source Where the catalogue came from. Empty while it has none.
+	Source string `json:"source"`
+}
+
 // MetricsSample One metrics sample. The rate fields are null for the first sample, after a gap of more than two sample intervals, at a reboot, and when the observer did not report the counters.
 type MetricsSample struct {
 	BatteryMv *int `json:"battery_mv"`
@@ -886,19 +1051,19 @@ type MetricsSample struct {
 	// RecvErrorRate Receive errors as a percentage of packets received plus errors.
 	RecvErrorRate *float64 `json:"recv_error_rate"`
 
-	// RxAirtimePct Share of the interval spent receiving
+	// RxAirtimePct Share of the interval spent receiving, 0 to 100.
 	RxAirtimePct *float64 `json:"rx_airtime_pct"`
 
 	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
 	Timestamp TimestampSeconds `json:"timestamp"`
 
-	// TxAirtimePct Share of the interval spent transmitting
+	// TxAirtimePct Share of the interval spent transmitting, 0 to 100.
 	TxAirtimePct *float64 `json:"tx_airtime_pct"`
 }
 
 // MetricsSummaryObserver defines model for MetricsSummaryObserver.
 type MetricsSummaryObserver struct {
-	// AvgNoiseFloor24h Average over the requested window
+	// AvgNoiseFloor24h Average over the requested window, whatever its length.
 	AvgNoiseFloor24h *float64 `json:"avg_noise_floor_24h"`
 
 	// BatteryMv The latest battery reading.
@@ -908,7 +1073,7 @@ type MetricsSummaryObserver struct {
 	// Iata Absent when the observer has no airport code.
 	Iata *string `json:"iata,omitempty"`
 
-	// MaxNoiseFloor24h Maximum over the requested window
+	// MaxNoiseFloor24h Maximum over the requested window, whatever its length.
 	MaxNoiseFloor24h *float64 `json:"max_noise_floor_24h"`
 	ObserverId       string   `json:"observer_id"`
 
@@ -1363,7 +1528,7 @@ type Observer struct {
 	// Iata Airport code of the observer's region.
 	Iata *string `json:"iata"`
 
-	// Id The observer's public key (hex)
+	// Id The observer's public key (hex), as stored.
 	Id           string            `json:"id"`
 	LastPacketAt *TimestampSeconds `json:"last_packet_at"`
 
@@ -1430,7 +1595,7 @@ type ObserverListResponse struct {
 type ObserverMetricsResponse struct {
 	Metrics []MetricsSample `json:"metrics"`
 
-	// ObserverId The requested key
+	// ObserverId The requested key, lowercased.
 	ObserverId string `json:"observer_id"`
 
 	// ObserverName Null when the observer is not known.
@@ -1759,6 +1924,12 @@ type RelayPreset struct {
 	Sf int `json:"sf"`
 }
 
+// ResolveHopsResponse defines model for ResolveHopsResponse.
+type ResolveHopsResponse struct {
+	// Resolved The resolution of each requested prefix, keyed by the prefix as sent.
+	Resolved map[string]HopResolution `json:"resolved"`
+}
+
 // ResolvePrefixResponse defines model for ResolvePrefixResponse.
 type ResolvePrefixResponse struct {
 	Ambiguous bool `json:"ambiguous"`
@@ -2062,6 +2233,26 @@ type TopologyResponse struct {
 	UniqueNodes int `json:"uniqueNodes"`
 }
 
+// TraceEntry One observation of a packet.
+type TraceEntry struct {
+	// Observer The observer's public key.
+	Observer     *string `json:"observer"`
+	ObserverName *string `json:"observer_name"`
+
+	// PathJson The hop prefixes as a JSON array in a string, [] when there are none.
+	PathJson string   `json:"path_json"`
+	Rssi     *float64 `json:"rssi"`
+	Snr      *float64 `json:"snr"`
+
+	// Time UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Time TimestampMillis `json:"time"`
+}
+
+// TraceResponse defines model for TraceResponse.
+type TraceResponse struct {
+	Traces []TraceEntry `json:"traces"`
+}
+
 // TwoByteCell defines model for TwoByteCell.
 type TwoByteCell struct {
 	// CollisionCount 2-byte prefixes shared by more than one node.
@@ -2278,6 +2469,33 @@ type GetTopologyAnalyticsParams struct {
 	To *To `form:"to,omitempty" json:"to,omitempty"`
 }
 
+// ListChannelsParams defines parameters for ListChannels.
+type ListChannelsParams struct {
+	// Region Comma-separated observer IATA codes. Only traffic heard by those observers counts. All, or an empty value, means every region.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// IncludeEncrypted Set to true to append the encrypted channels. Any other value leaves them out.
+	IncludeEncrypted *bool `form:"includeEncrypted,omitempty" json:"includeEncrypted,omitempty"`
+}
+
+// GetChannelMessagesParams defines parameters for GetChannelMessages.
+type GetChannelMessagesParams struct {
+	// Limit Page size. A missing, non-numeric or non-positive value uses 100; larger values are cut to the configured maximum, 500 by default.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Offset Messages to skip. Negative or non-numeric values use 0.
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// Region Comma-separated observer IATA codes. Only messages heard by those observers are returned.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+}
+
+// GetKnownChannelsParams defines parameters for GetKnownChannels.
+type GetKnownChannelsParams struct {
+	// Region Two-letter country code, case-insensitive. An unknown code returns no entries.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+}
+
 // ListNodesParams defines parameters for ListNodes.
 type ListNodesParams struct {
 	// Limit Page size. Clamped to the server's configured maximum.
@@ -2467,6 +2685,18 @@ type BatchPacketObservationsJSONBody struct {
 type ListPacketTimestampsParams struct {
 	// Since RFC 3339 time or date.
 	Since string `form:"since" json:"since"`
+}
+
+// ResolveHopsParams defines parameters for ResolveHops.
+type ResolveHopsParams struct {
+	// Hops Comma-separated hop prefixes. Empty entries are skipped. Without any, the result is empty.
+	Hops *string `form:"hops,omitempty" json:"hops,omitempty"`
+
+	// FromNode Public key of the node the path started from. Used to rank ambiguous prefixes by neighbor affinity.
+	FromNode *string `form:"from_node,omitempty" json:"from_node,omitempty"`
+
+	// Observer Public key of the observer that heard the path. Used like from_node.
+	Observer *string `form:"observer,omitempty" json:"observer,omitempty"`
 }
 
 // BatchPacketObservationsJSONRequestBody defines body for BatchPacketObservations for application/json ContentType.

@@ -1,0 +1,101 @@
+{
+  "messages": [
+    {
+      "first_seen": "2026-11-09T06:37:39Z",
+      "hops": 4,
+      "observers": [
+        "Observer 01"
+      ],
+      "packetHash": "c685f99f094e9d42",
+      "packetId": 44130697,
+      "repeats": 1,
+      "scope_name": null,
+      "sender": "Sender 04",
+      "sender_timestamp": 1794206217,
+      "snr": 7.2,
+      "text": "Message 01",
+      "timestamp": "2026-11-09T06:37:39Z"
+    },
+    {
+      "first_seen": "2026-11-09T06:44:54Z",
+      "hops": 12,
+      "observers": [
+        "Observer 01"
+      ],
+      "packetHash": "36b5c1ac0d4fc37b",
+      "packetId": 44132294,
+      "repeats": 1,
+      "scope_name": null,
+      "sender": "Sender 05",
+      "sender_timestamp": 1794206686,
+      "snr": 6.5,
+      "text": "Message 02",
+      "timestamp": "2026-11-09T06:44:54Z"
+    },
+    {
+      "first_seen": "2026-11-09T06:49:52Z",
+      "hops": 2,
+      "observers": [
+        "Observer 02"
+      ],
+      "packetHash": "dcdb6ab34031c686",
+      "packetId": 44133829,
+      "repeats": 5,
+      "scope_name": null,
+      "sender": "Sender 06",
+      "sender_timestamp": 1794206990,
+      "snr": 9.75,
+      "text": "Message 03",
+      "timestamp": "2026-11-09T06:49:54Z"
+    },
+    {
+      "first_seen": "2026-11-09T06:50:00Z",
+      "hops": 1,
+      "observers": [
+        "Observer 03"
+      ],
+      "packetHash": "780827dc6e12ce77",
+      "packetId": 44133834,
+      "repeats": 2,
+      "scope_name": null,
+      "sender": "Sender 07",
+      "sender_timestamp": 1794206995,
+      "snr": 8.5,
+      "text": "Message 04",
+      "timestamp": "2026-11-09T06:50:03Z"
+    },
+    {
+      "first_seen": "2026-11-09T06:50:25Z",
+      "hops": 4,
+      "observers": [
+        "Observer 01"
+      ],
+      "packetHash": "ce7534d1ef937066",
+      "packetId": 44133845,
+      "repeats": 1,
+      "scope_name": null,
+      "sender": "Sender 01",
+      "sender_timestamp": 1794206963,
+      "snr": 7.5,
+      "text": "Message 05",
+      "timestamp": "2026-11-09T06:50:25Z"
+    },
+    {
+      "first_seen": "2026-11-09T04:22:28Z",
+      "hops": 3,
+      "observers": [
+        "Observer 04"
+      ],
+      "packetHash": "ba888660f634ab87",
+      "packetId": 44088848,
+      "repeats": 3,
+      "scope_name": null,
+      "sender": "Sender 08",
+      "sender_timestamp": 1794198146,
+      "snr": 12,
+      "text": "Message 06",
+      "timestamp": "2026-11-09T04:22:29Z"
+    }
+  ],
+  "total": 61799
+}

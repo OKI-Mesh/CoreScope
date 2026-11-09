@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -41,37 +43,18 @@ func (t *UTCTime) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-type ChannelMessagesResponse struct {
-	Messages []ChannelMessageResponse `json:"messages"`
-	Total    int                      `json:"total"`
-}
-
-type ChannelResponse struct {
-	Hash         string  `json:"hash"`
-	Name         string  `json:"name"`
-	LastMessage  *string `json:"lastMessage"`
-	LastSender   *string `json:"lastSender"`
-	MessageCount int     `json:"messageCount"`
-	LastActivity string  `json:"lastActivity"`
-	Encrypted    bool    `json:"encrypted,omitempty"`
-}
-
 type flightCache[T any] struct { // 1. the type declares T
 	cache     ttlCache[[]T]
 	sf        singleflight.Group
 	queryHook func()
 }
 
-type ChannelListResponse struct {
-	Channels []ChannelResponse `json:"channels"`
-}
-
 // channelCaches holds the query-level caches for the channel endpoints.
 // Declare it on Server as a value (not a pointer) so the zero Server works.
 type channelCaches struct {
 	msgs     ttlCache[msgPage]
-	channels flightCache[ChannelResponse]
-	enc      flightCache[ChannelResponse]
+	channels flightCache[api.Channel]
+	enc      flightCache[api.Channel]
 }
 
 func (c *flightCache[T]) do(ctx context.Context, region string,
@@ -107,13 +90,13 @@ func (c *flightCache[T]) do(ctx context.Context, region string,
 	return v.([]T), nil
 }
 
-func (s *Server) getChannels(ctx context.Context, region string) ([]ChannelResponse, error) {
-	return s.channelCaches.channels.do(ctx, region, func(qctx context.Context) ([]ChannelResponse, error) {
+func (s *Server) getChannels(ctx context.Context, region string) ([]api.Channel, error) {
+	return s.channelCaches.channels.do(ctx, region, func(qctx context.Context) ([]api.Channel, error) {
 		summaries, err := s.db.ListChannelSummaries(qctx, database.NormalizeRegionCodes(region))
 		if err != nil {
 			return nil, err
 		}
-		out := make([]ChannelResponse, len(summaries))
+		out := make([]api.Channel, len(summaries))
 		for i, c := range summaries {
 			out[i] = channelToResponse(c)
 		}
@@ -121,13 +104,13 @@ func (s *Server) getChannels(ctx context.Context, region string) ([]ChannelRespo
 	})
 }
 
-func (s *Server) getEncryptedChannels(ctx context.Context, region string) ([]ChannelResponse, error) {
-	return s.channelCaches.enc.do(ctx, region, func(qctx context.Context) ([]ChannelResponse, error) {
+func (s *Server) getEncryptedChannels(ctx context.Context, region string) ([]api.Channel, error) {
+	return s.channelCaches.enc.do(ctx, region, func(qctx context.Context) ([]api.Channel, error) {
 		summaries, err := s.db.ListEncryptedChannelSummaries(qctx, database.NormalizeRegionCodes(region))
 		if err != nil {
 			return nil, err
 		}
-		out := make([]ChannelResponse, len(summaries))
+		out := make([]api.Channel, len(summaries))
 		for i, c := range summaries {
 			out[i] = encryptedChannelToResponse(c)
 		}
@@ -199,36 +182,21 @@ func (c *ttlCache[T]) set(key string, v T) {
 // Channel messages
 // ---------------------------------------------------------------------------
 
-type ChannelMessageResponse struct {
-	Sender          string          `json:"sender"`
-	Text            string          `json:"text"`
-	Timestamp       string          `json:"timestamp"`
-	FirstSeen       string          `json:"first_seen"`
-	SenderTimestamp json.RawMessage `json:"sender_timestamp"` // passed through as-is; absent -> null
-	PacketID        int64           `json:"packetId"`
-	PacketHash      string          `json:"packetHash"`
-	Repeats         int             `json:"repeats"`
-	Observers       []string        `json:"observers"`
-	Hops            int             `json:"hops"`
-	SNR             *float64        `json:"snr"`
-	ScopeName       *string         `json:"scope_name"`
-}
-
 type msgPage struct {
-	msgs  []ChannelMessageResponse
+	msgs  []api.ChannelMessage
 	total int
 }
 
-func (c *channelCaches) getMsg(key string) ([]ChannelMessageResponse, int, bool) {
+func (c *channelCaches) getMsg(key string) ([]api.ChannelMessage, int, bool) {
 	p, ok := c.msgs.get(key)
 	return p.msgs, p.total, ok
 }
 
-func (c *channelCaches) setMsg(key string, msgs []ChannelMessageResponse, total int) {
+func (c *channelCaches) setMsg(key string, msgs []api.ChannelMessage, total int) {
 	c.msgs.set(key, msgPage{msgs: msgs, total: total})
 }
 
-func (s *Server) getChannelMessages(ctx context.Context, channelHash string, encrypted bool, limit, offset int, region ...string) ([]ChannelMessageResponse, int, error) {
+func (s *Server) getChannelMessages(ctx context.Context, channelHash string, encrypted bool, limit, offset int, region ...string) ([]api.ChannelMessage, int, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -256,7 +224,7 @@ func (s *Server) getChannelMessages(ctx context.Context, channelHash string, enc
 		return nil, 0, err
 	}
 
-	messages := make([]ChannelMessageResponse, 0, len(rows))
+	messages := make([]api.ChannelMessage, 0, len(rows))
 	for _, r := range rows {
 		var decoded struct {
 			Text            string          `json:"text"`
@@ -282,18 +250,18 @@ func (s *Server) getChannelMessages(ctx context.Context, channelHash string, enc
 			observers = []string{*r.ObserverPubkey}
 		}
 
-		messages = append(messages, ChannelMessageResponse{
+		messages = append(messages, api.ChannelMessage{
 			Sender:          displaySender,
 			Text:            displayText,
-			Timestamp:       r.LatestSeen.UTC().Format(time.RFC3339), // #1366: max observation time
-			FirstSeen:       formatTS(r.FirstSeen),
-			SenderTimestamp: decoded.SenderTimestamp,
-			PacketID:        r.TransmissionID,
+			Timestamp:       types.WireTimeSeconds{Time: r.LatestSeen}, // #1366: max observation time
+			FirstSeen:       types.WireTimeSeconds{Time: r.FirstSeen},
+			SenderTimestamp: senderTimestamp(decoded.SenderTimestamp),
+			PacketId:        r.TransmissionID,
 			PacketHash:      r.Hash,
 			Repeats:         r.Repeats,
 			Observers:       observers,
 			Hops:            r.HopCount,
-			SNR:             r.SNR,
+			Snr:             r.SNR,
 			ScopeName:       r.ScopeName,
 		})
 	}
@@ -327,7 +295,7 @@ func channelsCacheKey(region string, includeEncrypted bool) string {
 }
 
 type channelsCacheEntry struct {
-	resp ChannelListResponse
+	resp api.ChannelListResponse
 	at   time.Time
 }
 
@@ -344,37 +312,48 @@ func (s *Server) isChannelsListCacheStale(cachedAt time.Time) bool {
 	return time.Since(cachedAt) >= s.effectiveChannelsCacheTTL()
 }
 
-func (s *Server) fetchChannelsList(ctx context.Context, region string, includeEncrypted bool) (ChannelListResponse, error) {
+func (s *Server) fetchChannelsList(ctx context.Context, region string, includeEncrypted bool) (api.ChannelListResponse, error) {
 	channels, err := s.getChannels(ctx, region)
 	if err != nil {
-		return ChannelListResponse{}, err
+		return api.ChannelListResponse{}, err
 	}
 	if includeEncrypted {
 		encrypted, err := s.getEncryptedChannels(ctx, region)
 		if err != nil {
 			log.Printf("WARN getEncryptedChannels: %v", err)
-			return ChannelListResponse{}, err // don't cache a partial encrypted merge
+			return api.ChannelListResponse{}, err // don't cache a partial encrypted merge
 		}
 		channels = append(channels, encrypted...)
 	}
-	return ChannelListResponse{Channels: channels}, nil
+	return api.ChannelListResponse{Channels: channels}, nil
 }
 
-func channelToResponse(c database.ChannelSummary) ChannelResponse {
+func channelToResponse(c database.ChannelSummary) api.Channel {
 	msg, sender := channelLastMessage(deref(c.SampleJSON))
-	return ChannelResponse{
+	return api.Channel{
 		Hash: c.ChannelHash, Name: c.ChannelHash,
 		LastMessage: msg, LastSender: sender,
-		MessageCount: c.MessageCount, LastActivity: formatTS(c.LastActivity),
+		MessageCount: c.MessageCount, LastActivity: types.WireTimeSeconds{Time: c.LastActivity},
 	}
 }
 
-func encryptedChannelToResponse(c database.EncryptedChannelSummary) ChannelResponse {
-	return ChannelResponse{
+func encryptedChannelToResponse(c database.EncryptedChannelSummary) api.Channel {
+	encrypted := true
+	return api.Channel{
 		Hash: c.ChannelHash, Name: "Encrypted (0x" + strings.TrimPrefix(c.ChannelHash, "enc_") + ")",
-		MessageCount: c.MessageCount, LastActivity: formatTS(c.LastActivity),
-		Encrypted: true,
+		MessageCount: c.MessageCount, LastActivity: types.WireTimeSeconds{Time: c.LastActivity},
+		Encrypted: &encrypted,
 	}
+}
+
+// senderTimestamp reads the sender's own clock out of a decoded message. A
+// missing or non-integer value is null.
+func senderTimestamp(raw json.RawMessage) *int64 {
+	var ts *int64
+	if json.Unmarshal(raw, &ts) != nil {
+		return nil
+	}
+	return ts
 }
 
 // channelLastMessage extracts "text" (minus a leading "sender: ") and "sender" from a

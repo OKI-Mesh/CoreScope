@@ -75,7 +75,7 @@ func TestGetEncryptedChannels(t *testing.T) {
 	if ch.Hash != "A1B2" {
 		t.Errorf("expected hash A1B2, got %v", ch.Hash)
 	}
-	if !ch.Encrypted {
+	if ch.Encrypted == nil || !*ch.Encrypted {
 		t.Errorf("expected encrypted=true, got %v", ch.Encrypted)
 	}
 	if ch.MessageCount != 2 {

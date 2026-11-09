@@ -1,0 +1,79 @@
+{
+  "channels": [
+    {
+      "hash": "#test",
+      "lastActivity": "2026-11-09T06:50:25Z",
+      "lastMessage": "Message 01",
+      "lastSender": "Sender 01",
+      "messageCount": 28564,
+      "name": "#test"
+    },
+    {
+      "hash": "#weather",
+      "lastActivity": "2026-11-09T06:30:07Z",
+      "lastMessage": "Message 02",
+      "lastSender": "Sender 02",
+      "messageCount": 6533,
+      "name": "#weather"
+    },
+    {
+      "hash": "#wardriving",
+      "lastActivity": "2026-11-09T05:10:55Z",
+      "lastMessage": "Message 03",
+      "lastSender": "Sender 03",
+      "messageCount": 98001,
+      "name": "#wardriving"
+    },
+    {
+      "hash": "#gaming",
+      "lastActivity": "2026-11-06T14:38:07Z",
+      "lastMessage": null,
+      "lastSender": null,
+      "messageCount": 1,
+      "name": "#gaming"
+    },
+    {
+      "hash": "#hidden",
+      "lastActivity": "2026-11-01T14:52:03Z",
+      "lastMessage": null,
+      "lastSender": null,
+      "messageCount": 1,
+      "name": "#hidden"
+    },
+    {
+      "hash": "#coffee",
+      "lastActivity": "2026-09-24T23:35:27Z",
+      "lastMessage": "Message 06",
+      "lastSender": null,
+      "messageCount": 1,
+      "name": "#coffee"
+    },
+    {
+      "encrypted": true,
+      "hash": "enc_43",
+      "lastActivity": "2026-11-09T06:50:33Z",
+      "lastMessage": null,
+      "lastSender": null,
+      "messageCount": 12792,
+      "name": "Encrypted (0x43)"
+    },
+    {
+      "encrypted": true,
+      "hash": "enc_03",
+      "lastActivity": "2026-11-09T06:45:06Z",
+      "lastMessage": null,
+      "lastSender": null,
+      "messageCount": 7526,
+      "name": "Encrypted (0x03)"
+    },
+    {
+      "encrypted": true,
+      "hash": "enc_17",
+      "lastActivity": "2026-11-09T06:39:48Z",
+      "lastMessage": null,
+      "lastSender": null,
+      "messageCount": 86,
+      "name": "Encrypted (0x17)"
+    }
+  ]
+}

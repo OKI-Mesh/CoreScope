@@ -8,14 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/gorilla/mux"
 )
 
 func TestChannelsCacheServesWarmEntry(t *testing.T) {
 	s := &Server{}
-	resp := ChannelListResponse{
-		Channels: []ChannelResponse{
-			{Hash: "enc_SENTINEL", Encrypted: true, Name: "enc_SENTINEL"},
+	encrypted := true
+	resp := api.ChannelListResponse{
+		Channels: []api.Channel{
+			{Hash: "enc_SENTINEL", Encrypted: &encrypted, Name: "enc_SENTINEL"},
 		},
 	}
 	cacheKey := channelsCacheKey("", true)
@@ -54,8 +56,8 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 	}
 
 	cacheKey := channelsCacheKey("", false)
-	fresh := ChannelListResponse{
-		Channels: []ChannelResponse{{Hash: "fresh-sentinel", Name: "fresh-sentinel"}},
+	fresh := api.ChannelListResponse{
+		Channels: []api.Channel{{Hash: "fresh-sentinel", Name: "fresh-sentinel"}},
 	}
 	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: fresh, at: time.Now()})
 	req := httptest.NewRequest("GET", "/api/channels", nil)
@@ -65,8 +67,8 @@ func TestChannelsCacheTTLBoundary(t *testing.T) {
 		t.Fatalf("fresh cache should be served, body=%s", w.Body.String())
 	}
 
-	stale := ChannelListResponse{
-		Channels: []ChannelResponse{{Hash: "stale-sentinel", Name: "stale-sentinel"}},
+	stale := api.ChannelListResponse{
+		Channels: []api.Channel{{Hash: "stale-sentinel", Name: "stale-sentinel"}},
 	}
 	s.channelsCache.entries.Store(cacheKey, &channelsCacheEntry{resp: stale, at: time.Now().Add(-channelsCacheTTL - time.Second)})
 	w2 := httptest.NewRecorder()
@@ -94,13 +96,13 @@ func TestChannelsCacheEncryptedSecondCallDoesNotRefill(t *testing.T) {
 		if w.Code != 200 {
 			t.Fatalf("call %d: status=%d body=%s", i+1, w.Code, w.Body.String())
 		}
-		var body ChannelListResponse
+		var body api.ChannelListResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatalf("call %d: decode: %v", i+1, err)
 		}
 		foundEnc := false
 		for _, ch := range body.Channels {
-			if ch.Encrypted {
+			if ch.Encrypted != nil && *ch.Encrypted {
 				foundEnc = true
 				break
 			}
@@ -164,7 +166,7 @@ func TestChannelsCacheKeysSeparateEncrypted(t *testing.T) {
 		t.Fatalf("plain + encrypted shapes should each fill once, got %d", got)
 	}
 
-	var plain, enc ChannelListResponse
+	var plain, enc api.ChannelListResponse
 	_ = json.Unmarshal(wPlain.Body.Bytes(), &plain)
 	_ = json.Unmarshal(wEnc.Body.Bytes(), &enc)
 	if len(enc.Channels) <= len(plain.Channels) {

@@ -21,6 +21,10 @@ tags:
     description: Packets, their observations and the live-poll timestamps
   - name: observers
     description: Observers (the stations that hear packets), their status and metrics
+  - name: channels
+    description: Channels, their messages and the community channel catalogue
+  - name: packets-tools
+    description: Hop resolution and per-packet traces
 paths:
   /api/nodes/{pubkey}/neighbors:
     get:
@@ -409,6 +413,152 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/channels:
+    get:
+      tags: [channels]
+      operationId: listChannels
+      summary: List channels
+      description: >-
+        Channels with traffic, most recently active first. Encrypted channels
+        (ones whose key the server does not hold) are listed only on request,
+        after the plain ones. The response is cached for 90 seconds.
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Comma-separated observer IATA codes. Only traffic heard by those observers counts. All, or an empty value, means every region.
+          schema: { type: string }
+        - name: includeEncrypted
+          in: query
+          required: false
+          description: Set to true to append the encrypted channels. Any other value leaves them out.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Success
+          headers:
+            X-Cache-Age-Seconds:
+              description: Age of the cached list in whole seconds.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelListResponse'
+  /api/channels/{hash}/messages:
+    get:
+      tags: [channels]
+      operationId: getChannelMessages
+      summary: Messages of one channel
+      description: >-
+        One page of the channel's messages, oldest first within the page. An
+        unknown channel returns an empty page.
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: The channel's hash exactly as /api/channels lists it. Percent-encode the leading # as %23, or the request never reaches the server.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: Page size. A missing, non-numeric or non-positive value uses 100; larger values are cut to the configured maximum, 500 by default.
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          required: false
+          description: Messages to skip. Negative or non-numeric values use 0.
+          schema: { type: integer, default: 0 }
+        - name: region
+          in: query
+          required: false
+          description: Comma-separated observer IATA codes. Only messages heard by those observers are returned.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelMessagesResponse'
+  /api/known-channels:
+    get:
+      tags: [channels]
+      operationId: getKnownChannels
+      summary: Community channel catalogue
+      description: >-
+        The catalogue of well-known hashtag channels, refreshed from upstream
+        once a day. Until the first fetch succeeds, or when the feature is off,
+        it answers with an empty snapshot whose fetchedAt is the zero time.
+        Cache-Control is public, max-age=300 for a populated snapshot and
+        max-age=30 for an empty one.
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Two-letter country code, case-insensitive. An unknown code returns no entries.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnownChannelsResponse'
+  /api/resolve-hops:
+    get:
+      tags: [packets-tools]
+      operationId: resolveHops
+      summary: Resolve hop prefixes to nodes
+      description: >-
+        Looks each hex prefix up among the known nodes. A prefix that several
+        nodes share is ambiguous; the server then picks a best guess, using the
+        neighbor graph around from_node and observer when given, and says how it
+        chose in confidence. Blacklisted and hidden nodes never appear.
+      parameters:
+        - name: hops
+          in: query
+          required: false
+          description: Comma-separated hop prefixes. Empty entries are skipped. Without any, the result is empty.
+          schema: { type: string }
+        - name: from_node
+          in: query
+          required: false
+          description: Public key of the node the path started from. Used to rank ambiguous prefixes by neighbor affinity.
+          schema: { type: string }
+        - name: observer
+          in: query
+          required: false
+          description: Public key of the observer that heard the path. Used like from_node.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveHopsResponse'
+  /api/traces/{hash}:
+    get:
+      tags: [packets-tools]
+      operationId: getTraces
+      summary: Every sighting of one packet
+      description: >-
+        One entry per observation of the packet, oldest first. An unknown hash
+        returns an empty list.
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: Packet hash (hex).
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceResponse'
   /api/observers:
     get:
       tags: [observers]
@@ -1812,6 +1962,163 @@ components:
         calibratedSamples: { type: integer }
         uncalibratedSamples: { type: integer }
 
+    Channel:
+      type: object
+      additionalProperties: false
+      description: One channel and its latest message.
+      required: [hash, name, lastMessage, lastSender, messageCount, lastActivity]
+      properties:
+        hash:
+          type: string
+          description: "The channel's identifier: its name for a hashtag channel such as #test, or enc_ and two hex digits for an encrypted one. Use it in /api/channels/{hash}/messages."
+        name: { type: string, description: "Display name. Encrypted channels read Encrypted (0x43) for the hash enc_43." }
+        lastMessage: { type: [string, "null"], description: The newest message's text without its sender prefix. Null when there is none or it is encrypted. }
+        lastSender: { type: [string, "null"] }
+        messageCount: { type: integer }
+        lastActivity:
+          $ref: '#/components/schemas/TimestampSeconds'
+        encrypted:
+          type: boolean
+          description: True for an encrypted channel. Absent otherwise.
+    ChannelListResponse:
+      type: object
+      additionalProperties: false
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+    ChannelMessage:
+      type: object
+      additionalProperties: false
+      required: [sender, text, timestamp, first_seen, sender_timestamp, packetId, packetHash, repeats, observers, hops, snr, scope_name]
+      properties:
+        sender: { type: string }
+        text: { type: string, description: The message without a leading sender prefix. }
+        timestamp:
+          description: When the packet was last heard.
+          $ref: '#/components/schemas/TimestampSeconds'
+        first_seen:
+          description: When the packet was first heard.
+          $ref: '#/components/schemas/TimestampSeconds'
+        sender_timestamp:
+          type: [integer, "null"]
+          format: int64
+          description: The sender's own clock in Unix seconds, as it put it in the message. Null when absent.
+        packetId: { type: integer, format: int64 }
+        packetHash: { type: string }
+        repeats: { type: integer, description: How many times the packet was heard. }
+        observers:
+          type: array
+          description: The observer that heard it, by name or key. Empty when unknown.
+          items: { type: string }
+        hops: { type: integer }
+        snr: { type: [number, "null"], format: double }
+        scope_name: { type: [string, "null"] }
+    ChannelMessagesResponse:
+      type: object
+      additionalProperties: false
+      required: [messages, total]
+      properties:
+        messages:
+          type: array
+          items: { $ref: '#/components/schemas/ChannelMessage' }
+        total: { type: integer, description: "Messages in the channel for this region filter, not only this page." }
+    KnownChannel:
+      type: object
+      additionalProperties: false
+      required: [channel, region]
+      properties:
+        channel: { type: string, description: "The channel name with its # prefix, for example #antwerpen." }
+        description: { type: string, description: Absent when upstream has none. }
+        key: { type: string, description: The channel's pre-shared key in base64. Absent for most entries. }
+        region: { type: string, description: Lowercase two-letter country code. }
+        regionName: { type: string, description: Absent when upstream has no country names. }
+    KnownChannelsResponse:
+      type: object
+      additionalProperties: false
+      required: [fetchedAt, source, entries]
+      properties:
+        generatedAt: { type: string, description: When upstream generated the catalogue. Absent when it did not say. }
+        license: { type: string }
+        fetchedAt:
+          type: string
+          format: date-time
+          description: When the server fetched the catalogue. 0001-01-01T00:00:00Z while it has none.
+        source: { type: string, description: Where the catalogue came from. Empty while it has none. }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/KnownChannel' }
+    HopCandidate:
+      type: object
+      additionalProperties: false
+      description: A node whose public key starts with the hop prefix.
+      required: [name, pubkey, lat, lon, affinityScore]
+      properties:
+        name: { type: [string, "null"], description: Null when the node has no name. }
+        pubkey: { type: string }
+        lat: { type: [number, "null"], format: double, description: Null when the node has no position. }
+        lon: { type: [number, "null"], format: double }
+        affinityScore:
+          type: [number, "null"]
+          format: double
+          description: How strongly the node neighbors from_node or the observer. Null without that context or without a neighbor edge.
+    HopConfidence:
+      type: string
+      description: >-
+        How the node was chosen. no_match: no node has the prefix.
+        unique_prefix: exactly one does. ambiguous: several do and none was
+        preferred. neighbor_affinity, geo_proximity, gps_preference and
+        observation_count_fallback: several do and the server chose by that rule.
+      enum: [no_match, unique_prefix, ambiguous, neighbor_affinity, geo_proximity, gps_preference, observation_count_fallback]
+    HopResolution:
+      type: object
+      additionalProperties: false
+      required: [name, candidates, conflicts, confidence]
+      properties:
+        name: { type: [string, "null"], description: The chosen node's name. Null when nothing matches or the node has no name. }
+        pubkey: { type: string, description: The chosen node's public key. Absent when nothing matches. }
+        ambiguous: { type: boolean, description: True when several nodes share the prefix. Absent otherwise. }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/HopCandidate' }
+        conflicts:
+          type: array
+          description: The same nodes as candidates when the prefix is ambiguous. Empty otherwise.
+          items: { $ref: '#/components/schemas/HopCandidate' }
+        bestCandidate: { type: string, description: Public key of the node neighbor affinity favored. Present only for neighbor_affinity. }
+        confidence:
+          $ref: '#/components/schemas/HopConfidence'
+    ResolveHopsResponse:
+      type: object
+      additionalProperties: false
+      required: [resolved]
+      properties:
+        resolved:
+          type: object
+          description: The resolution of each requested prefix, keyed by the prefix as sent.
+          additionalProperties: { $ref: '#/components/schemas/HopResolution' }
+    TraceEntry:
+      type: object
+      additionalProperties: false
+      description: One observation of a packet.
+      required: [observer, observer_name, time, snr, rssi, path_json]
+      properties:
+        observer: { type: [string, "null"], description: The observer's public key. }
+        observer_name: { type: [string, "null"] }
+        time:
+          $ref: '#/components/schemas/TimestampMillis'
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
+        path_json: { type: string, description: "The hop prefixes as a JSON array in a string, [] when there are none." }
+    TraceResponse:
+      type: object
+      additionalProperties: false
+      required: [traces]
+      properties:
+        traces:
+          type: array
+          items: { $ref: '#/components/schemas/TraceEntry' }
     Observer:
       type: object
       additionalProperties: false

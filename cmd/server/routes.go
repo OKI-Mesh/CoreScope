@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1092,11 +1093,11 @@ func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 	hopsParam := r.URL.Query().Get("hops")
 	if hopsParam == "" {
-		writeJSON(w, ResolveHopsResponse{Resolved: map[string]*HopResolution{}})
+		writeJSON(w, api.ResolveHopsResponse{Resolved: map[string]api.HopResolution{}})
 		return
 	}
 	hops := strings.Split(hopsParam, ",")
-	resolved := map[string]*HopResolution{}
+	resolved := map[string]api.HopResolution{}
 
 	// Context for affinity-based disambiguation.
 	fromNode := r.URL.Query().Get("from_node")
@@ -1131,7 +1132,7 @@ func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 
 		// Resolve candidates from the in-memory prefix map instead of
 		// issuing per-hop DB queries (fixes N+1 pattern, see #369).
-		var candidates []HopCandidate
+		var candidates []api.HopCandidate
 		if pm != nil {
 			if matched, ok := pm.m[hopLower]; ok {
 				for _, ni := range matched {
@@ -1144,13 +1145,10 @@ func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 					if s.cfg != nil && s.cfg.IsNameHidden(ni.Name) {
 						continue
 					}
-					c := HopCandidate{Pubkey: ni.PublicKey}
-					if ni.Name != "" {
-						c.Name = ni.Name
-					}
+					c := api.HopCandidate{Pubkey: ni.PublicKey, Name: optString(ni.Name)}
 					if ni.HasGPS {
-						c.Lat = ni.Lat
-						c.Lon = ni.Lon
+						lat, lon := ni.Lat, ni.Lon
+						c.Lat, c.Lon = &lat, &lon
 					}
 					candidates = append(candidates, c)
 				}
@@ -1158,12 +1156,12 @@ func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(candidates) == 0 {
-			resolved[hop] = &HopResolution{Name: nil, Candidates: []HopCandidate{}, Conflicts: []interface{}{}, Confidence: "no_match"}
+			resolved[hop] = api.HopResolution{Candidates: []api.HopCandidate{}, Conflicts: []api.HopCandidate{}, Confidence: api.HopConfidence("no_match")}
 		} else if len(candidates) == 1 {
-			resolved[hop] = &HopResolution{
-				Name: candidates[0].Name, Pubkey: candidates[0].Pubkey,
-				Candidates: candidates, Conflicts: []interface{}{},
-				Confidence: "unique_prefix",
+			resolved[hop] = api.HopResolution{
+				Name: candidates[0].Name, Pubkey: &candidates[0].Pubkey,
+				Candidates: candidates, Conflicts: []api.HopCandidate{},
+				Confidence: api.HopConfidence("unique_prefix"),
 			}
 		} else {
 			// Compute affinity scores for each candidate if we have context.
@@ -1205,35 +1203,35 @@ func (s *Server) handleResolveHops(w http.ResponseWriter, r *http.Request) {
 			}
 
 			ambig := true
-			hr := &HopResolution{
-				Name: candidates[0].Name, Pubkey: candidates[0].Pubkey,
-				Ambiguous: &ambig, Candidates: candidates, Conflicts: hopCandidatesToConflicts(candidates),
-				Confidence: "ambiguous",
+			hr := api.HopResolution{
+				Name: candidates[0].Name, Pubkey: &candidates[0].Pubkey,
+				Ambiguous: &ambig, Candidates: candidates, Conflicts: slices.Clone(candidates),
+				Confidence: api.HopConfidence("ambiguous"),
 			}
 
 			// Use the resolved node as the default (best-effort pick).
 			// Skip if the best pick is blacklisted or has a hidden-prefix
 			// name (#1181).
 			if best != nil && !(s.cfg != nil && (s.cfg.IsBlacklisted(best.PublicKey) || s.cfg.IsNameHidden(best.Name))) {
-				hr.Name = best.Name
-				hr.Pubkey = best.PublicKey
+				hr.Name = optString(best.Name)
+				hr.Pubkey = &best.PublicKey
 			}
 
 			// Only promote to bestCandidate when affinity is confident.
 			if confidence == "neighbor_affinity" && best != nil {
 				pk := best.PublicKey
 				hr.BestCandidate = &pk
-				hr.Confidence = "neighbor_affinity"
+				hr.Confidence = api.HopConfidence("neighbor_affinity")
 			} else if (confidence == "geo_proximity" || confidence == "gps_preference" || confidence == "observation_count_fallback") && best != nil {
 				// Propagate lower-priority tiers so the API reflects the actual
 				// resolution strategy used, rather than collapsing everything to "ambiguous".
-				hr.Confidence = confidence
+				hr.Confidence = api.HopConfidence(confidence)
 			}
 
 			resolved[hop] = hr
 		}
 	}
-	writeJSON(w, ResolveHopsResponse{Resolved: resolved})
+	writeJSON(w, api.ResolveHopsResponse{Resolved: resolved})
 }
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
@@ -1285,7 +1283,7 @@ func (s *Server) handleChannelMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, ChannelMessagesResponse{Messages: messages, Total: total})
+	writeJSON(w, api.ChannelMessagesResponse{Messages: messages, Total: total})
 }
 
 func (s *Server) handleObservers(w http.ResponseWriter, r *http.Request) {
@@ -1584,23 +1582,23 @@ func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, TraceResponse{Traces: traceEntries(obs)})
+	writeJSON(w, api.TraceResponse{Traces: traceEntries(obs)})
 }
 
 // traceEntries shapes observations (newest first, as the database returns
 // them) into trace rows, oldest first. Never returns nil, so an unknown hash
 // is "traces": [] and not null.
-func traceEntries(obs []database.Observation) []TraceEntry {
-	traces := make([]TraceEntry, 0, len(obs))
+func traceEntries(obs []database.Observation) []api.TraceEntry {
+	traces := make([]api.TraceEntry, 0, len(obs))
 	for i := len(obs) - 1; i >= 0; i-- {
 		o := obs[i]
-		traces = append(traces, TraceEntry{
+		traces = append(traces, api.TraceEntry{
 			Observer:     optString(o.ObserverID),
 			ObserverName: optString(o.ObserverName),
-			Time:         formatTS(o.Timestamp),
-			SNR:          o.SNR,
-			RSSI:         o.RSSI,
-			PathJSON:     hopsJSON(o.HopPrefixes()),
+			Time:         api.TimestampMillis{Time: o.Timestamp},
+			Snr:          o.SNR,
+			Rssi:         o.RSSI,
+			PathJson:     hopsJSON(o.HopPrefixes()),
 		})
 	}
 	return traces
@@ -1837,15 +1835,6 @@ func lastN(arr []map[string]interface{}, n int) []map[string]interface{} {
 		return arr
 	}
 	return arr[len(arr)-n:]
-}
-
-// hopCandidatesToConflicts converts typed candidates to interface slice for JSON.
-func hopCandidatesToConflicts(candidates []HopCandidate) []interface{} {
-	result := make([]interface{}, len(candidates))
-	for i, c := range candidates {
-		result[i] = c
-	}
-	return result
 }
 
 func (s *Server) handleObserverMetrics(w http.ResponseWriter, r *http.Request) {

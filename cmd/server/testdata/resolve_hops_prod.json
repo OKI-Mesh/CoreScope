@@ -1,0 +1,141 @@
+{
+  "resolved": {
+    "b2b8": {
+      "name": "Node 01",
+      "pubkey": "b2b84556ab5b700f9199f0a9c39c8bb60849fb1b4624581afb5907177849520d",
+      "candidates": [
+        {
+          "name": "Node 01",
+          "pubkey": "b2b84556ab5b700f9199f0a9c39c8bb60849fb1b4624581afb5907177849520d",
+          "lat": 38.0,
+          "lon": -84.0,
+          "affinityScore": null
+        }
+      ],
+      "conflicts": [],
+      "confidence": "unique_prefix"
+    },
+    "460B": {
+      "name": "Node 02",
+      "pubkey": "460B3b2826fcbfbe73372b9232d50c131705c9968328d571deeb2662523cb61f",
+      "candidates": [
+        {
+          "name": "Node 02",
+          "pubkey": "460B3b2826fcbfbe73372b9232d50c131705c9968328d571deeb2662523cb61f",
+          "lat": 38.09,
+          "lon": -84.09,
+          "affinityScore": null
+        }
+      ],
+      "conflicts": [],
+      "confidence": "unique_prefix"
+    },
+    "3bdc": {
+      "name": "Node 03",
+      "pubkey": "3bdc372c0381602ba2eea6cb47307a9398907eb3752ec144b03800f1a76b0d5f",
+      "candidates": [
+        {
+          "name": "Node 03",
+          "pubkey": "3bdc372c0381602ba2eea6cb47307a9398907eb3752ec144b03800f1a76b0d5f",
+          "lat": 38.18,
+          "lon": -84.18,
+          "affinityScore": null
+        }
+      ],
+      "conflicts": [],
+      "confidence": "unique_prefix"
+    },
+    "5874": {
+      "name": null,
+      "candidates": [],
+      "conflicts": [],
+      "confidence": "no_match"
+    },
+    "0833": {
+      "name": null,
+      "candidates": [],
+      "conflicts": [],
+      "confidence": "no_match"
+    },
+    "1d": {
+      "name": "Node 04",
+      "pubkey": "1d1dcb654c01a324bf5d1e7a6234e7e79a743a9406b263daac632ea7c8a342ed",
+      "ambiguous": true,
+      "candidates": [
+        {
+          "name": "Node 04",
+          "pubkey": "1d1dcb654c01a324bf5d1e7a6234e7e79a743a9406b263daac632ea7c8a342ed",
+          "lat": 38.45,
+          "lon": -84.45,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 05",
+          "pubkey": "1d731ecf190410946ff2dfa7a981aebc6e17373175a5f3df3958e9674fc21cc6",
+          "lat": 38.48,
+          "lon": -84.48,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 06",
+          "pubkey": "1d4ff6a87c94c540f48c095c851930c3367167ba8d120330483782fa5a8a06ef",
+          "lat": 38.51,
+          "lon": -84.51,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 07",
+          "pubkey": "1d415b4e82aa974bb21705cb01a730efe31425de2aafb3bb1772e376589cc0df",
+          "lat": 38.54,
+          "lon": -84.54,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 08",
+          "pubkey": "1da882c132498e4314da97ede059af4083edaf183fb255ad13024e016ab7dd3d",
+          "lat": 38.57,
+          "lon": -84.57,
+          "affinityScore": null
+        }
+      ],
+      "conflicts": [
+        {
+          "name": "Node 04",
+          "pubkey": "1d1dcb654c01a324bf5d1e7a6234e7e79a743a9406b263daac632ea7c8a342ed",
+          "lat": 38.45,
+          "lon": -84.45,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 05",
+          "pubkey": "1d731ecf190410946ff2dfa7a981aebc6e17373175a5f3df3958e9674fc21cc6",
+          "lat": 38.48,
+          "lon": -84.48,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 06",
+          "pubkey": "1d4ff6a87c94c540f48c095c851930c3367167ba8d120330483782fa5a8a06ef",
+          "lat": 38.51,
+          "lon": -84.51,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 07",
+          "pubkey": "1d415b4e82aa974bb21705cb01a730efe31425de2aafb3bb1772e376589cc0df",
+          "lat": 38.54,
+          "lon": -84.54,
+          "affinityScore": null
+        },
+        {
+          "name": "Node 08",
+          "pubkey": "1da882c132498e4314da97ede059af4083edaf183fb255ad13024e016ab7dd3d",
+          "lat": 38.57,
+          "lon": -84.57,
+          "affinityScore": null
+        }
+      ],
+      "confidence": "gps_preference"
+    }
+  }
+}

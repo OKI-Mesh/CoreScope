@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
@@ -188,7 +189,7 @@ func TestResolveHopsAPI_UniquePrefix(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	var result ResolveHopsResponse
+	var result api.ResolveHopsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
@@ -235,13 +236,13 @@ func TestResolveHopsAPI_AmbiguousNoContext(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	var result ResolveHopsResponse
+	var result api.ResolveHopsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
 
-	hr := result.Resolved["ee1"]
-	if hr == nil {
+	hr, ok := result.Resolved["ee1"]
+	if !ok {
 		t.Fatal("expected hop in resolved map")
 	}
 	if hr.Confidence != "gps_preference" {
@@ -304,13 +305,13 @@ func TestResolveHopsAPI_WithAffinityContext(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	var result ResolveHopsResponse
+	var result api.ResolveHopsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
 
-	hr := result.Resolved["dd1"]
-	if hr == nil {
+	hr, ok := result.Resolved["dd1"]
+	if !ok {
 		t.Fatal("expected hop in resolved map")
 	}
 	if hr.Confidence != "neighbor_affinity" {

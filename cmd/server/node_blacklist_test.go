@@ -257,7 +257,7 @@ func TestBlacklistFiltersResolveHops(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp ResolveHopsResponse
+	var resp api.ResolveHopsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -96,7 +97,7 @@ func setupChannelScopeDB(t *testing.T) *database.DB {
 	return db
 }
 
-func assertChannelMessageScopes(t *testing.T, messages []ChannelMessageResponse) {
+func assertChannelMessageScopes(t *testing.T, messages []api.ChannelMessage) {
 	t.Helper()
 	if len(messages) != len(chScopeWant) {
 		t.Fatalf("expected %d messages, got %d", len(chScopeWant), len(messages))
@@ -138,17 +139,22 @@ func TestStoreGetChannelMessagesCarriesScopeName(t *testing.T) {
 		t.Fatalf("LoadChunked(): %v", err)
 	}
 	messages, _ := store.GetChannelMessages(ctx, "#scopetest", 100, 0)
-	responses := make([]ChannelMessageResponse, 0, len(messages))
+	responses := make([]api.ChannelMessage, 0, len(messages))
 	for _, message := range messages {
 		encoded, err := json.Marshal(message)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		var response ChannelMessageResponse
-		if err := json.Unmarshal(encoded, &response); err != nil {
+		// The store's own message maps carry millisecond times, which the
+		// wire type refuses, so read only the two fields under test.
+		var scoped struct {
+			PacketHash string  `json:"packetHash"`
+			ScopeName  *string `json:"scope_name"`
+		}
+		if err := json.Unmarshal(encoded, &scoped); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		responses = append(responses, response)
+		responses = append(responses, api.ChannelMessage{PacketHash: scoped.PacketHash, ScopeName: scoped.ScopeName})
 	}
 	assertChannelMessageScopes(t, responses)
 }
@@ -173,7 +179,7 @@ func TestChannelMessagesEndpointExposesScopeName(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
 	var body struct {
-		Messages []ChannelMessageResponse `json:"messages"`
+		Messages []api.ChannelMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
