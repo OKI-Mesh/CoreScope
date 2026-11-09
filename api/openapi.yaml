@@ -371,6 +371,52 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/clock-skew:
+    get:
+      operationId: getFleetClockSkew
+      summary: Clock skew for every node that has advert data
+      description: >-
+        Fleet entries omit samples, recentHashEvidence and calibrationSummary,
+        and carry nodeName and nodeRole when the node is known.
+      parameters:
+        - { name: area, in: query, schema: { type: string }, description: "Only nodes inside this area." }
+      responses:
+        "200":
+          description: One entry per node
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NodeClockSkew' }
+  /api/nodes/{pubkey}/clock-skew:
+    get:
+      operationId: getNodeClockSkew
+      summary: Clock skew detail for one node, including its sample series and per-hash evidence
+      parameters:
+        - { name: pubkey, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Skew statistics for the node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeClockSkew' }
+        "404":
+          description: No clock skew data for this node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/observers/clock-skew:
+    get:
+      operationId: getObserverClockSkew
+      summary: Clock offset of each observer, largest absolute offset first
+      responses:
+        "200":
+          description: One entry per calibrated observer
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ObserverCalibration' }
 components:
   schemas:
     NodeRole:
@@ -1021,3 +1067,133 @@ components:
           allOf: [{ $ref: '#/components/schemas/TimestampMillis' }]
         status: { $ref: '#/components/schemas/BatteryStatus' }
         thresholds: { $ref: '#/components/schemas/BatteryThresholds' }
+
+    SkewSeverity:
+      type: string
+      description: >-
+        Derived from the recent median skew. ok is under 5 minutes, warning
+        under 1 hour, critical under 30 days, absurd under 365 days and
+        no_clock beyond that (an uninitialized RTC). bimodal_clock marks a node
+        whose recent adverts mix good and nonsense timestamps.
+      enum: [ok, warning, critical, absurd, no_clock, bimodal_clock]
+      x-go-type: types.SkewSeverity
+      x-go-type-import:
+        path: github.com/OKI-Mesh/CoreScope/internal/types
+
+    SkewSample:
+      type: object
+      additionalProperties: false
+      required: [ts, skew]
+      properties:
+        ts: { type: integer, format: int64, description: Unix epoch seconds of the observation. }
+        skew: { type: number, format: double, description: Corrected skew in seconds. }
+
+    BadSample:
+      type: object
+      additionalProperties: false
+      required: [hash, advertTS, skewSec]
+      properties:
+        hash: { type: string }
+        advertTS: { type: integer, format: int64, description: The offending advert Unix timestamp. }
+        skewSec: { type: number, format: double }
+
+    HashEvidenceObserver:
+      type: object
+      additionalProperties: false
+      required: [observerID, observerName, rawSkewSec, correctedSkewSec, observerOffsetSec, calibrated]
+      properties:
+        observerID: { type: string }
+        observerName: { type: string }
+        rawSkewSec: { type: number, format: double }
+        correctedSkewSec: { type: number, format: double }
+        observerOffsetSec: { type: number, format: double }
+        calibrated: { type: boolean }
+
+    HashEvidence:
+      type: object
+      additionalProperties: false
+      required: [hash, observers, medianCorrectedSkewSec, timestamp]
+      properties:
+        hash: { type: string }
+        observers:
+          type: array
+          items: { $ref: '#/components/schemas/HashEvidenceObserver' }
+        medianCorrectedSkewSec: { type: number, format: double }
+        timestamp: { type: integer, format: int64 }
+
+    CalibrationSummary:
+      type: object
+      additionalProperties: false
+      required: [totalSamples, calibratedSamples, uncalibratedSamples]
+      properties:
+        totalSamples: { type: integer }
+        calibratedSamples: { type: integer }
+        uncalibratedSamples: { type: integer }
+
+    ObserverCalibration:
+      type: object
+      additionalProperties: false
+      required: [observerID, offsetSec, samples]
+      properties:
+        observerID: { type: string }
+        offsetSec: { type: number, format: double, description: Positive means the observer clock is ahead. }
+        samples: { type: integer, description: Multi-observer packets used to compute the offset. }
+
+    NodeClockSkew:
+      type: object
+      additionalProperties: false
+      required:
+        - pubkey
+        - meanSkewSec
+        - medianSkewSec
+        - lastSkewSec
+        - recentMedianSkewSec
+        - driftPerDaySec
+        - severity
+        - sampleCount
+        - calibrated
+        - lastAdvertTS
+        - lastObservedTS
+        - goodFraction
+        - recentBadSampleCount
+        - recentSampleCount
+      properties:
+        pubkey: { type: string }
+        meanSkewSec: { type: number, format: double, description: Corrected mean skew; positive means the node is ahead. }
+        medianSkewSec: { type: number, format: double }
+        lastSkewSec: { type: number, format: double }
+        recentMedianSkewSec: { type: number, format: double, description: Median over the most recent samples; drives severity. }
+        driftPerDaySec: { type: number, format: double }
+        severity: { $ref: '#/components/schemas/SkewSeverity' }
+        sampleCount: { type: integer }
+        calibrated: { type: boolean, description: True when observer calibration was applied. }
+        lastAdvertTS: { type: integer, format: int64, description: Unix epoch seconds of the newest advert timestamp. }
+        # Production sends lastObservedTS and the analytics page reads it. The
+        # repo's old Go tag said lastObservedTime; the contract follows production.
+        lastObservedTS: { type: integer, format: int64, description: Unix epoch seconds of the newest observation. }
+        samples:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Time series for sparklines. Absent on fleet entries.
+          items: { $ref: '#/components/schemas/SkewSample' }
+        goodFraction: { type: number, format: double, description: Fraction of recent samples with absolute skew of an hour or less. }
+        recentBadSampleCount: { type: integer }
+        recentBadSamples:
+          type: array
+          nullable: true
+          x-go-type-skip-optional-pointer: true
+          description: Evidence for each recent nonsense timestamp. Production sends null when there are none; the server now omits it.
+          items: { $ref: '#/components/schemas/BadSample' }
+        recentSampleCount: { type: integer }
+        recentHashEvidence:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Absent on fleet entries.
+          items: { $ref: '#/components/schemas/HashEvidence' }
+        calibrationSummary:
+          allOf: [{ $ref: '#/components/schemas/CalibrationSummary' }]
+          description: Absent on fleet entries.
+        nodeName: { type: string, description: "Fleet entries only, when the node is known." }
+        nodeRole:
+          description: "Fleet entries only, when the node is known."
+          allOf: [{ $ref: '#/components/schemas/NodeRole' }]

@@ -9206,7 +9206,7 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 			UniquePeers:         len(peerSlice),
 			AvgPacketsPerDay:    avgPacketsPerDay,
 		},
-		ClockSkew: clockSkew,
+		ClockSkew: nodeClockSkewResponsePtr(clockSkew),
 	}, nil
 }
 

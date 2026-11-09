@@ -136,6 +136,14 @@ func (e ListNodesParamsLastHeard) Valid() bool {
 	}
 }
 
+// BadSample defines model for BadSample.
+type BadSample struct {
+	// AdvertTS The offending advert Unix timestamp.
+	AdvertTS int64   `json:"advertTS"`
+	Hash     string  `json:"hash"`
+	SkewSec  float64 `json:"skewSec"`
+}
+
 // BatterySample defines model for BatterySample.
 type BatterySample struct {
 	BatteryMv int `json:"battery_mv"`
@@ -178,6 +186,13 @@ type BulkHealthStats struct {
 	TotalObservations  int               `json:"totalObservations"`
 	TotalPackets       int               `json:"totalPackets"`
 	TotalTransmissions int               `json:"totalTransmissions"`
+}
+
+// CalibrationSummary defines model for CalibrationSummary.
+type CalibrationSummary struct {
+	CalibratedSamples   int `json:"calibratedSamples"`
+	TotalSamples        int `json:"totalSamples"`
+	UncalibratedSamples int `json:"uncalibratedSamples"`
 }
 
 // CandidateEntry A candidate node offered when a neighbor edge is ambiguous.
@@ -247,6 +262,24 @@ type GraphStats struct {
 	RejectedEdgesGeoFar int64 `json:"rejected_edges_geo_far"`
 	TotalEdges          int   `json:"total_edges"`
 	TotalNodes          int   `json:"total_nodes"`
+}
+
+// HashEvidence defines model for HashEvidence.
+type HashEvidence struct {
+	Hash                   string                 `json:"hash"`
+	MedianCorrectedSkewSec float64                `json:"medianCorrectedSkewSec"`
+	Observers              []HashEvidenceObserver `json:"observers"`
+	Timestamp              int64                  `json:"timestamp"`
+}
+
+// HashEvidenceObserver defines model for HashEvidenceObserver.
+type HashEvidenceObserver struct {
+	Calibrated        bool    `json:"calibrated"`
+	CorrectedSkewSec  float64 `json:"correctedSkewSec"`
+	ObserverID        string  `json:"observerID"`
+	ObserverName      string  `json:"observerName"`
+	ObserverOffsetSec float64 `json:"observerOffsetSec"`
+	RawSkewSec        float64 `json:"rawSkewSec"`
 }
 
 // NeighborEntry One neighbor of the queried node, with affinity score and observation metadata.
@@ -453,6 +486,55 @@ type NodeBatteryResponse struct {
 	Thresholds BatteryThresholds `json:"thresholds"`
 }
 
+// NodeClockSkew defines model for NodeClockSkew.
+type NodeClockSkew struct {
+	// Calibrated True when observer calibration was applied.
+	Calibrated bool `json:"calibrated"`
+
+	// CalibrationSummary Absent on fleet entries.
+	CalibrationSummary *CalibrationSummary `json:"calibrationSummary,omitempty"`
+	DriftPerDaySec     float64             `json:"driftPerDaySec"`
+
+	// GoodFraction Fraction of recent samples with absolute skew of an hour or less.
+	GoodFraction float64 `json:"goodFraction"`
+
+	// LastAdvertTS Unix epoch seconds of the newest advert timestamp.
+	LastAdvertTS int64 `json:"lastAdvertTS"`
+
+	// LastObservedTS Unix epoch seconds of the newest observation.
+	LastObservedTS int64   `json:"lastObservedTS"`
+	LastSkewSec    float64 `json:"lastSkewSec"`
+
+	// MeanSkewSec Corrected mean skew; positive means the node is ahead.
+	MeanSkewSec   float64 `json:"meanSkewSec"`
+	MedianSkewSec float64 `json:"medianSkewSec"`
+
+	// NodeName Fleet entries only, when the node is known.
+	NodeName *string `json:"nodeName,omitempty"`
+
+	// NodeRole Fleet entries only, when the node is known.
+	NodeRole             *NodeRole `json:"nodeRole,omitempty"`
+	Pubkey               string    `json:"pubkey"`
+	RecentBadSampleCount int       `json:"recentBadSampleCount"`
+
+	// RecentBadSamples Evidence for each recent nonsense timestamp. Production sends null when there are none; the server now omits it.
+	RecentBadSamples []BadSample `json:"recentBadSamples,omitempty"`
+
+	// RecentHashEvidence Absent on fleet entries.
+	RecentHashEvidence []HashEvidence `json:"recentHashEvidence,omitempty"`
+
+	// RecentMedianSkewSec Median over the most recent samples; drives severity.
+	RecentMedianSkewSec float64 `json:"recentMedianSkewSec"`
+	RecentSampleCount   int     `json:"recentSampleCount"`
+	SampleCount         int     `json:"sampleCount"`
+
+	// Samples Time series for sparklines. Absent on fleet entries.
+	Samples []SkewSample `json:"samples,omitempty"`
+
+	// Severity Derived from the recent median skew. ok is under 5 minutes, warning under 1 hour, critical under 30 days, absurd under 365 days and no_clock beyond that (an uninitialized RTC). bimodal_clock marks a node whose recent adverts mix good and nonsense timestamps.
+	Severity SkewSeverity `json:"severity"`
+}
+
 // NodeDetailResponse defines model for NodeDetailResponse.
 type NodeDetailResponse struct {
 	// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
@@ -490,6 +572,17 @@ type NodeRole = types.NodeRole
 // NodeSearchResponse defines model for NodeSearchResponse.
 type NodeSearchResponse struct {
 	Nodes []Node `json:"nodes"`
+}
+
+// ObserverCalibration defines model for ObserverCalibration.
+type ObserverCalibration struct {
+	ObserverID string `json:"observerID"`
+
+	// OffsetSec Positive means the observer clock is ahead.
+	OffsetSec float64 `json:"offsetSec"`
+
+	// Samples Multi-observer packets used to compute the offset.
+	Samples int `json:"samples"`
 }
 
 // PacketCore defines model for PacketCore.
@@ -538,6 +631,18 @@ type RoleCounts struct {
 
 // ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
 type ScopeConfigState string
+
+// SkewSample defines model for SkewSample.
+type SkewSample struct {
+	// Skew Corrected skew in seconds.
+	Skew float64 `json:"skew"`
+
+	// Ts Unix epoch seconds of the observation.
+	Ts int64 `json:"ts"`
+}
+
+// SkewSeverity Derived from the recent median skew. ok is under 5 minutes, warning under 1 hour, critical under 30 days, absurd under 365 days and no_clock beyond that (an uninitialized RTC). bimodal_clock marks a node whose recent adverts mix good and nonsense timestamps.
+type SkewSeverity = types.SkewSeverity
 
 // TimestampMillis UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
 type TimestampMillis = types.WireTimeMillis
@@ -606,6 +711,12 @@ type GetBulkHealthParams struct {
 	Region *string `form:"region,omitempty" json:"region,omitempty"`
 
 	// Area Only nodes inside this area; returns the full filtered set.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+}
+
+// GetFleetClockSkewParams defines parameters for GetFleetClockSkew.
+type GetFleetClockSkewParams struct {
+	// Area Only nodes inside this area.
 	Area *string `form:"area,omitempty" json:"area,omitempty"`
 }
 

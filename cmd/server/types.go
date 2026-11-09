@@ -548,7 +548,7 @@ type NodeAnalyticsResponse struct {
 	PeerInteractions    []PeerInteraction       `json:"peerInteractions"`
 	UptimeHeatmap       []HeatmapCell           `json:"uptimeHeatmap"`
 	ComputedStats       ComputedNodeStats       `json:"computedStats"`
-	ClockSkew           *NodeClockSkew          `json:"clockSkew,omitempty"`
+	ClockSkew           *api.NodeClockSkew      `json:"clockSkew,omitempty"`
 }
 
 // NodeHopPacket is one flood packet this node forwarded, with the hop count

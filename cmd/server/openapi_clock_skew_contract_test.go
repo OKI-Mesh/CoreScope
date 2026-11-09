@@ -1,0 +1,77 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/gorilla/mux"
+)
+
+func TestClockSkewEndpointsMatchSpec(t *testing.T) {
+	checker := newSpecChecker(t)
+
+	t.Run("fleet and observers on the fixture server", func(t *testing.T) {
+		_, router := setupTestServer(t)
+		checker.check(t, router, "/api/nodes/clock-skew")
+		checker.check(t, router, "/api/observers/clock-skew")
+	})
+
+	t.Run("node with bad samples", func(t *testing.T) {
+		store, _, _ := seedIssue1094Repro(t)
+		srv := &Server{store: store}
+		router := mux.NewRouter()
+		router.HandleFunc("/api/nodes/{pubkey}/clock-skew", srv.handleNodeClockSkew).Methods("GET")
+		router.HandleFunc("/api/observers/clock-skew", srv.handleObserverClockSkew).Methods("GET")
+
+		checker.check(t, router, "/api/nodes/BADTS1094/clock-skew")
+		checker.check(t, router, "/api/observers/clock-skew")
+		checker.checkStatus(t, router, "/api/nodes/NOSUCHNODE/clock-skew", http.StatusNotFound)
+	})
+}
+
+func TestProdClockSkewFixturesMatchSpec(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData(api.Spec)
+	if err != nil {
+		t.Fatalf("load spec: %v", err)
+	}
+	for _, tc := range []struct{ name, file string }{
+		{"NodeClockSkew", "node_clock_skew_prod.json"},
+		{"FleetClockSkew", "fleet_clock_skew_prod.json"},
+		{"ObserverCalibrations", "observer_clock_skew_prod.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := os.ReadFile("testdata/" + tc.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded interface{}
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			schema := doc.Components.Schemas["NodeClockSkew"].Value
+			switch tc.name {
+			case "NodeClockSkew":
+				if err := schema.VisitJSON(decoded); err != nil {
+					t.Errorf("production response does not match NodeClockSkew: %v", err)
+				}
+			case "FleetClockSkew":
+				for i, entry := range decoded.([]interface{}) {
+					if err := schema.VisitJSON(entry); err != nil {
+						t.Errorf("fleet entry %d does not match NodeClockSkew: %v", i, err)
+					}
+				}
+			case "ObserverCalibrations":
+				entry := doc.Components.Schemas["ObserverCalibration"].Value
+				for i, row := range decoded.([]interface{}) {
+					if err := entry.VisitJSON(row); err != nil {
+						t.Errorf("observer entry %d does not match ObserverCalibration: %v", i, err)
+					}
+				}
+			}
+		})
+	}
+}

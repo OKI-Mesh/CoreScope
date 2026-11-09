@@ -3,18 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// ── Clock Skew Severity ────────────────────────────────────────────────────────
-
-type SkewSeverity string
+// ── Clock Skew Constants ───────────────────────────────────────────────────────
 
 var (
 	skewMinAdvert = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -22,21 +22,6 @@ var (
 )
 
 const (
-	SkewOK           SkewSeverity = "ok"            // < 5 min
-	SkewWarning      SkewSeverity = "warning"       // 5 min – 1 hour
-	SkewCritical     SkewSeverity = "critical"      // 1 hour – 30 days
-	SkewAbsurd       SkewSeverity = "absurd"        // > 30 days
-	SkewNoClock      SkewSeverity = "no_clock"      // > 365 days — uninitialized RTC
-	SkewBimodalClock SkewSeverity = "bimodal_clock" // mixed good+bad recent samples (flaky RTC)
-)
-
-// Default thresholds in seconds.
-const (
-	skewThresholdWarnSec     = 5 * 60          // 5 minutes
-	skewThresholdCriticalSec = 60 * 60         // 1 hour
-	skewThresholdAbsurdSec   = 30 * 24 * 3600  // 30 days
-	skewThresholdNoClockSec  = 365 * 24 * 3600 // 365 days — uninitialized RTC
-
 	// minDriftSamples is the minimum number of advert transmissions needed
 	// to compute a meaningful linear drift rate.
 	minDriftSamples = 5
@@ -92,24 +77,6 @@ const (
 	theilSenMaxPoints = 200
 )
 
-// classifySkew maps absolute skew (seconds) to a severity level.
-// Float64 comparison is safe: inputs are rounded to 1 decimal via round(),
-// and thresholds are integer multiples of 60 — no rounding artifacts.
-func classifySkew(absSkewSec float64) SkewSeverity {
-	switch {
-	case absSkewSec >= skewThresholdNoClockSec:
-		return SkewNoClock
-	case absSkewSec >= skewThresholdAbsurdSec:
-		return SkewAbsurd
-	case absSkewSec >= skewThresholdCriticalSec:
-		return SkewCritical
-	case absSkewSec >= skewThresholdWarnSec:
-		return SkewWarning
-	default:
-		return SkewOK
-	}
-}
-
 // ── Data Types ─────────────────────────────────────────────────────────────────
 
 // skewSample is a single raw skew measurement from one advert observation.
@@ -126,79 +93,94 @@ func (s skewSample) rawSkewSec() float64 {
 
 // ObserverCalibration holds the computed clock offset for an observer.
 type ObserverCalibration struct {
-	ObserverID string  `json:"observerID"`
-	OffsetSec  float64 `json:"offsetSec"` // positive = observer clock ahead
-	Samples    int     `json:"samples"`   // number of multi-observer packets used
+	ObserverID string
+	OffsetSec  float64 // positive = observer clock ahead
+	Samples    int     // number of multi-observer packets used
 }
 
-// NodeClockSkew is the API response for a single node's clock skew data.
+// NodeClockSkew is the engine's clock skew result for a single node. It is
+// not serialized: handlers convert it to api.NodeClockSkew, which fixes the
+// wire names and formats.
 type NodeClockSkew struct {
-	Pubkey               string              `json:"pubkey"`
-	MeanSkewSec          float64             `json:"meanSkewSec"`         // corrected mean skew (positive = node ahead)
-	MedianSkewSec        float64             `json:"medianSkewSec"`       // corrected median skew
-	LastSkewSec          float64             `json:"lastSkewSec"`         // most recent corrected skew
-	RecentMedianSkewSec  float64             `json:"recentMedianSkewSec"` // median across most-recent samples (drives severity, see #789)
-	DriftPerDaySec       float64             `json:"driftPerDaySec"`      // linear drift rate (sec/day)
-	Severity             SkewSeverity        `json:"severity"`
-	SampleCount          int                 `json:"sampleCount"`
-	Calibrated           bool                `json:"calibrated"`                 // true if observer calibration was applied
-	LastAdvertTS         int64               `json:"lastAdvertTS"`               // most recent advert timestamp
-	LastObservedTS       int64               `json:"lastObservedTime"`           // most recent observation timestamp
-	Samples              []SkewSample        `json:"samples,omitempty"`          // time-series for sparklines
-	GoodFraction         float64             `json:"goodFraction"`               // fraction of recent samples with |skew| <= 1h
-	RecentBadSampleCount int                 `json:"recentBadSampleCount"`       // count of recent samples with |skew| > 1h
-	RecentBadSamples     []BadSample         `json:"recentBadSamples,omitempty"` // #1094: per-bad-sample evidence (hash + bad advertTS)
-	RecentSampleCount    int                 `json:"recentSampleCount"`          // total recent samples in window
-	RecentHashEvidence   []HashEvidence      `json:"recentHashEvidence,omitempty"`
-	CalibrationSummary   *CalibrationSummary `json:"calibrationSummary,omitempty"`
-	NodeName             string              `json:"nodeName,omitempty"` // populated in fleet responses
-	NodeRole             types.NodeRole      `json:"nodeRole,omitempty"` // populated in fleet responses
+	Pubkey               string
+	MeanSkewSec          float64 // corrected mean skew (positive = node ahead)
+	MedianSkewSec        float64 // corrected median skew
+	LastSkewSec          float64 // most recent corrected skew
+	RecentMedianSkewSec  float64 // median across most-recent samples (drives severity, see #789)
+	DriftPerDaySec       float64 // linear drift rate (sec/day)
+	Severity             types.SkewSeverity
+	SampleCount          int
+	Calibrated           bool // true if observer calibration was applied
+	LastAdvertTime       time.Time
+	LastObservedTime     time.Time
+	Samples              []SkewSample // time-series for sparklines
+	GoodFraction         float64      // fraction of recent samples with |skew| <= 1h
+	RecentBadSampleCount int          // count of recent samples with |skew| > 1h
+	RecentBadSamples     []BadSample  // #1094: per-bad-sample evidence (hash + bad advertTime)
+	RecentSampleCount    int          // total recent samples in window
+	RecentHashEvidence   []HashEvidence
+	CalibrationSummary   *CalibrationSummary
+	NodeName             string         // populated in fleet results
+	NodeRole             types.NodeRole // populated in fleet results
 }
 
-// SkewSample is a single (timestamp, skew) point for sparkline rendering.
+// SkewSample is a single (time, skew) point for sparkline rendering.
 type SkewSample struct {
-	Timestamp int64   `json:"ts"`   // Unix epoch of observation
-	SkewSec   float64 `json:"skew"` // corrected skew in seconds
+	Time    time.Time // when the observation was heard
+	SkewSec float64   // corrected skew in seconds
 }
 
 // BadSample is a single recent advert flagged as having a nonsense timestamp
 // (|corrected skew| in the bimodal-bad band — > 1h, <= 24h). #1094: surfaced
 // so the UI can link each offender to its packet detail page.
 type BadSample struct {
-	Hash     string  `json:"hash"`     // transmission hash for packet-detail deep-link
-	AdvertTS int64   `json:"advertTS"` // the offending advert Unix timestamp
-	SkewSec  float64 `json:"skewSec"`  // corrected skew vs observer at observation time
+	Hash       string    // transmission hash for packet-detail deep-link
+	AdvertTime time.Time // what the node's clock said in the offending advert
+	SkewSec    float64   // corrected skew vs observer at observation time
 }
 
 // HashEvidenceObserver is one observer's contribution to a per-hash evidence entry.
 type HashEvidenceObserver struct {
-	ObserverID        string  `json:"observerID"`
-	ObserverName      string  `json:"observerName"`
-	RawSkewSec        float64 `json:"rawSkewSec"`
-	CorrectedSkewSec  float64 `json:"correctedSkewSec"`
-	ObserverOffsetSec float64 `json:"observerOffsetSec"`
-	Calibrated        bool    `json:"calibrated"`
+	ObserverID        string
+	ObserverName      string
+	RawSkewSec        float64
+	CorrectedSkewSec  float64
+	ObserverOffsetSec float64
+	Calibrated        bool
 }
 
 // HashEvidence is per-hash clock skew evidence showing individual observer contributions.
 type HashEvidence struct {
-	Hash                   string                 `json:"hash"`
-	Observers              []HashEvidenceObserver `json:"observers"`
-	MedianCorrectedSkewSec float64                `json:"medianCorrectedSkewSec"`
-	Timestamp              int64                  `json:"timestamp"`
+	Hash                   string
+	Observers              []HashEvidenceObserver
+	MedianCorrectedSkewSec float64
+	Time                   time.Time // when the newest observation of this hash was heard
 }
 
 // CalibrationSummary counts how many samples were corrected via observer calibration.
 type CalibrationSummary struct {
-	TotalSamples        int `json:"totalSamples"`
-	CalibratedSamples   int `json:"calibratedSamples"`
-	UncalibratedSamples int `json:"uncalibratedSamples"`
+	TotalSamples        int
+	CalibratedSamples   int
+	UncalibratedSamples int
+}
+
+// txSkew is the skew statistics of one advert transmission, computed across
+// the observers that heard it. The store later maps transmission hash to node
+// pubkey when building the per-node view.
+type txSkew struct {
+	MeanSkewSec   float64
+	MedianSkewSec float64
+	LastSkewSec   float64
+	Severity      types.SkewSeverity
+	SampleCount   int
+	Calibrated    bool
+	LastAdvert    time.Time // what the node's clock said
+	LastObserved  time.Time // newest observation, truncated to whole seconds
 }
 
 // txSkewResult maps tx hash → per-transmission skew stats. This is an
-// intermediate result keyed by hash (not pubkey); the store maps hash → pubkey
-// when building the final per-node view.
-type txSkewResult = map[string]*NodeClockSkew
+// intermediate result keyed by hash (not pubkey).
+type txSkewResult = map[string]*txSkew
 
 // ── Clock Skew Engine ──────────────────────────────────────────────────────────
 
@@ -473,7 +455,7 @@ func computeNodeSkew(samples []skewSample, obsOffsets map[string]float64) (txSke
 	// Each hash represents one advert from one node. Compute median corrected
 	// skew per hash (across multiple observers).
 
-	result := make(map[string]*NodeClockSkew) // keyed by hash for now
+	result := make(txSkewResult) // keyed by hash for now
 	for hash, cs := range byHash {
 		skews := make([]float64, len(cs))
 		for i, c := range cs {
@@ -495,15 +477,15 @@ func computeNodeSkew(samples []skewSample, obsOffsets map[string]float64) (txSke
 		}
 
 		absMedian := math.Abs(medSkew)
-		result[hash] = &NodeClockSkew{
-			MeanSkewSec:    round(meanSkew, 1),
-			MedianSkewSec:  round(medSkew, 1),
-			LastSkewSec:    round(cs[len(cs)-1].skew, 1),
-			Severity:       classifySkew(absMedian),
-			SampleCount:    len(cs),
-			Calibrated:     anyCal,
-			LastAdvertTS:   hashAdvertTime[hash].Unix(),
-			LastObservedTS: latestObs.Unix(),
+		result[hash] = &txSkew{
+			MeanSkewSec:   round(meanSkew, 1),
+			MedianSkewSec: round(medSkew, 1),
+			LastSkewSec:   round(cs[len(cs)-1].skew, 1),
+			Severity:      types.ClassifySkew(absMedian),
+			SampleCount:   len(cs),
+			Calibrated:    anyCal,
+			LastAdvert:    time.Unix(hashAdvertTime[hash].Unix(), 0).UTC(),
+			LastObserved:  time.Unix(latestObs.Unix(), 0).UTC(),
 		}
 	}
 	return result, evidence
@@ -561,7 +543,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 
 	var allSkews []float64
 	var lastSkew float64
-	var lastObsTS, lastAdvTS int64
+	var lastObserved, lastAdvert time.Time
 	var totalSamples int
 	var anyCal bool
 	var tsSkews []tsSkewPair
@@ -585,12 +567,12 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 		if cs.Calibrated {
 			anyCal = true
 		}
-		if cs.LastObservedTS > lastObsTS {
-			lastObsTS = cs.LastObservedTS
+		if cs.LastObserved.After(lastObserved) {
+			lastObserved = cs.LastObserved
 			lastSkew = cs.LastSkewSec
-			lastAdvTS = cs.LastAdvertTS
+			lastAdvert = cs.LastAdvert
 		}
-		tsSkews = append(tsSkews, tsSkewPair{ts: cs.LastObservedTS, skew: cs.MedianSkewSec, hash: tx.Hash, advertTS: cs.LastAdvertTS})
+		tsSkews = append(tsSkews, tsSkewPair{ts: cs.LastObserved.Unix(), skew: cs.MedianSkewSec, hash: tx.Hash, advertTime: cs.LastAdvert})
 	}
 
 	if len(allSkews) == 0 {
@@ -677,9 +659,9 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 			// instead of showing a count without evidence (#1094).
 			if i < len(recentPairs) && recentPairs[i].hash != "" {
 				recentBadSamples = append(recentBadSamples, BadSample{
-					Hash:     recentPairs[i].hash,
-					AdvertTS: recentPairs[i].advertTS,
-					SkewSec:  round(v, 1),
+					Hash:       recentPairs[i].hash,
+					AdvertTime: recentPairs[i].advertTime,
+					SkewSec:    round(v, 1),
 				})
 			}
 		}
@@ -691,14 +673,14 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 		goodFraction = float64(len(goodSamples)) / float64(recentSampleCount)
 	}
 
-	var severity SkewSeverity
+	var severity types.SkewSeverity
 	if goodFraction < 0.10 {
 		// Essentially no real clock — classify as no_clock regardless
 		// of the raw skew magnitude.
-		severity = SkewNoClock
+		severity = types.SkewNoClock
 	} else if goodFraction < 0.80 && recentBadCount > 0 {
 		// Bimodal: use median of GOOD samples as the "real" skew.
-		severity = SkewBimodalClock
+		severity = types.SkewBimodalClock
 		if len(goodSamples) > 0 {
 			recentSkew = median(goodSamples)
 		}
@@ -709,12 +691,12 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 		if len(goodSamples) > 0 {
 			recentSkew = median(goodSamples)
 		}
-		severity = classifySkew(math.Abs(recentSkew))
+		severity = types.ClassifySkew(math.Abs(recentSkew))
 	}
 
 	// For no_clock / bimodal_clock nodes, skip drift when data is unreliable.
 	var drift float64
-	if severity != SkewNoClock && severity != SkewBimodalClock && len(tsSkews) >= minDriftSamples {
+	if !severity.HasUnreliableClock() && len(tsSkews) >= minDriftSamples {
 		drift = computeDrift(tsSkews)
 		// Cap physically impossible drift rates.
 		if math.Abs(drift) > maxReasonableDriftPerDay {
@@ -725,7 +707,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 	// Build sparkline samples from tsSkews (already sorted by time above).
 	samples := make([]SkewSample, len(tsSkews))
 	for i, p := range tsSkews {
-		samples[i] = SkewSample{Timestamp: p.ts, SkewSec: round(p.skew, 1)}
+		samples[i] = SkewSample{Time: time.Unix(p.ts, 0).UTC(), SkewSec: round(p.skew, 1)}
 	}
 
 	// Build per-hash evidence (most recent 10 hashes with ≥1 observer).
@@ -793,7 +775,7 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 			Hash:                   eh.hash,
 			Observers:              observers,
 			MedianCorrectedSkewSec: round(hashEvidenceMedian(corrSkews), 1),
-			Timestamp:              eh.ts,
+			Time:                   time.Unix(eh.ts, 0).UTC(),
 		})
 	}
 
@@ -807,8 +789,8 @@ func (s *PacketStore) getNodeClockSkewLocked(pubkey string) *NodeClockSkew {
 		Severity:             severity,
 		SampleCount:          totalSamples,
 		Calibrated:           anyCal,
-		LastAdvertTS:         lastAdvTS,
-		LastObservedTS:       lastObsTS,
+		LastAdvertTime:       lastAdvert,
+		LastObservedTime:     lastObserved,
 		Samples:              samples,
 		GoodFraction:         round(goodFraction, 2),
 		RecentBadSampleCount: recentBadCount,
@@ -974,15 +956,15 @@ func mean(vals []float64) float64 {
 }
 
 // tsSkewPair is a (timestamp, skew) pair for drift estimation. Also carries
-// the source hash + advertTS so callers building per-sample evidence (e.g.
+// the source hash + advertTime so callers building per-sample evidence (e.g.
 // recentBadSamples for #1094) can identify the offending packet without a
 // second pass. Drift code reads only ts/skew; the extra fields are inert
 // there.
 type tsSkewPair struct {
-	ts       int64
-	skew     float64
-	hash     string
-	advertTS int64
+	ts         int64
+	skew       float64
+	hash       string
+	advertTime time.Time
 }
 
 // computeDrift estimates linear drift in seconds per day from time-ordered
@@ -1064,4 +1046,516 @@ func theilSenSlope(pairs []tsSkewPair) float64 {
 		return 0
 	}
 	return median(slopes)
+}
+
+// Regression test for #1094: the bimodal-clock warning currently exposes only
+// RecentBadSampleCount, leaving the UI to render "⚠️ N of M adverts had
+// nonsense timestamps" without telling the operator WHICH packets were bad.
+//
+// This test pins the additive API contract: alongside the count, the response
+// must expose RecentBadSamples — a slice of (hash, advertTS, skewSec) — so the
+// frontend can render each offending hash as a clickable link with its bad
+// timestamp.
+// Seeds 5 recent adverts: 3 healthy (~-20s skew) and 2 with a "nonsense"
+// bimodal-bad timestamp (|skew| in (1h, 24h]). The recent window is exactly
+// 5 samples, so all five are inside it.
+func seedIssue1094Repro(t *testing.T) (*PacketStore, []string, []int64) {
+	t.Helper()
+	ps := NewPacketStore(nil, nil)
+	pt := types.PayloadADVERT
+
+	const pubkey = "BADTS1094"
+	baseObs := time.Date(2026, 5, 17, 6, 40, 0, 0, time.UTC) // equivalent to the old 1779000000
+
+	var txs []*StoreTx
+	var badHashes []string
+	var badAdvertTSs []int64
+
+	// 3 healthy adverts (skew = -20s).
+	for i := 0; i < 3; i++ {
+		obsTime := baseObs.Add(time.Duration(i) * time.Minute)
+		advTS := obsTime.Add(-20 * time.Second).Unix()
+		txs = append(txs, &StoreTx{
+			Hash:        "healthy-1094-" + formatInt64(int64(i)),
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"BADTS1094"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTime},
+			},
+		})
+	}
+
+	// 2 nonsense-timestamp adverts (skew = -7200s = -2h — bimodal-bad,
+	// below the 24h RTC-reset exclusion so they DO count in recentBadCount).
+	for i := 0; i < 2; i++ {
+		obsTS := baseObs.Add(time.Duration(3+i) * 60)
+		advTS := obsTS.Add(-2 * time.Hour).Unix()
+		hash := "bad-1094-" + formatInt64(int64(i))
+		txs = append(txs, &StoreTx{
+			Hash:        hash,
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"BADTS1094"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTS},
+			},
+		})
+		badHashes = append(badHashes, hash)
+		badAdvertTSs = append(badAdvertTSs, advTS)
+	}
+
+	ps.mu.Lock()
+	ps.byNode[pubkey] = txs
+	for _, tx := range txs {
+		ps.byPayloadType[4] = append(ps.byPayloadType[4], tx)
+	}
+	ps.clockSkew.computeInterval = 0
+	ps.mu.Unlock()
+	return ps, badHashes, badAdvertTSs
+}
+
+func TestIssue1094_RecentBadSamples_ExposesHashAndTimestamp(t *testing.T) {
+	ps, wantHashes, wantAdvertTSs := seedIssue1094Repro(t)
+	r := ps.GetNodeClockSkew("BADTS1094")
+	if r == nil {
+		t.Fatal("expected clock skew result")
+	}
+
+	// Pre-condition: count must already be 2 (gates the test against the
+	// existing field — if this drops we'd be measuring the wrong thing).
+	if r.RecentBadSampleCount != 2 {
+		t.Fatalf("RecentBadSampleCount = %d, want 2 (seed bug, not the field-under-test)",
+			r.RecentBadSampleCount)
+	}
+
+	if len(r.RecentBadSamples) != 2 {
+		t.Fatalf("RecentBadSamples len = %d, want 2 — operators need to see which "+
+			"adverts had nonsense timestamps, not just the count",
+			len(r.RecentBadSamples))
+	}
+
+	gotByHash := map[string]int64{}
+	for _, bs := range r.RecentBadSamples {
+		gotByHash[bs.Hash] = bs.AdvertTime.Unix()
+	}
+	for i, h := range wantHashes {
+		ts, ok := gotByHash[h]
+		if !ok {
+			t.Errorf("RecentBadSamples missing hash %q", h)
+			continue
+		}
+		if ts != wantAdvertTSs[i] {
+			t.Errorf("RecentBadSamples[%q].AdvertTime = %d, want %d (the bad advert time)",
+				h, ts, wantAdvertTSs[i])
+		}
+	}
+}
+
+// Regression tests for #1285:
+//
+// Bug A: per-hash evidence's MedianCorrectedSkewSec includes 700-day RTC-reset
+//        outliers, dragging the displayed median into "−704d 18h" garbage even
+//        though every recent sample is small (< 30s).
+//
+// Bug B: RecentBadSampleCount counts samples outside the *displayed* recent
+//        window (or counts against raw skew, not corrected) → "3 of last 5
+//        adverts had nonsense timestamps" warning fires on healthy nodes.
+//
+// Both must pass without disturbing the existing bimodal / no-clock logic.
+
+// Synthesizes the repro from issue #1285:
+//
+//	30 healthy adverts (skew ~−20s) + 1 historical advert with an RTC reset
+//	(advertTS = 2024-06-13, observed today → −705d skew).
+//
+// Returns the populated store.
+func seedIssue1285Repro(t *testing.T) *PacketStore {
+	t.Helper()
+	ps := NewPacketStore(nil, nil)
+	pt := types.PayloadADVERT
+
+	const pubkey = "RTCRESET"
+	const skew = -20 * time.Second // node clock is 20s BEHIND wall-clock
+
+	baseObs := time.Unix(1779000000, 0).UTC() // ~mid-2026
+	rtcResetAdv := int64(1718281640)          // 2024-06-13 (from the issue repro); payload value, stays unix seconds
+
+	var txs []*StoreTx
+
+	// 30 healthy adverts spanning the older end of the recent window.
+	for i := 0; i < 30; i++ {
+		obsTime := baseObs.Add(time.Duration(i) * time.Minute)
+		advTS := obsTime.Add(skew).Unix()
+		tx := &StoreTx{
+			Hash:        "healthy-" + formatInt64(int64(i)),
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"RTCRESET"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTime},
+			},
+		}
+		txs = append(txs, tx)
+	}
+
+	// One RTC-reset packet observed MOST RECENTLY (so it sits in the
+	// per-hash evidence list AND is included in the recent-window count
+	// on master). Its advertTS is from 2024 → corrected skew ≈ -60M sec.
+	rtcResetObs := baseObs.Add(31 * time.Minute) // 30*60 + 60 seconds after base
+	rtcTx := &StoreTx{
+		Hash:        "rtc-reset-0001",
+		PayloadType: &pt,
+		DecodedJSON: `{"payload":{"timestamp":` + formatInt64(rtcResetAdv) + `},"pubKey":"RTCRESET"}`,
+		Observations: []*StoreObs{
+			{ObserverID: "obs1", Timestamp: rtcResetObs},
+		},
+	}
+	txs = append(txs, rtcTx)
+
+	ps.mu.Lock()
+	ps.byNode[pubkey] = txs
+	for _, tx := range txs {
+		ps.byPayloadType[4] = append(ps.byPayloadType[4], tx)
+	}
+	ps.clockSkew.computeInterval = 0
+	ps.mu.Unlock()
+	return ps
+}
+
+// Bug A — per-hash evidence median must EXCLUDE the 705-day RTC-reset outlier.
+// On master this asserts on the RTC-reset hash's MedianCorrectedSkewSec being
+// ≈ −60M sec ("−704d 18h"); after the fix the field is suppressed (0) or
+// otherwise marked insufficient, never displayed as the garbage value.
+func TestIssue1285_HashEvidence_OutlierExcludedFromMedian(t *testing.T) {
+	ps := seedIssue1285Repro(t)
+	r := ps.GetNodeClockSkew("RTCRESET")
+	if r == nil {
+		t.Fatal("expected clock skew result")
+	}
+
+	// The recent-hash evidence list is the source of the "median corrected:
+	// −704d 18h" string in the UI. After the fix, NO entry in this list
+	// should report a |median| above the 24h sanity threshold — the fix is
+	// to drop outlier samples (or flag the hash as insufficient-data) before
+	// publishing the median.
+	const maxSaneAbsSec = float64(24 * 3600)
+	for _, ev := range r.RecentHashEvidence {
+		if abs(ev.MedianCorrectedSkewSec) > maxSaneAbsSec {
+			t.Errorf("hash %s exposes outlier-dominated median %.0fs (~%.1fd); "+
+				"expected entry to be filtered out or marked insufficient (|median| <= %.0fs)",
+				ev.Hash, ev.MedianCorrectedSkewSec,
+				ev.MedianCorrectedSkewSec/86400, maxSaneAbsSec)
+		}
+	}
+}
+
+// Bug B — RecentBadSampleCount must be 0 when every sample in the recent
+// window is healthy (<30s |corrected skew|). On master this fires because
+// "recent" is computed over the wrong set (or against raw skew).
+func TestIssue1285_RecentBadCount_NotPollutedByOldOutlier(t *testing.T) {
+	ps := seedIssue1285Repro(t)
+	r := ps.GetNodeClockSkew("RTCRESET")
+	if r == nil {
+		t.Fatal("expected clock skew result")
+	}
+	if r.RecentBadSampleCount != 0 {
+		t.Errorf("RecentBadSampleCount = %d, want 0 — recent samples are all "+
+			"~−20s (healthy); the historical RTC-reset outlier is outside the "+
+			"recent window and must not be counted", r.RecentBadSampleCount)
+	}
+	if r.Severity == types.SkewBimodalClock || r.Severity == types.SkewNoClock {
+		t.Errorf("severity = %v, want ok/warning — recent samples are all "+
+			"healthy (~−20s skew), one historical outlier must not flip the node "+
+			"to bimodal/no-clock", r.Severity)
+	}
+}
+
+func abs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// Regression tests for #1816 / #1818:
+//
+// getNodeClockSkewLocked() iterated every ADVERT transaction indexed under
+// a pubkey in s.byNode WITHOUT checking whether the node actually
+// originated (self-signed) that advert. byNode is an involvement index
+// (store.go:1696-1705, indexResolvedPathHops, #1558/#1352): a transmission
+// is also indexed under every relay-hop pubkey extracted from an
+// observation's resolved_path. So a relay that merely forwarded a
+// broken-clock node's advert inherited that node's skew as if it were its
+// own — producing:
+//
+//   - Fleet-wide false no_clock / bimodal_clock classifications on healthy
+//     relays whose only "bad" samples are adverts they relayed (#1816).
+//   - Bit-identical RecentMedianSkewSec "clusters" across unrelated relays
+//     that all forwarded the same broken-clock originator (#1816).
+//   - A single relay showing a nonsense multi-day skew even though its own
+//     self-adverts are perfectly healthy, because 1-2 relayed adverts from
+//     a broken originator landed in the tail of its small recent-window
+//     sample (#1818 — the "island" repro from cwichura).
+//
+// The fix (txOriginatedBy in clock_skew.go) restricts the ADVERT filter in
+// getNodeClockSkewLocked to self-originated adverts only (decoded pubKey
+// == pubkey), leaving byNode itself untouched (#1558/#1352 still depend on
+// the broader involvement index for other consumers).
+// ── txOriginatedBy ───────────────────────────────────────────────────────────
+
+func TestTxOriginatedBy(t *testing.T) {
+	pt := types.PayloadADVERT
+	selfTx := &StoreTx{
+		Hash:        "self-1",
+		PayloadType: &pt,
+		DecodedJSON: `{"payload":{"timestamp":1700000000},"pubKey":"AABBCC"}`,
+	}
+	foreignTx := &StoreTx{
+		Hash:        "foreign-1",
+		PayloadType: &pt,
+		DecodedJSON: `{"payload":{"timestamp":1700000000},"pubKey":"DDEEFF"}`,
+	}
+	noPubkeyTx := &StoreTx{
+		Hash:        "nopk-1",
+		PayloadType: &pt,
+		DecodedJSON: `{"payload":{"timestamp":1700000000}}`,
+	}
+	mixedCaseTx := &StoreTx{
+		Hash:        "case-1",
+		PayloadType: &pt,
+		DecodedJSON: `{"payload":{"timestamp":1700000000},"pubKey":"aabbcc"}`,
+	}
+
+	if !txOriginatedBy(selfTx, "AABBCC") {
+		t.Error("expected self-signed advert to match its own pubkey")
+	}
+	if txOriginatedBy(foreignTx, "AABBCC") {
+		t.Error("expected advert from a different originator NOT to match")
+	}
+	if txOriginatedBy(noPubkeyTx, "AABBCC") {
+		t.Error("expected advert with no decoded pubKey NOT to match anything")
+	}
+	if !txOriginatedBy(mixedCaseTx, "AABBCC") {
+		t.Error("expected case-insensitive pubkey match to succeed")
+	}
+}
+
+// ── #1816: relay must not inherit the originator's skew ───────────────────────
+
+// A relay ("RELAY001") only ever transmits healthy self-adverts (skew ~0s).
+// It also forwards adverts from a broken-clock originator ("BROKENORIG",
+// skew ~+100,500s, matching the #1816 report's +100.5k band) — those
+// transmissions are indexed under RELAY001 in byNode too, exactly as
+// indexResolvedPathHops does for real relay-hop traffic. Before the fix,
+// these foreign adverts polluted RELAY001's skew stream and could flip its
+// severity to no_clock/bimodal even though every advert RELAY001 itself
+// sent is fine.
+func TestIssue1816_RelayDoesNotInheritOriginatorSkew(t *testing.T) {
+	ps := NewPacketStore(nil, nil)
+	pt := types.PayloadADVERT
+	baseObs := time.Unix(1700000000, 0).UTC()
+
+	var relayTxs []*StoreTx
+
+	// RELAY001's own healthy adverts: skew ~0s.
+	for i := 0; i < 5; i++ {
+		obsTime := baseObs.Add(time.Duration(i) * 5 * time.Minute)
+		advTS := obsTime.Add(-2 * time.Second).Unix() // 2s behind, trivially healthy
+		tx := &StoreTx{
+			Hash:        "relay-self-" + formatInt64(int64(i)),
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"RELAY001"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTime},
+			},
+		}
+		relayTxs = append(relayTxs, tx)
+	}
+
+	// BROKENORIG's adverts: skew ~+100,500s (matches the #1816 band).
+	// These are indexed under RELAY001 too (simulating indexResolvedPathHops
+	// adding the transmission under the relay-hop pubkey), but their
+	// decoded pubKey is BROKENORIG, not RELAY001.
+	for i := 0; i < 5; i++ {
+		obsTime := baseObs.Add(time.Duration(100+i) * 5 * time.Minute)
+		advTS := obsTime.Add(100500 * time.Second).Unix()
+		tx := &StoreTx{
+			Hash:        "relayed-foreign-" + formatInt64(int64(i)),
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"BROKENORIG"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTime},
+			},
+		}
+		relayTxs = append(relayTxs, tx)
+	}
+
+	ps.mu.Lock()
+	ps.byNode["RELAY001"] = relayTxs
+	for _, tx := range relayTxs {
+		ps.byPayloadType[4] = append(ps.byPayloadType[4], tx)
+	}
+	ps.clockSkew.computeInterval = 0
+	ps.mu.Unlock()
+
+	r := ps.GetNodeClockSkew("RELAY001")
+	if r == nil {
+		t.Fatal("expected clock skew result for RELAY001")
+	}
+	if r.Severity != types.SkewOK {
+		t.Errorf("severity = %v, want ok — relay's own adverts are healthy; "+
+			"relayed foreign adverts must not be attributed to it", r.Severity)
+	}
+	if abs(r.RecentMedianSkewSec) > 5 {
+		t.Errorf("recentMedianSkewSec = %v, want ~0 (only RELAY001's own adverts "+
+			"should count, not the relayed +100.5k s originator adverts)", r.RecentMedianSkewSec)
+	}
+	// Sample count must reflect only the 5 self-originated adverts.
+	if r.RecentSampleCount != 5 {
+		t.Errorf("recentSampleCount = %d, want 5 (relayed adverts must be excluded)", r.RecentSampleCount)
+	}
+}
+
+// ── #1816: bit-identical clusters across relays disappear ─────────────────────
+
+// Five distinct relay pubkeys never self-advert at all — they only forward
+// a single broken-clock originator's advert. Before the fix, each relay's
+// GetNodeClockSkew would report the SAME bit-identical skew as the
+// originator (a false "cluster"). After the fix, a node with zero
+// self-originated adverts must report no clock-skew data at all (nil),
+// since it never actually said anything about its own clock.
+func TestIssue1816_PureRelaysReportNoSkew_NoBitIdenticalCluster(t *testing.T) {
+	ps := NewPacketStore(nil, nil)
+	pt := types.PayloadADVERT
+	baseObs := time.Unix(1700000000, 0).UTC()
+
+	const originator = "BROKENORIG2"
+	obsTime := baseObs
+	advTS := obsTime.Add(201000 * time.Second).Unix() // matches the #1816 report's +201k s band
+
+	originatorTx := &StoreTx{
+		Hash:        "originator-advert-1",
+		PayloadType: &pt,
+		DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"` + originator + `"}`,
+		Observations: []*StoreObs{
+			{ObserverID: "obs1", Timestamp: obsTime},
+		},
+	}
+
+	relayKeys := []string{"RLY-A", "RLY-B", "RLY-C", "RLY-D", "RLY-E"}
+
+	ps.mu.Lock()
+	// The originator's own byNode entry (legitimate — it self-signed this advert).
+	ps.byNode[originator] = []*StoreTx{originatorTx}
+	// Each relay is ALSO indexed under this same transmission (as
+	// indexResolvedPathHops does for every relay hop in the resolved path),
+	// but none of them ever self-advert.
+	for _, rk := range relayKeys {
+		ps.byNode[rk] = []*StoreTx{originatorTx}
+	}
+	ps.byPayloadType[4] = []*StoreTx{originatorTx}
+	ps.clockSkew.computeInterval = 0
+	ps.mu.Unlock()
+
+	// The originator itself should still report its own (bad) skew.
+	origResult := ps.GetNodeClockSkew(originator)
+	if origResult == nil {
+		t.Fatal("expected clock skew result for the originator")
+	}
+	if abs(origResult.RecentMedianSkewSec-201000) > 5 {
+		t.Errorf("originator recentMedianSkewSec = %v, want ~201000", origResult.RecentMedianSkewSec)
+	}
+
+	// None of the pure relays ever said anything about their own clock —
+	// they must report nil, not a copy of the originator's skew.
+	for _, rk := range relayKeys {
+		r := ps.GetNodeClockSkew(rk)
+		if r != nil {
+			t.Errorf("relay %s: expected nil (no self-originated adverts), "+
+				"got skew=%v — this is the bit-identical false cluster from #1816",
+				rk, r.RecentMedianSkewSec)
+		}
+	}
+}
+
+// ── #1818: two foreign adverts must not poison an otherwise-healthy node ──────
+
+// Reproduces the cwichura "island" report: a node's own adverts are all
+// healthy (~0s skew), but two adverts from a broken-clock originator
+// (skew ~10 days) are present in its byNode entry — exactly the volume
+// described in the issue ("Only 2 adverts out of all the adverts seen are
+// from other nodes"). Because getNodeClockSkewLocked sorts by time and
+// takes only the last recentSkewWindowCount samples, even 2 catastrophic
+// foreign samples can dominate the tail of a small window. After the fix,
+// they must be excluded entirely since they aren't self-originated.
+func TestIssue1818_TwoForeignAdvertsDoNotPoisonIslandNode(t *testing.T) {
+	ps := NewPacketStore(nil, nil)
+	pt := types.PayloadType(4) // ADVERT
+	baseObs := time.Unix(1700000000, 0).UTC()
+
+	const island = "ISLAND001"
+	var txs []*StoreTx
+
+	// Plenty of healthy self-adverts (island node mostly talks to itself).
+	for i := 0; i < 8; i++ {
+		obsTime := baseObs.Add(time.Duration(i) * 5 * time.Minute)
+		advTS := obsTime.Add(-1 * time.Second).Unix() // ~0s skew
+		tx := &StoreTx{
+			Hash:        "island-self-" + formatInt64(int64(i)),
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"` + island + `"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTime},
+			},
+		}
+		txs = append(txs, tx)
+	}
+
+	// Two foreign adverts from a broken-clock originator, landing at the
+	// tail of the recent window (most recent timestamps), skew ~10 days —
+	// matching the report's "off by nearly ten days".
+	for i := 0; i < 2; i++ {
+		obsTime := baseObs.Add(time.Duration(100+i) * 5 * time.Minute)
+		advTS := obsTime.Add(10 * 24 * time.Hour).Unix()
+		tx := &StoreTx{
+			Hash:        "island-foreign-" + formatInt64(int64(i)),
+			PayloadType: &pt,
+			DecodedJSON: `{"payload":{"timestamp":` + formatInt64(advTS) + `},"pubKey":"OFFCLOCKORIG"}`,
+			Observations: []*StoreObs{
+				{ObserverID: "obs1", Timestamp: obsTime},
+			},
+		}
+		txs = append(txs, tx)
+	}
+
+	ps.mu.Lock()
+	ps.byNode[island] = txs
+	for _, tx := range txs {
+		ps.byPayloadType[4] = append(ps.byPayloadType[4], tx)
+	}
+	ps.clockSkew.computeInterval = 0
+	ps.mu.Unlock()
+
+	r := ps.GetNodeClockSkew(island)
+	if r == nil {
+		t.Fatal("expected clock skew result for island node")
+	}
+	if r.Severity == types.SkewNoClock || r.Severity == types.SkewBimodalClock {
+		t.Errorf("severity = %v, want ok/warning — the node's own adverts are "+
+			"healthy; the two foreign adverts must not be attributed to it (#1818)",
+			r.Severity)
+	}
+	if abs(r.RecentMedianSkewSec) > 5 {
+		t.Errorf("recentMedianSkewSec = %v, want ~0 (foreign adverts excluded)", r.RecentMedianSkewSec)
+	}
+	// recentSkewWindowCount caps the window at 5 most-recent samples; with
+	// the 2 foreign adverts excluded, those 5 must all come from the
+	// island node's own healthy stream.
+	if r.RecentSampleCount != recentSkewWindowCount {
+		t.Errorf("recentSampleCount = %d, want %d (only self-originated adverts, "+
+			"windowed)", r.RecentSampleCount, recentSkewWindowCount)
+	}
+}
+
+// formatInt64 is a test helper to format int64 as string for JSON embedding.
+func formatInt64(n int64) string {
+	return fmt.Sprintf("%d", n)
 }

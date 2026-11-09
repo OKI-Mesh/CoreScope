@@ -1105,25 +1105,30 @@ func (s *Server) handleNodeClockSkew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "No clock skew data for this node")
 		return
 	}
-	writeJSON(w, result)
+	writeJSON(w, nodeClockSkewResponse(result))
 }
 
 func (s *Server) handleObserverClockSkew(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
-		writeJSON(w, []ObserverCalibration{})
+		writeJSON(w, []api.ObserverCalibration{})
 		return
 	}
-	writeJSON(w, s.store.GetObserverCalibrations())
+	writeJSON(w, observerCalibrationsResponse(s.store.GetObserverCalibrations()))
 }
 
 func (s *Server) handleFleetClockSkew(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if s.store == nil {
-		writeJSON(w, []*NodeClockSkew{})
+		writeJSON(w, []api.NodeClockSkew{})
 		return
 	}
 	area := r.URL.Query().Get("area")
-	writeJSON(w, s.store.GetFleetClockSkew(ctx, area))
+	fleet := s.store.GetFleetClockSkew(ctx, area)
+	out := make([]api.NodeClockSkew, 0, len(fleet))
+	for _, cs := range fleet {
+		out = append(out, nodeClockSkewResponse(cs))
+	}
+	writeJSON(w, out)
 }
 
 // pubkeysInArea returns the public keys of positions that pass the area's

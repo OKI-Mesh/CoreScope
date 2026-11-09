@@ -56,9 +56,9 @@ func TestComputeRoleAnalytics_SkewAggregation(t *testing.T) {
 		"pk_3": "repeater",
 	}
 	skews := map[string]*NodeClockSkew{
-		"pk_1": {Pubkey: "pk_1", RecentMedianSkewSec: 10, Severity: SkewOK},
-		"pk_2": {Pubkey: "pk_2", RecentMedianSkewSec: -400, Severity: SkewWarning},
-		"pk_3": {Pubkey: "pk_3", RecentMedianSkewSec: 7200, Severity: SkewCritical},
+		"pk_1": {Pubkey: "pk_1", RecentMedianSkewSec: 10, Severity: types.SkewOK},
+		"pk_2": {Pubkey: "pk_2", RecentMedianSkewSec: -400, Severity: types.SkewWarning},
+		"pk_3": {Pubkey: "pk_3", RecentMedianSkewSec: 7200, Severity: types.SkewCritical},
 	}
 	got := computeRoleAnalytics(nodes, skews)
 	if len(got.Roles) != 1 {

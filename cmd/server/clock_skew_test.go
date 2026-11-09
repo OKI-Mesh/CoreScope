@@ -10,35 +10,6 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// ── classifySkew ───────────────────────────────────────────────────────────────
-
-func TestClassifySkew(t *testing.T) {
-	tests := []struct {
-		absSkew  float64
-		expected SkewSeverity
-	}{
-		{0, SkewOK},
-		{60, SkewOK},                    // 1 min
-		{299, SkewOK},                   // just under 5 min
-		{300, SkewWarning},              // exactly 5 min
-		{1800, SkewWarning},             // 30 min
-		{3599, SkewWarning},             // just under 1 hour
-		{3600, SkewCritical},            // exactly 1 hour
-		{86400, SkewCritical},           // 1 day
-		{2592000 - 1, SkewCritical},     // just under 30 days
-		{2592000, SkewAbsurd},           // exactly 30 days
-		{86400*365 - 1, SkewAbsurd},     // just under 365 days
-		{86400 * 365, SkewNoClock},      // exactly 365 days
-		{86400 * 365 * 10, SkewNoClock}, // 10 years (epoch-0 style)
-	}
-	for _, tc := range tests {
-		got := classifySkew(tc.absSkew)
-		if got != tc.expected {
-			t.Errorf("classifySkew(%v) = %v, want %v", tc.absSkew, got, tc.expected)
-		}
-	}
-}
-
 // ── median ─────────────────────────────────────────────────────────────────────
 
 func TestMedian(t *testing.T) {
@@ -398,7 +369,7 @@ func TestGetNodeClockSkew_Integration(t *testing.T) {
 	if result.SampleCount < 2 {
 		t.Errorf("sample count = %v, want >= 2", result.SampleCount)
 	}
-	if result.Severity != SkewOK {
+	if result.Severity != types.SkewOK {
 		t.Errorf("severity = %v, want ok (120s < 5min)", result.Severity)
 	}
 	// Drift should be ~0 since skew is constant.
@@ -450,7 +421,7 @@ func TestGetNodeClockSkew_NoClock_EpochZero(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected clock skew result for epoch-0 node")
 	}
-	if result.Severity != SkewNoClock {
+	if result.Severity != types.SkewNoClock {
 		t.Errorf("severity = %v, want no_clock", result.Severity)
 	}
 	if result.DriftPerDaySec != 0 {
@@ -574,7 +545,7 @@ func TestGetNodeClockSkew_NormalNodeWithDrift(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected clock skew result")
 	}
-	if result.Severity != SkewOK {
+	if result.Severity != types.SkewOK {
 		t.Errorf("severity = %v, want ok", result.Severity)
 	}
 	// 1s per 7200s = 12 s/day
@@ -584,11 +555,6 @@ func TestGetNodeClockSkew_NormalNodeWithDrift(t *testing.T) {
 	if math.Abs(result.DriftPerDaySec) > maxReasonableDriftPerDay {
 		t.Errorf("drift = %v, should be reasonable", result.DriftPerDaySec)
 	}
-}
-
-// formatInt64 is a test helper to format int64 as string for JSON embedding.
-func formatInt64(n int64) string {
-	return fmt.Sprintf("%d", n)
 }
 
 // ── #789: Recent-window severity & robust drift ───────────────────────────────
@@ -632,7 +598,7 @@ func TestSeverityUsesRecentNotMedian(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	if r.Severity != SkewOK {
+	if r.Severity != types.SkewOK {
 		t.Errorf("severity = %v, want ok (recent samples are healthy)", r.Severity)
 	}
 	if math.Abs(r.RecentMedianSkewSec) > 5 {
@@ -726,7 +692,7 @@ func TestReporterScenario_789(t *testing.T) {
 		t.Fatal("nil result")
 	}
 	// Severity must reflect current health, not the all-time median.
-	if r.Severity != SkewOK && r.Severity != SkewWarning {
+	if r.Severity != types.SkewOK && r.Severity != types.SkewWarning {
 		t.Errorf("severity = %v, want ok/warning (recent samples are healthy)", r.Severity)
 	}
 	if math.Abs(r.RecentMedianSkewSec) > 5 {
@@ -782,7 +748,7 @@ func TestBimodalClock_845(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	if r.Severity != SkewBimodalClock {
+	if r.Severity != types.SkewBimodalClock {
 		t.Errorf("severity = %v, want bimodal_clock", r.Severity)
 	}
 	if math.Abs(r.RecentMedianSkewSec-(-5)) > 1 {
@@ -828,7 +794,7 @@ func TestAllBad_NoClock_845(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	if r.Severity != SkewNoClock {
+	if r.Severity != types.SkewNoClock {
 		t.Errorf("severity = %v, want no_clock", r.Severity)
 	}
 }
@@ -873,7 +839,7 @@ func TestMostlyGood_OK_845(t *testing.T) {
 		t.Fatal("nil result")
 	}
 	// 90% good → normal classification path, median of good samples = -5s → ok
-	if r.Severity != SkewOK {
+	if r.Severity != types.SkewOK {
 		t.Errorf("severity = %v, want ok", r.Severity)
 	}
 	if math.Abs(r.RecentMedianSkewSec-(-5)) > 1 {
@@ -905,7 +871,7 @@ func TestSingleSample_845(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	if r.Severity != SkewOK {
+	if r.Severity != types.SkewOK {
 		t.Errorf("severity = %v, want ok", r.Severity)
 	}
 	if r.RecentSampleCount != 1 {
@@ -952,7 +918,7 @@ func TestFiftyFifty_Bimodal_845(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	if r.Severity != SkewBimodalClock {
+	if r.Severity != types.SkewBimodalClock {
 		t.Errorf("severity = %v, want bimodal_clock", r.Severity)
 	}
 	if r.GoodFraction < 0.4 || r.GoodFraction > 0.6 {
@@ -990,7 +956,7 @@ func TestAllGood_OK_845(t *testing.T) {
 	if r == nil {
 		t.Fatal("nil result")
 	}
-	if r.Severity != SkewOK {
+	if r.Severity != types.SkewOK {
 		t.Errorf("severity = %v, want ok", r.Severity)
 	}
 	if r.GoodFraction != 1.0 {

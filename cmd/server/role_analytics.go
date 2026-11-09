@@ -63,15 +63,15 @@ func computeRoleAnalytics(nodesByPubkey map[string]types.NodeRole, skewByPubkey 
 		}
 		b.absSkews = append(b.absSkews, abs)
 		switch cs.Severity {
-		case SkewOK:
+		case types.SkewOK:
 			b.stats.OkCount++
-		case SkewWarning:
+		case types.SkewWarning:
 			b.stats.WarningCount++
-		case SkewCritical:
+		case types.SkewCritical:
 			b.stats.CriticalCount++
-		case SkewAbsurd:
+		case types.SkewAbsurd:
 			b.stats.AbsurdCount++
-		case SkewNoClock:
+		case types.SkewNoClock:
 			b.stats.NoClockCount++
 		}
 	}
