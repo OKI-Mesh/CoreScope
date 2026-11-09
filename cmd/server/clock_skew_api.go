@@ -1,10 +1,58 @@
 package main
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/gorilla/mux"
 )
+
+// registerClockSkewRoutes registers the clock-skew endpoints. Call it before
+// registerNodeRoutes: /api/nodes/clock-skew has to win over
+// /api/nodes/{pubkey}, and /api/observers/clock-skew over /api/observers/{id}.
+func (s *Server) registerClockSkewRoutes(r *mux.Router) {
+	r.HandleFunc("/api/nodes/clock-skew", s.handleFleetClockSkew).Methods("GET")
+	r.HandleFunc("/api/nodes/{pubkey}/clock-skew", s.handleNodeClockSkew).Methods("GET")
+	r.HandleFunc("/api/observers/clock-skew", s.handleObserverClockSkew).Methods("GET")
+}
+
+func (s *Server) handleNodeClockSkew(w http.ResponseWriter, r *http.Request) {
+	pubkey := mux.Vars(r)["pubkey"]
+	if s.store == nil {
+		writeError(w, 404, "Not found")
+		return
+	}
+	result := s.store.GetNodeClockSkew(pubkey)
+	if result == nil {
+		writeError(w, 404, "No clock skew data for this node")
+		return
+	}
+	writeJSON(w, nodeClockSkewResponse(result))
+}
+
+func (s *Server) handleObserverClockSkew(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, []api.ObserverCalibration{})
+		return
+	}
+	writeJSON(w, observerCalibrationsResponse(s.store.GetObserverCalibrations()))
+}
+
+func (s *Server) handleFleetClockSkew(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if s.store == nil {
+		writeJSON(w, []api.NodeClockSkew{})
+		return
+	}
+	area := r.URL.Query().Get("area")
+	fleet := s.store.GetFleetClockSkew(ctx, area)
+	out := make([]api.NodeClockSkew, 0, len(fleet))
+	for _, cs := range fleet {
+		out = append(out, nodeClockSkewResponse(cs))
+	}
+	writeJSON(w, out)
+}
 
 // epochSeconds is the one place engine times become the integer Unix seconds
 // the clock-skew wire format uses. A zero time encodes as 0.

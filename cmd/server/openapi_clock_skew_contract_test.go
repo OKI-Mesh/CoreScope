@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/OKI-Mesh/CoreScope/api"
@@ -31,6 +33,26 @@ func TestClockSkewEndpointsMatchSpec(t *testing.T) {
 		checker.check(t, router, "/api/observers/clock-skew")
 		checker.checkStatus(t, router, "/api/nodes/NOSUCHNODE/clock-skew", http.StatusNotFound)
 	})
+}
+
+// TestClockSkewRoutesAreNotShadowed goes through the full route table. If the
+// clock-skew routes were registered after the parameterized ones, these paths
+// would reach the node-detail and observer-detail handlers instead and return
+// an error object, not the arrays asserted here.
+func TestClockSkewRoutesAreNotShadowed(t *testing.T) {
+	_, router := setupTestServer(t)
+	for _, path := range []string{"/api/nodes/clock-skew", "/api/observers/clock-skew"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: status %d, want 200; body=%s", path, rec.Code, rec.Body.String())
+			}
+			if !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), "[") {
+				t.Errorf("%s did not return an array, a parameterized route probably matched first: %s", path, rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestProdClockSkewFixturesMatchSpec(t *testing.T) {

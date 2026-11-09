@@ -46,7 +46,6 @@ func (s *Server) registerNodeRoutes(r *mux.Router) {
 	r.HandleFunc("/api/nodes/search", s.handleNodeSearch).Methods("GET")
 	r.HandleFunc("/api/nodes/bulk-health", s.handleBulkHealth).Methods("GET")
 	r.HandleFunc("/api/nodes/network-status", s.handleNetworkStatus).Methods("GET")
-	r.HandleFunc("/api/nodes/clock-skew", s.handleFleetClockSkew).Methods("GET")
 	r.HandleFunc("/api/nodes/resolve", s.handleResolvePrefix).Methods("GET")
 
 	r.HandleFunc("/api/nodes/{pubkey}/health", s.handleNodeHealth).Methods("GET")
@@ -54,7 +53,6 @@ func (s *Server) registerNodeRoutes(r *mux.Router) {
 	r.HandleFunc("/api/nodes/{pubkey}/analytics", s.handleNodeAnalytics).Methods("GET")
 	r.HandleFunc("/api/nodes/{pubkey}/hop_analytics", s.handleNodeHopAnalytics).Methods("GET")
 	r.HandleFunc("/api/nodes/{pubkey}/battery", s.handleNodeBattery).Methods("GET")
-	r.HandleFunc("/api/nodes/{pubkey}/clock-skew", s.handleNodeClockSkew).Methods("GET")
 	r.HandleFunc("/api/nodes/{pubkey}/reach", s.handleNodeReach).Methods("GET")
 	// Coverage routes are always registered; each handler 404s when the opt-in
 	// clientRxCoverage flag is off (a clean 404 rather than the SPA fallback that
@@ -1092,43 +1090,6 @@ func (s *Server) handleNodeHopAnalytics(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, result)
-}
-
-func (s *Server) handleNodeClockSkew(w http.ResponseWriter, r *http.Request) {
-	pubkey := mux.Vars(r)["pubkey"]
-	if s.store == nil {
-		writeError(w, 404, "Not found")
-		return
-	}
-	result := s.store.GetNodeClockSkew(pubkey)
-	if result == nil {
-		writeError(w, 404, "No clock skew data for this node")
-		return
-	}
-	writeJSON(w, nodeClockSkewResponse(result))
-}
-
-func (s *Server) handleObserverClockSkew(w http.ResponseWriter, r *http.Request) {
-	if s.store == nil {
-		writeJSON(w, []api.ObserverCalibration{})
-		return
-	}
-	writeJSON(w, observerCalibrationsResponse(s.store.GetObserverCalibrations()))
-}
-
-func (s *Server) handleFleetClockSkew(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if s.store == nil {
-		writeJSON(w, []api.NodeClockSkew{})
-		return
-	}
-	area := r.URL.Query().Get("area")
-	fleet := s.store.GetFleetClockSkew(ctx, area)
-	out := make([]api.NodeClockSkew, 0, len(fleet))
-	for _, cs := range fleet {
-		out = append(out, nodeClockSkewResponse(cs))
-	}
-	writeJSON(w, out)
 }
 
 // pubkeysInArea returns the public keys of positions that pass the area's

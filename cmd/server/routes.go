@@ -360,11 +360,15 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	// Neighbor Endpoints
 	s.registerNeighborRoutes(r)
 
+	// Clock-skew endpoints. These must be registered BEFORE the node routes:
+	// /api/nodes/clock-skew would otherwise match /api/nodes/{pubkey} with
+	// pubkey "clock-skew". /api/observers/clock-skew likewise has to precede
+	// /api/observers/{id}.
+	s.registerClockSkewRoutes(r)
+
 	// Node endpoints — fixed routes BEFORE parameterized
 
 	s.registerNodeRoutes(r)
-
-	r.HandleFunc("/api/observers/clock-skew", s.handleObserverClockSkew).Methods("GET")
 
 	r.HandleFunc("/api/rx-coverage", s.handleRxCoverage).Methods("GET")
 	r.HandleFunc("/api/rx-leaderboard", s.handleRxLeaderboard).Methods("GET")
