@@ -360,10 +360,8 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Analytics endpoints
 	s.registerAnalyticsRoutes(r)
-	r.HandleFunc("/api/analytics/rf", s.handleAnalyticsRF).Methods("GET")
 	r.HandleFunc("/api/analytics/topology", s.handleAnalyticsTopology).Methods("GET")
 	r.HandleFunc("/api/analytics/channels", s.handleAnalyticsChannels).Methods("GET")
-	r.HandleFunc("/api/analytics/distance", s.handleAnalyticsDistance).Methods("GET")
 	r.HandleFunc("/api/analytics/subpaths", s.handleAnalyticsSubpaths).Methods("GET")
 	r.HandleFunc("/api/analytics/subpaths-bulk", s.handleAnalyticsSubpathsBulk).Methods("GET")
 	r.HandleFunc("/api/analytics/subpath-detail", s.handleAnalyticsSubpathDetail).Methods("GET")
@@ -1117,42 +1115,6 @@ func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
 
 // --- Analytics Handlers ---
 
-func (s *Server) handleAnalyticsRF(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	region := r.URL.Query().Get("region")
-	area := r.URL.Query().Get("area")
-	window := ParseTimeWindow(r)
-	if s.store != nil {
-		// Issue #1659: gate the default-shape request behind first-pass
-		// completion of the RF recomputer. Otherwise the post-restart
-		// in-RAM slice is served until the next recompute tick, and
-		// the client pins it via CLIENT_TTL.analyticsRF.
-		if region == "" && area == "" && window.IsZero() {
-			s.store.analyticsRecomputerMu.RLock()
-			rc := s.store.recompRF
-			s.store.analyticsRecomputerMu.RUnlock()
-			if rc != nil && rc.IsWarmingUp_1659() {
-				writeAnalyticsWarmup503(w)
-				return
-			}
-		}
-		writeJSON(w, s.store.GetAnalyticsRFWithWindow(ctx, region, area, window))
-		return
-	}
-	writeJSON(w, RFAnalyticsResponse{
-		SNR:            SignalStats{},
-		RSSI:           SignalStats{},
-		SnrValues:      Histogram{Bins: []HistogramBin{}, Min: 0, Max: 0},
-		RssiValues:     Histogram{Bins: []HistogramBin{}, Min: 0, Max: 0},
-		PacketSizes:    Histogram{Bins: []HistogramBin{}, Min: 0, Max: 0},
-		PacketsPerHour: []HourlyCount{},
-		PayloadTypes:   []PayloadTypeEntry{},
-		SnrByType:      []PayloadTypeSignal{},
-		SignalOverTime: []SignalOverTimeEntry{},
-		ScatterData:    []ScatterPoint{},
-	})
-}
-
 func (s *Server) handleAnalyticsRelayAirtimeShare(w http.ResponseWriter, r *http.Request) {
 	window := ParseTimeWindow(r)
 	if s.store != nil {
@@ -1219,37 +1181,6 @@ func (s *Server) handleAnalyticsChannels(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeJSON(w, s.store.GetAnalyticsChannelsWithWindow(ctx, region, area, window))
-}
-
-func (s *Server) handleAnalyticsDistance(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	region := r.URL.Query().Get("region")
-	area := r.URL.Query().Get("area")
-	if s.store != nil {
-		// Lazy build (#1011): distance index is not built at startup.
-		// First request triggers an async build and gets 202 +
-		// Retry-After; concurrent requests during the build window
-		// also get 202. Cached results (after the build completes)
-		// are served as 200 from the analytics recomputer / TTL cache.
-		if !s.store.DistanceIndexBuilt() {
-			s.store.TriggerDistanceIndexBuild()
-			w.Header().Set("Retry-After", "5")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"status":"building","retry_after_seconds":5,"detail":"distance index is being computed (lazy build, #1011). Retry after Retry-After seconds."}`))
-			return
-		}
-		writeJSON(w, s.store.GetAnalyticsDistance(ctx, region, area))
-		return
-	}
-	writeJSON(w, DistanceAnalyticsResponse{
-		Summary:       DistanceSummary{},
-		TopHops:       []DistanceHop{},
-		TopPaths:      []DistancePath{},
-		CatStats:      map[string]*CategoryDistStats{},
-		DistHistogram: nil,
-		DistOverTime:  []DistOverTimeEntry{},
-	})
 }
 
 func (s *Server) handleAnalyticsSubpaths(w http.ResponseWriter, r *http.Request) {

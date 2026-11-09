@@ -206,12 +206,13 @@ type PacketStore struct {
 	queryCount    int64
 	// Response caches (separate mutex to avoid contention with store RWMutex)
 	cacheMu           sync.RWMutex
-	rfCache           map[string]*cachedResult         // region → cached RF result
+	rfCache           map[string]*cachedRF             // region → cached RF result
 	topoCache         map[string]*cachedResult         // region → cached topology result
 	hashCache         map[string]*cachedHashSizes      // region → cached hash-sizes result
 	collisionCache    map[string]*cachedHashCollisions // cached hash-collisions result keyed by region ("" = global)
 	chanCache         map[string]*cachedResult         // region → cached channels result
-	distCache         map[string]*cachedResult         // region → cached distance result
+	distCache         map[string]*cachedDistance       // region → cached distance result
+	relayAirtimeCache map[string]*cachedResult         // window → cached relay airtime share; created on first use, cleared with rfCache
 	subpathCache      map[string]*cachedResult         // params → cached subpaths result
 	rfCacheTTL        time.Duration
 	collisionCacheTTL time.Duration
@@ -555,7 +556,7 @@ type distHopRecord struct {
 // dedupeHopsByPair groups hops by unordered node-pair, keeps the max-distance
 // record per pair, and computes obsCount / bestSnr / medianSnr.  limit caps the
 // number of returned entries (sorted by distance descending).
-func dedupeHopsByPair(hops []distHopRecord, limit int) []map[string]interface{} {
+func dedupeHopsByPair(hops []distHopRecord, limit int) []api.DistanceHop {
 	type pairAgg struct {
 		best     *distHopRecord
 		obsCount int
@@ -596,7 +597,7 @@ func dedupeHopsByPair(hops []distHopRecord, limit int) []map[string]interface{} 
 		pairs = append(pairs, pairEntry{k, v})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return pairs[i].agg.best.Dist > pairs[j].agg.best.Dist })
-	result := make([]map[string]interface{}, 0, min(limit, len(pairs)))
+	result := make([]api.DistanceHop, 0, min(limit, len(pairs)))
 	for i, pe := range pairs {
 		if i >= limit {
 			break
@@ -616,13 +617,18 @@ func dedupeHopsByPair(hops []distHopRecord, limit int) []map[string]interface{} 
 				medianSNR = &v
 			}
 		}
-		result = append(result, map[string]interface{}{
-			"fromName": h.FromName, "fromPk": h.FromPk,
-			"toName": h.ToName, "toPk": h.ToPk,
-			"dist": h.Dist, "type": h.Type,
-			"bestSnr": floatPtrOrNil(pe.agg.maxSNR), "medianSnr": floatPtrOrNil(medianSNR),
-			"obsCount": pe.agg.obsCount,
-			"hash":     h.Hash, "timestamp": h.Timestamp,
+		result = append(result, api.DistanceHop{
+			FromName:  h.FromName,
+			FromPk:    h.FromPk,
+			ToName:    h.ToName,
+			ToPk:      h.ToPk,
+			Dist:      h.Dist,
+			Type:      h.Type,
+			BestSnr:   pe.agg.maxSNR,
+			MedianSnr: medianSNR,
+			ObsCount:  pe.agg.obsCount,
+			Hash:      h.Hash,
+			Timestamp: types.WireTimeSeconds{Time: h.Timestamp},
 		})
 	}
 	return result
@@ -647,6 +653,19 @@ type distHopDetail struct {
 
 type cachedResult struct {
 	data      map[string]interface{}
+	expiresAt time.Time
+}
+
+// cachedRF is an RF analytics result held in rfCache until it expires.
+type cachedRF struct {
+	data      api.RFAnalyticsResponse
+	expiresAt time.Time
+}
+
+// cachedDistance is a distance analytics result held in distCache until it
+// expires.
+type cachedDistance struct {
+	data      api.DistanceAnalyticsResponse
 	expiresAt time.Time
 }
 
@@ -701,13 +720,13 @@ func NewPacketStore(db *database.DB, cfg *PacketStoreConfig, cacheTTLs ...map[st
 		byPathHop:     make(map[string][]*StoreTx),
 		nodeHashes:    make(map[string]map[string]bool),
 		byPayloadType: make(map[types.PayloadType][]*StoreTx),
-		rfCache:       make(map[string]*cachedResult),
+		rfCache:       make(map[string]*cachedRF),
 		topoCache:     make(map[string]*cachedResult),
 		hashCache:     make(map[string]*cachedHashSizes),
 
 		collisionCache: make(map[string]*cachedHashCollisions),
 		chanCache:      make(map[string]*cachedResult),
-		distCache:      make(map[string]*cachedResult),
+		distCache:      make(map[string]*cachedDistance),
 		subpathCache:   make(map[string]*cachedResult),
 		// #1239: 60 seconds by default. rfCacheTTL is the shared TTL for
 		// the RF, topology, distance, hash-sizes, subpath, and channel
@@ -1782,7 +1801,7 @@ func (s *PacketStore) GetPerfStoreStats() map[string]interface{} {
 // GetCacheStats returns RF cache hit/miss statistics.
 func (s *PacketStore) GetCacheStats() map[string]interface{} {
 	s.cacheMu.Lock()
-	size := len(s.rfCache) + len(s.topoCache) + len(s.hashCache) + len(s.chanCache) + len(s.distCache) + len(s.subpathCache)
+	size := len(s.rfCache) + len(s.relayAirtimeCache) + len(s.topoCache) + len(s.hashCache) + len(s.chanCache) + len(s.distCache) + len(s.subpathCache)
 	hits := s.cacheHits
 	misses := s.cacheMisses
 	s.cacheMu.Unlock()
@@ -1805,7 +1824,7 @@ func (s *PacketStore) GetCacheStats() map[string]interface{} {
 // GetCacheStatsTyped returns cache stats as a typed struct.
 func (s *PacketStore) GetCacheStatsTyped() CacheStats {
 	s.cacheMu.Lock()
-	size := len(s.rfCache) + len(s.topoCache) + len(s.hashCache) + len(s.chanCache) + len(s.distCache) + len(s.subpathCache)
+	size := len(s.rfCache) + len(s.relayAirtimeCache) + len(s.topoCache) + len(s.hashCache) + len(s.chanCache) + len(s.distCache) + len(s.subpathCache)
 	hits := s.cacheHits
 	misses := s.cacheMisses
 	s.cacheMu.Unlock()
@@ -1847,12 +1866,13 @@ func (s *PacketStore) invalidateCachesFor(inv cacheInvalidation) {
 
 	// Eviction bypasses rate-limiting — data was removed, caches must clear.
 	if inv.eviction {
-		s.rfCache = make(map[string]*cachedResult)
+		s.rfCache = make(map[string]*cachedRF)
+		s.relayAirtimeCache = nil
 		s.topoCache = make(map[string]*cachedResult)
 		s.hashCache = make(map[string]*cachedHashSizes)
 		s.collisionCache = make(map[string]*cachedHashCollisions)
 		s.chanCache = make(map[string]*cachedResult)
-		s.distCache = make(map[string]*cachedResult)
+		s.distCache = make(map[string]*cachedDistance)
 		s.subpathCache = make(map[string]*cachedResult)
 		s.retransCache = nil
 		s.channelsCacheMu.Lock()
@@ -1895,11 +1915,12 @@ func (s *PacketStore) invalidateCachesFor(inv cacheInvalidation) {
 // with cacheMu held.
 func (s *PacketStore) applyCacheInvalidation(inv cacheInvalidation) {
 	if inv.hasNewObservations {
-		s.rfCache = make(map[string]*cachedResult)
+		s.rfCache = make(map[string]*cachedRF)
+		s.relayAirtimeCache = nil
 	}
 	if inv.hasNewPaths {
 		s.topoCache = make(map[string]*cachedResult)
-		s.distCache = make(map[string]*cachedResult)
+		s.distCache = make(map[string]*cachedDistance)
 		s.subpathCache = make(map[string]*cachedResult)
 		s.retransCache = nil
 	}
@@ -5380,24 +5401,24 @@ func (s *PacketStore) computeAnalyticsChannels(ctx context.Context, region, area
 }
 
 // GetAnalyticsRF returns full RF analytics computed from in-memory observations.
-func (s *PacketStore) GetAnalyticsRF(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsRF(ctx context.Context, region, area string) api.RFAnalyticsResponse {
 	return s.GetAnalyticsRFWithWindow(ctx, region, area, TimeWindow{})
 }
 
 // GetAnalyticsRFWithWindow returns RF analytics bounded by an optional
 // time window (issue #842). Zero TimeWindow = all data (backwards compatible).
-func (s *PacketStore) GetAnalyticsRFWithWindow(ctx context.Context, region, area string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsRFWithWindow(ctx context.Context, region, area string, window TimeWindow) api.RFAnalyticsResponse {
 	if region == "" && area == "" && window.IsZero() {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompRF
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
 			if v := rc.Load(); v != nil {
-				if m, ok := v.(map[string]interface{}); ok {
+				if r, ok := v.(api.RFAnalyticsResponse); ok {
 					s.cacheMu.Lock()
 					s.cacheHits++
 					s.cacheMu.Unlock()
-					return m
+					return r
 				}
 			}
 		}
@@ -5418,7 +5439,7 @@ func (s *PacketStore) GetAnalyticsRFWithWindow(ctx context.Context, region, area
 	result := s.computeAnalyticsRF(ctx, region, area, window)
 
 	s.cacheMu.Lock()
-	s.rfCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.rfCache[cacheKey] = &cachedRF{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -5429,7 +5450,7 @@ func hourBucket(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15")
 }
 
-func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area string, window TimeWindow) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area string, window TimeWindow) api.RFAnalyticsResponse {
 	var areaNodes map[string]bool
 	if area != "" {
 		areaNodes = s.resolveAreaNodes(ctx, area)
@@ -5771,30 +5792,21 @@ func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area strin
 	}
 
 	// Packets per hour
-	type hourCount struct {
-		Hour  string `json:"hour"`
-		Count int    `json:"count"`
-	}
 	hourKeys := make([]string, 0, len(hourBuckets))
 	for k := range hourBuckets {
 		hourKeys = append(hourKeys, k)
 	}
 	sort.Strings(hourKeys)
-	packetsPerHour := make([]hourCount, len(hourKeys))
+	packetsPerHour := make([]api.HourlyCount, len(hourKeys))
 	for i, k := range hourKeys {
-		packetsPerHour[i] = hourCount{Hour: k, Count: hourBuckets[k]}
+		packetsPerHour[i] = api.HourlyCount{Hour: k, Count: hourBuckets[k]}
 	}
 
 	// Payload types
-	type ptEntry struct {
-		Type  types.PayloadType `json:"type"`
-		Name  string            `json:"name"`
-		Count int               `json:"count"`
-	}
-	payloadTypes := make([]ptEntry, 0, len(typeBuckets))
+	payloadTypes := make([]api.PayloadTypeEntry, 0, len(typeBuckets))
 	for t, c := range typeBuckets {
 		pt := t
-		payloadTypes = append(payloadTypes, ptEntry{Type: t, Name: resolvePayloadTypeName(&pt), Count: c})
+		payloadTypes = append(payloadTypes, api.PayloadTypeEntry{Type: t, Name: resolvePayloadTypeName(&pt), Count: c})
 	}
 	sort.Slice(payloadTypes, func(i, j int) bool {
 		if payloadTypes[i].Count != payloadTypes[j].Count {
@@ -5804,20 +5816,13 @@ func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area strin
 	})
 
 	// SNR by type
-	type snrTypeEntry struct {
-		Name  string  `json:"name"`
-		Count int     `json:"count"`
-		Avg   float64 `json:"avg"`
-		Min   float64 `json:"min"`
-		Max   float64 `json:"max"`
-	}
-	snrByTypeArr := make([]snrTypeEntry, 0, len(snrByType))
+	snrByTypeArr := make([]api.PayloadTypeSignal, 0, len(snrByType))
 	for name, d := range snrByType {
 		sum := 0.0
 		for _, v := range d.vals {
 			sum += v
 		}
-		snrByTypeArr = append(snrByTypeArr, snrTypeEntry{
+		snrByTypeArr = append(snrByTypeArr, api.PayloadTypeSignal{
 			Name: name, Count: len(d.vals),
 			Avg: sum / float64(len(d.vals)),
 			Min: minF64(d.vals), Max: maxF64(d.vals),
@@ -5826,46 +5831,37 @@ func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area strin
 	sort.Slice(snrByTypeArr, func(i, j int) bool { return snrByTypeArr[i].Count > snrByTypeArr[j].Count })
 
 	// Signal over time
-	type sigTimeEntry struct {
-		Hour   string  `json:"hour"`
-		Count  int     `json:"count"`
-		AvgSnr float64 `json:"avgSnr"`
-	}
 	sigKeys := make([]string, 0, len(sigTime))
 	for k := range sigTime {
 		sigKeys = append(sigKeys, k)
 	}
 	sort.Strings(sigKeys)
-	signalOverTime := make([]sigTimeEntry, len(sigKeys))
+	signalOverTime := make([]api.SignalOverTimeEntry, len(sigKeys))
 	for i, k := range sigKeys {
 		d := sigTime[k]
 		sum := 0.0
 		for _, v := range d.snrs {
 			sum += v
 		}
-		signalOverTime[i] = sigTimeEntry{Hour: k, Count: d.count, AvgSnr: sum / float64(d.count)}
+		signalOverTime[i] = api.SignalOverTimeEntry{Hour: k, Count: d.count, AvgSnr: sum / float64(d.count)}
 	}
 
 	// Scatter (downsample to 500)
-	type scatterPoint struct {
-		SNR  float64 `json:"snr"`
-		RSSI float64 `json:"rssi"`
-	}
 	scatterStep := 1
 	if len(scatterAll) > 500 {
 		scatterStep = len(scatterAll) / 500
 	}
-	scatterData := make([]scatterPoint, 0, 500)
+	scatterData := make([]api.ScatterPoint, 0, 500)
 	for i, p := range scatterAll {
 		if i%scatterStep == 0 {
-			scatterData = append(scatterData, scatterPoint{SNR: p.snr, RSSI: p.rssi})
+			scatterData = append(scatterData, api.ScatterPoint{Snr: p.snr, Rssi: p.rssi})
 		}
 	}
 
 	// Histograms
-	buildHistogramF64 := func(values []float64, bins int) map[string]interface{} {
+	buildHistogramF64 := func(values []float64, bins int) api.Histogram {
 		if len(values) == 0 {
-			return map[string]interface{}{"bins": []interface{}{}, "min": 0, "max": 0}
+			return api.Histogram{Bins: []api.HistogramBin{}}
 		}
 		mn, mx := minF64(values), maxF64(values)
 		rng := mx - mn
@@ -5881,15 +5877,15 @@ func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area strin
 			}
 			counts[idx]++
 		}
-		binArr := make([]map[string]interface{}, bins)
+		binArr := make([]api.HistogramBin, bins)
 		for i, c := range counts {
-			binArr[i] = map[string]interface{}{"x": mn + float64(i)*binWidth, "w": binWidth, "count": c}
+			binArr[i] = api.HistogramBin{X: mn + float64(i)*binWidth, W: binWidth, Count: c}
 		}
-		return map[string]interface{}{"bins": binArr, "min": mn, "max": mx}
+		return api.Histogram{Bins: binArr, Min: mn, Max: mx}
 	}
-	buildHistogramInt := func(values []int, bins int) map[string]interface{} {
+	buildHistogramInt := func(values []int, bins int) api.Histogram {
 		if len(values) == 0 {
-			return map[string]interface{}{"bins": []interface{}{}, "min": 0, "max": 0}
+			return api.Histogram{Bins: []api.HistogramBin{}}
 		}
 		mn, mx := float64(minInt(values)), float64(maxInt(values))
 		rng := mx - mn
@@ -5905,11 +5901,11 @@ func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area strin
 			}
 			counts[idx]++
 		}
-		binArr := make([]map[string]interface{}, bins)
+		binArr := make([]api.HistogramBin, bins)
 		for i, c := range counts {
-			binArr[i] = map[string]interface{}{"x": mn + float64(i)*binWidth, "w": binWidth, "count": c}
+			binArr[i] = api.HistogramBin{X: mn + float64(i)*binWidth, W: binWidth, Count: c}
 		}
-		return map[string]interface{}{"bins": binArr, "min": mn, "max": mx}
+		return api.Histogram{Bins: binArr, Min: mn, Max: mx}
 	}
 
 	snrHistogram := buildHistogramF64(snrVals, 20)
@@ -5933,41 +5929,40 @@ func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area strin
 	}
 
 	// snrVals and rssiVals are already sorted — read min/max/median directly.
-	snrStats := map[string]interface{}{"min": 0.0, "max": 0.0, "avg": 0.0, "median": 0.0, "stddev": 0.0}
+	var snrStats, rssiStats api.SignalStats
 	if len(snrVals) > 0 {
-		snrStats = map[string]interface{}{
-			"min": snrVals[0], "max": snrVals[len(snrVals)-1],
-			"avg": snrAvg, "median": snrVals[len(snrVals)/2],
-			"stddev": stddevF64(snrVals, snrAvg),
+		snrStats = api.SignalStats{
+			Min: snrVals[0], Max: snrVals[len(snrVals)-1],
+			Avg: snrAvg, Median: snrVals[len(snrVals)/2],
+			Stddev: stddevF64(snrVals, snrAvg),
 		}
 	}
-	rssiStats := map[string]interface{}{"min": 0.0, "max": 0.0, "avg": 0.0, "median": 0.0, "stddev": 0.0}
 	if len(rssiVals) > 0 {
-		rssiStats = map[string]interface{}{
-			"min": rssiVals[0], "max": rssiVals[len(rssiVals)-1],
-			"avg": rssiAvg, "median": rssiVals[len(rssiVals)/2],
-			"stddev": stddevF64(rssiVals, rssiAvg),
+		rssiStats = api.SignalStats{
+			Min: rssiVals[0], Max: rssiVals[len(rssiVals)-1],
+			Avg: rssiAvg, Median: rssiVals[len(rssiVals)/2],
+			Stddev: stddevF64(rssiVals, rssiAvg),
 		}
 	}
 
-	return map[string]interface{}{
-		"totalPackets":       len(snrVals),
-		"totalAllPackets":    totalObs,
-		"totalTransmissions": len(regionalHashes),
-		"snr":                snrStats,
-		"rssi":               rssiStats,
-		"snrValues":          snrHistogram,
-		"rssiValues":         rssiHistogram,
-		"packetSizes":        sizeHistogram,
-		"minPacketSize":      minInt(packetSizes),
-		"maxPacketSize":      maxInt(packetSizes),
-		"avgPacketSize":      avgPktSize,
-		"packetsPerHour":     packetsPerHour,
-		"payloadTypes":       payloadTypes,
-		"snrByType":          snrByTypeArr,
-		"signalOverTime":     signalOverTime,
-		"scatterData":        scatterData,
-		"timeSpanHours":      timeSpanHours,
+	return api.RFAnalyticsResponse{
+		TotalPackets:       len(snrVals),
+		TotalAllPackets:    totalObs,
+		TotalTransmissions: len(regionalHashes),
+		Snr:                snrStats,
+		Rssi:               rssiStats,
+		SnrValues:          snrHistogram,
+		RssiValues:         rssiHistogram,
+		PacketSizes:        sizeHistogram,
+		MinPacketSize:      minInt(packetSizes),
+		MaxPacketSize:      maxInt(packetSizes),
+		AvgPacketSize:      avgPktSize,
+		PacketsPerHour:     packetsPerHour,
+		PayloadTypes:       payloadTypes,
+		SnrByType:          snrByTypeArr,
+		SignalOverTime:     signalOverTime,
+		ScatterData:        scatterData,
+		TimeSpanHours:      timeSpanHours,
 	}
 }
 
@@ -7020,18 +7015,18 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 // default (region="", area="") query, prefer the steady-state recomputer
 // snapshot if one is registered (issue #1240). Region/area-keyed variants
 // continue to use the legacy TTL cache + on-request compute.
-func (s *PacketStore) GetAnalyticsDistance(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsDistance(ctx context.Context, region, area string) api.DistanceAnalyticsResponse {
 	if region == "" && area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompDistance
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
 			if v := rc.Load(); v != nil {
-				if m, ok := v.(map[string]interface{}); ok {
+				if r, ok := v.(api.DistanceAnalyticsResponse); ok {
 					s.cacheMu.Lock()
 					s.cacheHits++
 					s.cacheMu.Unlock()
-					return m
+					return r
 				}
 			}
 		}
@@ -7049,13 +7044,13 @@ func (s *PacketStore) GetAnalyticsDistance(ctx context.Context, region, area str
 	result := s.computeAnalyticsDistance(ctx, region, area)
 
 	s.cacheMu.Lock()
-	s.distCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.distCache[cacheKey] = &cachedDistance{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
 }
 
-func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area string) api.DistanceAnalyticsResponse {
 	// #1239: hold s.mu.RLock() only long enough to (a) snapshot the
 	// distHops/distPaths slice headers and (b) build the region match
 	// set (which reads tx.Observations, a field mutated by ingest under
@@ -7202,23 +7197,28 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 
 	// Sort and pick top paths
 	sort.Slice(filteredPaths, func(i, j int) bool { return filteredPaths[i].TotalDist > filteredPaths[j].TotalDist })
-	topPaths := make([]map[string]interface{}, 0)
+	topPaths := make([]api.DistancePath, 0)
 	for i := range filteredPaths {
 		if i >= 20 {
 			break
 		}
 		p := &filteredPaths[i]
-		hops := make([]map[string]interface{}, len(p.Hops))
+		hops := make([]api.DistancePathHop, len(p.Hops))
 		for j, hd := range p.Hops {
-			hops[j] = map[string]interface{}{
-				"fromName": hd.FromName, "fromPk": hd.FromPk,
-				"toName": hd.ToName, "toPk": hd.ToPk,
-				"dist": hd.Dist,
+			hops[j] = api.DistancePathHop{
+				FromName: hd.FromName,
+				FromPk:   hd.FromPk,
+				ToName:   hd.ToName,
+				ToPk:     hd.ToPk,
+				Dist:     hd.Dist,
 			}
 		}
-		topPaths = append(topPaths, map[string]interface{}{
-			"hash": p.Hash, "totalDist": p.TotalDist,
-			"hopCount": p.HopCount, "timestamp": p.Timestamp, "hops": hops,
+		topPaths = append(topPaths, api.DistancePath{
+			Hash:      p.Hash,
+			TotalDist: p.TotalDist,
+			HopCount:  p.HopCount,
+			Timestamp: types.WireTimeSeconds{Time: p.Timestamp},
+			Hops:      hops,
 		})
 	}
 
@@ -7257,10 +7257,10 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 		return m
 	}
 
-	catStats := map[string]interface{}{}
+	catStats := make(map[string]api.CategoryDistStats, len(catDists))
 	for cat, dists := range catDists {
 		if len(dists) == 0 {
-			catStats[cat] = map[string]interface{}{"count": 0, "avg": 0, "median": 0, "min": 0, "max": 0}
+			catStats[cat] = api.CategoryDistStats{}
 			continue
 		}
 		sum := 0.0
@@ -7268,17 +7268,17 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 			sum += v
 		}
 		avg := sum / float64(len(dists))
-		catStats[cat] = map[string]interface{}{
-			"count":  len(dists),
-			"avg":    math.Round(avg*100) / 100,
-			"median": math.Round(medianF(dists)*100) / 100,
-			"min":    math.Round(minF(dists)*100) / 100,
-			"max":    math.Round(maxF(dists)*100) / 100,
+		catStats[cat] = api.CategoryDistStats{
+			Count:  len(dists),
+			Avg:    math.Round(avg*100) / 100,
+			Median: math.Round(medianF(dists)*100) / 100,
+			Min:    math.Round(minF(dists)*100) / 100,
+			Max:    math.Round(maxF(dists)*100) / 100,
 		}
 	}
 
 	// Distance histogram
-	var distHistogram interface{} = []interface{}{}
+	distHistogram := api.Histogram{Bins: []api.HistogramBin{}}
 	allDists := make([]float64, len(filteredHops))
 	for i := range filteredHops {
 		allDists[i] = filteredHops[i].Dist
@@ -7301,15 +7301,15 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 			}
 			bins[idx]++
 		}
-		binArr := make([]map[string]interface{}, binCount)
+		binArr := make([]api.HistogramBin, binCount)
 		for i, c := range bins {
-			binArr[i] = map[string]interface{}{
-				"x":     math.Round((hMin+float64(i)*binW)*10) / 10,
-				"w":     math.Round(binW*10) / 10,
-				"count": c,
+			binArr[i] = api.HistogramBin{
+				X:     math.Round((hMin+float64(i)*binW)*10) / 10,
+				W:     math.Round(binW*10) / 10,
+				Count: c,
 			}
 		}
-		distHistogram = map[string]interface{}{"bins": binArr, "min": hMin, "max": hMax}
+		distHistogram = api.Histogram{Bins: binArr, Min: hMin, Max: hMax}
 	}
 
 	// Distance over time
@@ -7318,43 +7318,41 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 		timeKeys = append(timeKeys, k)
 	}
 	sort.Strings(timeKeys)
-	distOverTime := make([]map[string]interface{}, 0, len(timeKeys))
+	distOverTime := make([]api.DistOverTimeEntry, 0, len(timeKeys))
 	for _, hour := range timeKeys {
 		dists := distByHour[hour]
 		sum := 0.0
 		for _, v := range dists {
 			sum += v
 		}
-		distOverTime = append(distOverTime, map[string]interface{}{
-			"hour":  hour,
-			"avg":   math.Round(sum/float64(len(dists))*100) / 100,
-			"count": len(dists),
+		distOverTime = append(distOverTime, api.DistOverTimeEntry{
+			Hour:  hour,
+			Avg:   math.Round(sum/float64(len(dists))*100) / 100,
+			Count: len(dists),
 		})
 	}
 
 	// Summary
-	summary := map[string]interface{}{
-		"totalHops":  len(filteredHops),
-		"totalPaths": len(filteredPaths),
-		"avgDist":    0.0,
-		"maxDist":    0.0,
+	summary := api.DistanceSummary{
+		TotalHops:  len(filteredHops),
+		TotalPaths: len(filteredPaths),
 	}
 	if len(allDists) > 0 {
 		sum := 0.0
 		for _, v := range allDists {
 			sum += v
 		}
-		summary["avgDist"] = math.Round(sum/float64(len(allDists))*100) / 100
-		summary["maxDist"] = math.Round(maxF(allDists)*100) / 100
+		summary.AvgDist = math.Round(sum/float64(len(allDists))*100) / 100
+		summary.MaxDist = math.Round(maxF(allDists)*100) / 100
 	}
 
-	return map[string]interface{}{
-		"summary":       summary,
-		"topHops":       topHops,
-		"topPaths":      topPaths,
-		"catStats":      catStats,
-		"distHistogram": distHistogram,
-		"distOverTime":  distOverTime,
+	return api.DistanceAnalyticsResponse{
+		Summary:       summary,
+		TopHops:       topHops,
+		TopPaths:      topPaths,
+		CatStats:      catStats,
+		DistHistogram: distHistogram,
+		DistOverTime:  distOverTime,
 	}
 }
 

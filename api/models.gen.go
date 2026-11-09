@@ -5,6 +5,7 @@ package api
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/oapi-codegen/runtime"
@@ -178,6 +179,39 @@ func (e UsefulnessGrade) Valid() bool {
 	}
 }
 
+// Defines values for GetRFAnalyticsParamsWindow.
+const (
+	GetRFAnalyticsParamsWindowN1d  GetRFAnalyticsParamsWindow = "1d"
+	GetRFAnalyticsParamsWindowN1h  GetRFAnalyticsParamsWindow = "1h"
+	GetRFAnalyticsParamsWindowN1w  GetRFAnalyticsParamsWindow = "1w"
+	GetRFAnalyticsParamsWindowN24h GetRFAnalyticsParamsWindow = "24h"
+	GetRFAnalyticsParamsWindowN30d GetRFAnalyticsParamsWindow = "30d"
+	GetRFAnalyticsParamsWindowN3d  GetRFAnalyticsParamsWindow = "3d"
+	GetRFAnalyticsParamsWindowN7d  GetRFAnalyticsParamsWindow = "7d"
+)
+
+// Valid indicates whether the value is a known member of the GetRFAnalyticsParamsWindow enum.
+func (e GetRFAnalyticsParamsWindow) Valid() bool {
+	switch e {
+	case GetRFAnalyticsParamsWindowN1d:
+		return true
+	case GetRFAnalyticsParamsWindowN1h:
+		return true
+	case GetRFAnalyticsParamsWindowN1w:
+		return true
+	case GetRFAnalyticsParamsWindowN24h:
+		return true
+	case GetRFAnalyticsParamsWindowN30d:
+		return true
+	case GetRFAnalyticsParamsWindowN3d:
+		return true
+	case GetRFAnalyticsParamsWindowN7d:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListNodesParamsSortBy.
 const (
 	LastSeen    ListNodesParamsSortBy = "lastSeen"
@@ -201,25 +235,25 @@ func (e ListNodesParamsSortBy) Valid() bool {
 
 // Defines values for ListNodesParamsLastHeard.
 const (
-	N1h  ListNodesParamsLastHeard = "1h"
-	N24h ListNodesParamsLastHeard = "24h"
-	N30d ListNodesParamsLastHeard = "30d"
-	N6h  ListNodesParamsLastHeard = "6h"
-	N7d  ListNodesParamsLastHeard = "7d"
+	ListNodesParamsLastHeardN1h  ListNodesParamsLastHeard = "1h"
+	ListNodesParamsLastHeardN24h ListNodesParamsLastHeard = "24h"
+	ListNodesParamsLastHeardN30d ListNodesParamsLastHeard = "30d"
+	ListNodesParamsLastHeardN6h  ListNodesParamsLastHeard = "6h"
+	ListNodesParamsLastHeardN7d  ListNodesParamsLastHeard = "7d"
 )
 
 // Valid indicates whether the value is a known member of the ListNodesParamsLastHeard enum.
 func (e ListNodesParamsLastHeard) Valid() bool {
 	switch e {
-	case N1h:
+	case ListNodesParamsLastHeardN1h:
 		return true
-	case N24h:
+	case ListNodesParamsLastHeardN24h:
 		return true
-	case N30d:
+	case ListNodesParamsLastHeardN30d:
 		return true
-	case N6h:
+	case ListNodesParamsLastHeardN6h:
 		return true
-	case N7d:
+	case ListNodesParamsLastHeardN7d:
 		return true
 	default:
 		return false
@@ -239,6 +273,12 @@ func (e ListPacketsParamsExpand) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AnalyticsWarmupResponse defines model for AnalyticsWarmupResponse.
+type AnalyticsWarmupResponse struct {
+	Error       string `json:"error"`
+	RetryAfterS int    `json:"retry_after_s"`
 }
 
 // AttributionMethod observer: multi-byte nodes are attributed to the observers that heard them. repeater: to the repeater's home region, used whenever a region filter is given.
@@ -317,6 +357,15 @@ type CapabilityEvidence string
 // CapabilityStatus confirmed: an advert declared a size of 2 or more. suspected: the node's prefix appeared in a multi-byte path. unknown: only 1-byte evidence.
 type CapabilityStatus string
 
+// CategoryDistStats defines model for CategoryDistStats.
+type CategoryDistStats struct {
+	Avg    float64 `json:"avg"`
+	Count  int     `json:"count"`
+	Max    float64 `json:"max"`
+	Median float64 `json:"median"`
+	Min    float64 `json:"min"`
+}
+
 // CollisionClass local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
 type CollisionClass string
 
@@ -330,6 +379,98 @@ type DirectObserverStats struct {
 	ObserverId   string `json:"observer_id"`
 	ObserverName string `json:"observer_name"`
 	PacketCount  int    `json:"packetCount"`
+}
+
+// DistOverTimeEntry defines model for DistOverTimeEntry.
+type DistOverTimeEntry struct {
+	Avg   float64 `json:"avg"`
+	Count int     `json:"count"`
+
+	// Hour UTC hour bucket, 2026-11-05T15.
+	Hour string `json:"hour"`
+}
+
+// DistanceAnalyticsResponse defines model for DistanceAnalyticsResponse.
+type DistanceAnalyticsResponse struct {
+	// CatStats Statistics keyed by endpoint roles (R↔R, C↔R, C↔C).
+	CatStats      map[string]CategoryDistStats `json:"catStats"`
+	DistHistogram Histogram                    `json:"distHistogram"`
+
+	// DistOverTime Average distance over time, bucketed by hour.
+	DistOverTime []DistOverTimeEntry `json:"distOverTime"`
+	Summary      DistanceSummary     `json:"summary"`
+
+	// TopHops Longest hop per node pair, at most 20, longest first.
+	TopHops []DistanceHop `json:"topHops"`
+
+	// TopPaths The 20 longest paths.
+	TopPaths []DistancePath `json:"topPaths"`
+}
+
+// DistanceBuildingResponse defines model for DistanceBuildingResponse.
+type DistanceBuildingResponse struct {
+	Detail            string `json:"detail"`
+	RetryAfterSeconds int    `json:"retry_after_seconds"`
+
+	// Status Always building.
+	Status string `json:"status"`
+}
+
+// DistanceHop defines model for DistanceHop.
+type DistanceHop struct {
+	BestSnr *float64 `json:"bestSnr"`
+
+	// Dist Kilometres.
+	Dist      float64  `json:"dist"`
+	FromName  string   `json:"fromName"`
+	FromPk    string   `json:"fromPk"`
+	Hash      string   `json:"hash"`
+	MedianSnr *float64 `json:"medianSnr"`
+
+	// ObsCount Times this node pair was observed.
+	ObsCount int `json:"obsCount"`
+
+	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Timestamp TimestampSeconds `json:"timestamp"`
+	ToName    string           `json:"toName"`
+	ToPk      string           `json:"toPk"`
+
+	// Type Endpoint roles: R↔R, C↔R or C↔C.
+	Type string `json:"type"`
+}
+
+// DistancePath defines model for DistancePath.
+type DistancePath struct {
+	Hash     string            `json:"hash"`
+	HopCount int               `json:"hopCount"`
+	Hops     []DistancePathHop `json:"hops"`
+
+	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Timestamp TimestampSeconds `json:"timestamp"`
+
+	// TotalDist Kilometres.
+	TotalDist float64 `json:"totalDist"`
+}
+
+// DistancePathHop defines model for DistancePathHop.
+type DistancePathHop struct {
+	// Dist Kilometres.
+	Dist     float64 `json:"dist"`
+	FromName string  `json:"fromName"`
+	FromPk   string  `json:"fromPk"`
+	ToName   string  `json:"toName"`
+	ToPk     string  `json:"toPk"`
+}
+
+// DistanceSummary defines model for DistanceSummary.
+type DistanceSummary struct {
+	// AvgDist Kilometres.
+	AvgDist float64 `json:"avgDist"`
+
+	// MaxDist Kilometres.
+	MaxDist    float64 `json:"maxDist"`
+	TotalHops  int     `json:"totalHops"`
+	TotalPaths int     `json:"totalPaths"`
 }
 
 // ErrorResponse defines model for ErrorResponse.
@@ -564,6 +705,33 @@ type HashSizeHourly struct {
 
 	// N3 Packets with 3-byte hashes.
 	N3 int `json:"3"`
+
+	// Hour UTC hour bucket, 2026-11-05T15.
+	Hour string `json:"hour"`
+}
+
+// Histogram defines model for Histogram.
+type Histogram struct {
+	// Bins Empty when there is no data.
+	Bins []HistogramBin `json:"bins"`
+	Max  float64        `json:"max"`
+	Min  float64        `json:"min"`
+}
+
+// HistogramBin defines model for HistogramBin.
+type HistogramBin struct {
+	Count int `json:"count"`
+
+	// W Width of the bin.
+	W float64 `json:"w"`
+
+	// X Lower edge of the bin.
+	X float64 `json:"x"`
+}
+
+// HourlyCount defines model for HourlyCount.
+type HourlyCount struct {
+	Count int `json:"count"`
 
 	// Hour UTC hour bucket, 2026-11-05T15.
 	Hour string `json:"hour"`
@@ -1059,6 +1227,60 @@ type PacketObservation struct {
 	Timestamp TimestampMillis `json:"timestamp"`
 }
 
+// PayloadTypeEntry defines model for PayloadTypeEntry.
+type PayloadTypeEntry struct {
+	// Count Distinct packets of this type.
+	Count int               `json:"count"`
+	Name  string            `json:"name"`
+	Type  types.PayloadType `json:"type"`
+}
+
+// PayloadTypeSignal defines model for PayloadTypeSignal.
+type PayloadTypeSignal struct {
+	Avg float64 `json:"avg"`
+
+	// Count Observations with an SNR.
+	Count int     `json:"count"`
+	Max   float64 `json:"max"`
+	Min   float64 `json:"min"`
+
+	// Name Payload type name; UNK when the packet has none.
+	Name string `json:"name"`
+}
+
+// RFAnalyticsResponse defines model for RFAnalyticsResponse.
+type RFAnalyticsResponse struct {
+	AvgPacketSize  int           `json:"avgPacketSize"`
+	MaxPacketSize  int           `json:"maxPacketSize"`
+	MinPacketSize  int           `json:"minPacketSize"`
+	PacketSizes    Histogram     `json:"packetSizes"`
+	PacketsPerHour []HourlyCount `json:"packetsPerHour"`
+
+	// PayloadTypes Most frequent first.
+	PayloadTypes []PayloadTypeEntry `json:"payloadTypes"`
+	Rssi         SignalStats        `json:"rssi"`
+	RssiValues   Histogram          `json:"rssiValues"`
+
+	// ScatterData At most about 500 points, thinned evenly.
+	ScatterData    []ScatterPoint        `json:"scatterData"`
+	SignalOverTime []SignalOverTimeEntry `json:"signalOverTime"`
+	Snr            SignalStats           `json:"snr"`
+
+	// SnrByType Most observations first.
+	SnrByType     []PayloadTypeSignal `json:"snrByType"`
+	SnrValues     Histogram           `json:"snrValues"`
+	TimeSpanHours float64             `json:"timeSpanHours"`
+
+	// TotalAllPackets All observations in the selection.
+	TotalAllPackets int `json:"totalAllPackets"`
+
+	// TotalPackets Observations that carry an SNR.
+	TotalPackets int `json:"totalPackets"`
+
+	// TotalTransmissions Distinct packet hashes.
+	TotalTransmissions int `json:"totalTransmissions"`
+}
+
 // ReachImportance defines model for ReachImportance.
 type ReachImportance struct {
 	BidirectionalLinks int `json:"bidirectional_links"`
@@ -1181,8 +1403,32 @@ type RoleStats struct {
 	WithSkew int `json:"withSkew"`
 }
 
+// ScatterPoint defines model for ScatterPoint.
+type ScatterPoint struct {
+	Rssi float64 `json:"rssi"`
+	Snr  float64 `json:"snr"`
+}
+
 // ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
 type ScopeConfigState string
+
+// SignalOverTimeEntry defines model for SignalOverTimeEntry.
+type SignalOverTimeEntry struct {
+	AvgSnr float64 `json:"avgSnr"`
+	Count  int     `json:"count"`
+
+	// Hour UTC hour bucket, 2026-11-05T15.
+	Hour string `json:"hour"`
+}
+
+// SignalStats defines model for SignalStats.
+type SignalStats struct {
+	Avg    float64 `json:"avg"`
+	Max    float64 `json:"max"`
+	Median float64 `json:"median"`
+	Min    float64 `json:"min"`
+	Stddev float64 `json:"stddev"`
+}
 
 // SkewSample defines model for SkewSample.
 type SkewSample struct {
@@ -1220,6 +1466,15 @@ type TwoByteCell struct {
 // UsefulnessGrade Letter grade derived from usefulness_score.
 type UsefulnessGrade string
 
+// GetDistanceAnalyticsParams defines parameters for GetDistanceAnalytics.
+type GetDistanceAnalyticsParams struct {
+	// Region Region (observer IATA) filter.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key; filters by the transmitting node's position.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+}
+
 // GetHashCollisionAnalyticsParams defines parameters for GetHashCollisionAnalytics.
 type GetHashCollisionAnalyticsParams struct {
 	// Region Region (observer IATA) filter.
@@ -1252,6 +1507,27 @@ type GetNeighborGraphParams struct {
 	// Role Keep only edges where at least one endpoint has this role. Matched case-insensitively.
 	Role *FilterableRole `form:"role,omitempty" json:"role,omitempty"`
 }
+
+// GetRFAnalyticsParams defines parameters for GetRFAnalytics.
+type GetRFAnalyticsParams struct {
+	// Region Region (observer IATA) filter.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key; filters by the transmitting node's position.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+
+	// Window Only data from this long ago until now.
+	Window *GetRFAnalyticsParamsWindow `form:"window,omitempty" json:"window,omitempty"`
+
+	// From Start of an explicit range, RFC 3339.
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of an explicit range, RFC 3339.
+	To *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
+// GetRFAnalyticsParamsWindow defines parameters for GetRFAnalytics.
+type GetRFAnalyticsParamsWindow string
 
 // ListNodesParams defines parameters for ListNodes.
 type ListNodesParams struct {

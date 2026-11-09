@@ -1,0 +1,371 @@
+{
+  "catStats": {
+    "C↔C": {
+      "avg": 100.4,
+      "count": 28,
+      "max": 235.98,
+      "median": 96.41,
+      "min": 0
+    },
+    "C↔R": {
+      "avg": 80.11,
+      "count": 3396,
+      "max": 294.85,
+      "median": 60.56,
+      "min": 0
+    },
+    "R↔R": {
+      "avg": 47.93,
+      "count": 200165,
+      "max": 299.99,
+      "median": 16.41,
+      "min": 0
+    }
+  },
+  "distHistogram": {
+    "bins": [
+      {
+        "count": 86926,
+        "w": 12,
+        "x": 0
+      },
+      {
+        "count": 32037,
+        "w": 12,
+        "x": 12
+      },
+      {
+        "count": 17415,
+        "w": 12,
+        "x": 24
+      },
+      {
+        "count": 10498,
+        "w": 12,
+        "x": 36
+      },
+      {
+        "count": 8992,
+        "w": 12,
+        "x": 48
+      },
+      {
+        "count": 4492,
+        "w": 12,
+        "x": 60
+      },
+      {
+        "count": 4165,
+        "w": 12,
+        "x": 72
+      },
+      {
+        "count": 2871,
+        "w": 12,
+        "x": 84
+      },
+      {
+        "count": 3277,
+        "w": 12,
+        "x": 96
+      },
+      {
+        "count": 3112,
+        "w": 12,
+        "x": 108
+      },
+      {
+        "count": 1752,
+        "w": 12,
+        "x": 120
+      },
+      {
+        "count": 1950,
+        "w": 12,
+        "x": 132
+      },
+      {
+        "count": 2629,
+        "w": 12,
+        "x": 144
+      },
+      {
+        "count": 3407,
+        "w": 12,
+        "x": 156
+      },
+      {
+        "count": 4530,
+        "w": 12,
+        "x": 168
+      },
+      {
+        "count": 2030,
+        "w": 12,
+        "x": 180
+      },
+      {
+        "count": 1930,
+        "w": 12,
+        "x": 192
+      },
+      {
+        "count": 1913,
+        "w": 12,
+        "x": 204
+      },
+      {
+        "count": 1700,
+        "w": 12,
+        "x": 216
+      },
+      {
+        "count": 1225,
+        "w": 12,
+        "x": 228
+      },
+      {
+        "count": 2224,
+        "w": 12,
+        "x": 240
+      },
+      {
+        "count": 1554,
+        "w": 12,
+        "x": 252
+      },
+      {
+        "count": 1090,
+        "w": 12,
+        "x": 264
+      },
+      {
+        "count": 1213,
+        "w": 12,
+        "x": 276
+      },
+      {
+        "count": 657,
+        "w": 12,
+        "x": 288
+      }
+    ],
+    "max": 299.99,
+    "min": 0
+  },
+  "distOverTime": [
+    {
+      "avg": 41.64,
+      "count": 1747,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "avg": 39.05,
+      "count": 2578,
+      "hour": "2026-11-05T16"
+    },
+    {
+      "avg": 56.26,
+      "count": 2726,
+      "hour": "2026-11-05T17"
+    },
+    {
+      "avg": 39.54,
+      "count": 2822,
+      "hour": "2026-11-05T18"
+    },
+    {
+      "avg": 42.99,
+      "count": 2807,
+      "hour": "2026-11-05T19"
+    },
+    {
+      "avg": 46.39,
+      "count": 2635,
+      "hour": "2026-11-05T20"
+    }
+  ],
+  "summary": {
+    "avgDist": 48.48,
+    "maxDist": 299.99,
+    "totalHops": 203589,
+    "totalPaths": 45465
+  },
+  "topHops": [
+    {
+      "bestSnr": 13,
+      "dist": 299.99,
+      "fromName": "Repeater 01",
+      "fromPk": "2019280a18478691e7d25f0547dd1dd25ee02caf3de29d3fd97e714a67b59118",
+      "hash": "f038cdf537cf8f96",
+      "medianSnr": 12.5,
+      "obsCount": 12,
+      "timestamp": "2026-11-08T10:11:30Z",
+      "toName": "Repeater 02",
+      "toPk": "f7c982709295d5a7771925da74f81aa410d4c78e067276a5ae7f5a2669f8a852",
+      "type": "R↔R"
+    },
+    {
+      "bestSnr": 12,
+      "dist": 299.94,
+      "fromName": "Repeater 03",
+      "fromPk": "7a5bb2be03f47bbe2a040bc8aaff68c23d251b9b63ce039bc594b7201d752a60",
+      "hash": "13e2febd0004626b",
+      "medianSnr": 11.275,
+      "obsCount": 4,
+      "timestamp": "2026-11-08T11:15:16Z",
+      "toName": "Repeater 04",
+      "toPk": "1c3891f30b8268e995e50038a5abc3359a21effd86001c32f59114b75c80e260",
+      "type": "R↔R"
+    },
+    {
+      "bestSnr": 1.5,
+      "dist": 299.88,
+      "fromName": "Repeater 05",
+      "fromPk": "df84f1079b0508504c5b53110940800865cab6608602fdd15eb3d279eea955e1",
+      "hash": "f7f935256d16284e",
+      "medianSnr": 1.5,
+      "obsCount": 1,
+      "timestamp": "2026-11-06T03:23:06Z",
+      "toName": "Repeater 06",
+      "toPk": "034f5d6da0e62ee426f2bcb5b51b0598b9ba71111afc531c6f147938a5df9f5f",
+      "type": "R↔R"
+    },
+    {
+      "bestSnr": 9,
+      "dist": 299.68,
+      "fromName": "Repeater 07",
+      "fromPk": "56dfd6f83ac025d0ddbf9949520a820225318d43811af38efe6a5610bbdd223a",
+      "hash": "8d34f377cdf07abf",
+      "medianSnr": 9,
+      "obsCount": 1,
+      "timestamp": "2026-11-08T14:24:04Z",
+      "toName": "Repeater 08",
+      "toPk": "f4fd99402b40bd23cfe901497b0e4267647ece153a390c55ff73fcf0d785a62e",
+      "type": "R↔R"
+    },
+    {
+      "bestSnr": -4,
+      "dist": 299.56,
+      "fromName": "Repeater 08",
+      "fromPk": "f4fd99402b40bd23cfe901497b0e4267647ece153a390c55ff73fcf0d785a62e",
+      "hash": "1f6105b93b3eaf5f",
+      "medianSnr": -6.4,
+      "obsCount": 6,
+      "timestamp": "2026-11-06T14:14:40Z",
+      "toName": "Repeater 09",
+      "toPk": "bc38a26698dc6bea3777c3469714005e5db4ede9a0956d055c220b4cb1262c42",
+      "type": "R↔R"
+    }
+  ],
+  "topPaths": [
+    {
+      "hash": "8bff805f0c944557",
+      "hopCount": 111,
+      "hops": [
+        {
+          "dist": 133.84,
+          "fromName": "Repeater 10",
+          "fromPk": "a43bfbd8f19e74a7e0213f8b37cd5357874ed35b607ebfbe26dddd0bd18e6b6d",
+          "toName": "Repeater 11",
+          "toPk": "7ce8995f7593ffaceed1a3e7fb576b87dcaae31a5c01d8078e6baff3c7ede962"
+        },
+        {
+          "dist": 139.03,
+          "fromName": "Repeater 11",
+          "fromPk": "7ce8995f7593ffaceed1a3e7fb576b87dcaae31a5c01d8078e6baff3c7ede962",
+          "toName": "Repeater 12",
+          "toPk": "1b5168c6d22002dfdee836ea36521ea59f1b9aba9ba9915b504079fc33009e9f"
+        },
+        {
+          "dist": 41.53,
+          "fromName": "Repeater 12",
+          "fromPk": "1b5168c6d22002dfdee836ea36521ea59f1b9aba9ba9915b504079fc33009e9f",
+          "toName": "Repeater 13",
+          "toPk": "fce91c108a3a27b2e47594fcaa8d9dbd0c2e8e9230baf6c0eb18dea153ee6d5a"
+        },
+        {
+          "dist": 25.14,
+          "fromName": "Repeater 13",
+          "fromPk": "fce91c108a3a27b2e47594fcaa8d9dbd0c2e8e9230baf6c0eb18dea153ee6d5a",
+          "toName": "Repeater 14",
+          "toPk": "3948ccaf455c55cdce0699e35ab94a79d401d4c7ddc85a4dc8d870f0a37c40e0"
+        }
+      ],
+      "timestamp": "2026-11-08T01:53:46Z",
+      "totalDist": 11394.47
+    },
+    {
+      "hash": "fa7a5961760403a7",
+      "hopCount": 46,
+      "hops": [
+        {
+          "dist": 261.44,
+          "fromName": "Repeater 15",
+          "fromPk": "a9d2f791e3c96126f00ce74acfa46ea24f6f0af793c1108e64927e12072f437e",
+          "toName": "Repeater 16",
+          "toPk": "c9891f8706191cc1b62de2a70131bc32ccbf5d1871b3177ef67dc1d56315aeee"
+        },
+        {
+          "dist": 30.39,
+          "fromName": "Repeater 16",
+          "fromPk": "c9891f8706191cc1b62de2a70131bc32ccbf5d1871b3177ef67dc1d56315aeee",
+          "toName": "Repeater 17",
+          "toPk": "c5244af1aa4e230ff6f344b0c40bd291bdc8f88eb8e3e3aa3010c82b647c8d41"
+        },
+        {
+          "dist": 43.62,
+          "fromName": "Repeater 17",
+          "fromPk": "c5244af1aa4e230ff6f344b0c40bd291bdc8f88eb8e3e3aa3010c82b647c8d41",
+          "toName": "Repeater 18",
+          "toPk": "6d8c9439806ec0056e257c46e5e9693fcf635d1473cb679d8c8042c4a8b7c011"
+        },
+        {
+          "dist": 200.11,
+          "fromName": "Repeater 18",
+          "fromPk": "6d8c9439806ec0056e257c46e5e9693fcf635d1473cb679d8c8042c4a8b7c011",
+          "toName": "Repeater 19",
+          "toPk": "961a88c259a7751b8c77a249195355f6403bb904946980758caa938de7bb5ab3"
+        }
+      ],
+      "timestamp": "2026-11-05T17:13:06Z",
+      "totalDist": 7001.99
+    },
+    {
+      "hash": "d45ebf8ae6fefe3f",
+      "hopCount": 55,
+      "hops": [
+        {
+          "dist": 88.81,
+          "fromName": "Repeater 20",
+          "fromPk": "990e03b731492d1c93dee19d6004b9ccbcf23f4d9fdde30483b7162dd3c90263",
+          "toName": "Repeater 21",
+          "toPk": "57af994ffbfe4b0f67be868c3e91b65aa9293ab08ff84f6287b37af8329d373b"
+        },
+        {
+          "dist": 64.5,
+          "fromName": "Repeater 21",
+          "fromPk": "57af994ffbfe4b0f67be868c3e91b65aa9293ab08ff84f6287b37af8329d373b",
+          "toName": "Repeater 22",
+          "toPk": "82592842049ce1bdbde04df0d1a53043e3eab7f4b28f9d3594c168cf0f0274d5"
+        },
+        {
+          "dist": 98.04,
+          "fromName": "Repeater 22",
+          "fromPk": "82592842049ce1bdbde04df0d1a53043e3eab7f4b28f9d3594c168cf0f0274d5",
+          "toName": "Repeater 23",
+          "toPk": "5fe2fe289025cc93ff68229671abb40b7fadee8389e7a3c608ad080b4349e7ca"
+        },
+        {
+          "dist": 70.6,
+          "fromName": "Repeater 23",
+          "fromPk": "5fe2fe289025cc93ff68229671abb40b7fadee8389e7a3c608ad080b4349e7ca",
+          "toName": "Repeater 24",
+          "toPk": "8d66b6dba02037593ccdd914c696cfab6cdc1c2d90715e810ca421dbf02250d3"
+        }
+      ],
+      "timestamp": "2026-11-05T18:12:19Z",
+      "totalDist": 6870.36
+    }
+  ]
+}

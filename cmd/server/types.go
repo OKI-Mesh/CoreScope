@@ -26,26 +26,6 @@ type OkResp struct {
 	Ok bool `json:"ok"`
 }
 
-type HistogramBin struct {
-	X     float64 `json:"x"`
-	W     float64 `json:"w"`
-	Count int     `json:"count"`
-}
-
-type Histogram struct {
-	Bins []HistogramBin `json:"bins"`
-	Min  float64        `json:"min"`
-	Max  float64        `json:"max"`
-}
-
-type SignalStats struct {
-	Min    float64 `json:"min"`
-	Max    float64 `json:"max"`
-	Avg    float64 `json:"avg"`
-	Median float64 `json:"median"`
-	Stddev float64 `json:"stddev"`
-}
-
 type TimeBucket struct {
 	Label  *string `json:"label,omitempty"`
 	Count  int     `json:"count"`
@@ -489,58 +469,6 @@ type NodeHopAnalyticsResponse struct {
 	Ambiguous int             `json:"ambiguous"`
 }
 
-// ─── Analytics — RF ────────────────────────────────────────────────────────────
-
-type PayloadTypeSignal struct {
-	Name  string  `json:"name"`
-	Count int     `json:"count"`
-	Avg   float64 `json:"avg"`
-	Min   float64 `json:"min"`
-	Max   float64 `json:"max"`
-}
-
-type SignalOverTimeEntry struct {
-	Hour   string  `json:"hour"`
-	Count  int     `json:"count"`
-	AvgSnr float64 `json:"avgSnr"`
-}
-
-type ScatterPoint struct {
-	SNR  float64 `json:"snr"`
-	RSSI float64 `json:"rssi"`
-}
-
-type PayloadTypeEntry struct {
-	Type  interface{} `json:"type"`
-	Name  string      `json:"name"`
-	Count int         `json:"count"`
-}
-
-type HourlyCount struct {
-	Hour  string `json:"hour"`
-	Count int    `json:"count"`
-}
-
-type RFAnalyticsResponse struct {
-	TotalPackets       int                   `json:"totalPackets"`
-	TotalAllPackets    int                   `json:"totalAllPackets"`
-	TotalTransmissions int                   `json:"totalTransmissions"`
-	SNR                SignalStats           `json:"snr"`
-	RSSI               SignalStats           `json:"rssi"`
-	SnrValues          Histogram             `json:"snrValues"`
-	RssiValues         Histogram             `json:"rssiValues"`
-	PacketSizes        Histogram             `json:"packetSizes"`
-	MinPacketSize      int                   `json:"minPacketSize"`
-	MaxPacketSize      int                   `json:"maxPacketSize"`
-	AvgPacketSize      float64               `json:"avgPacketSize"`
-	PacketsPerHour     []HourlyCount         `json:"packetsPerHour"`
-	PayloadTypes       []PayloadTypeEntry    `json:"payloadTypes"`
-	SnrByType          []PayloadTypeSignal   `json:"snrByType"`
-	SignalOverTime     []SignalOverTimeEntry `json:"signalOverTime"`
-	ScatterData        []ScatterPoint        `json:"scatterData"`
-	TimeSpanHours      float64               `json:"timeSpanHours"`
-}
-
 // ─── Analytics — Topology ──────────────────────────────────────────────────────
 
 type TopologyHopDist struct {
@@ -661,68 +589,6 @@ type ChannelAnalyticsResponse struct {
 	TopSenders      []TopSender               `json:"topSenders"`
 	ChannelTimeline []ChannelTimelineEntry    `json:"channelTimeline"`
 	MsgLengths      []int                     `json:"msgLengths"`
-}
-
-// ─── Analytics — Distance ──────────────────────────────────────────────────────
-
-type DistanceSummary struct {
-	TotalHops  int     `json:"totalHops"`
-	TotalPaths int     `json:"totalPaths"`
-	AvgDist    float64 `json:"avgDist"`
-	MaxDist    float64 `json:"maxDist"`
-}
-
-type DistanceHop struct {
-	FromName  string      `json:"fromName"`
-	FromPk    string      `json:"fromPk"`
-	ToName    string      `json:"toName"`
-	ToPk      string      `json:"toPk"`
-	Dist      float64     `json:"dist"`
-	Type      string      `json:"type"`
-	BestSnr   interface{} `json:"bestSnr"`
-	MedianSnr interface{} `json:"medianSnr"`
-	ObsCount  int         `json:"obsCount"`
-	Hash      string      `json:"hash"`
-	Timestamp string      `json:"timestamp"`
-}
-
-type DistancePathHop struct {
-	FromName string  `json:"fromName"`
-	FromPk   string  `json:"fromPk"`
-	ToName   string  `json:"toName"`
-	ToPk     string  `json:"toPk"`
-	Dist     float64 `json:"dist"`
-}
-
-type DistancePath struct {
-	Hash      string            `json:"hash"`
-	TotalDist float64           `json:"totalDist"`
-	HopCount  int               `json:"hopCount"`
-	Timestamp string            `json:"timestamp"`
-	Hops      []DistancePathHop `json:"hops"`
-}
-
-type CategoryDistStats struct {
-	Count  int     `json:"count"`
-	Avg    float64 `json:"avg"`
-	Median float64 `json:"median"`
-	Min    float64 `json:"min"`
-	Max    float64 `json:"max"`
-}
-
-type DistOverTimeEntry struct {
-	Hour  string  `json:"hour"`
-	Avg   float64 `json:"avg"`
-	Count int     `json:"count"`
-}
-
-type DistanceAnalyticsResponse struct {
-	Summary       DistanceSummary               `json:"summary"`
-	TopHops       []DistanceHop                 `json:"topHops"`
-	TopPaths      []DistancePath                `json:"topPaths"`
-	CatStats      map[string]*CategoryDistStats `json:"catStats"`
-	DistHistogram *Histogram                    `json:"distHistogram"`
-	DistOverTime  []DistOverTimeEntry           `json:"distOverTime"`
 }
 
 // ─── Analytics — Subpaths ──────────────────────────────────────────────────────

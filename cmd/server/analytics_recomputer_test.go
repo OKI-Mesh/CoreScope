@@ -100,8 +100,8 @@ func TestAnalyticsRecomputerSteadyStateLatency(t *testing.T) {
 			t0 := time.Now()
 			r := store.GetAnalyticsDistance(ctx, "", "")
 			latencies[i] = time.Since(t0)
-			if r == nil {
-				t.Errorf("reader %d got nil result", i)
+			if r.TopHops == nil {
+				t.Errorf("reader %d got a result without topHops", i)
 			}
 		}()
 	}

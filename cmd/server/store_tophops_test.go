@@ -26,30 +26,33 @@ func TestDedupeTopHopsByPair(t *testing.T) {
 
 	// First entry: A↔B pair, max distance = 100, obsCount = 5
 	ab := result[0]
-	if ab["dist"].(float64) != 100 {
-		t.Errorf("expected dist 100, got %v", ab["dist"])
+	if ab.Dist != 100 {
+		t.Errorf("expected dist 100, got %v", ab.Dist)
 	}
-	if ab["obsCount"].(int) != 5 {
-		t.Errorf("expected obsCount 5, got %v", ab["obsCount"])
+	if ab.ObsCount != 5 {
+		t.Errorf("expected obsCount 5, got %v", ab.ObsCount)
 	}
-	if ab["hash"].(string) != "h1" {
-		t.Errorf("expected hash h1 (from max-dist record), got %v", ab["hash"])
+	if ab.Hash != "h1" {
+		t.Errorf("expected hash h1 (from max-dist record), got %v", ab.Hash)
 	}
-	if ab["bestSnr"].(float64) != 8.0 {
-		t.Errorf("expected bestSnr 8.0, got %v", ab["bestSnr"])
+	if ab.BestSnr == nil || *ab.BestSnr != 8.0 {
+		t.Errorf("expected bestSnr 8.0, got %v", ab.BestSnr)
 	}
 	// medianSnr of [3,4,5,6,8] = 5.0
-	if ab["medianSnr"].(float64) != 5.0 {
-		t.Errorf("expected medianSnr 5.0, got %v", ab["medianSnr"])
+	if ab.MedianSnr == nil || *ab.MedianSnr != 5.0 {
+		t.Errorf("expected medianSnr 5.0, got %v", ab.MedianSnr)
+	}
+	if want := base.Add(1 * time.Second); !ab.Timestamp.Time.Equal(want) {
+		t.Errorf("expected timestamp of the max-dist record %v, got %v", want, ab.Timestamp.Time)
 	}
 
 	// Second entry: C↔D pair
 	cd := result[1]
-	if cd["dist"].(float64) != 50 {
-		t.Errorf("expected dist 50, got %v", cd["dist"])
+	if cd.Dist != 50 {
+		t.Errorf("expected dist 50, got %v", cd.Dist)
 	}
-	if cd["obsCount"].(int) != 1 {
-		t.Errorf("expected obsCount 1, got %v", cd["obsCount"])
+	if cd.ObsCount != 1 {
+		t.Errorf("expected obsCount 1, got %v", cd.ObsCount)
 	}
 }
 
@@ -62,11 +65,11 @@ func TestDedupeTopHopsReversePairMerges(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(result))
 	}
-	if result[0]["obsCount"].(int) != 2 {
-		t.Errorf("expected obsCount 2, got %v", result[0]["obsCount"])
+	if result[0].ObsCount != 2 {
+		t.Errorf("expected obsCount 2, got %v", result[0].ObsCount)
 	}
-	if result[0]["dist"].(float64) != 80 {
-		t.Errorf("expected dist 80, got %v", result[0]["dist"])
+	if result[0].Dist != 80 {
+		t.Errorf("expected dist 80, got %v", result[0].Dist)
 	}
 }
 
@@ -79,11 +82,11 @@ func TestDedupeTopHopsNilSNR(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(result))
 	}
-	if result[0]["bestSnr"] != nil {
-		t.Errorf("expected bestSnr nil, got %v", result[0]["bestSnr"])
+	if result[0].BestSnr != nil {
+		t.Errorf("expected bestSnr nil, got %v", *result[0].BestSnr)
 	}
-	if result[0]["medianSnr"] != nil {
-		t.Errorf("expected medianSnr nil, got %v", result[0]["medianSnr"])
+	if result[0].MedianSnr != nil {
+		t.Errorf("expected medianSnr nil, got %v", *result[0].MedianSnr)
 	}
 }
 
@@ -112,7 +115,7 @@ func TestDedupeTopHopsEvenMedian(t *testing.T) {
 	}
 	result := dedupeHopsByPair(hops, 20)
 	// sorted SNR: [2,4,6,8], median = (4+6)/2 = 5.0
-	if result[0]["medianSnr"].(float64) != 5.0 {
-		t.Errorf("expected medianSnr 5.0, got %v", result[0]["medianSnr"])
+	if result[0].MedianSnr == nil || *result[0].MedianSnr != 5.0 {
+		t.Errorf("expected medianSnr 5.0, got %v", result[0].MedianSnr)
 	}
 }

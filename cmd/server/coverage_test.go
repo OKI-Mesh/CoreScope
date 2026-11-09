@@ -2221,14 +2221,14 @@ func TestStoreGetAnalyticsRFCacheHit(t *testing.T) {
 
 	// First call — cache miss
 	result1 := store.GetAnalyticsRF(ctx, "", "")
-	if result1["totalPackets"] == nil {
+	if result1.TotalPackets == 0 {
 		t.Error("expected totalPackets")
 	}
 
 	// Second call — should hit cache
 	result2 := store.GetAnalyticsRF(ctx, "", "")
-	if result2["totalPackets"] == nil {
-		t.Error("expected cached totalPackets")
+	if result2.TotalPackets != result1.TotalPackets {
+		t.Errorf("cached totalPackets = %d, want %d", result2.TotalPackets, result1.TotalPackets)
 	}
 
 	// Verify cache hit was recorded
@@ -2394,13 +2394,15 @@ func TestStoreGetAnalyticsDistance(t *testing.T) {
 	}
 
 	result := store.GetAnalyticsDistance(ctx, "", "")
-	if result == nil {
-		t.Error("expected non-nil result")
+	if result.TopHops == nil || result.TopPaths == nil || result.DistOverTime == nil {
+		t.Error("expected non-nil lists in the result")
 	}
 
 	t.Run("with region", func(t *testing.T) {
 		r := store.GetAnalyticsDistance(ctx, "SJC", "")
-		_ = r
+		if r.CatStats == nil {
+			t.Error("expected category stats for the region query")
+		}
 	})
 }
 

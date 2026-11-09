@@ -239,16 +239,16 @@ func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) map[string]int
 }
 
 // GetRelayAirtimeShareWithWindow is the cached wrapper around
-// computeRelayAirtimeShare. Reuses the existing rfCache + rfCacheTTL pool
-// (shared with RF / topology / distance analytics — no new cache layer per
-// #1359 spec).
+// computeRelayAirtimeShare. It has its own map, relayAirtimeCache, because
+// rfCache holds typed RF results. It shares rfCacheTTL and is cleared together
+// with rfCache when new observations arrive.
 func (s *PacketStore) GetRelayAirtimeShareWithWindow(window TimeWindow) map[string]interface{} {
 	cacheKey := "relay-airtime-share|"
 	if !window.IsZero() {
 		cacheKey += window.CacheKey()
 	}
 	s.cacheMu.Lock()
-	if cached, ok := s.rfCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+	if cached, ok := s.relayAirtimeCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		s.cacheHits++
 		s.cacheMu.Unlock()
 		// Shallow copy with cached=true so the JSON client can tell.
@@ -266,7 +266,10 @@ func (s *PacketStore) GetRelayAirtimeShareWithWindow(window TimeWindow) map[stri
 	result := s.computeRelayAirtimeShare(window)
 
 	s.cacheMu.Lock()
-	s.rfCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	if s.relayAirtimeCache == nil {
+		s.relayAirtimeCache = make(map[string]*cachedResult)
+	}
+	s.relayAirtimeCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result

@@ -657,6 +657,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RoleAnalyticsResponse'
+  /api/analytics/rf:
+    get:
+      tags: [analytics]
+      operationId: getRFAnalytics
+      summary: RF analytics
+      description: >-
+        SNR and RSSI distributions, packet sizes, payload type mix and hourly
+        activity over the observations in memory. An unknown region applies no
+        filter, and an unrecognised window is ignored. While the background
+        snapshot is still warming up after a restart, the unfiltered query
+        answers 503.
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Region (observer IATA) filter.
+          schema: { type: string }
+        - name: area
+          in: query
+          required: false
+          description: Area key; filters by the transmitting node's position.
+          schema: { type: string }
+        - name: window
+          in: query
+          required: false
+          description: Only data from this long ago until now.
+          schema: { type: string, enum: [1h, 24h, 1d, 3d, 7d, 1w, 30d] }
+        - name: from
+          in: query
+          required: false
+          description: Start of an explicit range, RFC 3339.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: End of an explicit range, RFC 3339.
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RFAnalyticsResponse'
+        "503":
+          description: The analytics snapshot is still warming up.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema: { type: integer }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsWarmupResponse'
+  /api/analytics/distance:
+    get:
+      tags: [analytics]
+      operationId: getDistanceAnalytics
+      summary: Hop distance analytics
+      description: >-
+        Distances between consecutive positioned hops: the longest hops and
+        paths, a histogram, per-category statistics and an hourly series. An
+        unknown region applies no filter. The first request after a restart
+        starts the index build and answers 202 until it is ready.
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Region (observer IATA) filter.
+          schema: { type: string }
+        - name: area
+          in: query
+          required: false
+          description: Area key; filters by the transmitting node's position.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistanceAnalyticsResponse'
+        "202":
+          description: The distance index is still being built.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema: { type: integer }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistanceBuildingResponse'
 components:
   schemas:
     NodeRole:
@@ -1942,3 +2034,230 @@ components:
           description: One entry per role, largest first.
           items: { $ref: '#/components/schemas/RoleStats' }
           
+    AnalyticsWarmupResponse:
+      type: object
+      additionalProperties: false
+      required: [error, retry_after_s]
+      properties:
+        error: { type: string }
+        retry_after_s: { type: integer }
+    DistanceBuildingResponse:
+      type: object
+      additionalProperties: false
+      required: [status, retry_after_seconds, detail]
+      properties:
+        status: { type: string, description: Always building. }
+        retry_after_seconds: { type: integer }
+        detail: { type: string }
+    HistogramBin:
+      type: object
+      additionalProperties: false
+      required: [x, w, count]
+      properties:
+        x: { type: number, format: double, description: Lower edge of the bin. }
+        w: { type: number, format: double, description: Width of the bin. }
+        count: { type: integer }
+    Histogram:
+      type: object
+      additionalProperties: false
+      required: [bins, min, max]
+      properties:
+        bins:
+          type: array
+          description: Empty when there is no data.
+          items: { $ref: '#/components/schemas/HistogramBin' }
+        min: { type: number, format: double }
+        max: { type: number, format: double }
+    SignalStats:
+      type: object
+      additionalProperties: false
+      required: [min, max, avg, median, stddev]
+      properties:
+        min: { type: number, format: double }
+        max: { type: number, format: double }
+        avg: { type: number, format: double }
+        median: { type: number, format: double }
+        stddev: { type: number, format: double }
+    HourlyCount:
+      type: object
+      additionalProperties: false
+      required: [hour, count]
+      properties:
+        hour: { type: string, description: "UTC hour bucket, 2026-11-05T15." }
+        count: { type: integer }
+    PayloadTypeEntry:
+      type: object
+      additionalProperties: false
+      required: [type, name, count]
+      properties:
+        type:
+          type: integer
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        name: { type: string }
+        count: { type: integer, description: Distinct packets of this type. }
+    PayloadTypeSignal:
+      type: object
+      additionalProperties: false
+      required: [name, count, avg, min, max]
+      properties:
+        name: { type: string, description: "Payload type name; UNK when the packet has none." }
+        count: { type: integer, description: Observations with an SNR. }
+        avg: { type: number, format: double }
+        min: { type: number, format: double }
+        max: { type: number, format: double }
+    SignalOverTimeEntry:
+      type: object
+      additionalProperties: false
+      required: [hour, count, avgSnr]
+      properties:
+        hour: { type: string, description: "UTC hour bucket, 2026-11-05T15." }
+        count: { type: integer }
+        avgSnr: { type: number, format: double }
+    ScatterPoint:
+      type: object
+      additionalProperties: false
+      required: [snr, rssi]
+      properties:
+        snr: { type: number, format: double }
+        rssi: { type: number, format: double }
+    RFAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - totalPackets
+        - totalAllPackets
+        - totalTransmissions
+        - snr
+        - rssi
+        - snrValues
+        - rssiValues
+        - packetSizes
+        - minPacketSize
+        - maxPacketSize
+        - avgPacketSize
+        - packetsPerHour
+        - payloadTypes
+        - snrByType
+        - signalOverTime
+        - scatterData
+        - timeSpanHours
+      properties:
+        totalPackets: { type: integer, description: Observations that carry an SNR. }
+        totalAllPackets: { type: integer, description: All observations in the selection. }
+        totalTransmissions: { type: integer, description: Distinct packet hashes. }
+        snr: { $ref: '#/components/schemas/SignalStats' }
+        rssi: { $ref: '#/components/schemas/SignalStats' }
+        snrValues: { $ref: '#/components/schemas/Histogram' }
+        rssiValues: { $ref: '#/components/schemas/Histogram' }
+        packetSizes: { $ref: '#/components/schemas/Histogram' }
+        minPacketSize: { type: integer }
+        maxPacketSize: { type: integer }
+        avgPacketSize: { type: integer }
+        packetsPerHour:
+          type: array
+          items: { $ref: '#/components/schemas/HourlyCount' }
+        payloadTypes:
+          type: array
+          description: Most frequent first.
+          items: { $ref: '#/components/schemas/PayloadTypeEntry' }
+        snrByType:
+          type: array
+          description: Most observations first.
+          items: { $ref: '#/components/schemas/PayloadTypeSignal' }
+        signalOverTime:
+          type: array
+          items: { $ref: '#/components/schemas/SignalOverTimeEntry' }
+        scatterData:
+          type: array
+          description: At most about 500 points, thinned evenly.
+          items: { $ref: '#/components/schemas/ScatterPoint' }
+        timeSpanHours: { type: number, format: double }
+    DistanceSummary:
+      type: object
+      additionalProperties: false
+      required: [totalHops, totalPaths, avgDist, maxDist]
+      properties:
+        totalHops: { type: integer }
+        totalPaths: { type: integer }
+        avgDist: { type: number, format: double, description: Kilometres. }
+        maxDist: { type: number, format: double, description: Kilometres. }
+    DistanceHop:
+      type: object
+      additionalProperties: false
+      required: [fromName, fromPk, toName, toPk, dist, type, bestSnr, medianSnr, obsCount, hash, timestamp]
+      properties:
+        fromName: { type: string }
+        fromPk: { type: string }
+        toName: { type: string }
+        toPk: { type: string }
+        dist: { type: number, format: double, description: Kilometres. }
+        type: { type: string, description: "Endpoint roles: R\u2194R, C\u2194R or C\u2194C." }
+        bestSnr: { type: number, format: double, nullable: true }
+        medianSnr: { type: number, format: double, nullable: true }
+        obsCount: { type: integer, description: Times this node pair was observed. }
+        hash: { type: string }
+        timestamp: { $ref: '#/components/schemas/TimestampSeconds' }
+    DistancePathHop:
+      type: object
+      additionalProperties: false
+      required: [fromName, fromPk, toName, toPk, dist]
+      properties:
+        fromName: { type: string }
+        fromPk: { type: string }
+        toName: { type: string }
+        toPk: { type: string }
+        dist: { type: number, format: double, description: Kilometres. }
+    DistancePath:
+      type: object
+      additionalProperties: false
+      required: [hash, totalDist, hopCount, timestamp, hops]
+      properties:
+        hash: { type: string }
+        totalDist: { type: number, format: double, description: Kilometres. }
+        hopCount: { type: integer }
+        timestamp: { $ref: '#/components/schemas/TimestampSeconds' }
+        hops:
+          type: array
+          items: { $ref: '#/components/schemas/DistancePathHop' }
+    CategoryDistStats:
+      type: object
+      additionalProperties: false
+      required: [count, avg, median, min, max]
+      properties:
+        count: { type: integer }
+        avg: { type: number, format: double }
+        median: { type: number, format: double }
+        min: { type: number, format: double }
+        max: { type: number, format: double }
+    DistOverTimeEntry:
+      type: object
+      additionalProperties: false
+      required: [hour, avg, count]
+      properties:
+        hour: { type: string, description: "UTC hour bucket, 2026-11-05T15." }
+        avg: { type: number, format: double }
+        count: { type: integer }
+    DistanceAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required: [summary, topHops, topPaths, catStats, distHistogram, distOverTime]
+      properties:
+        summary: { $ref: '#/components/schemas/DistanceSummary' }
+        topHops:
+          type: array
+          description: Longest hop per node pair, at most 20, longest first.
+          items: { $ref: '#/components/schemas/DistanceHop' }
+        topPaths:
+          type: array
+          description: The 20 longest paths.
+          items: { $ref: '#/components/schemas/DistancePath' }
+        catStats:
+          type: object
+          description: Statistics keyed by endpoint roles (R↔R, C↔R, C↔C).
+          additionalProperties: { $ref: '#/components/schemas/CategoryDistStats' }
+        distHistogram: { $ref: '#/components/schemas/Histogram' }
+        distOverTime:
+          type: array
+          description: Average distance over time, bucketed by hour.
+          items: { $ref: '#/components/schemas/DistOverTimeEntry' }

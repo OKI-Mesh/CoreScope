@@ -79,10 +79,7 @@ func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
 
 	// Sanity: result is non-empty.
 	r := store.computeAnalyticsDistance(ctx, "", "")
-	if r == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if _, ok := r["topHops"]; !ok {
+	if len(r.TopHops) == 0 {
 		t.Fatal("expected topHops in result")
 	}
 
@@ -97,10 +94,7 @@ func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
 			defer wg.Done()
 			for !stop.Load() {
 				rr := store.computeAnalyticsDistance(ctx, "", "")
-				if rr == nil {
-					readerErrs.Add(1)
-				}
-				if _, ok := rr["topHops"]; !ok {
+				if len(rr.TopHops) == 0 {
 					readerErrs.Add(1)
 				}
 			}

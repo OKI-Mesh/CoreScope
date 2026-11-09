@@ -195,12 +195,8 @@ func TestAnalyticsRFAreaFilter(t *testing.T) {
 	ingestAdvert(t, s, "hash-rf-out", `{"public_key":"outside-node","name":"Outside"}`)
 
 	result := s.GetAnalyticsRF(ctx, "", "BEL")
-	if result == nil {
-		t.Fatal("GetAnalyticsRF returned nil")
-	}
-	total, _ := result["totalTransmissions"].(int)
-	if total != 1 {
-		t.Errorf("want totalTransmissions=1 for BEL, got %d", total)
+	if result.TotalTransmissions != 1 {
+		t.Errorf("want totalTransmissions=1 for BEL, got %d", result.TotalTransmissions)
 	}
 }
 

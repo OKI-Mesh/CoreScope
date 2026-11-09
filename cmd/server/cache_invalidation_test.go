@@ -9,12 +9,12 @@ import (
 func newTestStore(t *testing.T) *PacketStore {
 	t.Helper()
 	return &PacketStore{
-		rfCache:        make(map[string]*cachedResult),
+		rfCache:        make(map[string]*cachedRF),
 		topoCache:      make(map[string]*cachedResult),
 		hashCache:      make(map[string]*cachedHashSizes),
 		collisionCache: make(map[string]*cachedHashCollisions),
 		chanCache:      make(map[string]*cachedResult),
-		distCache:      make(map[string]*cachedResult),
+		distCache:      make(map[string]*cachedDistance),
 		subpathCache:   make(map[string]*cachedResult),
 		rfCacheTTL:     15 * time.Second,
 		invCooldown:    10 * time.Second,
@@ -27,12 +27,12 @@ func populateAllCaches(s *PacketStore) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	dummy := &cachedResult{data: map[string]interface{}{"test": true}, expiresAt: time.Now().Add(time.Hour)}
-	s.rfCache["global"] = dummy
+	s.rfCache["global"] = &cachedRF{expiresAt: time.Now().Add(time.Hour)}
 	s.topoCache["global"] = dummy
 	s.hashCache["global"] = &cachedHashSizes{expiresAt: time.Now().Add(time.Hour)}
 	s.collisionCache["global"] = &cachedHashCollisions{expiresAt: time.Now().Add(time.Hour)}
 	s.chanCache["global"] = dummy
-	s.distCache["global"] = dummy
+	s.distCache["global"] = &cachedDistance{expiresAt: time.Now().Add(time.Hour)}
 	s.subpathCache["global"] = dummy
 }
 
@@ -294,11 +294,11 @@ func TestEvictionBypassesCooldown(t *testing.T) {
 // that cache hits now occur thanks to rate-limited invalidation.
 func BenchmarkCacheHitDuringIngestion(b *testing.B) {
 	s := &PacketStore{
-		rfCache:      make(map[string]*cachedResult),
+		rfCache:      make(map[string]*cachedRF),
 		topoCache:    make(map[string]*cachedResult),
 		hashCache:    make(map[string]*cachedHashSizes),
 		chanCache:    make(map[string]*cachedResult),
-		distCache:    make(map[string]*cachedResult),
+		distCache:    make(map[string]*cachedDistance),
 		subpathCache: make(map[string]*cachedResult),
 		rfCacheTTL:   15 * time.Second,
 		invCooldown:  50 * time.Millisecond,
@@ -311,8 +311,7 @@ func BenchmarkCacheHitDuringIngestion(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Populate cache (simulates an analytics query filling the cache)
 		s.cacheMu.Lock()
-		s.rfCache["global"] = &cachedResult{
-			data:      map[string]interface{}{"test": true},
+		s.rfCache["global"] = &cachedRF{
 			expiresAt: time.Now().Add(time.Hour),
 		}
 		s.cacheMu.Unlock()
@@ -459,12 +458,12 @@ func TestNewNodesAccumulatedDuringCooldown(t *testing.T) {
 // for analytics endpoints to demonstrate the performance impact.
 func BenchmarkAnalyticsLatencyCacheHitVsMiss(b *testing.B) {
 	s := &PacketStore{
-		rfCache:        make(map[string]*cachedResult),
+		rfCache:        make(map[string]*cachedRF),
 		topoCache:      make(map[string]*cachedResult),
 		hashCache:      make(map[string]*cachedHashSizes),
 		collisionCache: make(map[string]*cachedHashCollisions),
 		chanCache:      make(map[string]*cachedResult),
-		distCache:      make(map[string]*cachedResult),
+		distCache:      make(map[string]*cachedDistance),
 		subpathCache:   make(map[string]*cachedResult),
 		rfCacheTTL:     1800 * time.Second,
 		invCooldown:    300 * time.Second,
@@ -472,8 +471,7 @@ func BenchmarkAnalyticsLatencyCacheHitVsMiss(b *testing.B) {
 
 	// Pre-populate cache
 	s.cacheMu.Lock()
-	s.rfCache["global"] = &cachedResult{
-		data:      map[string]interface{}{"bins": make([]int, 100)},
+	s.rfCache["global"] = &cachedRF{
 		expiresAt: time.Now().Add(time.Hour),
 	}
 	s.cacheMu.Unlock()
@@ -486,8 +484,7 @@ func BenchmarkAnalyticsLatencyCacheHitVsMiss(b *testing.B) {
 		// Re-populate (simulates query filling cache)
 		s.cacheMu.Lock()
 		if len(s.rfCache) == 0 {
-			s.rfCache["global"] = &cachedResult{
-				data:      map[string]interface{}{"bins": make([]int, 100)},
+			s.rfCache["global"] = &cachedRF{
 				expiresAt: time.Now().Add(time.Hour),
 			}
 		}
