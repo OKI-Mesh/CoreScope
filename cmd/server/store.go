@@ -8743,7 +8743,7 @@ func (s *PacketStore) nodeTxsSince(pubkey string, fromISO time.Time) []*StoreTx 
 }
 
 // GetNodeAnalytics computes analytics for a single node using in-memory byNode index.
-func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days int) (*NodeAnalyticsResponse, error) {
+func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days int) (*api.NodeAnalyticsResponse, error) {
 	dbNode, err := s.db.GetNodeByPubkey(ctx, pubkey)
 	if errors.Is(err, database.ErrNotFound) {
 		return nil, nil
@@ -8761,35 +8761,40 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 	packets := s.nodeTxsSince(pubkey, fromTime)
 
 	// Activity timeline (hourly buckets)
-	timelineBuckets := map[string]int{}
+	timelineBuckets := map[time.Time]int{}
 	for _, p := range packets {
 		if p.FirstSeen.IsZero() {
 			continue
 		}
-		bucket := p.FirstSeen.UTC().Truncate(time.Hour).Format("2006-01-02T15:00:00Z")
-		timelineBuckets[bucket]++
+		timelineBuckets[p.FirstSeen.UTC().Truncate(time.Hour)]++
 	}
-	bucketKeys := make([]string, 0, len(timelineBuckets))
-	for k := range timelineBuckets {
-		bucketKeys = append(bucketKeys, k)
+	bucketTimes := make([]time.Time, 0, len(timelineBuckets))
+	for t := range timelineBuckets {
+		bucketTimes = append(bucketTimes, t)
 	}
-	sort.Strings(bucketKeys)
-	activityTimeline := make([]TimeBucket, 0, len(bucketKeys))
-	for _, k := range bucketKeys {
-		b := k
-		activityTimeline = append(activityTimeline, TimeBucket{Bucket: &b, Count: timelineBuckets[k]})
+	sort.Slice(bucketTimes, func(i, j int) bool { return bucketTimes[i].Before(bucketTimes[j]) })
+	activityTimeline := make([]api.NodeActivityBucket, 0, len(bucketTimes))
+	for _, t := range bucketTimes {
+		activityTimeline = append(activityTimeline, api.NodeActivityBucket{
+			Bucket: types.WireTimeSeconds{Time: t},
+			Count:  timelineBuckets[t],
+		})
 	}
 
 	// SNR trend
-	snrTrend := make([]SnrTrendEntry, 0)
+	snrTrend := make([]api.NodeSnrSample, 0)
 	for _, p := range packets {
 		if p.SNR != nil {
-			snrTrend = append(snrTrend, SnrTrendEntry{
-				Timestamp:    p.FirstSeen,
-				SNR:          floatPtrOrNil(p.SNR),
-				RSSI:         floatPtrOrNil(p.RSSI),
-				ObserverID:   strOrNil(p.ObserverID),
-				ObserverName: strOrNil(p.ObserverName),
+			var rssi *float64
+			if p.RSSI != nil {
+				rssi = ptr(*p.RSSI)
+			}
+			snrTrend = append(snrTrend, api.NodeSnrSample{
+				Timestamp:    types.WireTimeSeconds{Time: p.FirstSeen},
+				Snr:          *p.SNR,
+				Rssi:         rssi,
+				ObserverId:   optString(p.ObserverID),
+				ObserverName: optString(p.ObserverName),
 			})
 		}
 	}
@@ -8801,9 +8806,9 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 			typeBuckets[*p.PayloadType]++
 		}
 	}
-	packetTypeBreakdown := make([]PayloadTypeCount, 0, len(typeBuckets))
+	packetTypeBreakdown := make([]api.NodePacketTypeCount, 0, len(typeBuckets))
 	for pt, cnt := range typeBuckets {
-		packetTypeBreakdown = append(packetTypeBreakdown, PayloadTypeCount{PayloadType: pt, Count: cnt})
+		packetTypeBreakdown = append(packetTypeBreakdown, api.NodePacketTypeCount{PayloadType: pt, Count: cnt})
 	}
 
 	// Observer coverage
@@ -8839,27 +8844,30 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 			o.last = p.FirstSeen
 		}
 	}
-	observerCoverage := make([]NodeObserverStatsResp, 0, len(obsMap))
+	observerCoverage := make([]api.NodeObserverCoverage, 0, len(obsMap))
 	for id, o := range obsMap {
-		var avgSnr, avgRssi interface{}
+		var avgSnr, avgRssi *float64
 		if o.snrCount > 0 {
-			avgSnr = o.snrSum / float64(o.snrCount)
+			avgSnr = ptr(o.snrSum / float64(o.snrCount))
 		}
 		if o.rssiCount > 0 {
-			avgRssi = o.rssiSum / float64(o.rssiCount)
+			avgRssi = ptr(o.rssiSum / float64(o.rssiCount))
 		}
-		observerCoverage = append(observerCoverage, NodeObserverStatsResp{
-			ObserverID:   id,
+		observerCoverage = append(observerCoverage, api.NodeObserverCoverage{
+			ObserverId:   id,
 			ObserverName: o.name,
 			PacketCount:  o.count,
 			AvgSnr:       avgSnr,
 			AvgRssi:      avgRssi,
-			FirstSeen:    o.first,
-			LastSeen:     o.last,
+			FirstSeen:    types.WireTimeSeconds{Time: o.first},
+			LastSeen:     types.WireTimeSeconds{Time: o.last},
 		})
 	}
 	sort.Slice(observerCoverage, func(i, j int) bool {
-		return observerCoverage[i].PacketCount > observerCoverage[j].PacketCount
+		if observerCoverage[i].PacketCount != observerCoverage[j].PacketCount {
+			return observerCoverage[i].PacketCount > observerCoverage[j].PacketCount
+		}
+		return observerCoverage[i].ObserverId < observerCoverage[j].ObserverId
 	})
 
 	// Hop distribution
@@ -8882,10 +8890,10 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 			hopCounts["0"]++
 		}
 	}
-	hopDistribution := make([]HopDistEntry, 0)
+	hopDistribution := make([]api.NodeHopBucket, 0)
 	for _, h := range []string{"0", "1", "2", "3", "4+"} {
 		if c, ok := hopCounts[h]; ok {
-			hopDistribution = append(hopDistribution, HopDistEntry{Hops: h, Count: c})
+			hopDistribution = append(hopDistribution, api.NodeHopBucket{Hops: h, Count: c})
 		}
 	}
 
@@ -8943,32 +8951,35 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 			}
 		}
 	}
-	peerSlice := make([]PeerInteraction, 0, len(peerMap))
+	peerSlice := make([]api.NodePeerInteraction, 0, len(peerMap))
 	for _, pm := range peerMap {
-		peerSlice = append(peerSlice, PeerInteraction{
+		peerSlice = append(peerSlice, api.NodePeerInteraction{
 			PeerKey: pm.key, PeerName: pm.name,
-			MessageCount: pm.count, LastContact: pm.lastContact,
+			MessageCount: pm.count, LastContact: types.WireTimeSeconds{Time: pm.lastContact},
 		})
 	}
 	sort.Slice(peerSlice, func(i, j int) bool {
-		return peerSlice[i].MessageCount > peerSlice[j].MessageCount
+		if peerSlice[i].MessageCount != peerSlice[j].MessageCount {
+			return peerSlice[i].MessageCount > peerSlice[j].MessageCount
+		}
+		return peerSlice[i].PeerKey < peerSlice[j].PeerKey
 	})
 	if len(peerSlice) > 20 {
 		peerSlice = peerSlice[:20]
 	}
 
 	// Uptime heatmap
-	heatBuckets := map[string]*HeatmapCell{}
+	heatBuckets := map[string]*api.NodeHeatCell{}
 	for _, p := range packets {
 		dow := int(p.FirstSeen.UTC().Weekday())
 		hr := p.FirstSeen.UTC().Hour()
 		k := fmt.Sprintf("%d:%d", dow, hr)
 		if heatBuckets[k] == nil {
-			heatBuckets[k] = &HeatmapCell{DayOfWeek: dow, Hour: hr}
+			heatBuckets[k] = &api.NodeHeatCell{DayOfWeek: dow, Hour: hr}
 		}
 		heatBuckets[k].Count++
 	}
-	uptimeHeatmap := make([]HeatmapCell, 0, len(heatBuckets))
+	uptimeHeatmap := make([]api.NodeHeatCell, 0, len(heatBuckets))
 	for _, cell := range heatBuckets {
 		uptimeHeatmap = append(uptimeHeatmap, *cell)
 	}
@@ -8992,25 +9003,12 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 
 	// Longest silence
 	var longestSilenceMs int
-	var longestSilenceStart interface{}
-	if len(activityTimeline) >= 2 {
-		for i := 1; i < len(activityTimeline); i++ {
-			var t1Str, t2Str string
-			if activityTimeline[i-1].Bucket != nil {
-				t1Str = *activityTimeline[i-1].Bucket
-			}
-			if activityTimeline[i].Bucket != nil {
-				t2Str = *activityTimeline[i].Bucket
-			}
-			t1, e1 := time.Parse(time.RFC3339, t1Str)
-			t2, e2 := time.Parse(time.RFC3339, t2Str)
-			if e1 == nil && e2 == nil {
-				gap := int(t2.Sub(t1).Milliseconds())
-				if gap > longestSilenceMs {
-					longestSilenceMs = gap
-					longestSilenceStart = t1Str
-				}
-			}
+	var longestSilenceStart *types.WireTimeSeconds
+	for i := 1; i < len(bucketTimes); i++ {
+		gap := int(bucketTimes[i].Sub(bucketTimes[i-1]).Milliseconds())
+		if gap > longestSilenceMs {
+			longestSilenceMs = gap
+			longestSilenceStart = &types.WireTimeSeconds{Time: bucketTimes[i-1]}
 		}
 	}
 
@@ -9019,17 +9017,13 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 	if len(snrTrend) > 0 {
 		var sum float64
 		for _, e := range snrTrend {
-			if v, ok := e.SNR.(float64); ok {
-				sum += v
-			}
+			sum += e.Snr
 		}
 		snrMean = sum / float64(len(snrTrend))
 		if len(snrTrend) > 1 {
 			var sqSum float64
 			for _, e := range snrTrend {
-				if v, ok := e.SNR.(float64); ok {
-					sqSum += (v - snrMean) * (v - snrMean)
-				}
+				sqSum += (e.Snr - snrMean) * (e.Snr - snrMean)
 			}
 			snrStdDev = math.Sqrt(sqSum / float64(len(snrTrend)))
 		}
@@ -9056,9 +9050,13 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 	// Compute clock skew (already under RLock).
 	clockSkew := s.getNodeClockSkewLocked(pubkey)
 
-	return &NodeAnalyticsResponse{
-		Node:                node,
-		TimeRange:           TimeRangeResp{From: fromTime, To: toTime, Days: days},
+	return &api.NodeAnalyticsResponse{
+		Node: node,
+		TimeRange: api.NodeTimeRange{
+			From: types.WireTimeSeconds{Time: fromTime},
+			To:   types.WireTimeSeconds{Time: toTime},
+			Days: days,
+		},
 		ActivityTimeline:    activityTimeline,
 		SnrTrend:            snrTrend,
 		PacketTypeBreakdown: packetTypeBreakdown,
@@ -9066,7 +9064,7 @@ func (s *PacketStore) GetNodeAnalytics(ctx context.Context, pubkey string, days 
 		HopDistribution:     hopDistribution,
 		PeerInteractions:    peerSlice,
 		UptimeHeatmap:       uptimeHeatmap,
-		ComputedStats: ComputedNodeStats{
+		ComputedStats: api.NodeComputedStats{
 			AvailabilityPct:     availabilityPct,
 			LongestSilenceMs:    longestSilenceMs,
 			LongestSilenceStart: longestSilenceStart,

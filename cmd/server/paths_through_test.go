@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -85,7 +86,7 @@ func TestHandleNodePaths_PrefixCollisionExclusion(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

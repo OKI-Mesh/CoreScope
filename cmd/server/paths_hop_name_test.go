@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
@@ -112,7 +113,7 @@ func TestHandleNodePaths_HopName_CanonicalPathShowsTarget_1144(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /paths: code=%d body=%s", w.Code, w.Body.String())
 	}
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestHandleNodePaths_HopName_CanonicalPathShowsTarget_1144(t *testing.T) {
 			t.Errorf("hop name = %q, want %q", hop.Name, "CJS SF Mission")
 		}
 	}
-	if hop.Pubkey != targetPK {
-		t.Errorf("hop pubkey = %q, want %q", hop.Pubkey, targetPK)
+	if hop.Pubkey == nil || *hop.Pubkey != targetPK {
+		t.Errorf("hop pubkey = %v, want %q", hop.Pubkey, targetPK)
 	}
 }

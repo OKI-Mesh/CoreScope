@@ -18,24 +18,6 @@ import (
 	"github.com/gorilla/mux"
 )
 
-type NodeHealthStats struct {
-	TotalTransmissions int      `json:"totalTransmissions"`
-	TotalObservations  int      `json:"totalObservations"`
-	TotalPackets       int      `json:"totalPackets"`
-	PacketsToday       int      `json:"packetsToday"`
-	AvgSnr             *float64 `json:"avgSnr"` // null when no packet carried SNR
-	AvgHops            int      `json:"avgHops"`
-	LastHeard          *string  `json:"lastHeard"` // null when there are no packets
-}
-
-type NodeHealthResponse struct {
-	Node               api.Node                 `json:"node"`      // becomes NodeResponse with the nodes conversion
-	Observers          []map[string]interface{} `json:"observers"` // use the type buildDirectObserverRows returns
-	RelayObserverCount int                      `json:"relayObserverCount"`
-	Stats              NodeHealthStats          `json:"stats"`
-	RecentPackets      []api.Packet             `json:"recentPackets"`
-}
-
 func (s *Server) registerNodeRoutes(r *mux.Router) {
 	// Fixed routes BEFORE the parameterized /api/nodes/{pubkey}.
 	r.HandleFunc("/api/nodes/search", s.handleNodeSearch).Methods("GET")
@@ -624,7 +606,7 @@ func (s *Server) handleNetworkStatus(w http.ResponseWriter, r *http.Request) {
 
 // nodePathAgg groups the transmissions that took the same resolved path.
 type nodePathAgg struct {
-	Hops       []PathHopResp
+	Hops       []api.NodePathHop
 	Count      int
 	LastSeen   time.Time
 	SampleHash string
@@ -857,7 +839,7 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, tx := range candidates {
 		hops := txGetParsedPath(tx)
-		resolvedHops := make([]PathHopResp, len(hops))
+		resolvedHops := make([]api.NodePathHop, len(hops))
 		sigParts := make([]string, len(hops))
 		containsTarget := false
 
@@ -868,7 +850,7 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 			// txGetParsedPath; align by the shorter length.
 			rpLen := len(rp)
 			for i, hop := range hops {
-				entry := PathHopResp{Prefix: hop, Name: hop}
+				entry := api.NodePathHop{Prefix: hop, Name: hop}
 				var resolvedPK string
 				if i < rpLen && rp[i] != nil {
 					resolvedPK = strings.ToLower(*rp[i])
@@ -876,14 +858,14 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 				if resolvedPK != "" {
 					if n := lookupNode(resolvedPK); n != nil {
 						entry.Name = n.Name
-						entry.Pubkey = n.PublicKey
+						entry.Pubkey = ptr(n.PublicKey)
 						if n.HasGPS {
-							entry.Lat = n.Lat
-							entry.Lon = n.Lon
+							entry.Lat = ptr(n.Lat)
+							entry.Lon = ptr(n.Lon)
 						}
 						sigParts[i] = n.PublicKey
 					} else {
-						entry.Pubkey = resolvedPK
+						entry.Pubkey = ptr(resolvedPK)
 						sigParts[i] = resolvedPK
 					}
 					if resolvedPK == lowerPK {
@@ -935,7 +917,7 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 			preconfirmed := containsTarget
 			for i, hop := range hops {
 				resolved := resolveHop(hop)
-				entry := PathHopResp{Prefix: hop, Name: hop}
+				entry := api.NodePathHop{Prefix: hop, Name: hop}
 				lowerHop := strings.ToLower(hop)
 				// #1352 guard helper. We treat as "unique/safe" when the
 				// hop's prefix candidate set has EXACTLY ONE member: no
@@ -954,10 +936,10 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 				uniquePrefix := len(pm.m[lowerHop]) <= 1
 				if resolved != nil {
 					entry.Name = resolved.Name
-					entry.Pubkey = resolved.PublicKey
+					entry.Pubkey = ptr(resolved.PublicKey)
 					if resolved.HasGPS {
-						entry.Lat = resolved.Lat
-						entry.Lon = resolved.Lon
+						entry.Lat = ptr(resolved.Lat)
+						entry.Lon = ptr(resolved.Lon)
 					}
 					sigParts[i] = resolved.PublicKey
 					if strings.ToLower(resolved.PublicKey) == lowerPK {
@@ -1010,13 +992,13 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 	s.store.mu.RUnlock()
 
 	ranked := rankNodePaths(pathGroups, 50)
-	paths := make([]PathEntryResp, 0, len(ranked))
+	paths := make([]api.NodePath, 0, len(ranked))
 	for _, agg := range ranked {
-		var lastSeen interface{}
+		var lastSeen *types.WireTimeSeconds
 		if !agg.LastSeen.IsZero() {
-			lastSeen = agg.LastSeen.UTC()
+			lastSeen = &types.WireTimeSeconds{Time: agg.LastSeen}
 		}
-		paths = append(paths, PathEntryResp{
+		paths = append(paths, api.NodePath{
 			Hops:       agg.Hops,
 			Count:      agg.Count,
 			LastSeen:   lastSeen,
@@ -1024,12 +1006,12 @@ func (s *Server) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, NodePathsResponse{
-		Node: map[string]interface{}{
-			"public_key": node.PublicKey,
-			"name":       node.Name,
-			"lat":        node.Lat,
-			"lon":        node.Lon,
+	writeJSON(w, api.NodePathsResponse{
+		Node: api.NodePathsNode{
+			PublicKey: node.PublicKey,
+			Name:      node.Name,
+			Lat:       node.Lat,
+			Lon:       node.Lon,
 		},
 		Paths:              paths,
 		TotalPaths:         len(pathGroups),
@@ -1132,7 +1114,7 @@ func classifyNetworkStatus(nodes []database.NodeHealth, th HealthThresholds, now
 }
 
 // GetNodeHealth returns health info for a single node using in-memory data.
-func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[string]interface{}, error) {
+func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (*api.NodeHealthResponse, error) {
 	// Fetch node info from DB (fast single-row lookup)
 	dbNode, err := s.db.GetNodeByPubkey(ctx, pubkey)
 	var node api.Node
@@ -1199,9 +1181,13 @@ func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[str
 	observerRows := buildDirectObserverRows(directByObs, nonRelaySet, seenSet)
 	relayObserverCount := relayOnlyObserverCount(relayObservers, directByObs)
 
-	var avgSnr interface{}
+	var avgSnr *float64
 	if snrCount > 0 {
-		avgSnr = snrSum / float64(snrCount)
+		avgSnr = ptr(snrSum / float64(snrCount))
+	}
+	var lastHeardWire *types.WireTimeSeconds
+	if !lastHeard.IsZero() {
+		lastHeardWire = &types.WireTimeSeconds{Time: lastHeard}
 	}
 	avgHops := 0
 	if hopCount > 0 {
@@ -1232,25 +1218,25 @@ func (s *PacketStore) GetNodeHealth(ctx context.Context, pubkey string) (map[str
 	}
 	s.mu.RUnlock()
 
-	return map[string]interface{}{
-		"node": node,
+	return &api.NodeHealthResponse{
+		Node: node,
 		// Direct-RF only: observers that received this node's own
 		// transmission off the air.
-		"observers": observerRows,
+		Observers: observerRows,
 		// Observers that saw traffic through this node without hearing it.
 		// The stats below count that relayed traffic too, so the card needs
 		// the number to stay consistent with them.
-		"relayObserverCount": relayObserverCount,
-		"stats": map[string]interface{}{
-			"totalTransmissions": totalPackets,
-			"totalObservations":  totalObservations,
-			"totalPackets":       totalPackets,
-			"packetsToday":       packetsToday,
-			"avgSnr":             avgSnr,
-			"avgHops":            avgHops,
-			"lastHeard":          formatTS(lastHeard),
+		RelayObserverCount: relayObserverCount,
+		Stats: api.NodeHealthStats{
+			TotalTransmissions: totalPackets,
+			TotalObservations:  totalObservations,
+			TotalPackets:       totalPackets,
+			PacketsToday:       packetsToday,
+			AvgSnr:             avgSnr,
+			AvgHops:            avgHops,
+			LastHeard:          lastHeardWire,
 		},
-		"recentPackets": recentPackets,
+		RecentPackets: recentPackets,
 	}, nil
 }
 

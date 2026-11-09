@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
@@ -78,7 +79,7 @@ func hopGraph() *NeighborGraph {
 	return g
 }
 
-func hopsOf(packets []NodeHopPacket) []int {
+func hopsOf(packets []api.NodeHopPacket) []int {
 	out := make([]int, 0, len(packets))
 	for _, p := range packets {
 		out = append(out, p.Hops)
@@ -86,7 +87,7 @@ func hopsOf(packets []NodeHopPacket) []int {
 	return out
 }
 
-func hashesOf(packets []NodeHopPacket) []string {
+func hashesOf(packets []api.NodeHopPacket) []string {
 	out := make([]string, 0, len(packets))
 	for _, p := range packets {
 		out = append(out, p.Hash)
@@ -356,7 +357,7 @@ func hopLoadedStore(t *testing.T, db *database.DB) *PacketStore {
 	return store
 }
 
-func hopAnalytics(t *testing.T, store *PacketStore, pk string) *NodeHopAnalyticsResponse {
+func hopAnalytics(t *testing.T, store *PacketStore, pk string) *api.NodeHopAnalyticsResponse {
 	t.Helper()
 	ctx := t.Context()
 	resp, err := store.GetNodeHopAnalytics(ctx, pk, 7)
@@ -432,16 +433,16 @@ func TestNodeHopAnalytics_SameResultAfterRestart(t *testing.T) {
 
 	restarted := hopAnalytics(t, hopLoadedStore(t, db), hopTarget)
 
-	want := []NodeHopPacket{
+	want := []api.NodeHopPacket{
 		{Hash: "after-neighbor", Hops: 1, Tags: hopTagsUnscoped},
 		{Hash: "not-on-longest-path", Hops: 1, Tags: hopTagsUnscoped},
 		{Hash: "three-byte", Hops: 2, Tags: hopTagsUnscoped},
 		{Hash: "two-byte", Hops: 1, Tags: hopTagsScoped},
 	}
-	for name, resp := range map[string]*NodeHopAnalyticsResponse{"live ingest": fromLive, "cold load": restarted} {
-		got := make([]NodeHopPacket, len(resp.Packets))
+	for name, resp := range map[string]*api.NodeHopAnalyticsResponse{"live ingest": fromLive, "cold load": restarted} {
+		got := make([]api.NodeHopPacket, len(resp.Packets))
 		for i, p := range resp.Packets {
-			got[i] = NodeHopPacket{Hash: p.Hash, Hops: p.Hops, Tags: p.Tags}
+			got[i] = api.NodeHopPacket{Hash: p.Hash, Hops: p.Hops, Tags: p.Tags}
 		}
 		if !reflect.DeepEqual(got, want) || resp.Ambiguous != 1 {
 			t.Errorf("%s: packets=%+v ambiguous=%d, want %+v and 1", name, got, resp.Ambiguous, want)
@@ -457,7 +458,7 @@ func TestNodeHopAnalytics_SameResultAfterRestart(t *testing.T) {
 func TestHandleNodeHopAnalytics(t *testing.T) {
 	ctx := t.Context()
 	db := setupTestDB(t)
-	recent := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Millisecond)
+	recent := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Second)
 	old := time.Now().Add(-3 * 24 * time.Hour).UTC().Truncate(time.Millisecond)
 
 	hopInsertNode(t, db, hopTarget, "Target", 1)
@@ -527,11 +528,11 @@ func TestHandleNodeHopAnalytics(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	var resp NodeHopAnalyticsResponse
+	var resp api.NodeHopAnalyticsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	byHash := map[string]NodeHopPacket{}
+	byHash := map[string]api.NodeHopPacket{}
 	for _, p := range resp.Packets {
 		byHash[p.Hash] = p
 	}
@@ -551,7 +552,7 @@ func TestHandleNodeHopAnalytics(t *testing.T) {
 	if w := get("/api/nodes/" + hopTarget + "/hop_analytics?days=7"); w.Code != http.StatusOK || !json.Valid(w.Body.Bytes()) {
 		t.Fatalf("days=7: code=%d", w.Code)
 	} else {
-		var wide NodeHopAnalyticsResponse
+		var wide api.NodeHopAnalyticsResponse
 		_ = json.Unmarshal(w.Body.Bytes(), &wide)
 		if len(wide.Packets) != 3 {
 			t.Errorf("days=7 packets = %d, want 3", len(wide.Packets))
@@ -597,7 +598,7 @@ func BenchmarkNodeHopPackets(b *testing.B) {
 	}
 	pm, graph := hopPM(), hopGraph()
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
 		computeNodeHopPackets(hopTarget, txs, time.Time{}, pm, graph)
 	}

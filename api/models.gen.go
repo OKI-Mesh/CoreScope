@@ -1918,6 +1918,13 @@ type Node struct {
 	UsefulnessScore *float64 `json:"usefulness_score,omitempty"`
 }
 
+// NodeActivityBucket defines model for NodeActivityBucket.
+type NodeActivityBucket struct {
+	// Bucket UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Bucket TimestampSeconds `json:"bucket"`
+	Count  int              `json:"count"`
+}
+
 // NodeAdvert defines model for NodeAdvert.
 type NodeAdvert struct {
 	DecodedJson      *string                 `json:"decoded_json"`
@@ -1957,6 +1964,23 @@ type NodeAdvertObservation struct {
 	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
 	Timestamp      TimestampMillis `json:"timestamp"`
 	TransmissionId int64           `json:"transmission_id"`
+}
+
+// NodeAnalyticsResponse clockSkew is absent when the node has no clock-skew samples.
+type NodeAnalyticsResponse struct {
+	ActivityTimeline []NodeActivityBucket `json:"activityTimeline"`
+	ClockSkew        *NodeClockSkew       `json:"clockSkew,omitempty"`
+	ComputedStats    NodeComputedStats    `json:"computedStats"`
+	HopDistribution  []NodeHopBucket      `json:"hopDistribution"`
+
+	// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
+	Node                Node                   `json:"node"`
+	ObserverCoverage    []NodeObserverCoverage `json:"observerCoverage"`
+	PacketTypeBreakdown []NodePacketTypeCount  `json:"packetTypeBreakdown"`
+	PeerInteractions    []NodePeerInteraction  `json:"peerInteractions"`
+	SnrTrend            []NodeSnrSample        `json:"snrTrend"`
+	TimeRange           NodeTimeRange          `json:"timeRange"`
+	UptimeHeatmap       []NodeHeatCell         `json:"uptimeHeatmap"`
 }
 
 // NodeBatteryResponse defines model for NodeBatteryResponse.
@@ -2023,11 +2047,100 @@ type NodeClockSkew struct {
 	Severity SkewSeverity `json:"severity"`
 }
 
+// NodeComputedStats defines model for NodeComputedStats.
+type NodeComputedStats struct {
+	AvailabilityPct  float64 `json:"availabilityPct"`
+	AvgPacketsPerDay float64 `json:"avgPacketsPerDay"`
+	LongestSilenceMs int     `json:"longestSilenceMs"`
+
+	// LongestSilenceStart Start of the longest gap between active hours. Null when there are fewer than two active hours.
+	LongestSilenceStart *TimestampSeconds `json:"longestSilenceStart"`
+	RelayPct            float64           `json:"relayPct"`
+
+	// SignalGrade Letter grade from SNR mean and spread: A, A-, B+, B, C or D.
+	SignalGrade     string  `json:"signalGrade"`
+	SnrMean         float64 `json:"snrMean"`
+	SnrStdDev       float64 `json:"snrStdDev"`
+	TotalPackets    int     `json:"totalPackets"`
+	UniqueObservers int     `json:"uniqueObservers"`
+	UniquePeers     int     `json:"uniquePeers"`
+}
+
 // NodeDetailResponse defines model for NodeDetailResponse.
 type NodeDetailResponse struct {
 	// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
 	Node          Node         `json:"node"`
 	RecentAdverts []NodeAdvert `json:"recentAdverts"`
+}
+
+// NodeHealthResponse defines model for NodeHealthResponse.
+type NodeHealthResponse struct {
+	// Node A mesh node. Fields marked repeater/room only are absent on other roles. A field that is absent is not the same as null: null means the server looked and has no value.
+	Node Node `json:"node"`
+
+	// Observers Observers that received this node's own transmissions directly.
+	Observers     []DirectObserverStats `json:"observers"`
+	RecentPackets []Packet              `json:"recentPackets"`
+
+	// RelayObserverCount Observers that saw traffic through this node without hearing it directly.
+	RelayObserverCount int             `json:"relayObserverCount"`
+	Stats              NodeHealthStats `json:"stats"`
+}
+
+// NodeHealthStats defines model for NodeHealthStats.
+type NodeHealthStats struct {
+	// AvgHops Mean path length over packets that have a path, rounded.
+	AvgHops int `json:"avgHops"`
+
+	// AvgSnr Null when no packet carried SNR.
+	AvgSnr *float64 `json:"avgSnr"`
+
+	// LastHeard Null when the node has no packets.
+	LastHeard          *TimestampSeconds `json:"lastHeard"`
+	PacketsToday       int               `json:"packetsToday"`
+	TotalObservations  int               `json:"totalObservations"`
+	TotalPackets       int               `json:"totalPackets"`
+	TotalTransmissions int               `json:"totalTransmissions"`
+}
+
+// NodeHeatCell defines model for NodeHeatCell.
+type NodeHeatCell struct {
+	Count int `json:"count"`
+
+	// DayOfWeek 0 is Sunday.
+	DayOfWeek int `json:"dayOfWeek"`
+
+	// Hour UTC hour, 0 to 23.
+	Hour int `json:"hour"`
+}
+
+// NodeHopAnalyticsResponse defines model for NodeHopAnalyticsResponse.
+type NodeHopAnalyticsResponse struct {
+	Ambiguous int             `json:"ambiguous"`
+	Packets   []NodeHopPacket `json:"packets"`
+	TimeRange NodeTimeRange   `json:"timeRange"`
+}
+
+// NodeHopBucket defines model for NodeHopBucket.
+type NodeHopBucket struct {
+	Count int `json:"count"`
+
+	// Hops Path length bucket: 0, 1, 2, 3 or 4+.
+	Hops string `json:"hops"`
+}
+
+// NodeHopPacket defines model for NodeHopPacket.
+type NodeHopPacket struct {
+	Hash string `json:"hash"`
+
+	// Hops Zero-based index of this node in the path.
+	Hops int `json:"hops"`
+
+	// Tags Combination of flood, scoped or unscoped, and advert.
+	Tags []string `json:"tags"`
+
+	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Timestamp TimestampSeconds `json:"timestamp"`
 }
 
 // NodeListResponse defines model for NodeListResponse.
@@ -2054,6 +2167,79 @@ type NodeNeighborsResponse struct {
 	TotalObservations int `json:"total_observations"`
 }
 
+// NodeObserverCoverage defines model for NodeObserverCoverage.
+type NodeObserverCoverage struct {
+	AvgRssi *float64 `json:"avgRssi"`
+	AvgSnr  *float64 `json:"avgSnr"`
+
+	// FirstSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	FirstSeen TimestampSeconds `json:"firstSeen"`
+
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen     TimestampSeconds `json:"lastSeen"`
+	ObserverId   string           `json:"observer_id"`
+	ObserverName string           `json:"observer_name"`
+	PacketCount  int              `json:"packetCount"`
+}
+
+// NodePacketTypeCount defines model for NodePacketTypeCount.
+type NodePacketTypeCount struct {
+	Count       int               `json:"count"`
+	PayloadType types.PayloadType `json:"payload_type"`
+}
+
+// NodePath defines model for NodePath.
+type NodePath struct {
+	Count    int               `json:"count"`
+	Hops     []NodePathHop     `json:"hops"`
+	LastSeen *TimestampSeconds `json:"lastSeen"`
+
+	// SampleHash Hash of the most recent packet on this path.
+	SampleHash string `json:"sampleHash"`
+}
+
+// NodePathHop defines model for NodePathHop.
+type NodePathHop struct {
+	Lat *float64 `json:"lat"`
+	Lon *float64 `json:"lon"`
+
+	// Name Resolved node name, or the prefix when unresolved.
+	Name string `json:"name"`
+
+	// Prefix The hop as it appears in the packet.
+	Prefix string `json:"prefix"`
+
+	// Pubkey Null when the hop is unresolved.
+	Pubkey *string `json:"pubkey"`
+}
+
+// NodePathsNode defines model for NodePathsNode.
+type NodePathsNode struct {
+	Lat       *float64 `json:"lat"`
+	Lon       *float64 `json:"lon"`
+	Name      *string  `json:"name"`
+	PublicKey string   `json:"public_key"`
+}
+
+// NodePathsResponse defines model for NodePathsResponse.
+type NodePathsResponse struct {
+	Node  NodePathsNode `json:"node"`
+	Paths []NodePath    `json:"paths"`
+
+	// TotalPaths Distinct paths before the 50-entry cut.
+	TotalPaths         int `json:"totalPaths"`
+	TotalTransmissions int `json:"totalTransmissions"`
+}
+
+// NodePeerInteraction defines model for NodePeerInteraction.
+type NodePeerInteraction struct {
+	// LastContact UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastContact  TimestampSeconds `json:"lastContact"`
+	MessageCount int              `json:"messageCount"`
+	PeerKey      string           `json:"peer_key"`
+	PeerName     string           `json:"peer_name"`
+}
+
 // NodeReachResponse defines model for NodeReachResponse.
 type NodeReachResponse struct {
 	DirectObservers []ReachObserver `json:"direct_observers"`
@@ -2072,6 +2258,28 @@ type NodeRole = types.NodeRole
 // NodeSearchResponse defines model for NodeSearchResponse.
 type NodeSearchResponse struct {
 	Nodes []Node `json:"nodes"`
+}
+
+// NodeSnrSample defines model for NodeSnrSample.
+type NodeSnrSample struct {
+	ObserverId   *string  `json:"observer_id"`
+	ObserverName *string  `json:"observer_name"`
+	Rssi         *float64 `json:"rssi"`
+	Snr          float64  `json:"snr"`
+
+	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Timestamp TimestampSeconds `json:"timestamp"`
+}
+
+// NodeTimeRange defines model for NodeTimeRange.
+type NodeTimeRange struct {
+	Days int `json:"days"`
+
+	// From UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	From TimestampSeconds `json:"from"`
+
+	// To UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	To TimestampSeconds `json:"to"`
 }
 
 // ObservationBatchResponse defines model for ObservationBatchResponse.
@@ -3525,6 +3733,12 @@ type Area = string
 // From defines model for From.
 type From = time.Time
 
+// NodeDays defines model for NodeDays.
+type NodeDays = int
+
+// NodePubkey defines model for NodePubkey.
+type NodePubkey = string
+
 // Region defines model for Region.
 type Region = string
 
@@ -3841,10 +4055,22 @@ type SearchNodesParams struct {
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 
+// GetNodeAnalyticsParams defines parameters for GetNodeAnalytics.
+type GetNodeAnalyticsParams struct {
+	// Days Range in days, clamped to 1..365. Missing or non-numeric means 7.
+	Days *NodeDays `form:"days,omitempty" json:"days,omitempty"`
+}
+
 // GetNodeBatteryParams defines parameters for GetNodeBattery.
 type GetNodeBatteryParams struct {
 	// Days Look-back window; values outside 1..365 fall back to 7.
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
+}
+
+// GetNodeHopAnalyticsParams defines parameters for GetNodeHopAnalytics.
+type GetNodeHopAnalyticsParams struct {
+	// Days Range in days, clamped to 1..365. Missing or non-numeric means 7.
+	Days *NodeDays `form:"days,omitempty" json:"days,omitempty"`
 }
 
 // GetNodeNeighborsParams defines parameters for GetNodeNeighbors.
@@ -3857,6 +4083,11 @@ type GetNodeNeighborsParams struct {
 
 	// IncludeAmbiguous Set to false to drop edges that could not be resolved to a single node. Any other value keeps them.
 	IncludeAmbiguous *bool `form:"include_ambiguous,omitempty" json:"include_ambiguous,omitempty"`
+}
+
+// GetNodePaths503JSONResponseBody defines parameters for GetNodePaths.
+type GetNodePaths503JSONResponseBody struct {
+	union json.RawMessage
 }
 
 // GetNodeReachParams defines parameters for GetNodeReach.
@@ -4110,6 +4341,68 @@ func (t PacketDetailResponse_Packet) MarshalJSON() ([]byte, error) {
 }
 
 func (t *PacketDetailResponse_Packet) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsErrorResponse returns the union data inside the GetNodePaths503JSONResponseBody as a ErrorResponse
+func (t GetNodePaths503JSONResponseBody) AsErrorResponse() (ErrorResponse, error) {
+	var body ErrorResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromErrorResponse overwrites any union data inside the GetNodePaths503JSONResponseBody as the provided ErrorResponse
+func (t *GetNodePaths503JSONResponseBody) FromErrorResponse(v ErrorResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeErrorResponse performs a merge with any union data inside the GetNodePaths503JSONResponseBody, using the provided ErrorResponse
+func (t *GetNodePaths503JSONResponseBody) MergeErrorResponse(v ErrorResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsIndexLoadingResponse returns the union data inside the GetNodePaths503JSONResponseBody as a IndexLoadingResponse
+func (t GetNodePaths503JSONResponseBody) AsIndexLoadingResponse() (IndexLoadingResponse, error) {
+	var body IndexLoadingResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromIndexLoadingResponse overwrites any union data inside the GetNodePaths503JSONResponseBody as the provided IndexLoadingResponse
+func (t *GetNodePaths503JSONResponseBody) FromIndexLoadingResponse(v IndexLoadingResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeIndexLoadingResponse performs a merge with any union data inside the GetNodePaths503JSONResponseBody, using the provided IndexLoadingResponse
+func (t *GetNodePaths503JSONResponseBody) MergeIndexLoadingResponse(v IndexLoadingResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GetNodePaths503JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GetNodePaths503JSONResponseBody) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

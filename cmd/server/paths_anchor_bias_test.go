@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
@@ -95,7 +96,7 @@ func TestHandleNodePaths_AnchorBiasInconsistency_Issue1278(t *testing.T) {
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 
-	doGet := func(pk string) NodePathsResponse {
+	doGet := func(pk string) api.NodePathsResponse {
 		t.Helper()
 		req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/paths", nil)
 		w := httptest.NewRecorder()
@@ -103,7 +104,7 @@ func TestHandleNodePaths_AnchorBiasInconsistency_Issue1278(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("GET /paths for %s: code=%d body=%s", pk, w.Code, w.Body.String())
 		}
-		var resp NodePathsResponse
+		var resp api.NodePathsResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}

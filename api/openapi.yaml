@@ -2000,6 +2000,120 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/{pubkey}/health:
+    get:
+      tags: [nodes]
+      operationId: getNodeHealth
+      summary: Health card for one node
+      description: >-
+        The node, the observers that heard it directly, packet counts, and its
+        20 most recent packets. Answers 404 when the node is blacklisted, hidden,
+        or unknown and has no packets.
+      parameters:
+        - $ref: '#/components/parameters/NodePubkey'
+      responses:
+        "200":
+          description: Node health
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeHealthResponse' }
+        "404":
+          description: Node is blacklisted, hidden, or not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/{pubkey}/paths:
+    get:
+      tags: [nodes]
+      operationId: getNodePaths
+      summary: Paths that pass through one node
+      description: >-
+        Transmissions whose path contains this node, grouped by identical
+        resolved path, most recently seen first, at most 50 groups. Answers 503
+        while the path index is loading, with the same body as the other index
+        loading responses, and 503 with a plain error when there is no packet
+        store.
+      parameters:
+        - $ref: '#/components/parameters/NodePubkey'
+      responses:
+        "200":
+          description: Paths through the node
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodePathsResponse' }
+        "404":
+          description: Node is blacklisted, hidden, or not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Lookup failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "503":
+          description: The packet store is unavailable, or the path index is still loading
+          headers:
+            Retry-After:
+              description: Present only while the path index is loading.
+              schema: { type: integer }
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/IndexLoadingResponse'
+  /api/nodes/{pubkey}/analytics:
+    get:
+      tags: [nodes, analytics]
+      operationId: getNodeAnalytics
+      summary: Activity, signal and observer analytics for one node
+      description: >-
+        Hourly activity, SNR trend, packet types, observer coverage, hop
+        distribution, peers, an uptime heatmap, computed stats and clock skew,
+        over the last N days.
+      parameters:
+        - $ref: '#/components/parameters/NodePubkey'
+        - $ref: '#/components/parameters/NodeDays'
+      responses:
+        "200":
+          description: Node analytics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeAnalyticsResponse' }
+        "404":
+          description: Node is blacklisted, hidden, or not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/{pubkey}/hop_analytics:
+    get:
+      tags: [nodes, analytics]
+      operationId: getNodeHopAnalytics
+      summary: Hop counts of flood packets a node forwarded
+      description: >-
+        One entry per flood packet this node forwarded in the last N days, with
+        the hop count its flood.max check saw (the node's zero-based index in
+        the path) and tags: flood, scoped or unscoped, advert. DIRECT packets
+        are excluded. Every observation in the window is read. A colliding path
+        prefix is attributed only when the previous hop's neighbor_edges
+        neighbors leave this node as the one candidate; the server's
+        resolved-path pick is not used. Packets that carry this node's prefix
+        but cannot be attributed are counted in ambiguous.
+      parameters:
+        - $ref: '#/components/parameters/NodePubkey'
+        - $ref: '#/components/parameters/NodeDays'
+      responses:
+        "200":
+          description: Hop analytics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeHopAnalyticsResponse' }
+        "404":
+          description: Node is blacklisted, hidden, not found, or the packet store is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   securitySchemes:
     apiKey:
@@ -2037,6 +2151,18 @@ components:
       required: false
       description: End of an explicit range, RFC 3339.
       schema: { type: string, format: date-time }
+    NodePubkey:
+      name: pubkey
+      in: path
+      required: true
+      description: Full 64-character hex pubkey.
+      schema: { type: string }
+    NodeDays:
+      name: days
+      in: query
+      required: false
+      description: Range in days, clamped to 1..365. Missing or non-numeric means 7.
+      schema: { type: integer, default: 7 }
   headers:
     RetryAfter:
       description: Seconds to wait before retrying.
@@ -5727,3 +5853,263 @@ components:
           items: { $ref: '#/components/schemas/DebugResolution' }
         stats: { $ref: '#/components/schemas/DebugStats' }
         
+
+    NodeHealthStats:
+      type: object
+      additionalProperties: false
+      required: [totalTransmissions, totalObservations, totalPackets, packetsToday, avgSnr, avgHops, lastHeard]
+      properties:
+        totalTransmissions: { type: integer }
+        totalObservations: { type: integer }
+        totalPackets: { type: integer }
+        packetsToday: { type: integer }
+        avgSnr: { type: [number, "null"], format: double, description: Null when no packet carried SNR. }
+        avgHops: { type: integer, description: "Mean path length over packets that have a path, rounded." }
+        lastHeard:
+          description: Null when the node has no packets.
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
+
+    NodeHealthResponse:
+      type: object
+      additionalProperties: false
+      required: [node, observers, relayObserverCount, stats, recentPackets]
+      properties:
+        node: { $ref: '#/components/schemas/Node' }
+        observers:
+          type: array
+          description: Observers that received this node's own transmissions directly.
+          items: { $ref: '#/components/schemas/DirectObserverStats' }
+        relayObserverCount:
+          type: integer
+          description: Observers that saw traffic through this node without hearing it directly.
+        stats: { $ref: '#/components/schemas/NodeHealthStats' }
+        recentPackets:
+          type: array
+          items: { $ref: '#/components/schemas/Packet' }
+
+    NodePathsNode:
+      type: object
+      additionalProperties: false
+      required: [public_key, name, lat, lon]
+      properties:
+        public_key: { type: string }
+        name: { type: [string, "null"] }
+        lat: { type: [number, "null"], format: double }
+        lon: { type: [number, "null"], format: double }
+
+    NodePathHop:
+      type: object
+      additionalProperties: false
+      required: [prefix, name, pubkey, lat, lon]
+      properties:
+        prefix: { type: string, description: The hop as it appears in the packet. }
+        name: { type: string, description: "Resolved node name, or the prefix when unresolved." }
+        pubkey: { type: [string, "null"], description: Null when the hop is unresolved. }
+        lat: { type: [number, "null"], format: double }
+        lon: { type: [number, "null"], format: double }
+
+    NodePath:
+      type: object
+      additionalProperties: false
+      required: [hops, count, lastSeen, sampleHash]
+      properties:
+        hops:
+          type: array
+          items: { $ref: '#/components/schemas/NodePathHop' }
+        count: { type: integer }
+        lastSeen:
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
+        sampleHash: { type: string, description: Hash of the most recent packet on this path. }
+
+    NodePathsResponse:
+      type: object
+      additionalProperties: false
+      required: [node, paths, totalPaths, totalTransmissions]
+      properties:
+        node: { $ref: '#/components/schemas/NodePathsNode' }
+        paths:
+          type: array
+          items: { $ref: '#/components/schemas/NodePath' }
+        totalPaths: { type: integer, description: Distinct paths before the 50-entry cut. }
+        totalTransmissions: { type: integer }
+
+    NodeTimeRange:
+      type: object
+      additionalProperties: false
+      required: [from, to, days]
+      properties:
+        from: { $ref: '#/components/schemas/TimestampSeconds' }
+        to: { $ref: '#/components/schemas/TimestampSeconds' }
+        days: { type: integer }
+
+    NodeActivityBucket:
+      type: object
+      additionalProperties: false
+      required: [bucket, count]
+      properties:
+        bucket: { $ref: '#/components/schemas/TimestampSeconds' }
+        count: { type: integer }
+
+    NodeSnrSample:
+      type: object
+      additionalProperties: false
+      required: [timestamp, snr, rssi, observer_id, observer_name]
+      properties:
+        timestamp: { $ref: '#/components/schemas/TimestampSeconds' }
+        snr: { type: number, format: double }
+        rssi: { type: [number, "null"], format: double }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+
+    NodePacketTypeCount:
+      type: object
+      additionalProperties: false
+      required: [payload_type, count]
+      properties:
+        payload_type:
+          type: integer
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        count: { type: integer }
+
+    NodeObserverCoverage:
+      type: object
+      additionalProperties: false
+      required: [observer_id, observer_name, packetCount, avgSnr, avgRssi, firstSeen, lastSeen]
+      properties:
+        observer_id: { type: string }
+        observer_name: { type: string }
+        packetCount: { type: integer }
+        avgSnr: { type: [number, "null"], format: double }
+        avgRssi: { type: [number, "null"], format: double }
+        firstSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+        lastSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+
+    NodeHopBucket:
+      type: object
+      additionalProperties: false
+      required: [hops, count]
+      properties:
+        hops: { type: string, description: "Path length bucket: 0, 1, 2, 3 or 4+." }
+        count: { type: integer }
+
+    NodePeerInteraction:
+      type: object
+      additionalProperties: false
+      required: [peer_key, peer_name, messageCount, lastContact]
+      properties:
+        peer_key: { type: string }
+        peer_name: { type: string }
+        messageCount: { type: integer }
+        lastContact: { $ref: '#/components/schemas/TimestampSeconds' }
+
+    NodeHeatCell:
+      type: object
+      additionalProperties: false
+      required: [dayOfWeek, hour, count]
+      properties:
+        dayOfWeek: { type: integer, description: "0 is Sunday." }
+        hour: { type: integer, description: "UTC hour, 0 to 23." }
+        count: { type: integer }
+
+    NodeComputedStats:
+      type: object
+      additionalProperties: false
+      required:
+        - availabilityPct
+        - longestSilenceMs
+        - longestSilenceStart
+        - signalGrade
+        - snrMean
+        - snrStdDev
+        - relayPct
+        - totalPackets
+        - uniqueObservers
+        - uniquePeers
+        - avgPacketsPerDay
+      properties:
+        availabilityPct: { type: number, format: double }
+        longestSilenceMs: { type: integer }
+        longestSilenceStart:
+          description: Start of the longest gap between active hours. Null when there are fewer than two active hours.
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
+        signalGrade: { type: string, description: "Letter grade from SNR mean and spread: A, A-, B+, B, C or D." }
+        snrMean: { type: number, format: double }
+        snrStdDev: { type: number, format: double }
+        relayPct: { type: number, format: double }
+        totalPackets: { type: integer }
+        uniqueObservers: { type: integer }
+        uniquePeers: { type: integer }
+        avgPacketsPerDay: { type: number, format: double }
+
+    NodeAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      description: clockSkew is absent when the node has no clock-skew samples.
+      required:
+        - node
+        - timeRange
+        - activityTimeline
+        - snrTrend
+        - packetTypeBreakdown
+        - observerCoverage
+        - hopDistribution
+        - peerInteractions
+        - uptimeHeatmap
+        - computedStats
+      properties:
+        node: { $ref: '#/components/schemas/Node' }
+        timeRange: { $ref: '#/components/schemas/NodeTimeRange' }
+        activityTimeline:
+          type: array
+          items: { $ref: '#/components/schemas/NodeActivityBucket' }
+        snrTrend:
+          type: array
+          items: { $ref: '#/components/schemas/NodeSnrSample' }
+        packetTypeBreakdown:
+          type: array
+          items: { $ref: '#/components/schemas/NodePacketTypeCount' }
+        observerCoverage:
+          type: array
+          items: { $ref: '#/components/schemas/NodeObserverCoverage' }
+        hopDistribution:
+          type: array
+          items: { $ref: '#/components/schemas/NodeHopBucket' }
+        peerInteractions:
+          type: array
+          items: { $ref: '#/components/schemas/NodePeerInteraction' }
+        uptimeHeatmap:
+          type: array
+          items: { $ref: '#/components/schemas/NodeHeatCell' }
+        computedStats: { $ref: '#/components/schemas/NodeComputedStats' }
+        clockSkew: { $ref: '#/components/schemas/NodeClockSkew' }
+
+    NodeHopPacket:
+      type: object
+      additionalProperties: false
+      required: [hash, timestamp, hops, tags]
+      properties:
+        hash: { type: string }
+        timestamp: { $ref: '#/components/schemas/TimestampSeconds' }
+        hops: { type: integer, description: "Zero-based index of this node in the path." }
+        tags:
+          type: array
+          items: { type: string }
+          description: Combination of flood, scoped or unscoped, and advert.
+
+    NodeHopAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required: [timeRange, packets, ambiguous]
+      properties:
+        timeRange: { $ref: '#/components/schemas/NodeTimeRange' }
+        packets:
+          type: array
+          items: { $ref: '#/components/schemas/NodeHopPacket' }
+        ambiguous: { type: integer }

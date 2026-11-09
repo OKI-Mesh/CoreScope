@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
@@ -122,7 +123,7 @@ func (sc *collisionScenario) reloadStore(t *testing.T) {
 }
 
 // query issues GET /api/nodes/{pk}/paths and returns the decoded response.
-func (sc *collisionScenario) query(t *testing.T, pk string) NodePathsResponse {
+func (sc *collisionScenario) query(t *testing.T, pk string) api.NodePathsResponse {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/paths", nil)
 	w := httptest.NewRecorder()
@@ -130,7 +131,7 @@ func (sc *collisionScenario) query(t *testing.T, pk string) NodePathsResponse {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /paths for %s: code=%d body=%s", pk, w.Code, w.Body.String())
 	}
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -336,7 +337,7 @@ func TestHandleNodePaths_FallbackUniquePrefix_1352(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /paths: code=%d body=%s", w.Code, w.Body.String())
 	}
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

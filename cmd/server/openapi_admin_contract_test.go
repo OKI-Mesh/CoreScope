@@ -73,7 +73,6 @@ func TestDroppedPacketsMatchSpec(t *testing.T) {
 	srv, router := setupTestServerWithAPIKey(t, adminTestKey)
 
 	// The database stamps dropped_at itself when it inserts a row.
-	before := time.Now().UTC().Truncate(time.Second)
 	for _, d := range []database.DroppedPacket{
 		{Hash: "f8efa237271c1d25", RawHex: "11403f35", Reason: "invalid signature", ObserverID: "AABB", ObserverName: "Observer", NodePubkey: padKey("3f35"), NodeName: "Node"},
 		{Hash: "", RawHex: "", Reason: "malformed", ObserverID: "", ObserverName: "", NodePubkey: "", NodeName: ""},
@@ -95,8 +94,11 @@ func TestDroppedPacketsMatchSpec(t *testing.T) {
 	if oldest.Hash == nil || *oldest.Hash != "f8efa237271c1d25" || oldest.RawHex != "11403f35" {
 		t.Errorf("full packet = %+v", oldest)
 	}
-	if oldest.DroppedAt.Before(before) || oldest.DroppedAt.After(time.Now().UTC()) {
-		t.Errorf("dropped_at = %v, want between %v and now", oldest.DroppedAt, before)
+	// The database stamps dropped_at with its own clock and the wire format
+	// drops sub-second digits, so allow a few seconds either way.
+	const clockSlack = 5 * time.Second
+	if age := time.Since(oldest.DroppedAt.Time); age < -clockSlack || age > clockSlack {
+		t.Errorf("dropped_at = %v, want within %v of now (%v)", oldest.DroppedAt.Time, clockSlack, time.Now().UTC())
 	}
 
 	checker.checkAsAdmin(t, router, http.MethodGet, "/api/dropped-packets?limit=1&observer=AABB&pubkey="+padKey("3f35"), "", http.StatusOK)
