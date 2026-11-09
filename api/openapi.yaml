@@ -5,7 +5,7 @@
 # A name ending in Response is the whole body of an endpoint. A bare name is
 # a thing that appears inside one.
 
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: CoreScope API
   description: MeshCore network analyzer — packet capture, node tracking, and mesh analytics.
@@ -1014,19 +1014,17 @@ components:
         - ambiguous
       properties:
         pubkey:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Resolved neighbor public key, or null when only a hop prefix is known.
         prefix:
           type: string
           description: Raw hop hash prefix that established this edge.
         name:
-          type: string
-          nullable: true
+          type: [string, "null"]
         role:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/NodeRole"
+            - type: "null"
         count:
           type: integer
           description: Total observations supporting this neighborship.
@@ -1047,9 +1045,8 @@ components:
         last_seen:
           $ref: "#/components/schemas/TimestampSeconds"
         avg_snr:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
         distance_km:
           type: number
           format: double
@@ -1081,9 +1078,9 @@ components:
           type: string
           description: Empty when the node is not known.
         role:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/NodeRole"
+            - type: "null"
     NeighborGraphResponse:
       type: object
       required: [nodes, edges, stats]
@@ -1105,14 +1102,13 @@ components:
         pubkey:
           type: string
         name:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Null when the node is not known.
         role:
-          nullable: true
           description: Null when the node is not known.
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/NodeRole"
+            - type: "null"
         neighbor_count:
           type: integer
           description: Number of returned edges that touch this node.
@@ -1135,9 +1131,8 @@ components:
         bidirectional:
           type: boolean
         avg_snr:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
         ambiguous:
           type: boolean
     GraphStats:
@@ -1254,39 +1249,35 @@ components:
           type: string
           description: Node public key (hex).
         name:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Most recent advert name.
         role:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/NodeRole"
+            - type: "null"
         lat:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
         lon:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
         last_seen:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/TimestampSeconds"
+            - type: "null"
         first_seen:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/TimestampSeconds"
+            - type: "null"
         advert_count:
           type: integer
         last_heard:
-          nullable: true
           description: Same value as last_seen.
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/TimestampSeconds"
+            - type: "null"
         hash_size:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: Null until the node's hash size is known.
         hash_size_inconsistent:
           type: boolean
@@ -1294,22 +1285,18 @@ components:
           type: boolean
           description: Flagged by the ingestor's geo filter as bridged or leaked from outside the configured area.
         battery_mv:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
         temperature_c:
-          type: number
+          type: [number, "null"]
           format: double
-          nullable: true
         default_scope:
-          type: string
-          nullable: true
+          type: [string, "null"]
         configured_scope:
-          type: string
-          nullable: true
+          type: [string, "null"]
         configured_scope_at:
-          nullable: true
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/TimestampSeconds"
+            - type: "null"
         hash_sizes_seen:
           type: array
           x-go-type-skip-optional-pointer: true
@@ -1328,8 +1315,7 @@ components:
           type: integer
         last_relayed:
           description: Repeater/room only. Time this node last appeared as a relay hop. Absent if it never has.
-          allOf:
-            - $ref: "#/components/schemas/TimestampSeconds"
+          $ref: "#/components/schemas/TimestampSeconds"
         relay_active:
           type: boolean
           description: Repeater/room only. Relayed traffic within the active window.
@@ -1430,38 +1416,38 @@ components:
         - scope_name
       properties:
         id: { type: integer }
-        raw_hex: { type: string, nullable: true }
-        hash: { type: string, nullable: true }
+        raw_hex: { type: [string, "null"] }
+        hash: { type: [string, "null"] }
         first_seen:
-          nullable: true
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
         timestamp:
-          nullable: true
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
         route_type:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           x-go-type: types.RouteType
           x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
         payload_type:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           x-go-type: types.PayloadType
           x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
-        decoded_json: { type: string, nullable: true }
+        decoded_json: { type: [string, "null"] }
         observation_count: { type: integer }
-        observer_id: { type: string, nullable: true }
-        observer_name: { type: string, nullable: true }
-        observer_iata: { type: string, nullable: true }
-        snr: { type: number, format: double, nullable: true }
-        rssi: { type: number, format: double, nullable: true }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        observer_iata: { type: [string, "null"] }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
         score: { type: number, format: double }
-        path_json: { type: string, nullable: true }
-        direction: { type: string, nullable: true }
-        scope_name: { type: string, nullable: true }
+        path_json: { type: [string, "null"] }
+        direction: { type: [string, "null"] }
+        scope_name: { type: [string, "null"] }
         resolved_path:
           type: array
-          items: { type: string, nullable: true }
+          items: { type: [string, "null"] }
 
     NodeAdvertObservation:
       type: object
@@ -1471,11 +1457,11 @@ components:
       properties:
         id: { type: integer, format: int64 }
         transmission_id: { type: integer, format: int64 }
-        observer_id: { type: string, nullable: true }
-        observer_name: { type: string, nullable: true }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
         observer_iata: { type: string }
-        snr: { type: number, format: double, nullable: true }
-        rssi: { type: number, format: double, nullable: true }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
         score: { type: number, format: double }
         direction: { type: string }
         path_json: { type: string }
@@ -1515,10 +1501,10 @@ components:
       required: [public_key, name, role, lat, lon, stats, observers, relayObserverCount]
       properties:
         public_key: { type: string }
-        name: { type: string, nullable: true }
+        name: { type: [string, "null"] }
         role: { type: string }
-        lat: { type: number, format: double, nullable: true }
-        lon: { type: number, format: double, nullable: true }
+        lat: { type: [number, "null"], format: double }
+        lon: { type: [number, "null"], format: double }
         stats: { $ref: '#/components/schemas/BulkHealthStats' }
         observers:
           type: array
@@ -1536,10 +1522,11 @@ components:
         totalObservations: { type: integer }
         totalPackets: { type: integer }
         packetsToday: { type: integer }
-        avgSnr: { type: number, format: double, nullable: true }
+        avgSnr: { type: [number, "null"], format: double }
         lastHeard:
-          nullable: true
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
 
     DirectObserverStats:
       type: object
@@ -1548,12 +1535,11 @@ components:
       properties:
         observer_id: { type: string }
         observer_name: { type: string }
-        avgSnr: { type: number, format: double, nullable: true }
-        avgRssi: { type: number, format: double, nullable: true }
+        avgSnr: { type: [number, "null"], format: double }
+        avgRssi: { type: [number, "null"], format: double }
         packetCount: { type: integer }
         can_relay:
-          type: boolean
-          nullable: true
+          type: [boolean, "null"]
           description: Null when no repeat field was ever reported for this observer.
           
 
@@ -1600,10 +1586,11 @@ components:
         samples:
           type: array
           items: { $ref: '#/components/schemas/BatterySample' }
-        latest_mv: { type: integer, nullable: true }
+        latest_mv: { type: [integer, "null"] }
         latest_ts:
-          nullable: true
-          allOf: [{ $ref: '#/components/schemas/TimestampMillis' }]
+          oneOf:
+            - $ref: '#/components/schemas/TimestampMillis'
+            - type: "null"
         status: { $ref: '#/components/schemas/BatteryStatus' }
         thresholds: { $ref: '#/components/schemas/BatteryThresholds' }
 
@@ -1718,8 +1705,7 @@ components:
         goodFraction: { type: number, format: double, description: Fraction of recent samples with absolute skew of an hour or less. }
         recentBadSampleCount: { type: integer }
         recentBadSamples:
-          type: array
-          nullable: true
+          type: [array, "null"]
           x-go-type-skip-optional-pointer: true
           description: Evidence for each recent nonsense timestamp. Production sends null when there are none; the server now omits it.
           items: { $ref: '#/components/schemas/BadSample' }
@@ -1730,12 +1716,12 @@ components:
           description: Absent on fleet entries.
           items: { $ref: '#/components/schemas/HashEvidence' }
         calibrationSummary:
-          allOf: [{ $ref: '#/components/schemas/CalibrationSummary' }]
+          $ref: '#/components/schemas/CalibrationSummary'
           description: Absent on fleet entries.
         nodeName: { type: string, description: "Fleet entries only, when the node is known." }
         nodeRole:
           description: "Fleet entries only, when the node is known."
-          allOf: [{ $ref: '#/components/schemas/NodeRole' }]
+          $ref: '#/components/schemas/NodeRole'
 
     ReachRole:
       type: string
@@ -1753,16 +1739,16 @@ components:
         pubkey: { type: string }
         name: { type: string }
         role: { $ref: '#/components/schemas/ReachRole' }
-        lat: { type: number, format: double, nullable: true }
-        lon: { type: number, format: double, nullable: true }
+        lat: { type: [number, "null"], format: double }
+        lon: { type: [number, "null"], format: double }
         first_seen:
           description: Omitted when the node has no recorded first-seen.
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          $ref: '#/components/schemas/TimestampSeconds'
         default_scope: { type: string, description: "Inferred from the transport scope of observed adverts. Omitted when unknown." }
         configured_scope: { type: string, description: "Confirmed by an observer neighbors report. Omitted when never confirmed." }
         configured_scope_at:
           description: When the configured scope was confirmed. Omitted with configured_scope.
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          $ref: '#/components/schemas/TimestampSeconds'
 
     ReachWindow:
       type: object
@@ -1792,10 +1778,10 @@ components:
         pubkey: { type: string }
         name: { type: string }
         count: { type: integer }
-        avg_snr: { type: number, format: double, nullable: true }
-        lat: { type: number, format: double, nullable: true }
-        lon: { type: number, format: double, nullable: true }
-        distance_km: { type: number, format: double, nullable: true }
+        avg_snr: { type: [number, "null"], format: double }
+        lat: { type: [number, "null"], format: double }
+        lon: { type: [number, "null"], format: double }
+        distance_km: { type: [number, "null"], format: double }
 
     ReachLink:
       type: object
@@ -1805,13 +1791,13 @@ components:
         pubkey: { type: string }
         name: { type: string }
         role: { $ref: '#/components/schemas/ReachRole' }
-        lat: { type: number, format: double, nullable: true }
-        lon: { type: number, format: double, nullable: true }
+        lat: { type: [number, "null"], format: double }
+        lon: { type: [number, "null"], format: double }
         we_hear: { type: integer }
         they_hear: { type: integer }
         bottleneck: { type: integer, description: The smaller of we_hear and they_hear. }
         bidir: { type: boolean }
-        distance_km: { type: number, format: double, nullable: true }
+        distance_km: { type: [number, "null"], format: double }
 
     NodeReachResponse:
       type: object
@@ -1839,17 +1825,17 @@ components:
       required: [id, observer_id, observer_name, observer_iata, direction, snr, rssi, path_json, timestamp]
       properties:
         id: { type: integer }
-        observer_id: { type: string, nullable: true }
-        observer_name: { type: string, nullable: true }
-        observer_iata: { type: string, nullable: true }
-        direction: { type: string, nullable: true }
-        snr: { type: number, format: double, nullable: true }
-        rssi: { type: number, format: double, nullable: true }
-        path_json: { type: string, nullable: true }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        observer_iata: { type: [string, "null"] }
+        direction: { type: [string, "null"] }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
+        path_json: { type: [string, "null"] }
         timestamp: { $ref: '#/components/schemas/TimestampMillis' }
         resolved_path:
           type: array
-          items: { type: string, nullable: true }
+          items: { type: [string, "null"] }
     Packet:
       description: >-
         A packet with the display fields of its representative observation.
@@ -1861,8 +1847,7 @@ components:
           required: [_parsedPath]
           properties:
             _parsedPath:
-              type: array
-              nullable: true
+              type: [array, "null"]
               description: Hop prefixes of the representative observation, null when it has none.
               items: { type: string }
             observations:
@@ -1875,39 +1860,39 @@ components:
       required:
         [hash, first_seen, latest, count, observer_count, observation_count, observer_id, observer_name, observer_iata, distinct_iatas, path_json, payload_type, route_type, raw_hex, decoded_json, snr, rssi, scope_name]
       properties:
-        hash: { type: string, nullable: true }
+        hash: { type: [string, "null"] }
         first_seen:
-          nullable: true
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
         latest:
-          nullable: true
-          allOf: [{ $ref: '#/components/schemas/TimestampSeconds' }]
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
         count: { type: integer, description: Same value as observation_count. }
         observer_count: { type: integer }
         observation_count: { type: integer }
-        observer_id: { type: string, nullable: true }
-        observer_name: { type: string, nullable: true }
-        observer_iata: { type: string, nullable: true }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        observer_iata: { type: [string, "null"] }
         distinct_iatas:
           type: array
           description: Distinct observer IATA codes across all observations.
           items: { type: string }
-        path_json: { type: string, nullable: true }
+        path_json: { type: [string, "null"] }
         payload_type:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           x-go-type: types.PayloadType
           x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
         route_type:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           x-go-type: types.RouteType
           x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
-        raw_hex: { type: string, nullable: true }
-        decoded_json: { type: string, nullable: true }
-        snr: { type: number, format: double, nullable: true }
-        rssi: { type: number, format: double, nullable: true }
-        scope_name: { type: string, nullable: true }
+        raw_hex: { type: [string, "null"] }
+        decoded_json: { type: [string, "null"] }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
+        scope_name: { type: [string, "null"] }
     PacketListResponse:
       type: object
       additionalProperties: false
@@ -1938,15 +1923,15 @@ components:
       properties:
         id: { type: integer }
         hash: { type: string }
-        observer_id: { type: string, nullable: true }
-        observer_name: { type: string, nullable: true }
-        observer_iata: { type: string, nullable: true }
-        snr: { type: number, format: double, nullable: true }
-        rssi: { type: number, format: double, nullable: true }
-        path_json: { type: string, nullable: true }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        observer_iata: { type: [string, "null"] }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
+        path_json: { type: [string, "null"] }
         resolved_path:
           type: array
-          items: { type: string, nullable: true }
+          items: { type: [string, "null"] }
         direction: { type: string }
         raw_hex: { type: string }
         timestamp: { $ref: '#/components/schemas/TimestampMillis' }
@@ -1972,17 +1957,17 @@ components:
           type: integer
           x-go-type: types.RouteType
           x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
-        observer_id: { type: string, nullable: true }
-        observer_name: { type: string, nullable: true }
-        observer_iata: { type: string, nullable: true }
-        direction: { type: string, nullable: true }
-        snr: { type: number, format: double, nullable: true }
-        rssi: { type: number, format: double, nullable: true }
-        score: { type: number, format: double, nullable: true }
-        path_json: { type: string, nullable: true }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        observer_iata: { type: [string, "null"] }
+        direction: { type: [string, "null"] }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
+        score: { type: [number, "null"], format: double }
+        path_json: { type: [string, "null"] }
         resolved_path:
           type: array
-          items: { type: string, nullable: true }
+          items: { type: [string, "null"] }
         timestamp: { $ref: '#/components/schemas/TimestampMillis' }
     PacketDetailResponse:
       type: object
@@ -2059,8 +2044,8 @@ components:
         hex: { type: string, description: The hop's hash prefix as hex. }
         size: { type: integer, description: The prefix length in bytes. }
         count: { type: integer, description: Packets that carried the hop. }
-        name: { type: string, nullable: true, description: The node the prefix resolves to; null when unknown. }
-        pubkey: { type: string, nullable: true, description: The resolved node's public key; null when unknown. }
+        name: { type: [string, "null"], description: The node the prefix resolves to; null when unknown. }
+        pubkey: { type: [string, "null"], description: The resolved node's public key; null when unknown. }
     MultiByteNode:
       type: object
       additionalProperties: false
@@ -2402,8 +2387,8 @@ components:
         toPk: { type: string }
         dist: { type: number, format: double, description: Kilometres. }
         type: { type: string, description: "Endpoint roles: R\u2194R, C\u2194R or C\u2194C." }
-        bestSnr: { type: number, format: double, nullable: true }
-        medianSnr: { type: number, format: double, nullable: true }
+        bestSnr: { type: [number, "null"], format: double }
+        medianSnr: { type: [number, "null"], format: double }
         obsCount: { type: integer, description: Times this node pair was observed. }
         hash: { type: string }
         timestamp: { $ref: '#/components/schemas/TimestampSeconds' }
@@ -2497,8 +2482,8 @@ components:
       required: [hop, name, pubkey]
       properties:
         hop: { type: string, description: "The hop's hash prefix as hex." }
-        name: { type: string, nullable: true, description: "The resolved node's name; null when the hop does not resolve." }
-        pubkey: { type: string, nullable: true, description: "The resolved node's public key; null when the hop does not resolve." }
+        name: { type: [string, "null"], description: "The resolved node's name; null when the hop does not resolve." }
+        pubkey: { type: [string, "null"], description: "The resolved node's public key; null when the hop does not resolve." }
     HopCount:
       type: object
       required: [hops, count]
@@ -2513,6 +2498,7 @@ components:
           required: [avgSnr]
           properties:
             avgSnr: { type: number, format: double }
+      unevaluatedProperties: false
     TopRepeater:
       description: A repeater and how often it appears in paths.
       allOf:
@@ -2521,6 +2507,7 @@ components:
           required: [count]
           properties:
             count: { type: integer }
+      unevaluatedProperties: false
     TopPair:
       type: object
       additionalProperties: false
@@ -2529,10 +2516,10 @@ components:
         hopA: { type: string }
         hopB: { type: string }
         count: { type: integer, description: "Times the two hops appeared next to each other." }
-        nameA: { type: string, nullable: true }
-        nameB: { type: string, nullable: true }
-        pubkeyA: { type: string, nullable: true }
-        pubkeyB: { type: string, nullable: true }
+        nameA: { type: [string, "null"] }
+        nameB: { type: [string, "null"] }
+        pubkeyA: { type: [string, "null"] }
+        pubkeyB: { type: [string, "null"] }
     TopologyObserver:
       type: object
       additionalProperties: false
@@ -2548,7 +2535,8 @@ components:
           required: [count, distRange]
           properties:
             count: { type: integer }
-            distRange: { type: string, nullable: true, description: "Fewest-most hops, for example 1-7; null when it was always at the ring's distance." }
+            distRange: { type: [string, "null"], description: "Fewest-most hops, for example 1-7; null when it was always at the ring's distance." }
+      unevaluatedProperties: false
     ReachRing:
       type: object
       additionalProperties: false
@@ -2588,6 +2576,7 @@ components:
               type: array
               description: Nearest observer first.
               items: { $ref: '#/components/schemas/MultiObsObserver' }
+      unevaluatedProperties: false
     BestPathEntry:
       description: A repeater and the observer that hears it over the fewest hops.
       allOf:
@@ -2598,6 +2587,7 @@ components:
             minDist: { type: integer }
             observer_id: { type: string }
             observer_name: { type: string }
+      unevaluatedProperties: false
     TopologyResponse:
       type: object
       additionalProperties: false
@@ -2669,6 +2659,7 @@ components:
           required: [channel]
           properties:
             channel: { type: string }
+      unevaluatedProperties: false
     ChannelAnalyticsResponse:
       type: object
       additionalProperties: false
@@ -2798,15 +2789,16 @@ components:
         - type: object
           required: [lat, lon]
           properties:
-            lat: { type: number, format: double, nullable: true }
-            lon: { type: number, format: double, nullable: true }
+            lat: { type: [number, "null"], format: double }
+            lon: { type: [number, "null"], format: double }
+      unevaluatedProperties: false
     SubpathSignal:
       type: object
       additionalProperties: false
       required: [avgSnr, avgRssi, samples]
       properties:
-        avgSnr: { type: number, format: double, nullable: true }
-        avgRssi: { type: number, format: double, nullable: true }
+        avgSnr: { type: [number, "null"], format: double }
+        avgRssi: { type: [number, "null"], format: double }
         samples: { type: integer, description: "Packets with an SNR." }
     SubpathDetailResponse:
       type: object

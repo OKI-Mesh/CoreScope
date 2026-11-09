@@ -68,7 +68,9 @@ func TestRFWarmupResponseMatchesSpec(t *testing.T) {
 }
 
 // TestDistanceBuildingResponseMatchesSpec checks the 202 the first distance
-// request answers while the lazy index build is under way.
+// request answers while the lazy index build is under way. Only the first
+// request is guaranteed to see the build pending, so the header is read from
+// that same response.
 func TestDistanceBuildingResponseMatchesSpec(t *testing.T) {
 	ctx := t.Context()
 	checker := newSpecChecker(t)
@@ -84,11 +86,7 @@ func TestDistanceBuildingResponseMatchesSpec(t *testing.T) {
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 
-	checker.checkStatus(t, router, "/api/analytics/distance", http.StatusAccepted)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/analytics/distance", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	rec := checker.checkStatus(t, router, "/api/analytics/distance", http.StatusAccepted)
 	if got := rec.Header().Get("Retry-After"); got != "5" {
 		t.Errorf("Retry-After = %q, want 5", got)
 	}

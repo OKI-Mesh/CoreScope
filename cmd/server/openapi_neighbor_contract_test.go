@@ -46,8 +46,9 @@ func (c specChecker) check(t *testing.T, router *mux.Router, path string) {
 }
 
 // checkStatus sends GET path, requires the given status, and fails the test if
-// the response does not match the spec.
-func (c specChecker) checkStatus(t *testing.T, router *mux.Router, path string, want int) {
+// the response does not match the spec. It returns the recorded response so a
+// test can assert on headers of that same response.
+func (c specChecker) checkStatus(t *testing.T, router *mux.Router, path string, want int) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
@@ -74,6 +75,7 @@ func (c specChecker) checkStatus(t *testing.T, router *mux.Router, path string, 
 	if err := openapi3filter.ValidateResponse(context.Background(), input); err != nil {
 		t.Errorf("%s: status %d does not match the spec: %v", path, rec.Code, err)
 	}
+	return rec
 }
 
 func TestInvalidRoleFilterMatchesSpec(t *testing.T) {
