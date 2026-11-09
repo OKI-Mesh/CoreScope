@@ -29,6 +29,8 @@ tags:
     description: Operator settings the web client reads
   - name: tools
     description: Packet decoder, path inspector and reference data for the web tools
+  - name: admin
+    description: Operator tools behind the API key
   - name: system
     description: Server health, counters and ingestor status
   - name: rx
@@ -1783,6 +1785,221 @@ paths:
             text/html:
               schema:
                 type: string
+  /api/admin/prune-geo-filter:
+    post:
+      tags: [admin]
+      operationId: pruneGeoFilter
+      summary: Preview or enqueue the removal of nodes outside the geo filter
+      description: >-
+        Without confirm this is a dry run that lists the nodes with a GPS fix
+        outside the configured geo_filter; nothing is changed. Nodes without a
+        fix are always kept. With confirm=true the body must carry pubkeys taken
+        from the preview; only those that are still outside the filter are queued
+        for deletion. The ingestor performs the delete, so the answer is 202 with
+        a request id to poll at /api/admin/prune-geo-filter/status. Needs a
+        geo_filter polygon of at least 3 points.
+      security:
+        - apiKey: []
+      parameters:
+        - name: confirm
+          in: query
+          required: false
+          description: Set to true to enqueue the deletion. Any other value is a dry run.
+          schema: { type: boolean }
+      requestBody:
+        required: false
+        description: Required, with at least one pubkey, when confirm=true. Ignored for a dry run.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PruneGeoFilterRequest'
+      responses:
+        "200":
+          description: Dry run. The nodes that would be removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PruneGeoFilterPreview'
+        "202":
+          description: The deletion was queued for the ingestor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PruneGeoFilterAccepted'
+        "400":
+          description: No geo_filter is configured, or confirm=true came without pubkeys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "401":
+          description: Missing or wrong X-API-Key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Write endpoints are disabled or the API key is too weak.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: The database could not be read, or the request could not be queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/admin/prune-geo-filter/status:
+    get:
+      tags: [admin]
+      operationId: getPruneGeoFilterStatus
+      summary: State of a queued geo-prune request
+      security:
+        - apiKey: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: The requestId returned by the 202 answer.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Pending until the ingestor writes its result, then done or error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PruneGeoFilterStatus'
+        "400":
+          description: The id is missing or malformed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "401":
+          description: Missing or wrong X-API-Key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Write endpoints are disabled or the API key is too weak.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: No request with that id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: The queue could not be read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/debug/affinity:
+    get:
+      tags: [admin]
+      operationId: getDebugAffinity
+      summary: Neighbor-graph edges and how ambiguous prefixes were resolved
+      description: >-
+        The whole neighbor graph, which is large (several megabytes on a busy
+        mesh). Edges come heaviest first. Filters narrow both lists.
+      security:
+        - apiKey: []
+      parameters:
+        - name: prefix
+          in: query
+          required: false
+          description: Only edges and resolutions with this hash prefix, case-insensitive.
+          schema: { type: string }
+        - name: node
+          in: query
+          required: false
+          description: Only edges touching this public key, as either end or as a candidate.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DebugAffinityResponse'
+        "401":
+          description: Missing or wrong X-API-Key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Write endpoints are disabled or the API key is too weak.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/dropped-packets:
+    get:
+      tags: [admin]
+      operationId: listDroppedPackets
+      summary: Packets the ingestor refused, newest first
+      security:
+        - apiKey: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: How many to return. Defaults to 100; at most 500.
+          schema: { type: integer }
+        - name: observer
+          in: query
+          required: false
+          description: Only packets heard by this observer.
+          schema: { type: string }
+        - name: pubkey
+          in: query
+          required: false
+          description: Only packets attributed to this node.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DroppedPacket' }
+        "401":
+          description: Missing or wrong X-API-Key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Write endpoints are disabled or the API key is too weak.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: The database could not be read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/perf/reset:
+    post:
+      tags: [system]
+      operationId: resetPerfStats
+      summary: Clear the request counters and slow-query list
+      description: Zeroes the numbers /api/perf reports and restarts its clock.
+      security:
+        - apiKey: []
+      responses:
+        "200":
+          description: Done.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        "401":
+          description: Missing or wrong X-API-Key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Write endpoints are disabled or the API key is too weak.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 components:
   securitySchemes:
     apiKey:
@@ -5342,3 +5559,171 @@ components:
           additionalProperties:
             type: array
             items: { $ref: '#/components/schemas/AudioLabPacket' }
+    OkResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    PruneGeoFilterRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        pubkeys:
+          type: array
+          description: Public keys from the preview. Required, and not empty, when confirm=true.
+          items: { type: string }
+    PruneGeoFilterNode:
+      type: object
+      additionalProperties: false
+      required: [pubkey, name, lat, lon]
+      properties:
+        pubkey: { type: string }
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+    PruneGeoFilterPreview:
+      type: object
+      additionalProperties: false
+      required: [dryRun, count, nodes]
+      properties:
+        dryRun: { type: boolean, description: Always true. }
+        count: { type: integer }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/PruneGeoFilterNode' }
+    PruneGeoFilterAccepted:
+      type: object
+      additionalProperties: false
+      required: [dryRun, accepted, requestId, count, nodes, statusUrl]
+      properties:
+        dryRun: { type: boolean, description: Always false. }
+        accepted: { type: boolean, description: Always true. }
+        requestId: { type: string }
+        count: { type: integer, description: Nodes queued. Pubkeys that were not in the preview or are no longer outside the filter are left out. }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/PruneGeoFilterNode' }
+        statusUrl: { type: string, description: Where to poll for the result. }
+    PruneGeoFilterStatus:
+      type: object
+      additionalProperties: false
+      required: [requestId, status]
+      description: >-
+        While pending only requestId and status are present. Once the ingestor
+        has written its result the other fields follow.
+      properties:
+        requestId: { type: string }
+        status:
+          type: string
+          description: pending, done or error.
+        deleted: { type: integer, format: int64 }
+        requestedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        error:
+          type: string
+          description: Empty when status is done.
+    DroppedPacket:
+      type: object
+      additionalProperties: false
+      required: [id, reason, hash, observer_id, observer_name, node_pubkey, node_name, dropped_at]
+      properties:
+        id: { type: integer, format: int64 }
+        hash: { type: [string, "null"] }
+        raw_hex:
+          type: string
+          x-go-type-skip-optional-pointer: true
+          description: Absent when the packet was not kept.
+        reason: { type: string }
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        node_pubkey: { type: [string, "null"] }
+        node_name: { type: [string, "null"] }
+        dropped_at: { $ref: '#/components/schemas/TimestampSeconds' }
+    DebugEdge:
+      type: object
+      additionalProperties: false
+      required: [nodeA, nodeB, prefix, weight, observationCount, lastSeen, firstSeen, score, observers, ambiguous]
+      properties:
+        nodeA: { type: string }
+        nodeAName: { type: string, x-go-type-skip-optional-pointer: true }
+        nodeB:
+          type: string
+          description: Empty while the far end is unresolved.
+        nodeBName: { type: string, x-go-type-skip-optional-pointer: true }
+        prefix: { type: string }
+        weight: { type: integer }
+        observationCount: { type: integer }
+        lastSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+        firstSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+        score: { type: number, format: double }
+        jaccard: { type: number, format: double, x-go-type-skip-optional-pointer: true }
+        avgSnr: { type: number, format: double }
+        observers:
+          type: array
+          items: { type: string }
+        ambiguous: { type: boolean }
+        unresolved: { type: boolean, x-go-type-skip-optional-pointer: true }
+        resolved: { type: boolean, x-go-type-skip-optional-pointer: true }
+    DebugCandidate:
+      type: object
+      additionalProperties: false
+      required: [pubkey, score, jaccard]
+      properties:
+        pubkey: { type: string }
+        name: { type: string, x-go-type-skip-optional-pointer: true }
+        score: { type: integer }
+        jaccard: { type: number, format: double }
+    DebugResolution:
+      type: object
+      additionalProperties: false
+      required: [prefix, chosenScore, chosenJaccard, confidence, candidates, ratio, thresholdApplied, method, tier, knownNode]
+      properties:
+        prefix: { type: string }
+        chosen: { type: string, x-go-type-skip-optional-pointer: true, description: Absent when the prefix stayed ambiguous. }
+        chosenName: { type: string, x-go-type-skip-optional-pointer: true }
+        chosenScore: { type: integer }
+        chosenJaccard: { type: number, format: double }
+        confidence: { type: string, description: HIGH or AMBIGUOUS. }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/DebugCandidate' }
+        ratio: { type: number, format: double, description: 'Best Jaccard over the runner-up; 999 stands in for infinity.' }
+        thresholdApplied: { type: number, format: double }
+        method: { type: string, description: auto-resolved or ambiguous. }
+        tier:
+          type: string
+          description: Which fallback decided it, for example neighbor_affinity, geo_proximity or gps_preference. Empty when the node list is not loaded.
+        knownNode: { type: string }
+        knownNodeName: { type: string, x-go-type-skip-optional-pointer: true }
+    DebugStats:
+      type: object
+      additionalProperties: false
+      required: [totalEdges, totalNodes, resolvedCount, ambiguousCount, unresolvedCount, avgConfidence, coldStartCoverage, cacheAge, lastRebuild]
+      properties:
+        totalEdges: { type: integer }
+        totalNodes: { type: integer }
+        resolvedCount: { type: integer }
+        ambiguousCount: { type: integer }
+        unresolvedCount: { type: integer }
+        avgConfidence: { type: number, format: double }
+        coldStartCoverage: { type: number, format: double, description: Percent of 1-byte prefixes with at least 3 observations. }
+        cacheAge:
+          type: string
+          description: Seconds since the graph was built, like 71.1s. Empty before the first build.
+        lastRebuild:
+          type: string
+          description: When the graph was built, as a whole-second UTC time. Empty before the first build.
+    DebugAffinityResponse:
+      type: object
+      additionalProperties: false
+      required: [edges, resolutions, stats]
+      properties:
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/DebugEdge' }
+        resolutions:
+          type: array
+          items: { $ref: '#/components/schemas/DebugResolution' }
+        stats: { $ref: '#/components/schemas/DebugStats' }
+        

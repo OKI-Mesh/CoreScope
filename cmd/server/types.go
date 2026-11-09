@@ -22,10 +22,6 @@ type ErrorResp struct {
 	Error string `json:"error"`
 }
 
-type OkResp struct {
-	Ok bool `json:"ok"`
-}
-
 type TimeBucket struct {
 	Label  *string `json:"label,omitempty"`
 	Count  int     `json:"count"`

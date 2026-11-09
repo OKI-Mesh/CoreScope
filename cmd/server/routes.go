@@ -965,7 +965,7 @@ func (s *Server) handlePerfReset(w http.ResponseWriter, r *http.Request) {
 	s.perfStats.SlowQueries = make([]api.SlowQuery, 0)
 	s.perfStats.StartedAt = time.Now()
 	s.perfStats.mu.Unlock()
-	writeJSON(w, OkResp{Ok: true})
+	writeJSON(w, api.OkResponse{Ok: true})
 }
 
 // splitObserverIDs turns "A, b,,C" into ["a", "b", "c"]: trimmed, lowercased,
@@ -1892,7 +1892,21 @@ func (s *Server) handleDroppedPackets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, results)
+	out := make([]api.DroppedPacket, 0, len(results))
+	for _, d := range results {
+		out = append(out, api.DroppedPacket{
+			Id:           d.ID,
+			Hash:         optString(d.Hash),
+			RawHex:       d.RawHex,
+			Reason:       d.Reason,
+			ObserverId:   optString(d.ObserverID),
+			ObserverName: optString(d.ObserverName),
+			NodePubkey:   optString(d.NodePubkey),
+			NodeName:     optString(d.NodeName),
+			DroppedAt:    types.WireTimeSeconds{Time: d.DroppedAt},
+		})
+	}
+	writeJSON(w, out)
 }
 
 func (s *Server) handleScopeStats(w http.ResponseWriter, r *http.Request) {
@@ -1919,13 +1933,11 @@ func (s *Server) handleScopeStats(w http.ResponseWriter, r *http.Request) {
 
 	name, since, bucket := scopeStatsWindow(window, time.Now())
 	st, err := s.db.GetScopeStats(r.Context(), since, bucket)
-	if err != nil { /* your existing error response */
-	}
-	resp := scopeStatsToResponse(name, st)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
+	resp := scopeStatsToResponse(name, st)
 
 	s.scopeStatsMu.Lock()
 	if s.scopeStatsCache == nil {
@@ -1966,30 +1978,19 @@ func (s *Server) handlePruneGeoFilter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type nodeResult struct {
-		PubKey string   `json:"pubkey"`
-		Name   string   `json:"name"`
-		Lat    *float64 `json:"lat"`
-		Lon    *float64 `json:"lon"`
-	}
-
-	var outside []nodeResult
+	outside := []api.PruneGeoFilterNode{}
 	for _, n := range nodes {
 		if n.Lat == nil || n.Lon == nil {
 			continue // no GPS — always keep
 		}
 		if !NodePassesGeoFilter(n.Lat, n.Lon, gf) {
-			outside = append(outside, nodeResult{PubKey: n.Pubkey, Name: n.Name, Lat: n.Lat, Lon: n.Lon})
+			outside = append(outside, api.PruneGeoFilterNode{Pubkey: n.Pubkey, Name: n.Name, Lat: *n.Lat, Lon: *n.Lon})
 		}
 	}
 
 	if r.URL.Query().Get("confirm") != "true" {
 		// Dry run — return preview without enqueueing anything.
-		writeJSON(w, map[string]interface{}{
-			"dryRun": true,
-			"count":  len(outside),
-			"nodes":  outside,
-		})
+		writeJSON(w, api.PruneGeoFilterPreview{DryRun: true, Count: len(outside), Nodes: outside})
 		return
 	}
 
@@ -1997,28 +1998,26 @@ func (s *Server) handlePruneGeoFilter(w http.ResponseWriter, r *http.Request) {
 	// only nodes that were shown in preview AND are still outside the filter
 	// at this exact moment are scheduled for deletion. (The ingestor honors
 	// the list verbatim; it does NOT re-evaluate geo_filter membership.)
-	var body struct {
-		Pubkeys []string `json:"pubkeys"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Pubkeys) == 0 {
+	var body api.PruneGeoFilterRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Pubkeys == nil || len(*body.Pubkeys) == 0 {
 		writeError(w, http.StatusBadRequest, "confirm requires pubkeys from preview in request body")
 		return
 	}
-	allowed := make(map[string]bool, len(body.Pubkeys))
-	for _, pk := range body.Pubkeys {
+	allowed := make(map[string]bool, len(*body.Pubkeys))
+	for _, pk := range *body.Pubkeys {
 		allowed[pk] = true
 	}
 
-	var toDelete []nodeResult
+	toDelete := []api.PruneGeoFilterNode{}
 	for _, n := range outside {
-		if allowed[n.PubKey] {
+		if allowed[n.Pubkey] {
 			toDelete = append(toDelete, n)
 		}
 	}
 
 	pubkeys := make([]string, 0, len(toDelete))
 	for _, n := range toDelete {
-		pubkeys = append(pubkeys, n.PubKey)
+		pubkeys = append(pubkeys, n.Pubkey)
 	}
 
 	id := prunequeue.NewID()
@@ -2038,13 +2037,13 @@ func (s *Server) handlePruneGeoFilter(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"dryRun":    false,
-		"accepted":  true,
-		"requestId": id,
-		"count":     len(pubkeys),
-		"nodes":     toDelete,
-		"statusUrl": "/api/admin/prune-geo-filter/status?id=" + id,
+	_ = json.NewEncoder(w).Encode(api.PruneGeoFilterAccepted{
+		DryRun:    false,
+		Accepted:  true,
+		RequestId: id,
+		Count:     len(pubkeys),
+		Nodes:     toDelete,
+		StatusUrl: "/api/admin/prune-geo-filter/status?id=" + id,
 	})
 }
 
@@ -2074,13 +2073,13 @@ func (s *Server) handlePruneGeoFilterStatus(w http.ResponseWriter, r *http.Reque
 		if res.Error != "" {
 			status = "error"
 		}
-		writeJSON(w, map[string]interface{}{
-			"requestId":   res.ID,
-			"status":      status,
-			"deleted":     res.Deleted,
-			"requestedAt": res.RequestedAt,
-			"completedAt": res.CompletedAt,
-			"error":       res.Error,
+		writeJSON(w, api.PruneGeoFilterStatus{
+			RequestId:   res.ID,
+			Status:      status,
+			Deleted:     &res.Deleted,
+			RequestedAt: &res.RequestedAt,
+			CompletedAt: &res.CompletedAt,
+			Error:       &res.Error,
 		})
 		return
 	}
@@ -2095,10 +2094,7 @@ func (s *Server) handlePruneGeoFilterStatus(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if pending {
-		writeJSON(w, map[string]interface{}{
-			"requestId": id,
-			"status":    "pending",
-		})
+		writeJSON(w, api.PruneGeoFilterStatus{RequestId: id, Status: "pending"})
 		return
 	}
 	writeError(w, http.StatusNotFound, "unknown request id")

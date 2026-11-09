@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 func TestDebugAffinityEndpoint(t *testing.T) {
@@ -30,7 +32,7 @@ func TestDebugAffinityEndpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var resp DebugAffinityResponse
+	var resp api.DebugAffinityResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -65,7 +67,7 @@ func TestDebugAffinityPrefixFilter(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleDebugAffinity(w, r)
 
-	var resp DebugAffinityResponse
+	var resp api.DebugAffinityResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	if len(resp.Edges) != 1 {
@@ -87,7 +89,7 @@ func TestDebugAffinityNodeFilter(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleDebugAffinity(w, r)
 
-	var resp DebugAffinityResponse
+	var resp api.DebugAffinityResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	if len(resp.Edges) != 1 {

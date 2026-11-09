@@ -789,6 +789,93 @@ type DbStats struct {
 	WalSizeMB   float64          `json:"walSizeMB"`
 }
 
+// DebugAffinityResponse defines model for DebugAffinityResponse.
+type DebugAffinityResponse struct {
+	Edges       []DebugEdge       `json:"edges"`
+	Resolutions []DebugResolution `json:"resolutions"`
+	Stats       DebugStats        `json:"stats"`
+}
+
+// DebugCandidate defines model for DebugCandidate.
+type DebugCandidate struct {
+	Jaccard float64 `json:"jaccard"`
+	Name    string  `json:"name,omitempty"`
+	Pubkey  string  `json:"pubkey"`
+	Score   int     `json:"score"`
+}
+
+// DebugEdge defines model for DebugEdge.
+type DebugEdge struct {
+	Ambiguous bool     `json:"ambiguous"`
+	AvgSnr    *float64 `json:"avgSnr,omitempty"`
+
+	// FirstSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	FirstSeen TimestampSeconds `json:"firstSeen"`
+	Jaccard   float64          `json:"jaccard,omitempty"`
+
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen  TimestampSeconds `json:"lastSeen"`
+	NodeA     string           `json:"nodeA"`
+	NodeAName string           `json:"nodeAName,omitempty"`
+
+	// NodeB Empty while the far end is unresolved.
+	NodeB            string   `json:"nodeB"`
+	NodeBName        string   `json:"nodeBName,omitempty"`
+	ObservationCount int      `json:"observationCount"`
+	Observers        []string `json:"observers"`
+	Prefix           string   `json:"prefix"`
+	Resolved         bool     `json:"resolved,omitempty"`
+	Score            float64  `json:"score"`
+	Unresolved       bool     `json:"unresolved,omitempty"`
+	Weight           int      `json:"weight"`
+}
+
+// DebugResolution defines model for DebugResolution.
+type DebugResolution struct {
+	Candidates []DebugCandidate `json:"candidates"`
+
+	// Chosen Absent when the prefix stayed ambiguous.
+	Chosen        string  `json:"chosen,omitempty"`
+	ChosenJaccard float64 `json:"chosenJaccard"`
+	ChosenName    string  `json:"chosenName,omitempty"`
+	ChosenScore   int     `json:"chosenScore"`
+
+	// Confidence HIGH or AMBIGUOUS.
+	Confidence    string `json:"confidence"`
+	KnownNode     string `json:"knownNode"`
+	KnownNodeName string `json:"knownNodeName,omitempty"`
+
+	// Method auto-resolved or ambiguous.
+	Method string `json:"method"`
+	Prefix string `json:"prefix"`
+
+	// Ratio Best Jaccard over the runner-up; 999 stands in for infinity.
+	Ratio            float64 `json:"ratio"`
+	ThresholdApplied float64 `json:"thresholdApplied"`
+
+	// Tier Which fallback decided it, for example neighbor_affinity, geo_proximity or gps_preference. Empty when the node list is not loaded.
+	Tier string `json:"tier"`
+}
+
+// DebugStats defines model for DebugStats.
+type DebugStats struct {
+	AmbiguousCount int     `json:"ambiguousCount"`
+	AvgConfidence  float64 `json:"avgConfidence"`
+
+	// CacheAge Seconds since the graph was built, like 71.1s. Empty before the first build.
+	CacheAge string `json:"cacheAge"`
+
+	// ColdStartCoverage Percent of 1-byte prefixes with at least 3 observations.
+	ColdStartCoverage float64 `json:"coldStartCoverage"`
+
+	// LastRebuild When the graph was built, as a whole-second UTC time. Empty before the first build.
+	LastRebuild     string `json:"lastRebuild"`
+	ResolvedCount   int    `json:"resolvedCount"`
+	TotalEdges      int    `json:"totalEdges"`
+	TotalNodes      int    `json:"totalNodes"`
+	UnresolvedCount int    `json:"unresolvedCount"`
+}
+
 // DecodeRequest defines model for DecodeRequest.
 type DecodeRequest struct {
 	// Hex The packet as hex. Surrounding whitespace is ignored.
@@ -929,6 +1016,22 @@ type DistanceSummary struct {
 	MaxDist    float64 `json:"maxDist"`
 	TotalHops  int     `json:"totalHops"`
 	TotalPaths int     `json:"totalPaths"`
+}
+
+// DroppedPacket defines model for DroppedPacket.
+type DroppedPacket struct {
+	// DroppedAt UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	DroppedAt    TimestampSeconds `json:"dropped_at"`
+	Hash         *string          `json:"hash"`
+	Id           int64            `json:"id"`
+	NodeName     *string          `json:"node_name"`
+	NodePubkey   *string          `json:"node_pubkey"`
+	ObserverId   *string          `json:"observer_id"`
+	ObserverName *string          `json:"observer_name"`
+
+	// RawHex Absent when the packet was not kept.
+	RawHex string `json:"raw_hex,omitempty"`
+	Reason string `json:"reason"`
 }
 
 // EndpointStats defines model for EndpointStats.
@@ -2149,6 +2252,11 @@ type ObserverReach struct {
 	Rings []ReachRing `json:"rings"`
 }
 
+// OkResponse defines model for OkResponse.
+type OkResponse struct {
+	Ok bool `json:"ok"`
+}
+
 // Packet A packet with the display fields of its representative observation. observations is present only when requested (expand=observations) or on the detail route.
 type Packet struct {
 	// UnderscoreParsedPath Hop prefixes of the representative observation, null when it has none.
@@ -2485,6 +2593,60 @@ type PerfWriteSourcesResponse struct {
 
 	// WriterPerf Lock timings by writer kind. Sent by newer ingestor builds only.
 	WriterPerf *map[string]WriterLockStats `json:"writer_perf,omitempty"`
+}
+
+// PruneGeoFilterAccepted defines model for PruneGeoFilterAccepted.
+type PruneGeoFilterAccepted struct {
+	// Accepted Always true.
+	Accepted bool `json:"accepted"`
+
+	// Count Nodes queued. Pubkeys that were not in the preview or are no longer outside the filter are left out.
+	Count int `json:"count"`
+
+	// DryRun Always false.
+	DryRun    bool                 `json:"dryRun"`
+	Nodes     []PruneGeoFilterNode `json:"nodes"`
+	RequestId string               `json:"requestId"`
+
+	// StatusUrl Where to poll for the result.
+	StatusUrl string `json:"statusUrl"`
+}
+
+// PruneGeoFilterNode defines model for PruneGeoFilterNode.
+type PruneGeoFilterNode struct {
+	Lat    float64 `json:"lat"`
+	Lon    float64 `json:"lon"`
+	Name   string  `json:"name"`
+	Pubkey string  `json:"pubkey"`
+}
+
+// PruneGeoFilterPreview defines model for PruneGeoFilterPreview.
+type PruneGeoFilterPreview struct {
+	Count int `json:"count"`
+
+	// DryRun Always true.
+	DryRun bool                 `json:"dryRun"`
+	Nodes  []PruneGeoFilterNode `json:"nodes"`
+}
+
+// PruneGeoFilterRequest defines model for PruneGeoFilterRequest.
+type PruneGeoFilterRequest struct {
+	// Pubkeys Public keys from the preview. Required, and not empty, when confirm=true.
+	Pubkeys *[]string `json:"pubkeys,omitempty"`
+}
+
+// PruneGeoFilterStatus While pending only requestId and status are present. Once the ingestor has written its result the other fields follow.
+type PruneGeoFilterStatus struct {
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	Deleted     *int64     `json:"deleted,omitempty"`
+
+	// Error Empty when status is done.
+	Error       *string    `json:"error,omitempty"`
+	RequestId   string     `json:"requestId"`
+	RequestedAt *time.Time `json:"requestedAt,omitempty"`
+
+	// Status pending, done or error.
+	Status string `json:"status"`
 }
 
 // RFAnalyticsResponse defines model for RFAnalyticsResponse.
@@ -3378,6 +3540,18 @@ type AnalyticsWarmingUp = AnalyticsWarmupResponse
 // SubpathIndexLoading defines model for SubpathIndexLoading.
 type SubpathIndexLoading = IndexLoadingResponse
 
+// PruneGeoFilterParams defines parameters for PruneGeoFilter.
+type PruneGeoFilterParams struct {
+	// Confirm Set to true to enqueue the deletion. Any other value is a dry run.
+	Confirm *bool `form:"confirm,omitempty" json:"confirm,omitempty"`
+}
+
+// GetPruneGeoFilterStatusParams defines parameters for GetPruneGeoFilterStatus.
+type GetPruneGeoFilterStatusParams struct {
+	// Id The requestId returned by the 202 answer.
+	Id string `form:"id" json:"id"`
+}
+
 // GetChannelAnalyticsParams defines parameters for GetChannelAnalytics.
 type GetChannelAnalyticsParams struct {
 	// Region Region (observer IATA) filter. An unknown region applies no filter.
@@ -3574,6 +3748,27 @@ type GetChannelMessagesParams struct {
 
 	// Region Comma-separated observer IATA codes. Only messages heard by those observers are returned.
 	Region *string `form:"region,omitempty" json:"region,omitempty"`
+}
+
+// GetDebugAffinityParams defines parameters for GetDebugAffinity.
+type GetDebugAffinityParams struct {
+	// Prefix Only edges and resolutions with this hash prefix, case-insensitive.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// Node Only edges touching this public key, as either end or as a candidate.
+	Node *string `form:"node,omitempty" json:"node,omitempty"`
+}
+
+// ListDroppedPacketsParams defines parameters for ListDroppedPackets.
+type ListDroppedPacketsParams struct {
+	// Limit How many to return. Defaults to 100; at most 500.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Observer Only packets heard by this observer.
+	Observer *string `form:"observer,omitempty" json:"observer,omitempty"`
+
+	// Pubkey Only packets attributed to this node.
+	Pubkey *string `form:"pubkey,omitempty" json:"pubkey,omitempty"`
 }
 
 // GetKnownChannelsParams defines parameters for GetKnownChannels.
@@ -3841,6 +4036,9 @@ type GetScopeStatsParams struct {
 	// Window 1h, 24h or 7d. Default 24h.
 	Window *string `form:"window,omitempty" json:"window,omitempty"`
 }
+
+// PruneGeoFilterJSONRequestBody defines body for PruneGeoFilter for application/json ContentType.
+type PruneGeoFilterJSONRequestBody = PruneGeoFilterRequest
 
 // PutConfigGeoFilterJSONRequestBody defines body for PutConfigGeoFilter for application/json ContentType.
 type PutConfigGeoFilterJSONRequestBody = GeoFilterRequest
