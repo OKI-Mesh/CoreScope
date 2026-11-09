@@ -620,7 +620,7 @@ func TestEstimateStoreObsBytes(t *testing.T) {
 
 func BenchmarkEviction100K(b *testing.B) {
 	now := time.Now().UTC()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		b.StopTimer()
 		store := makeTestStore(100000, now.Add(-48*time.Hour), 0)
 		store.retentionHours = 24

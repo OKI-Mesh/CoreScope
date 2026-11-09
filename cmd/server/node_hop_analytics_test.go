@@ -597,8 +597,8 @@ func BenchmarkNodeHopPackets(b *testing.B) {
 	}
 	pm, graph := hopPM(), hopGraph()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		computeNodeHopPackets(hopTarget, txs, time.Time{}, pm, graph)
 	}
 }

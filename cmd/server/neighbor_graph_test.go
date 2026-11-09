@@ -920,8 +920,8 @@ func BenchmarkBuildFromStore(b *testing.B) {
 	}
 	store := ngTestStore(b, nodes, packets)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		BuildFromStore(store)
 	}
 }

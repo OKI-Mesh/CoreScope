@@ -307,7 +307,7 @@ func BenchmarkCacheHitDuringIngestion(b *testing.B) {
 	s.invalidateCachesFor(cacheInvalidation{hasNewObservations: true})
 
 	var hits, misses int64
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Populate cache (simulates an analytics query filling the cache)
 		s.cacheMu.Lock()
 		s.rfCache["global"] = &cachedRF{
@@ -479,7 +479,7 @@ func BenchmarkAnalyticsLatencyCacheHitVsMiss(b *testing.B) {
 	s.invalidateCachesFor(cacheInvalidation{hasNewObservations: true})
 
 	var hits, misses int64
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Re-populate (simulates query filling cache)
 		s.cacheMu.Lock()
 		if len(s.rfCache) == 0 {

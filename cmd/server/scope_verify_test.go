@@ -223,8 +223,8 @@ func BenchmarkScopeVerifierAudit(b *testing.B) {
 	for i := 0; i < names; i++ {
 		declared = append(declared, fmt.Sprintf("r%04d", i))
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		v := newScopeVerifier(rows)
 		for t := 0; t < targets; t++ {
 			v.evidence(txIDs, declared)
@@ -333,8 +333,8 @@ func BenchmarkScopeVerifierStress(b *testing.B) {
 	for i := 0; i < names; i++ {
 		declared = append(declared, fmt.Sprintf("r%04d", i))
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		v := newScopeVerifier(rows)
 		for t := 0; t < targets; t++ {
 			v.evidence(txIDs, declared)

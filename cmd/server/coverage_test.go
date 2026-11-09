@@ -4129,7 +4129,7 @@ func TestResolveRegionObserversCaching(t *testing.T) {
 
 	// First call should populate cache.
 	obs1 := store.resolveRegionObservers(ctx, "SJC")
-	if obs1 == nil || len(obs1) == 0 {
+	if len(obs1) == 0 {
 		t.Fatal("expected observer IDs for SJC on first call")
 	}
 
@@ -4163,7 +4163,7 @@ func TestResolveRegionObserversCacheMissNewRegion(t *testing.T) {
 
 	// Populate cache with SJC.
 	obs1 := store.resolveRegionObservers(ctx, "SJC")
-	if obs1 == nil || len(obs1) == 0 {
+	if len(obs1) == 0 {
 		t.Fatal("expected observer IDs for SJC on first call")
 	}
 

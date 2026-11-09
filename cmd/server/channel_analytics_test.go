@@ -123,9 +123,10 @@ func TestComputeAnalyticsChannels_RejectsRainbowTableMismatch(t *testing.T) {
 	// Find the buckets
 	var ch72, ch129 *api.ChannelSummary
 	for i := range channels {
-		if channels[i].Hash == "72" {
+		switch channels[i].Hash {
+		case "72":
 			ch72 = &channels[i]
-		} else if channels[i].Hash == "129" {
+		case "129":
 			ch129 = &channels[i]
 		}
 	}

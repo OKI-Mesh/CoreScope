@@ -561,7 +561,7 @@ func BenchmarkLoad_BeforeAfter(b *testing.B) {
 	const numObsPerTx = 5
 	const numHops = 3
 
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		var m1 runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&m1)
@@ -623,7 +623,7 @@ func BenchmarkLoad_OldFieldStorage(b *testing.B) {
 	const numObsPerTx = 5
 	const numHops = 3
 
-	for n := 0; n < b.N; n++ {
+	for b.Loop() {
 		var m1 runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&m1)

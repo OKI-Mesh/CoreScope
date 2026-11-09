@@ -147,8 +147,8 @@ func BenchmarkEstimateStoreTxBytes(b *testing.B) {
 		parsedPath:  []string{"hop1", "hop2", "hop3", "hop4", "hop5"},
 		pathParsed:  true,
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		estimateStoreTxBytes(tx)
 	}
 }
@@ -159,8 +159,8 @@ func BenchmarkEstimateStoreObsBytes(b *testing.B) {
 		ObserverID: "observer1234",
 		PathJSON:   `["a","b","c"]`,
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		estimateStoreObsBytes(obs)
 	}
 }

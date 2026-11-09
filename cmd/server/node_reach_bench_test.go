@@ -96,8 +96,8 @@ func BenchmarkNodeReachScanMixed(b *testing.B) {
 	db := reachFixtureDB(b, 100000, 2)
 	srv := &Server{db: db}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		rows, _ := srv.scanReachRows(context.Background(), tokens, time.Time{})
 		if len(rows) == 0 {
 			b.Fatal("expected rows")
@@ -114,8 +114,8 @@ func BenchmarkNodeReachScanLowerCase(b *testing.B) {
 	db := reachFixtureDB(b, 100000, 1)
 	srv := &Server{db: db}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		rows, _ := srv.scanReachRows(context.Background(), tokens, time.Time{})
 		if len(rows) == 0 {
 			b.Fatal("expected rows")
@@ -144,8 +144,8 @@ func BenchmarkNodeReachAttribute(b *testing.B) {
 		return ""
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		d := attributeDirections(rows, tokens, "01fa326b", resolve)
 		if d.relay == 0 {
 			b.Fatal("expected relay hits")

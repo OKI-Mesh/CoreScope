@@ -692,8 +692,8 @@ func BenchmarkComputeRetransmissionPressure(b *testing.B) {
 	s.computeRetransmissionPressure(ctx, "", TimeWindow{}, time.Hour)
 	runtime.GC() // fixture garbage must not be collected inside the timed loop
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		s.computeRetransmissionPressure(ctx, "", TimeWindow{}, time.Hour)
 	}
 }
@@ -705,8 +705,8 @@ func BenchmarkComputeRetransmissionPressureColdTimestamps(b *testing.B) {
 	s := retransmissionBenchStore()
 	runtime.GC()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		b.StopTimer()
 		for _, tx := range s.packets {
 			for _, o := range tx.Observations {

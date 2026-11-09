@@ -148,8 +148,7 @@ func BenchmarkGetPerfStoreStats(b *testing.B) {
 	}
 	ps.mu.Unlock()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ps.GetPerfStoreStats()
 	}
 }
@@ -176,8 +175,7 @@ func BenchmarkGetPerfStoreStatsTyped(b *testing.B) {
 	}
 	ps.mu.Unlock()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ps.GetPerfStoreStatsTyped()
 	}
 }

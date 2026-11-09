@@ -35,7 +35,7 @@ func TestPerfIOBench_Sanity(t *testing.T) {
 // walker on a representative payload. Carmack must-fix #3.
 func BenchmarkParseProcIOInto(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		var s procIOSample
 		parseProcIOInto(bufio.NewScanner(strings.NewReader(benchProcIOSample)), &s)
 	}
@@ -59,8 +59,8 @@ func BenchmarkReadIngestorIOSample_CacheHit(b *testing.B) {
 	_ = readIngestorIOSample()
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		_ = readIngestorIOSample()
 	}
 }
@@ -81,9 +81,9 @@ func BenchmarkReadIngestorIOSample_CacheMiss(b *testing.B) {
 	resetIngestorIOCache()
 
 	b.ReportAllocs()
-	b.ResetTimer()
+	
 	base := time.Now()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		// Force cache invalidation by advancing mtime each iter.
 		t := base.Add(time.Duration(i+1) * time.Millisecond)
 		b.StopTimer()

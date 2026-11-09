@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	"github.com/OKI-Mesh/CoreScope/api"
-	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -16,17 +15,6 @@ type NodeUsefulness struct {
 	RedundancyScore   float64 `json:"redundancy_score"`
 	UsefulnessScore   float64 `json:"usefulness_score"`
 	UsefulnessGrade   string  `json:"usefulness_grade,omitempty"` // empty only on cold start
-}
-
-func applyMultiByteCap(n *api.Node, mb *database.MultiByteCap) {
-	if mb == nil {
-		return
-	}
-	n.MultiByteStatus = ptr(mb.Status.String())
-	n.MultiByteMaxHashSize = ptr(mb.MaxHashSize)
-	if mb.Evidence != nil {
-		n.MultiByteEvidence = ptr(string(*mb.Evidence))
-	}
 }
 
 func enrichNodeWithDeclaredScope(n *api.Node, answer declaredAnswer, hasDeclared bool, transportedScopes []string) {

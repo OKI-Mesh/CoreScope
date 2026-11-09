@@ -108,9 +108,10 @@ func regionCode(name string, payloadType byte, payload []byte) string {
 	mac.Write(payload)
 	h := mac.Sum(nil)
 	code := uint16(h[0]) | uint16(h[1])<<8
-	if code == 0 {
+	switch code {
+	case 0:
 		code = 1
-	} else if code == 0xFFFF {
+	case 0xFFFF:
 		code = 0xFFFE
 	}
 	return strings.ToUpper(hex.EncodeToString([]byte{byte(code & 0xFF), byte(code >> 8)}))

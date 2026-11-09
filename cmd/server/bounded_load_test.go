@@ -245,8 +245,8 @@ func BenchmarkLoad_Bounded(b *testing.B) {
 	db := setupTestDB(b)
 	dbtest.SeedTransmissions(b, db, 5000)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		b.StopTimer()
 		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 1})
 		b.StartTimer()
@@ -263,8 +263,8 @@ func BenchmarkLoad_Unlimited(b *testing.B) {
 	db := setupTestDB(b)
 	dbtest.SeedTransmissions(b, db, 5000)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		b.StopTimer()
 		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 0})
 		b.StartTimer()
@@ -283,8 +283,8 @@ func BenchmarkLoad_30K_Bounded(b *testing.B) {
 	db := setupTestDB(b)
 	dbtest.SeedTransmissions(b, db, 30000)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		b.StopTimer()
 		store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 1})
 		b.StartTimer()
@@ -302,8 +302,8 @@ func BenchmarkLoad_30K_Unlimited(b *testing.B) {
 
 	dsn := createTestDBWithObs(b, 30000)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		b.StopTimer()
 		db, err := OpenDB(b.Context(), dsn)
 		if err != nil {
