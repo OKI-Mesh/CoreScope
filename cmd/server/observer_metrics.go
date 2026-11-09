@@ -5,30 +5,11 @@ import (
 	"math"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
-// MetricsSample is one observer metrics row with server-computed deltas.
-// The raw cumulative counters are not sent; they were always omitted
-// (omitempty on never-set fields), so they are dropped from the struct.
-type MetricsSample struct {
-	Timestamp     string   `json:"timestamp"`
-	NoiseFloor    *float64 `json:"noise_floor"`
-	BatteryMv     *int     `json:"battery_mv"`
-	TxAirtimePct  *float64 `json:"tx_airtime_pct"`
-	RxAirtimePct  *float64 `json:"rx_airtime_pct"`
-	RecvErrorRate *float64 `json:"recv_error_rate"`
-	IsReboot      bool     `json:"is_reboot_sample,omitempty"`
-}
-
-type ObserverMetricsResponse struct {
-	ObserverID   string          `json:"observer_id"`
-	ObserverName *string         `json:"observer_name"`
-	Reboots      []string        `json:"reboots"`
-	Metrics      []MetricsSample `json:"metrics"`
-}
-
-func (s *Server) observerMetrics(ctx context.Context, pubkey string, since, until *time.Time, resolution database.MetricsResolution, sampleIntervalSec int) ([]MetricsSample, []string, error) {
+func (s *Server) observerMetrics(ctx context.Context, pubkey string, since, until *time.Time, resolution database.MetricsResolution, sampleIntervalSec int) ([]api.MetricsSample, []api.TimestampSeconds, error) {
 	raw, err := s.db.GetObserverMetrics(ctx, pubkey, since, until, resolution)
 	if err != nil {
 		return nil, nil, err
@@ -52,17 +33,17 @@ func metricsBucketSeconds(resolution database.MetricsResolution, sampleIntervalS
 	return sampleIntervalSec
 }
 
-func computeDeltas(raw []database.ObserverMetric, bucketSizeSec int) ([]MetricsSample, []string) {
+func computeDeltas(raw []database.ObserverMetric, bucketSizeSec int) ([]api.MetricsSample, []api.TimestampSeconds) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
 	gapThreshold := float64(bucketSizeSec) * 2.0
-	result := make([]MetricsSample, 0, len(raw))
-	var reboots []string
+	result := make([]api.MetricsSample, 0, len(raw))
+	var reboots []api.TimestampSeconds
 
 	for i, cur := range raw {
-		s := MetricsSample{
-			Timestamp:  formatTS(cur.Timestamp),
+		s := api.MetricsSample{
+			Timestamp:  api.TimestampSeconds{Time: cur.Timestamp},
 			NoiseFloor: cur.NoiseFloor,
 			BatteryMv:  cur.BatteryMv,
 		}
@@ -82,7 +63,8 @@ func computeDeltas(raw []database.ObserverMetric, bucketSizeSec int) ([]MetricsS
 		if decreased(cur.TxAirSecs, prev.TxAirSecs) || decreased(cur.RxAirSecs, prev.RxAirSecs) ||
 			decreased(cur.RecvErrors, prev.RecvErrors) || decreased(cur.PacketsSent, prev.PacketsSent) ||
 			decreased(cur.PacketsRecv, prev.PacketsRecv) {
-			s.IsReboot = true
+			isReboot := true
+			s.IsRebootSample = &isReboot
 			reboots = append(reboots, s.Timestamp)
 			result = append(result, s)
 			continue

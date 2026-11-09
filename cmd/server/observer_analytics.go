@@ -33,6 +33,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
@@ -65,24 +66,23 @@ func observerAnalyticsFormatLabel(days int) func(time.Time) string {
 
 // buildTimelineBuckets is the shared kernel used by both buildTimeline and
 // buildNodesTimeline. Sorts the count map by bucket-key and returns
-// TimeBucket entries with labels formatted per days.
-func buildTimelineBuckets(counts map[int64]int, days int) []TimeBucket {
+// TimelineBucket entries with labels formatted per days.
+func buildTimelineBuckets(counts map[int64]int, days int) []api.TimelineBucket {
 	formatLabel := observerAnalyticsFormatLabel(days)
 	keys := make([]int64, 0, len(counts))
 	for k := range counts {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	out := make([]TimeBucket, 0, len(keys))
+	out := make([]api.TimelineBucket, 0, len(keys))
 	for _, k := range keys {
-		lbl := formatLabel(time.Unix(k, 0))
-		out = append(out, TimeBucket{Label: &lbl, Count: counts[k]})
+		out = append(out, api.TimelineBucket{Label: formatLabel(time.Unix(k, 0)), Count: counts[k]})
 	}
 	return out
 }
 
 // buildTimeline builds the packet-timeline aggregate for /analytics.
-func buildTimeline(filtered []*StoreObs, days int) []TimeBucket {
+func buildTimeline(filtered []*StoreObs, days int) []api.TimelineBucket {
 	bucketDur := observerAnalyticsBucketDur(days)
 	counts := map[int64]int{}
 
@@ -112,7 +112,7 @@ func buildPacketTypes(filtered []*StoreObs, txByID map[int]*StoreTx) map[types.P
 
 // buildNodesTimeline builds the distinct-node-per-bucket timeline aggregate.
 // Nodes = path-json hops ∪ decoded_json pubKey/srcHash/destHash.
-func buildNodesTimeline(filtered []*StoreObs, days int, txByID map[int]*StoreTx) []TimeBucket {
+func buildNodesTimeline(filtered []*StoreObs, days int, txByID map[int]*StoreTx) []api.TimelineBucket {
 	bucketDur := observerAnalyticsBucketDur(days)
 	nodeBucketSets := map[int64]map[string]struct{}{}
 	for _, obs := range filtered {
@@ -146,8 +146,8 @@ func buildNodesTimeline(filtered []*StoreObs, days int, txByID map[int]*StoreTx)
 }
 
 // buildSnrDistribution builds the SNR histogram (2-unit buckets, floor).
-func buildSnrDistribution(filtered []*StoreObs) []SnrDistributionEntry {
-	snrBuckets := map[int]*SnrDistributionEntry{}
+func buildSnrDistribution(filtered []*StoreObs) []api.SnrBucket {
+	snrBuckets := map[int]*api.SnrBucket{}
 	for _, obs := range filtered {
 		if obs.SNR == nil {
 			continue
@@ -157,7 +157,7 @@ func buildSnrDistribution(filtered []*StoreObs) []SnrDistributionEntry {
 			bucket -= 2
 		}
 		if snrBuckets[bucket] == nil {
-			snrBuckets[bucket] = &SnrDistributionEntry{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
+			snrBuckets[bucket] = &api.SnrBucket{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
 		}
 		snrBuckets[bucket].Count++
 	}
@@ -166,7 +166,7 @@ func buildSnrDistribution(filtered []*StoreObs) []SnrDistributionEntry {
 		keys = append(keys, k)
 	}
 	sort.Ints(keys)
-	out := make([]SnrDistributionEntry, 0, len(keys))
+	out := make([]api.SnrBucket, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, *snrBuckets[k])
 	}
@@ -182,8 +182,8 @@ func recentPacketObs(filtered []*StoreObs, limit int) []*StoreObs {
 	return slices.Clone(filtered[:min(limit, len(filtered))])
 }
 
-func buildRecentPackets(store *PacketStore, selected []*StoreObs, txByID map[int]*StoreTx, paths database.ResolvedPaths) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(selected))
+func buildRecentPackets(store *PacketStore, selected []*StoreObs, txByID map[int]*StoreTx, paths database.ResolvedPaths) []api.ObserverPacket {
+	out := make([]api.ObserverPacket, 0, len(selected))
 	for _, obs := range selected {
 		if obs.Timestamp.IsZero() {
 			continue

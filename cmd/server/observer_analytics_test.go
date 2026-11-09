@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -180,8 +179,8 @@ func TestBuildRecentPacketsSkipsZeroTimestamp(t *testing.T) {
 		t.Errorf("recentPackets len = %d, want 20 (the 3 zero-time observations must be skipped)", len(got))
 	}
 	for i, e := range got {
-		if ts, _ := e["timestamp"].(string); strings.HasPrefix(ts, "0001-") {
-			t.Errorf("recentPackets[%d] contains a zero-time observation (timestamp=%q)", i, ts)
+		if e.Timestamp.IsZero() {
+			t.Errorf("recentPackets[%d] contains a zero-time observation (timestamp=%v)", i, e.Timestamp)
 		}
 	}
 }

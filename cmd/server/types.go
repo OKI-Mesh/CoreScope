@@ -469,26 +469,6 @@ type NodeHopAnalyticsResponse struct {
 	Ambiguous int             `json:"ambiguous"`
 }
 
-// ─── Observers ─────────────────────────────────────────────────────────────────
-
-type ObserverListResponse struct {
-	Observers  []ObserverResponse `json:"observers"`
-	ServerTime string             `json:"server_time"`
-}
-
-type SnrDistributionEntry struct {
-	Range string `json:"range"`
-	Count int    `json:"count"`
-}
-
-type ObserverAnalyticsResponse struct {
-	Timeline        []TimeBucket              `json:"timeline"`
-	PacketTypes     map[types.PayloadType]int `json:"packetTypes"`
-	NodesTimeline   []TimeBucket              `json:"nodesTimeline"`
-	SnrDistribution []SnrDistributionEntry    `json:"snrDistribution"`
-	RecentPackets   []map[string]interface{}  `json:"recentPackets"`
-}
-
 // ─── Resolve Hops ──────────────────────────────────────────────────────────────
 
 type HopCandidate struct {

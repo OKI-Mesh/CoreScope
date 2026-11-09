@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
@@ -77,20 +78,20 @@ func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp ObserverListResponse
+	var resp api.ObserverListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
 	for _, obs := range resp.Observers {
-		if obs.ID == "badobs" {
+		if obs.Id == "badobs" {
 			t.Error("blacklisted observer should not appear in observers list")
 		}
 	}
 
 	foundGood := false
 	for _, obs := range resp.Observers {
-		if obs.ID == "goodobs" {
+		if obs.Id == "goodobs" {
 			foundGood = true
 		}
 	}
@@ -148,14 +149,14 @@ func TestNoObserverBlacklistPassesAll(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var resp ObserverListResponse
+	var resp api.ObserverListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
 	foundSome := false
 	for _, obs := range resp.Observers {
-		if obs.ID == "someobs" {
+		if obs.Id == "someobs" {
 			foundSome = true
 		}
 	}

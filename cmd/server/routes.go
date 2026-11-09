@@ -137,40 +137,21 @@ type Server struct {
 	channelCaches channelCaches
 }
 
-// MetricsSummaryResponse is the body of GET /api/observers/metrics/summary.
-type MetricsSummaryResponse struct {
-	Observers []MetricsSummaryObserver `json:"observers"`
-}
-
-// MetricsSummaryObserver is one observer in the metrics summary. Its JSON keys
-// are the contract with public/analytics.js.
-type MetricsSummaryObserver struct {
-	ObserverID    string     `json:"observer_id"`
-	ObserverName  *string    `json:"observer_name"`
-	IATA          string     `json:"iata,omitempty"`
-	CurrentNF     *float64   `json:"current_noise_floor"`
-	AvgNF         *float64   `json:"avg_noise_floor_24h"`
-	MaxNF         *float64   `json:"max_noise_floor_24h"`
-	CurrentBattMv *int       `json:"battery_mv"`
-	SampleCount   int        `json:"sample_count"`
-	Sparkline     []*float64 `json:"sparkline"`
-}
-
-func newMetricsSummaryObserver(s database.MetricsSummary) MetricsSummaryObserver {
+func newMetricsSummaryObserver(s database.MetricsSummary) api.MetricsSummaryObserver {
 	var name *string
 	if s.ObserverName != "" {
 		name = &s.ObserverName
 	}
-	return MetricsSummaryObserver{
-		ObserverID:    s.ObserverID,
-		ObserverName:  name,
-		IATA:          s.IATA,
-		CurrentNF:     s.CurrentNF,
-		AvgNF:         s.AvgNF,
-		MaxNF:         s.MaxNF,
-		CurrentBattMv: s.CurrentBattMv,
-		SampleCount:   s.SampleCount,
-		Sparkline:     s.Sparkline,
+	return api.MetricsSummaryObserver{
+		ObserverId:        s.ObserverID,
+		ObserverName:      name,
+		Iata:              optString(s.IATA),
+		CurrentNoiseFloor: s.CurrentNF,
+		AvgNoiseFloor24h:  s.AvgNF,
+		MaxNoiseFloor24h:  s.MaxNF,
+		BatteryMv:         s.CurrentBattMv,
+		SampleCount:       s.SampleCount,
+		Sparkline:         s.Sparkline,
 	}
 }
 
@@ -1361,17 +1342,17 @@ func (s *Server) handleObservers(w http.ResponseWriter, r *http.Request) {
 // the default-shape /api/observers payload. Extracted so the cache
 // refill path can be wrapped in singleflight and counted by tests.
 // #1483 follow-up.
-func (s *Server) buildObserversDefaultResponse(ctx context.Context) (ObserverListResponse, error) {
+func (s *Server) buildObserversDefaultResponse(ctx context.Context) (api.ObserverListResponse, error) {
 	observers, err := s.db.GetObservers(ctx)
 	if err != nil {
-		return ObserverListResponse{}, err
+		return api.ObserverListResponse{}, err
 	}
 
 	// Batch lookup: packetsLastHour per observer
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
 	pktCounts, err := s.db.GetObserverPacketCounts(ctx, oneHourAgo)
 	if err != nil {
-		return ObserverListResponse{}, err
+		return api.ObserverListResponse{}, err
 	}
 
 	// Batch lookup: node locations only for observer IDs (not all nodes)
@@ -1381,48 +1362,28 @@ func (s *Server) buildObserversDefaultResponse(ctx context.Context) (ObserverLis
 	}
 	nodeLocations, err := s.db.GetNodeLocationsByKeys(ctx, observerIDs)
 	if err != nil {
-		return ObserverListResponse{}, err
+		return api.ObserverListResponse{}, err
 	}
 
-	result := make([]ObserverResponse, 0, len(observers))
-	nowTime := time.Now().UTC()
+	result := make([]api.Observer, 0, len(observers))
+	now := time.Now().UTC()
 	for i := range observers {
 		o := &observers[i]
 		// Defense in depth: skip observers that are in the blacklist
 		if s.cfg != nil && s.cfg.IsObserverBlacklisted(o.Pubkey) {
 			continue
 		}
-		plh := 0
-		if c, ok := pktCounts[o.Pubkey]; ok {
-			plh = c
-		}
-		var lat, lon *float64
-		var nodeRole *types.NodeRole
+		resp := newObserver(o, pktCounts[o.Pubkey], now)
 		if nodeLoc, ok := nodeLocations[strings.ToLower(o.Pubkey)]; ok {
-			lat = nodeLoc.Lat
-			lon = nodeLoc.Lon
-			nodeRole = nodeLoc.Role
+			resp.Lat = nodeLoc.Lat
+			resp.Lon = nodeLoc.Lon
+			resp.NodeRole = nodeLoc.Role
 		}
-
-		resp := ObserverResponse{
-			ID: o.Pubkey, Name: o.Name, IATA: o.IATA,
-			LastSeen: &o.LastSeen, FirstSeen: &o.FirstSeen,
-			PacketCount: int(o.PacketCount),
-			Model:       o.Model, Firmware: o.Firmware,
-			ClientVersion: o.ClientVersion, Radio: o.Radio,
-			BatteryMv: o.BatteryMv, UptimeSecs: o.UptimeSecs,
-			NoiseFloor:      o.NoiseFloor,
-			LastPacketAt:    o.LastPacketAt,
-			PacketsLastHour: plh,
-			Lat:             lat, Lon: lon, NodeRole: nodeRole,
-			CanRelay: relayReport(o.CanRelay, o.CanRelaySeen),
-		}
-		applyObserverNaiveClock(&resp, o, nowTime)
 		result = append(result, resp)
 	}
-	return ObserverListResponse{
+	return api.ObserverListResponse{
 		Observers:  result,
-		ServerTime: time.Now().UTC().Format(time.RFC3339),
+		ServerTime: types.WireTimeSeconds{Time: now},
 	}, nil
 }
 
@@ -1454,20 +1415,8 @@ func (s *Server) handleObserverDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := ObserverResponse{
-		ID: obs.Pubkey, Name: obs.Name, IATA: obs.IATA,
-		LastSeen: &obs.LastSeen, FirstSeen: &obs.FirstSeen,
-		PacketCount: int(obs.PacketCount),
-		Model:       obs.Model, Firmware: obs.Firmware,
-		ClientVersion: obs.ClientVersion, Radio: obs.Radio,
-		BatteryMv: obs.BatteryMv, UptimeSecs: obs.UptimeSecs,
-		NoiseFloor:      obs.NoiseFloor,
-		LastPacketAt:    obs.LastPacketAt,
-		PacketsLastHour: pktCounts[id], // missing key = 0 observations in the window
-		CanRelay:        relayReport(obs.CanRelay, obs.CanRelaySeen),
-	}
-	applyObserverNaiveClock(&resp, obs, time.Now().UTC())
-	writeJSON(w, resp)
+	// A missing key means 0 observations in the window.
+	writeJSON(w, newObserver(obs, pktCounts[id], time.Now().UTC()))
 }
 
 func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request) {
@@ -1535,7 +1484,7 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 	packetTypes := map[types.PayloadType]int{}
 	timelineCounts := map[int64]int{}
 	nodeBucketSets := map[int64]map[string]struct{}{}
-	snrBuckets := map[int]*SnrDistributionEntry{}
+	snrBuckets := map[int]*api.SnrBucket{}
 
 	for _, obs := range filtered {
 		bucketStart := obs.Timestamp.UTC().Truncate(bucketDur).Unix()
@@ -1570,7 +1519,7 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 				bucket -= 2
 			}
 			if snrBuckets[bucket] == nil {
-				snrBuckets[bucket] = &SnrDistributionEntry{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
+				snrBuckets[bucket] = &api.SnrBucket{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
 			}
 			snrBuckets[bucket].Count++
 		}
@@ -1592,16 +1541,15 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 	// #1481 P0-2: RLock was released earlier after snapshotting the
 	// observation pointer slice; no Unlock needed here.
 
-	buildTimeline := func(counts map[int64]int) []TimeBucket {
+	buildTimeline := func(counts map[int64]int) []api.TimelineBucket {
 		keys := make([]int64, 0, len(counts))
 		for k := range counts {
 			keys = append(keys, k)
 		}
 		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-		out := make([]TimeBucket, 0, len(keys))
+		out := make([]api.TimelineBucket, 0, len(keys))
 		for _, k := range keys {
-			lbl := formatLabel(time.Unix(k, 0))
-			out = append(out, TimeBucket{Label: &lbl, Count: counts[k]})
+			out = append(out, api.TimelineBucket{Label: formatLabel(time.Unix(k, 0)), Count: counts[k]})
 		}
 		return out
 	}
@@ -1615,12 +1563,12 @@ func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request)
 		snrKeys = append(snrKeys, k)
 	}
 	sort.Ints(snrKeys)
-	snrDistribution := make([]SnrDistributionEntry, 0, len(snrKeys))
+	snrDistribution := make([]api.SnrBucket, 0, len(snrKeys))
 	for _, k := range snrKeys {
 		snrDistribution = append(snrDistribution, *snrBuckets[k])
 	}
 
-	writeJSON(w, ObserverAnalyticsResponse{
+	writeJSON(w, api.ObserverAnalyticsResponse{
 		Timeline:        buildTimeline(timelineCounts),
 		PacketTypes:     packetTypes,
 		NodesTimeline:   buildTimeline(nodeCounts),
@@ -1936,10 +1884,10 @@ func (s *Server) handleObserverMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics, reboots := computeDeltas(raw, metricsBucketSeconds(resolution, 300))
 	if metrics == nil {
-		metrics = []MetricsSample{}
+		metrics = []api.MetricsSample{}
 	}
 	if reboots == nil {
-		reboots = []string{}
+		reboots = []api.TimestampSeconds{}
 	}
 
 	var name *string
@@ -1953,8 +1901,8 @@ func (s *Server) handleObserverMetrics(w http.ResponseWriter, r *http.Request) {
 		name = obs.Name
 	}
 
-	writeJSON(w, ObserverMetricsResponse{
-		ObserverID: id, ObserverName: name, Reboots: reboots, Metrics: metrics,
+	writeJSON(w, api.ObserverMetricsResponse{
+		ObserverId: id, ObserverName: name, Reboots: reboots, Metrics: metrics,
 	})
 }
 
@@ -1988,11 +1936,11 @@ func (s *Server) handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
 		summary = filtered
 	}
 
-	observers := make([]MetricsSummaryObserver, len(summary))
+	observers := make([]api.MetricsSummaryObserver, len(summary))
 	for i, s := range summary {
 		observers[i] = newMetricsSummaryObserver(s)
 	}
-	writeJSON(w, MetricsSummaryResponse{Observers: observers})
+	writeJSON(w, api.MetricsSummaryResponse{Observers: observers})
 }
 
 // parseWindowDuration parses strings like "24h", "3d", "7d", "30d".

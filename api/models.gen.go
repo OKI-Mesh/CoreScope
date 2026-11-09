@@ -46,16 +46,16 @@ func (e AnalyticsWindow) Valid() bool {
 
 // Defines values for AttributionMethod.
 const (
-	Observer AttributionMethod = "observer"
-	Repeater AttributionMethod = "repeater"
+	AttributionMethodObserver AttributionMethod = "observer"
+	AttributionMethodRepeater AttributionMethod = "repeater"
 )
 
 // Valid indicates whether the value is a known member of the AttributionMethod enum.
 func (e AttributionMethod) Valid() bool {
 	switch e {
-	case Observer:
+	case AttributionMethodObserver:
 		return true
-	case Repeater:
+	case AttributionMethodRepeater:
 		return true
 	default:
 		return false
@@ -281,6 +281,27 @@ func (e ListNodesParamsLastHeard) Valid() bool {
 	case ListNodesParamsLastHeardN6h:
 		return true
 	case ListNodesParamsLastHeardN7d:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetObserverMetricsParamsResolution.
+const (
+	GetObserverMetricsParamsResolutionN1d GetObserverMetricsParamsResolution = "1d"
+	GetObserverMetricsParamsResolutionN1h GetObserverMetricsParamsResolution = "1h"
+	GetObserverMetricsParamsResolutionN5m GetObserverMetricsParamsResolution = "5m"
+)
+
+// Valid indicates whether the value is a known member of the GetObserverMetricsParamsResolution enum.
+func (e GetObserverMetricsParamsResolution) Valid() bool {
+	switch e {
+	case GetObserverMetricsParamsResolutionN1d:
+		return true
+	case GetObserverMetricsParamsResolutionN1h:
+		return true
+	case GetObserverMetricsParamsResolutionN5m:
 		return true
 	default:
 		return false
@@ -854,6 +875,56 @@ type IndexLoadingResponse struct {
 	RetryAfter int    `json:"retryAfter"`
 }
 
+// MetricsSample One metrics sample. The rate fields are null for the first sample, after a gap of more than two sample intervals, at a reboot, and when the observer did not report the counters.
+type MetricsSample struct {
+	BatteryMv *int `json:"battery_mv"`
+
+	// IsRebootSample True when a cumulative counter went down. Absent otherwise.
+	IsRebootSample *bool    `json:"is_reboot_sample,omitempty"`
+	NoiseFloor     *float64 `json:"noise_floor"`
+
+	// RecvErrorRate Receive errors as a percentage of packets received plus errors.
+	RecvErrorRate *float64 `json:"recv_error_rate"`
+
+	// RxAirtimePct Share of the interval spent receiving
+	RxAirtimePct *float64 `json:"rx_airtime_pct"`
+
+	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Timestamp TimestampSeconds `json:"timestamp"`
+
+	// TxAirtimePct Share of the interval spent transmitting
+	TxAirtimePct *float64 `json:"tx_airtime_pct"`
+}
+
+// MetricsSummaryObserver defines model for MetricsSummaryObserver.
+type MetricsSummaryObserver struct {
+	// AvgNoiseFloor24h Average over the requested window
+	AvgNoiseFloor24h *float64 `json:"avg_noise_floor_24h"`
+
+	// BatteryMv The latest battery reading.
+	BatteryMv         *int     `json:"battery_mv"`
+	CurrentNoiseFloor *float64 `json:"current_noise_floor"`
+
+	// Iata Absent when the observer has no airport code.
+	Iata *string `json:"iata,omitempty"`
+
+	// MaxNoiseFloor24h Maximum over the requested window
+	MaxNoiseFloor24h *float64 `json:"max_noise_floor_24h"`
+	ObserverId       string   `json:"observer_id"`
+
+	// ObserverName Null when the observer has no name.
+	ObserverName *string `json:"observer_name"`
+	SampleCount  int     `json:"sample_count"`
+
+	// Sparkline The noise floor of each sample in the window, oldest first; null where a sample did not report one.
+	Sparkline []*float64 `json:"sparkline"`
+}
+
+// MetricsSummaryResponse defines model for MetricsSummaryResponse.
+type MetricsSummaryResponse struct {
+	Observers []MetricsSummaryObserver `json:"observers"`
+}
+
 // MultiByteCapability defines model for MultiByteCapability.
 type MultiByteCapability struct {
 	// Evidence What the capability status rests on. Empty when the status is unknown.
@@ -1271,6 +1342,71 @@ type ObservationPacket struct {
 	Timestamp TimestampMillis `json:"timestamp"`
 }
 
+// Observer One observer and its latest status.
+type Observer struct {
+	BatteryMv *int `json:"battery_mv"`
+
+	// CanRelay Whether the firmware reported repeating on (true) or off (false). Absent when the observer never reported it.
+	CanRelay         *bool             `json:"can_relay,omitempty"`
+	ClientVersion    *string           `json:"client_version"`
+	ClockLastNaiveAt *TimestampSeconds `json:"clock_last_naive_at"`
+
+	// ClockNaive True when the observer reported a clock without a time zone in the last 24 hours. The three fields below read as zero or null otherwise.
+	ClockNaive        bool    `json:"clock_naive"`
+	ClockSkewCount24h int     `json:"clock_skew_count_24h"`
+	ClockSkewSeconds  *int    `json:"clock_skew_seconds"`
+	Firmware          *string `json:"firmware"`
+
+	// FirstSeen Null when the first sighting is not recorded.
+	FirstSeen *TimestampSeconds `json:"first_seen"`
+
+	// Iata Airport code of the observer's region.
+	Iata *string `json:"iata"`
+
+	// Id The observer's public key (hex)
+	Id           string            `json:"id"`
+	LastPacketAt *TimestampSeconds `json:"last_packet_at"`
+
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen TimestampSeconds `json:"last_seen"`
+
+	// Lat Position of the node with this key; null when it is not a known node or has none.
+	Lat   *float64 `json:"lat"`
+	Lon   *float64 `json:"lon"`
+	Model *string  `json:"model"`
+	Name  *string  `json:"name"`
+
+	// NodeRole Role of the node with this key; null when it is not a known node.
+	NodeRole    *NodeRole `json:"nodeRole"`
+	NoiseFloor  *float64  `json:"noise_floor"`
+	PacketCount int64     `json:"packet_count"`
+
+	// PacketsLastHour Observations in the last hour.
+	PacketsLastHour int `json:"packetsLastHour"`
+
+	// Radio Radio settings as reported: frequency, bandwidth, spreading factor, coding rate.
+	Radio      *string `json:"radio"`
+	UptimeSecs *int    `json:"uptime_secs"`
+}
+
+// ObserverAnalyticsResponse defines model for ObserverAnalyticsResponse.
+type ObserverAnalyticsResponse struct {
+	// NodesTimeline Distinct nodes seen per bucket, oldest first.
+	NodesTimeline []TimelineBucket `json:"nodesTimeline"`
+
+	// PacketTypes Observations per payload type, keyed by the type number.
+	PacketTypes map[types.PayloadType]int `json:"packetTypes"`
+
+	// RecentPackets The newest observations, newest first, at most 20.
+	RecentPackets []ObserverPacket `json:"recentPackets"`
+
+	// SnrDistribution Observations per two-unit SNR range, lowest first.
+	SnrDistribution []SnrBucket `json:"snrDistribution"`
+
+	// Timeline Observations per bucket, oldest first.
+	Timeline []TimelineBucket `json:"timeline"`
+}
+
 // ObserverCalibration defines model for ObserverCalibration.
 type ObserverCalibration struct {
 	ObserverID string `json:"observerID"`
@@ -1280,6 +1416,52 @@ type ObserverCalibration struct {
 
 	// Samples Multi-observer packets used to compute the offset.
 	Samples int `json:"samples"`
+}
+
+// ObserverListResponse defines model for ObserverListResponse.
+type ObserverListResponse struct {
+	Observers []Observer `json:"observers"`
+
+	// ServerTime UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	ServerTime TimestampSeconds `json:"server_time"`
+}
+
+// ObserverMetricsResponse defines model for ObserverMetricsResponse.
+type ObserverMetricsResponse struct {
+	Metrics []MetricsSample `json:"metrics"`
+
+	// ObserverId The requested key
+	ObserverId string `json:"observer_id"`
+
+	// ObserverName Null when the observer is not known.
+	ObserverName *string `json:"observer_name"`
+
+	// Reboots Timestamps of the reboot samples.
+	Reboots []TimestampSeconds `json:"reboots"`
+}
+
+// ObserverPacket One observation by the observer, with the transmission's fields. The transmission fields are null when the transmission is no longer in the store.
+type ObserverPacket struct {
+	DecodedJson  *string            `json:"decoded_json"`
+	Direction    *string            `json:"direction"`
+	Hash         *string            `json:"hash"`
+	Id           int                `json:"id"`
+	ObserverIata *string            `json:"observer_iata"`
+	ObserverId   *string            `json:"observer_id"`
+	ObserverName *string            `json:"observer_name"`
+	PathJson     *string            `json:"path_json"`
+	PayloadType  *types.PayloadType `json:"payload_type"`
+	RawHex       *string            `json:"raw_hex"`
+
+	// ResolvedPath Resolved public keys of the path, null where a hop did not resolve. Absent when none were resolved.
+	ResolvedPath *[]*string       `json:"resolved_path,omitempty"`
+	RouteType    *types.RouteType `json:"route_type"`
+	Rssi         *float64         `json:"rssi"`
+	Score        *float64         `json:"score"`
+	Snr          *float64         `json:"snr"`
+
+	// Timestamp UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	Timestamp TimestampMillis `json:"timestamp"`
 }
 
 // ObserverReach defines model for ObserverReach.
@@ -1704,6 +1886,14 @@ type SkewSample struct {
 // SkewSeverity Derived from the recent median skew. ok is under 5 minutes, warning under 1 hour, critical under 30 days, absurd under 365 days and no_clock beyond that (an uninitialized RTC). bimodal_clock marks a node whose recent adverts mix good and nonsense timestamps.
 type SkewSeverity = types.SkewSeverity
 
+// SnrBucket defines model for SnrBucket.
+type SnrBucket struct {
+	Count int `json:"count"`
+
+	// Range Two-unit SNR range such as -4 to -2.
+	Range string `json:"range"`
+}
+
 // SubpathBulkResponse defines model for SubpathBulkResponse.
 type SubpathBulkResponse struct {
 	// Results One list per requested group, in request order.
@@ -1773,6 +1963,14 @@ type SubpathSignal struct {
 
 	// Samples Packets with an SNR.
 	Samples int `json:"samples"`
+}
+
+// TimelineBucket defines model for TimelineBucket.
+type TimelineBucket struct {
+	Count int `json:"count"`
+
+	// Label The bucket start: 15:04 for hourly buckets, Mon 15:04 for four-hourly, Jan 02 for daily. UTC.
+	Label string `json:"label"`
 }
 
 // TimestampMillis UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
@@ -2167,6 +2365,36 @@ type GetNodeReachParams struct {
 	// Days Look-back window in days; clamped to 1..30. Non-numeric values use 7.
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
+
+// GetObserverMetricsSummaryParams defines parameters for GetObserverMetricsSummary.
+type GetObserverMetricsSummaryParams struct {
+	// Window How far back to summarize. A number of days such as 7d, or any Go duration such as 24h.
+	Window *string `form:"window,omitempty" json:"window,omitempty"`
+
+	// Region Keep only observers with this IATA code. Matched case-insensitively.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+}
+
+// GetObserverAnalyticsParams defines parameters for GetObserverAnalytics.
+type GetObserverAnalyticsParams struct {
+	// Days Look-back window in days. Values below 1 become 1 and values above 365 become 365; a missing or non-numeric value uses 7. One day or less is bucketed hourly, up to seven days every four hours and longer by day.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
+}
+
+// GetObserverMetricsParams defines parameters for GetObserverMetrics.
+type GetObserverMetricsParams struct {
+	// Resolution Sample spacing. 5m returns the samples as stored.
+	Resolution *GetObserverMetricsParamsResolution `form:"resolution,omitempty" json:"resolution,omitempty"`
+
+	// Since Start of the range, RFC 3339 or YYYY-MM-DD. Defaults to 24 hours ago.
+	Since *string `form:"since,omitempty" json:"since,omitempty"`
+
+	// Until End of the range, RFC 3339 or YYYY-MM-DD. Defaults to now.
+	Until *string `form:"until,omitempty" json:"until,omitempty"`
+}
+
+// GetObserverMetricsParamsResolution defines parameters for GetObserverMetrics.
+type GetObserverMetricsParamsResolution string
 
 // ListPacketsParams defines parameters for ListPackets.
 type ListPacketsParams struct {

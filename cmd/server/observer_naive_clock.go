@@ -3,7 +3,9 @@ package main
 import (
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // observerNaiveClockWindow is the rolling window after which a recorded
@@ -11,13 +13,13 @@ import (
 // the UI. Read-time decay (no background sweep) keeps it cheap.
 const observerNaiveClockWindow = 24 * time.Hour
 
-// applyObserverNaiveClock populates the four clock_* fields on ObserverResp
+// applyObserverNaiveClock populates the four clock_* fields on an api.Observer
 // from the underlying Observer row, applying read-time decay: any event
 // older than observerNaiveClockWindow is treated as absent so the chip and
 // banner clear automatically without a background sweep.
 //
 // Issue #1478.
-func applyObserverNaiveClock(resp *ObserverResponse, o *database.Observer, now time.Time) {
+func applyObserverNaiveClock(resp *api.Observer, o *database.Observer, now time.Time) {
 	if o.ClockLastNaiveAt == nil {
 		return
 	}
@@ -33,7 +35,6 @@ func applyObserverNaiveClock(resp *ObserverResponse, o *database.Observer, now t
 		v := int(*o.ClockSkewSeconds)
 		resp.ClockSkewSeconds = &v
 	}
-	resp.ClockSkewCount24h = int(o.ClockSkewCount24h)
-	ts := formatTS(*o.ClockLastNaiveAt)
-	resp.ClockLastNaiveAt = &ts
+	resp.ClockSkewCount24h = o.ClockSkewCount24h
+	resp.ClockLastNaiveAt = types.NewWireTimeSecondsPtr(o.ClockLastNaiveAt)
 }

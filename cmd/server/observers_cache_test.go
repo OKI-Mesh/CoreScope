@@ -7,6 +7,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestObserversCacheServesFromAtomicPointer asserts the /api/observers default
@@ -14,9 +17,9 @@ import (
 // not from SQL. Issue #1481 P0-3.
 func TestObserversCacheServesFromAtomicPointer(t *testing.T) {
 	s := &Server{}
-	resp := ObserverListResponse{
-		Observers:  []ObserverResponse{{ID: "abc", Name: sptr("test")}},
-		ServerTime: time.Now().UTC().Format(time.RFC3339),
+	resp := api.ObserverListResponse{
+		Observers:  []api.Observer{{Id: "abc", Name: sptr("test")}},
+		ServerTime: types.WireTimeSeconds{Time: time.Now().UTC()},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: resp, at: time.Now()})
 
@@ -57,9 +60,9 @@ func TestObserversCacheTTLBoundary(t *testing.T) {
 	}
 
 	// Handler integration: fresh entry → served from cache.
-	fresh := ObserverListResponse{
-		Observers:  []ObserverResponse{{ID: "fresh-sentinel"}},
-		ServerTime: time.Now().UTC().Format(time.RFC3339),
+	fresh := api.ObserverListResponse{
+		Observers:  []api.Observer{{Id: "fresh-sentinel"}},
+		ServerTime: types.WireTimeSeconds{Time: time.Now().UTC()},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: fresh, at: time.Now()})
 	req := httptest.NewRequest("GET", "/api/observers", nil)
@@ -73,9 +76,9 @@ func TestObserversCacheTTLBoundary(t *testing.T) {
 	// singleflight build path and (with nil DB) crash. We assert it
 	// did NOT short-circuit by checking the response is not the stale
 	// sentinel: either 500 or panic-recover. Use defer recover().
-	stale := ObserverListResponse{
-		Observers:  []ObserverResponse{{ID: "stale-sentinel"}},
-		ServerTime: time.Now().UTC().Format(time.RFC3339),
+	stale := api.ObserverListResponse{
+		Observers:  []api.Observer{{Id: "stale-sentinel"}},
+		ServerTime: types.WireTimeSeconds{Time: time.Now().UTC()},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: stale, at: time.Now().Add(-31 * time.Second)})
 	w2 := httptest.NewRecorder()
@@ -127,8 +130,8 @@ func TestObserversCacheSingleflightCollapsesStampede(t *testing.T) {
 // flight (atomic.Pointer payload immutability). #1483 follow-up.
 func TestObserversCacheConcurrentReadersDuringRecompute(t *testing.T) {
 	s := &Server{}
-	initial := ObserverListResponse{
-		Observers: []ObserverResponse{{ID: "v1"}},
+	initial := api.ObserverListResponse{
+		Observers: []api.Observer{{Id: "v1"}},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: initial, at: time.Now()})
 
@@ -149,7 +152,7 @@ func TestObserversCacheConcurrentReadersDuringRecompute(t *testing.T) {
 						continue
 					}
 					if len(e.resp.Observers) > 0 {
-						switch e.resp.Observers[0].ID {
+						switch e.resp.Observers[0].Id {
 						case "v1":
 							observedV1.Add(1)
 						case "v2":
@@ -162,8 +165,8 @@ func TestObserversCacheConcurrentReadersDuringRecompute(t *testing.T) {
 	}
 	time.Sleep(5 * time.Millisecond)
 	// Swap in v2 while readers are running.
-	updated := ObserverListResponse{
-		Observers: []ObserverResponse{{ID: "v2"}},
+	updated := api.ObserverListResponse{
+		Observers: []api.Observer{{Id: "v2"}},
 	}
 	s.observersCacheV2.ptr.Store(&observersCacheEntry{resp: updated, at: time.Now()})
 	time.Sleep(5 * time.Millisecond)

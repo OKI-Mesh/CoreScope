@@ -1171,10 +1171,10 @@ func TestComputeDeltas(t *testing.T) {
 		if len(reboots) != 1 {
 			t.Fatalf("expected 1 reboot, got %d", len(reboots))
 		}
-		if reboots[0] != "2026-04-05T00:05:00.000Z" {
-			t.Errorf("reboot timestamp = %s", reboots[0])
+		if got := types.FormatWireTimeSeconds(reboots[0].Time); got != "2026-04-05T00:05:00Z" {
+			t.Errorf("reboot timestamp = %s", got)
 		}
-		if !result[1].IsReboot {
+		if result[1].IsRebootSample == nil || !*result[1].IsRebootSample {
 			t.Error("second sample should be marked as reboot")
 		}
 		// Reboot sample should have nil deltas
@@ -1329,7 +1329,7 @@ func TestLastValuePreservesReboot(t *testing.T) {
 	if len(m) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(m))
 	}
-	if m[1].IsReboot {
+	if m[1].IsRebootSample != nil {
 		t.Error("second bucket should NOT be flagged as reboot with LAST-value aggregation")
 	}
 	if m[1].TxAirtimePct == nil {

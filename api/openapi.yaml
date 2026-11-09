@@ -19,6 +19,8 @@ tags:
     description: Network analytics and statistics
   - name: packets
     description: Packets, their observations and the live-poll timestamps
+  - name: observers
+    description: Observers (the stations that hear packets), their status and metrics
 paths:
   /api/nodes/{pubkey}/neighbors:
     get:
@@ -407,8 +409,162 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/observers:
+    get:
+      tags: [observers]
+      operationId: listObservers
+      summary: List observers
+      description: >-
+        Every observer that is not blacklisted, with its latest status, packet
+        count, radio details and, when the observer is also a known node, its
+        position and role. Query parameters are ignored. The response is served
+        from a 30 second snapshot.
+      responses:
+        "200":
+          description: Success
+          headers:
+            X-Cache-Age-Seconds:
+              description: Age of the snapshot in whole seconds. Present only when the response was served from the snapshot.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObserverListResponse'
+  /api/observers/{id}:
+    get:
+      tags: [observers]
+      operationId: getObserver
+      summary: Get one observer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Observer public key (hex). Matched case-insensitively.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Observer'
+        "404":
+          description: No such observer, or it is blacklisted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/observers/{id}/analytics:
+    get:
+      tags: [observers]
+      operationId: getObserverAnalytics
+      summary: Traffic seen by one observer
+      description: >-
+        Packet and node timelines, payload type counts, an SNR histogram and the
+        twenty newest observations, all from the in-memory packet store. An
+        observer the store has not heard returns empty collections.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Observer public key (hex), exactly as /api/observers lists it. Unlike the other observer routes the case matters.
+          schema: { type: string }
+        - name: days
+          in: query
+          required: false
+          description: >-
+            Look-back window in days. Values below 1 become 1 and values above
+            365 become 365; a missing or non-numeric value uses 7. One day or
+            less is bucketed hourly, up to seven days every four hours and
+            longer by day.
+          schema: { type: integer, default: 7 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObserverAnalyticsResponse'
+        "503":
+          description: The packet store is not available.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/observers/{id}/metrics:
+    get:
+      tags: [observers]
+      operationId: getObserverMetrics
+      summary: Noise floor, battery and airtime history of one observer
+      description: >-
+        Samples oldest first, with airtime and error rates computed from the
+        change in the observer's cumulative counters. A sample where a counter
+        went down marks a reboot and carries no rates. An unknown observer
+        returns empty lists and a null name.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Observer public key (hex). Matched case-insensitively.
+          schema: { type: string }
+        - name: resolution
+          in: query
+          required: false
+          description: Sample spacing. 5m returns the samples as stored.
+          schema: { type: string, enum: [5m, 1h, 1d], default: 5m }
+        - name: since
+          in: query
+          required: false
+          description: Start of the range, RFC 3339 or YYYY-MM-DD. Defaults to 24 hours ago.
+          schema: { type: string }
+        - name: until
+          in: query
+          required: false
+          description: End of the range, RFC 3339 or YYYY-MM-DD. Defaults to now.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObserverMetricsResponse'
+        "400":
+          description: Unknown resolution, or since or until is not a date.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/observers/metrics/summary:
+    get:
+      tags: [observers]
+      operationId: getObserverMetricsSummary
+      summary: Noise floor and battery summary for every observer
+      description: Observers with samples in the window, highest maximum noise floor first, observers without a noise floor last.
+      parameters:
+        - name: window
+          in: query
+          required: false
+          description: How far back to summarize. A number of days such as 7d, or any Go duration such as 24h.
+          schema: { type: string, default: 24h }
+        - name: region
+          in: query
+          required: false
+          description: Keep only observers with this IATA code. Matched case-insensitively.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSummaryResponse'
+        "400":
+          description: The window is not a duration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /api/observers/clock-skew:
     get:
+      tags: [observers]
       operationId: getObserverClockSkew
       summary: Clock offset of each observer, largest absolute offset first
       responses:
@@ -1656,6 +1812,220 @@ components:
         calibratedSamples: { type: integer }
         uncalibratedSamples: { type: integer }
 
+    Observer:
+      type: object
+      additionalProperties: false
+      description: One observer and its latest status.
+      required:
+        - id
+        - name
+        - iata
+        - last_seen
+        - first_seen
+        - packet_count
+        - model
+        - firmware
+        - client_version
+        - radio
+        - battery_mv
+        - uptime_secs
+        - noise_floor
+        - last_packet_at
+        - packetsLastHour
+        - lat
+        - lon
+        - nodeRole
+        - clock_naive
+        - clock_skew_seconds
+        - clock_skew_count_24h
+        - clock_last_naive_at
+      properties:
+        id: { type: string, description: "The observer's public key (hex), as stored." }
+        name: { type: [string, "null"] }
+        iata: { type: [string, "null"], description: Airport code of the observer's region. }
+        last_seen:
+          $ref: '#/components/schemas/TimestampSeconds'
+        first_seen:
+          description: Null when the first sighting is not recorded.
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
+        packet_count: { type: integer, format: int64 }
+        model: { type: [string, "null"] }
+        firmware: { type: [string, "null"] }
+        client_version: { type: [string, "null"] }
+        radio: { type: [string, "null"], description: "Radio settings as reported: frequency, bandwidth, spreading factor, coding rate." }
+        battery_mv: { type: [integer, "null"] }
+        uptime_secs: { type: [integer, "null"] }
+        noise_floor: { type: [number, "null"], format: double }
+        last_packet_at:
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
+        packetsLastHour: { type: integer, description: Observations in the last hour. }
+        lat: { type: [number, "null"], format: double, description: Position of the node with this key; null when it is not a known node or has none. }
+        lon: { type: [number, "null"], format: double }
+        nodeRole:
+          description: Role of the node with this key; null when it is not a known node.
+          oneOf:
+            - $ref: '#/components/schemas/NodeRole'
+            - type: "null"
+        clock_naive:
+          type: boolean
+          description: True when the observer reported a clock without a time zone in the last 24 hours. The three fields below read as zero or null otherwise.
+        clock_skew_seconds: { type: [integer, "null"] }
+        clock_skew_count_24h: { type: integer }
+        clock_last_naive_at:
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - type: "null"
+        can_relay:
+          type: boolean
+          description: Whether the firmware reported repeating on (true) or off (false). Absent when the observer never reported it.
+    ObserverListResponse:
+      type: object
+      additionalProperties: false
+      required: [observers, server_time]
+      properties:
+        observers:
+          type: array
+          items: { $ref: '#/components/schemas/Observer' }
+        server_time:
+          $ref: '#/components/schemas/TimestampSeconds'
+    TimelineBucket:
+      type: object
+      additionalProperties: false
+      required: [label, count]
+      properties:
+        label: { type: string, description: "The bucket start: 15:04 for hourly buckets, Mon 15:04 for four-hourly, Jan 02 for daily. UTC." }
+        count: { type: integer }
+    SnrBucket:
+      type: object
+      additionalProperties: false
+      required: [range, count]
+      properties:
+        range: { type: string, description: "Two-unit SNR range such as -4 to -2." }
+        count: { type: integer }
+    ObserverPacket:
+      type: object
+      additionalProperties: false
+      description: >-
+        One observation by the observer, with the transmission's fields. The
+        transmission fields are null when the transmission is no longer in the
+        store.
+      required: [id, timestamp, observer_id, observer_name, observer_iata, direction, snr, rssi, score, path_json, hash, raw_hex, payload_type, route_type, decoded_json]
+      properties:
+        id: { type: integer }
+        timestamp:
+          $ref: '#/components/schemas/TimestampMillis'
+        observer_id: { type: [string, "null"] }
+        observer_name: { type: [string, "null"] }
+        observer_iata: { type: [string, "null"] }
+        direction: { type: [string, "null"] }
+        snr: { type: [number, "null"], format: double }
+        rssi: { type: [number, "null"], format: double }
+        score: { type: [number, "null"], format: double }
+        path_json: { type: [string, "null"] }
+        resolved_path:
+          type: array
+          description: Resolved public keys of the path, null where a hop did not resolve. Absent when none were resolved.
+          items: { type: [string, "null"] }
+        hash: { type: [string, "null"] }
+        raw_hex: { type: [string, "null"] }
+        payload_type:
+          type: [integer, "null"]
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        route_type:
+          type: [integer, "null"]
+          x-go-type: types.RouteType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        decoded_json: { type: [string, "null"] }
+    ObserverAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required: [timeline, packetTypes, nodesTimeline, snrDistribution, recentPackets]
+      properties:
+        timeline:
+          type: array
+          description: Observations per bucket, oldest first.
+          items: { $ref: '#/components/schemas/TimelineBucket' }
+        packetTypes:
+          type: object
+          description: Observations per payload type, keyed by the type number.
+          additionalProperties: { type: integer }
+          x-go-type: map[types.PayloadType]int
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        nodesTimeline:
+          type: array
+          description: Distinct nodes seen per bucket, oldest first.
+          items: { $ref: '#/components/schemas/TimelineBucket' }
+        snrDistribution:
+          type: array
+          description: Observations per two-unit SNR range, lowest first.
+          items: { $ref: '#/components/schemas/SnrBucket' }
+        recentPackets:
+          type: array
+          description: The newest observations, newest first, at most 20.
+          items: { $ref: '#/components/schemas/ObserverPacket' }
+    MetricsSample:
+      type: object
+      additionalProperties: false
+      description: >-
+        One metrics sample. The rate fields are null for the first sample, after
+        a gap of more than two sample intervals, at a reboot, and when the
+        observer did not report the counters.
+      required: [timestamp, noise_floor, battery_mv, tx_airtime_pct, rx_airtime_pct, recv_error_rate]
+      properties:
+        timestamp:
+          $ref: '#/components/schemas/TimestampSeconds'
+        noise_floor: { type: [number, "null"], format: double }
+        battery_mv: { type: [integer, "null"] }
+        tx_airtime_pct: { type: [number, "null"], format: double, description: "Share of the interval spent transmitting, 0 to 100." }
+        rx_airtime_pct: { type: [number, "null"], format: double, description: "Share of the interval spent receiving, 0 to 100." }
+        recv_error_rate: { type: [number, "null"], format: double, description: Receive errors as a percentage of packets received plus errors. }
+        is_reboot_sample:
+          type: boolean
+          description: True when a cumulative counter went down. Absent otherwise.
+    ObserverMetricsResponse:
+      type: object
+      additionalProperties: false
+      required: [observer_id, observer_name, reboots, metrics]
+      properties:
+        observer_id: { type: string, description: "The requested key, lowercased." }
+        observer_name: { type: [string, "null"], description: Null when the observer is not known. }
+        reboots:
+          type: array
+          description: Timestamps of the reboot samples.
+          items: { $ref: '#/components/schemas/TimestampSeconds' }
+        metrics:
+          type: array
+          items: { $ref: '#/components/schemas/MetricsSample' }
+    MetricsSummaryObserver:
+      type: object
+      additionalProperties: false
+      required: [observer_id, observer_name, current_noise_floor, avg_noise_floor_24h, max_noise_floor_24h, battery_mv, sample_count, sparkline]
+      properties:
+        observer_id: { type: string }
+        observer_name: { type: [string, "null"], description: Null when the observer has no name. }
+        iata: { type: string, description: Absent when the observer has no airport code. }
+        current_noise_floor: { type: [number, "null"], format: double }
+        avg_noise_floor_24h: { type: [number, "null"], format: double, description: "Average over the requested window, whatever its length." }
+        max_noise_floor_24h: { type: [number, "null"], format: double, description: "Maximum over the requested window, whatever its length." }
+        battery_mv: { type: [integer, "null"], description: The latest battery reading. }
+        sample_count: { type: integer }
+        sparkline:
+          type: array
+          description: The noise floor of each sample in the window, oldest first; null where a sample did not report one.
+          items: { type: [number, "null"], format: double }
+    MetricsSummaryResponse:
+      type: object
+      additionalProperties: false
+      required: [observers]
+      properties:
+        observers:
+          type: array
+          items: { $ref: '#/components/schemas/MetricsSummaryObserver' }
     ObserverCalibration:
       type: object
       additionalProperties: false

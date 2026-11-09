@@ -3,40 +3,36 @@ package main
 import (
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// Observer represents a row from the observers table.
-type ObserverResponse struct {
-	ID              string          `json:"id"`
-	Name            *string         `json:"name"`
-	IATA            *string         `json:"iata"`
-	LastSeen        *time.Time      `json:"last_seen"`
-	FirstSeen       *time.Time      `json:"first_seen"`
-	PacketCount     int             `json:"packet_count"`
-	Model           *string         `json:"model"`
-	Firmware        *string         `json:"firmware"`
-	ClientVersion   *string         `json:"client_version"`
-	Radio           *string         `json:"radio"`
-	BatteryMv       *int            `json:"battery_mv"`
-	UptimeSecs      *int            `json:"uptime_secs"`
-	NoiseFloor      *float64        `json:"noise_floor"`
-	LastPacketAt    *time.Time      `json:"last_packet_at"`
-	PacketsLastHour int             `json:"packetsLastHour"`
-	Lat             *float64        `json:"lat"`
-	Lon             *float64        `json:"lon"`
-	NodeRole        *types.NodeRole `json:"nodeRole"`
-	// Issue #1478: surface naive-clock observers to the UI.
-	// `clock_naive` is derived from clock_last_naive_at being within the
-	// last 24h; once decayed, all three skew fields read as zero/null so the
-	// chip and banner clear automatically.
-	ClockNaive        bool    `json:"clock_naive"`
-	ClockSkewSeconds  *int    `json:"clock_skew_seconds"`
-	ClockSkewCount24h int     `json:"clock_skew_count_24h"`
-	ClockLastNaiveAt  *string `json:"clock_last_naive_at"`
-	// Issue #1290: firmware 1.16 `repeat` flag — true=repeater,
-	// false=listener-only, nil=unknown (legacy observer never sent the
-	// field). UI tri-state badge renders nothing when nil so legacy
-	// rows don't masquerade as confirmed repeaters (PR #1624 MAJOR-2).
-	CanRelay *bool `json:"can_relay,omitempty"`
+// newObserver builds the wire form of an observer. Its position and role come
+// from the node with the same key, so the caller fills Lat, Lon and NodeRole
+// when there is one.
+func newObserver(o *database.Observer, packetsLastHour int, now time.Time) api.Observer {
+	obs := api.Observer{
+		Id:              o.Pubkey,
+		Name:            o.Name,
+		Iata:            o.IATA,
+		LastSeen:        types.WireTimeSeconds{Time: o.LastSeen},
+		PacketCount:     o.PacketCount,
+		Model:           o.Model,
+		Firmware:        o.Firmware,
+		ClientVersion:   o.ClientVersion,
+		Radio:           o.Radio,
+		BatteryMv:       o.BatteryMv,
+		UptimeSecs:      o.UptimeSecs,
+		NoiseFloor:      o.NoiseFloor,
+		LastPacketAt:    types.NewWireTimeSecondsPtr(o.LastPacketAt),
+		PacketsLastHour: packetsLastHour,
+		CanRelay:        relayReport(o.CanRelay, o.CanRelaySeen),
+	}
+	// A zero first_seen is an observer whose first sighting was never recorded.
+	if !o.FirstSeen.IsZero() {
+		obs.FirstSeen = &types.WireTimeSeconds{Time: o.FirstSeen}
+	}
+	applyObserverNaiveClock(&obs, o, now)
+	return obs
 }

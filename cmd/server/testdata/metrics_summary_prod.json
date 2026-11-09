@@ -1,0 +1,76 @@
+{
+  "observers": [
+    {
+      "observer_id": "856D860D52ACF6DEA21011683811C55A8205CDC3CADD1DD083F5D6F9B8998B67",
+      "observer_name": "Observer 02",
+      "iata": "IND",
+      "current_noise_floor": -103,
+      "avg_noise_floor_24h": -100.61177644710578,
+      "max_noise_floor_24h": 0,
+      "battery_mv": 4069,
+      "sample_count": 2004,
+      "sparkline": [
+        -97,
+        -102,
+        -102,
+        -102,
+        -101,
+        -102,
+        -111,
+        -101,
+        -102,
+        -102,
+        -102,
+        -102
+      ]
+    },
+    {
+      "observer_id": "7ACDA7E5B0590CE3B81A9F9FAF6E9AC1B3CC7089A39C99170BD75FF103DEBBEC",
+      "observer_name": "Observer 03",
+      "iata": "CVG",
+      "current_noise_floor": -114,
+      "avg_noise_floor_24h": -115.24539571926331,
+      "max_noise_floor_24h": 0,
+      "battery_mv": 4157,
+      "sample_count": 2009,
+      "sparkline": [
+        -116,
+        -117,
+        -116,
+        -115,
+        -115,
+        -116,
+        -116,
+        -116,
+        -116,
+        -117,
+        -117,
+        -116
+      ]
+    },
+    {
+      "observer_id": "A98E7577FEA32648A5003197055B815FB2255D0B22369BB1CB22CBF61B36B1CB",
+      "observer_name": "Observer 04",
+      "iata": "LAF",
+      "current_noise_floor": -120,
+      "avg_noise_floor_24h": -116.51577366049074,
+      "max_noise_floor_24h": 0,
+      "battery_mv": 0,
+      "sample_count": 1997,
+      "sparkline": [
+        -117,
+        -108,
+        -114,
+        -117,
+        -114,
+        -118,
+        -117,
+        -117,
+        -116,
+        -118,
+        -120,
+        -120
+      ]
+    }
+  ]
+}

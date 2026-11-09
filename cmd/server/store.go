@@ -3292,40 +3292,40 @@ func (s *PacketStore) observationDetails(ctx context.Context, obsList []*StoreOb
 // from this change and is NOT established here; the one known in-place mutation
 // (hash-migrate rewriting tx.Hash) is a distinct field-level race tracked in
 // #142, not closed by this method.
-func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx, rp []*string) map[string]interface{} {
-	m := map[string]interface{}{
-		"id":            obs.ID,
-		"timestamp":     formatTS(obs.Timestamp),
-		"observer_id":   strOrNil(obs.ObserverID),
-		"observer_name": strOrNil(obs.ObserverName),
-		"observer_iata": strOrNil(obs.ObserverIATA),
-		"direction":     strOrNil(obs.Direction),
-		"snr":           floatPtrOrNil(obs.SNR),
-		"rssi":          floatPtrOrNil(obs.RSSI),
-		"score":         floatPtrOrNil(obs.Score),
-		"path_json":     strOrNil(obs.PathJSON),
+func (s *PacketStore) enrichObsWithTx(obs *StoreObs, tx *StoreTx, rp []*string) api.ObserverPacket {
+	p := api.ObserverPacket{
+		Id:           obs.ID,
+		Timestamp:    api.TimestampMillis{Time: obs.Timestamp},
+		ObserverId:   optString(obs.ObserverID),
+		ObserverName: optString(obs.ObserverName),
+		ObserverIata: optString(obs.ObserverIATA),
+		Direction:    optString(obs.Direction),
+		Snr:          obs.SNR,
+		Rssi:         obs.RSSI,
+		Score:        obs.Score,
+		PathJson:     optString(obs.PathJSON),
 	}
 	if rp != nil {
-		m["resolved_path"] = rp
+		p.ResolvedPath = &rp
 	}
 	if tx != nil {
-		m["hash"] = strOrNil(tx.Hash)
+		p.Hash = optString(tx.Hash)
 		// raw_hex comes from the transmission (#881). obs.RawHex is no longer
 		// retained when loading/ingesting the store: it duplicated this exact
 		// value (same content hash => same frame) and at ~10.6 observations/tx
 		// wasted ~98MB on a live ~1.7M-observation store. The obs.RawHex branch
 		// stays for callers that build a StoreObs from a response map.
 		if obs.RawHex != "" {
-			m["raw_hex"] = obs.RawHex
+			p.RawHex = optString(obs.RawHex)
 		} else {
-			m["raw_hex"] = strOrNil(tx.RawHex)
+			p.RawHex = optString(tx.RawHex)
 		}
-		m["payload_type"] = tx.PayloadType
-		m["route_type"] = tx.RouteType
-		m["decoded_json"] = strOrNil(tx.DecodedJSON)
+		p.PayloadType = tx.PayloadType
+		p.RouteType = tx.RouteType
+		p.DecodedJson = optString(tx.DecodedJSON)
 	}
 
-	return m
+	return p
 }
 
 // --- Conversion helpers ---
