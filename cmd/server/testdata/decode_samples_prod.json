@@ -1,0 +1,425 @@
+[
+ {
+  "bucket": "ACK",
+  "hex": "0e40b9d26944",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 3,
+     "payloadTypeName": "ACK",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 0,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "ACK",
+     "extraHash": "4469d2b9",
+     "ackLen": 4
+    }
+   }
+  }
+ },
+ {
+  "bucket": "ADVERT",
+  "hex": "1146DBC682C33F21AC014172E56E8D2C25DF11A0A18EDDDB158339FA713B939B7F8C",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 4,
+     "payloadTypeName": "ADVERT",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 2,
+     "hashCount": 6,
+     "hops": [
+      "DBC6",
+      "82C3",
+      "3F21",
+      "AC01",
+      "4172",
+      "E56E"
+     ]
+    },
+    "payload": {
+     "type": "ADVERT",
+     "raw": "8d2c25df11a0a18edddb158339fa713b939b7f8c",
+     "error": "too short for advert"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "ANON_REQ",
+  "hex": "1E0092FB77E244BB5111F26CC802CB0E",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 7,
+     "payloadTypeName": "ANON_REQ",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 0,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "ANON_REQ",
+     "raw": "92fb77e244bb5111f26cc802cb0e",
+     "error": "too short"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "CHAN",
+  "hex": "1540D99E4008249B9CF4861EBD4CE19F4AB7241383",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 5,
+     "payloadTypeName": "GRP_TXT",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 2,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "GRP_TXT",
+     "mac": "9e40",
+     "encryptedData": "08249b9cf4861ebd4ce19f4ab7241383",
+     "channelHash": 217
+    }
+   }
+  }
+ },
+ {
+  "bucket": "CONTROL",
+  "hex": "2e0081ff0beddb5f",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 11,
+     "payloadTypeName": "CONTROL",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 0,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "CONTROL",
+     "raw": "81ff0beddb5f",
+     "ctrlFlags": "81",
+     "ctrlZeroHop": true,
+     "ctrlLength": 6
+    }
+   }
+  }
+ },
+ {
+  "bucket": "GRP_DATA",
+  "hex": "190714C45C204D91777E72B14BE1E5AA5CE022E66DE67DE0B7",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 6,
+     "payloadTypeName": "GRP_DATA",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 1,
+     "hashCount": 7,
+     "hops": [
+      "14",
+      "C4",
+      "5C",
+      "20",
+      "4D",
+      "91",
+      "77"
+     ]
+    },
+    "payload": {
+     "type": "GRP_DATA",
+     "mac": "72b1",
+     "encryptedData": "4be1e5aa5ce022e66de67de0b7",
+     "channelHash": 126,
+     "channelHashHex": "7E"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "GRP_TXT",
+  "hex": "15453DA8BA3F9649EC8BF3C3453D46",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 5,
+     "payloadTypeName": "GRP_TXT",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 2,
+     "hashCount": 5,
+     "hops": [
+      "3DA8",
+      "BA3F",
+      "9649",
+      "EC8B",
+      "F3C3"
+     ]
+    },
+    "payload": {
+     "type": "GRP_TXT",
+     "mac": "3d46",
+     "channelHash": 69
+    }
+   }
+  }
+ },
+ {
+  "bucket": "MULTIPART",
+  "hex": "2A4013FDA484A7",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 10,
+     "payloadTypeName": "MULTIPART",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 0,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "MULTIPART",
+     "remaining": 1,
+     "innerType": 3,
+     "innerTypeName": "ACK",
+     "innerAckCrc": "a784a4fd",
+     "innerAckLen": 4
+    }
+   }
+  }
+ },
+ {
+  "bucket": "PATH",
+  "hex": "2140710A7C36FB2D267D",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 8,
+     "payloadTypeName": "PATH",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 2,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "PATH",
+     "destHash": "71",
+     "srcHash": "0a",
+     "mac": "7c36",
+     "pathData": "fb2d267d"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "RAW_CUSTOM",
+  "hex": "3d436a3dc641c8f56a184b899a73686a77fb99b5fe19fdb58f2cd77d",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 15,
+     "payloadTypeName": "RAW_CUSTOM",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 2,
+     "hashCount": 3,
+     "hops": [
+      "6A3D",
+      "C641",
+      "C8F5"
+     ]
+    },
+    "payload": {
+     "type": "RAW_CUSTOM",
+     "raw": "6a184b899a73686a77fb99b5fe19fdb58f2cd77d",
+     "rawLength": 20,
+     "firstByteTag": "6A"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "REQ",
+  "hex": "0140E26B254D7649A58CB5197B",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 1,
+     "routeTypeName": "FLOOD",
+     "payloadType": 0,
+     "payloadTypeName": "REQ",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 2,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "REQ",
+     "destHash": "e2",
+     "srcHash": "6b",
+     "mac": "254d",
+     "encryptedData": "7649a58cb5197b"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "RESPONSE",
+  "hex": "06406dedb8057f7c40020adfd56f2d263631c3b244",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 1,
+     "payloadTypeName": "RESPONSE",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 0,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "RESPONSE",
+     "destHash": "6d",
+     "srcHash": "ed",
+     "mac": "b805",
+     "encryptedData": "7f7c40020adfd56f2d263631c3b244"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "TRACE",
+  "hex": "26009e3a763d0000000000d2",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 9,
+     "payloadTypeName": "TRACE",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 1,
+     "hashCount": 1,
+     "hops": [
+      "D2"
+     ],
+     "hopsCompleted": 0
+    },
+    "payload": {
+     "type": "TRACE",
+     "pathData": "d2",
+     "tag": 1031158430,
+     "traceFlags": 0
+    }
+   }
+  }
+ },
+ {
+  "bucket": "TXT_MSG",
+  "hex": "0a400f84277eaeeeb357c55347aae35442c80ac84fc9",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 2,
+     "payloadTypeName": "TXT_MSG",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 0,
+     "hashCount": 0,
+     "hops": []
+    },
+    "payload": {
+     "type": "TXT_MSG",
+     "destHash": "0f",
+     "srcHash": "84",
+     "mac": "277e",
+     "encryptedData": "aeeeb357c55347aae35442c80ac84fc9"
+    }
+   }
+  }
+ },
+ {
+  "bucket": "UNKNOWN",
+  "hex": "3A022077EAEE8F1A5EE49A69CCE83ECC514F6A9BDC3AA4A4",
+  "response": {
+   "decoded": {
+    "header": {
+     "routeType": 2,
+     "routeTypeName": "DIRECT",
+     "payloadType": 14,
+     "payloadTypeName": "UNKNOWN",
+     "payloadVersion": 0
+    },
+    "path": {
+     "hashSize": 1,
+     "hashCount": 2,
+     "hops": [
+      "20",
+      "77"
+     ]
+    },
+    "payload": {
+     "type": "UNKNOWN",
+     "raw": "eaee8f1a5ee49a69cce83ecc514f6a9bdc3aa4a4"
+    }
+   }
+  }
+ }
+]

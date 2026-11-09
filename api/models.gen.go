@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/oapi-codegen/runtime"
 )
@@ -400,6 +401,29 @@ type AreaSummary struct {
 // AttributionMethod observer: multi-byte nodes are attributed to the observers that heard them. repeater: to the repeater's home region, used whenever a region filter is given.
 type AttributionMethod string
 
+// AudioLabBucketsResponse defines model for AudioLabBucketsResponse.
+type AudioLabBucketsResponse struct {
+	// Buckets Keyed by payload type name.
+	Buckets map[string][]AudioLabPacket `json:"buckets"`
+}
+
+// AudioLabPacket defines model for AudioLabPacket.
+type AudioLabPacket struct {
+	// DecodedJson The decoded payload as a JSON string.
+	DecodedJson      string `json:"decoded_json"`
+	Hash             string `json:"hash"`
+	ObservationCount int    `json:"observation_count"`
+	ObserverId       string `json:"observer_id"`
+
+	// PathJson The hop list as a JSON string.
+	PathJson    string            `json:"path_json"`
+	PayloadType types.PayloadType `json:"payload_type"`
+	RawHex      string            `json:"raw_hex"`
+
+	// Timestamp UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Timestamp TimestampSeconds `json:"timestamp"`
+}
+
 // BadSample defines model for BadSample.
 type BadSample struct {
 	// AdvertTS The offending advert Unix timestamp.
@@ -680,6 +704,76 @@ type ClientRoles struct {
 // CollisionClass local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
 type CollisionClass string
 
+// CoverageFeature defines model for CoverageFeature.
+type CoverageFeature struct {
+	Geometry   CoveragePolygon    `json:"geometry"`
+	Properties CoverageProperties `json:"properties"`
+
+	// Type Always Feature.
+	Type string `json:"type"`
+}
+
+// CoverageFeatureCollection GeoJSON FeatureCollection with three foreign members.
+type CoverageFeatureCollection struct {
+	Features []CoverageFeature `json:"features"`
+
+	// MobileClients Per-node route only; absent when zero. Distinct clients that heard the node.
+	MobileClients *int `json:"mobile_clients,omitempty"`
+
+	// MobileReceptions Per-node route only; absent when zero. All mobile receptions of the node.
+	MobileReceptions *int `json:"mobile_receptions,omitempty"`
+
+	// Truncated Present only when true. The cell list was capped at 5000.
+	Truncated *bool `json:"truncated,omitempty"`
+
+	// Type Always FeatureCollection.
+	Type string `json:"type"`
+}
+
+// CoverageNode One directly-heard node within a cell, with its latest SNR.
+type CoverageNode struct {
+	Count int `json:"count"`
+
+	// Name Present only when the key resolved to exactly one known node.
+	Name *string `json:"name,omitempty"`
+
+	// Prefix The heard key: a 2 or 3 byte prefix or a full pubkey.
+	Prefix string `json:"prefix"`
+
+	// Snr SNR of the node's most recent reception in the cell. Null when heard without a signal metric.
+	Snr *float64 `json:"snr"`
+}
+
+// CoveragePolygon defines model for CoveragePolygon.
+type CoveragePolygon struct {
+	// Coordinates One ring.
+	Coordinates []CoverageRing `json:"coordinates"`
+
+	// Type Always Polygon.
+	Type string `json:"type"`
+}
+
+// CoverageProperties defines model for CoverageProperties.
+type CoverageProperties struct {
+	BestSnr *float64 `json:"best_snr"`
+	Cell    string   `json:"cell"`
+
+	// Count Receptions in the cell.
+	Count int `json:"count"`
+
+	// HasSig False when no reception in the cell carried a signal metric.
+	HasSig bool `json:"has_sig"`
+
+	// Nodes Per-node breakdown, strongest latest SNR first. At most 25.
+	Nodes []CoverageNode `json:"nodes"`
+
+	// NodesTruncated Present only when true.
+	NodesTruncated *bool `json:"nodes_truncated,omitempty"`
+}
+
+// CoverageRing A closed GeoJSON linear ring.
+type CoverageRing = []GeoPosition
+
 // CustomizerClientConfig defines model for CustomizerClientConfig.
 type CustomizerClientConfig struct {
 	// DisabledTabs Customizer tabs hidden from end users. Never null.
@@ -694,6 +788,38 @@ type DbStats struct {
 	Rows        TableRowCounts   `json:"rows"`
 	WalSizeMB   float64          `json:"walSizeMB"`
 }
+
+// DecodeRequest defines model for DecodeRequest.
+type DecodeRequest struct {
+	// Hex The packet as hex. Surrounding whitespace is ignored.
+	Hex string `json:"hex"`
+}
+
+// DecodeResponse defines model for DecodeResponse.
+type DecodeResponse struct {
+	Decoded DecodedPacket `json:"decoded"`
+}
+
+// DecodedAdvertFlags defines model for DecodedAdvertFlags.
+type DecodedAdvertFlags = decoder.AdvertFlags
+
+// DecodedHeader defines model for DecodedHeader.
+type DecodedHeader = decoder.Header
+
+// DecodedPacket defines model for DecodedPacket.
+type DecodedPacket struct {
+	Header DecodedHeader `json:"header"`
+	Path   DecodedPath   `json:"path"`
+
+	// Payload One flat shape for every payload type. type is always present; each other field appears only for the types that carry it and only when it was decoded. Zero numbers and empty strings are left out.
+	Payload DecodedPayload `json:"payload"`
+}
+
+// DecodedPath defines model for DecodedPath.
+type DecodedPath = decoder.Path
+
+// DecodedPayload One flat shape for every payload type. type is always present; each other field appears only for the types that carry it and only when it was decoded. Zero numbers and empty strings are left out.
+type DecodedPayload = decoder.Payload
 
 // DirectObserverStats defines model for DirectObserverStats.
 type DirectObserverStats struct {
@@ -860,6 +986,9 @@ type GeoFilterResponse struct {
 	// WriteEnabled Sent by GET only.
 	WriteEnabled *bool `json:"writeEnabled,omitempty"`
 }
+
+// GeoPosition A GeoJSON position, [longitude, latitude].
+type GeoPosition = []float64
 
 // GoRuntimeStats defines model for GoRuntimeStats.
 type GoRuntimeStats struct {
@@ -1304,6 +1433,18 @@ type HourlyCount struct {
 
 	// Hour UTC hour bucket, 2026-11-05T15.
 	Hour string `json:"hour"`
+}
+
+// IataCoord defines model for IataCoord.
+type IataCoord struct {
+	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon"`
+}
+
+// IataCoordsResponse defines model for IataCoordsResponse.
+type IataCoordsResponse struct {
+	// Coords Keyed by upper-case IATA code.
+	Coords map[string]IataCoord `json:"coords"`
 }
 
 // IndexLoadingResponse defines model for IndexLoadingResponse.
@@ -2109,12 +2250,106 @@ type PacketStoreIndexes struct {
 	ByObserver       int `json:"byObserver"`
 }
 
+// PathCandidate defines model for PathCandidate.
+type PathCandidate struct {
+	Evidence PathEvidence `json:"evidence"`
+	Names    []string     `json:"names"`
+
+	// Path Public keys, one per prefix.
+	Path []string `json:"path"`
+
+	// Score Geometric mean of the hop scores, rounded to 3 decimals.
+	Score float64 `json:"score"`
+
+	// Speculative True when the score is under 0.7 or any hop is untrusted.
+	Speculative bool `json:"speculative"`
+}
+
 // PathCount defines model for PathCount.
 type PathCount struct {
 	Count int `json:"count"`
 
 	// Path Node names joined by arrows; unresolved hops show as hex.
 	Path string `json:"path"`
+}
+
+// PathEvidence defines model for PathEvidence.
+type PathEvidence struct {
+	PerHop []PathHopEvidence `json:"perHop"`
+}
+
+// PathHopAlternative defines model for PathHopAlternative.
+type PathHopAlternative struct {
+	Name      string  `json:"name"`
+	PublicKey string  `json:"publicKey"`
+	Score     float64 `json:"score"`
+}
+
+// PathHopEvidence defines model for PathHopEvidence.
+type PathHopEvidence struct {
+	// Alternatives Up to 5 other nodes that relay traffic and share the prefix, best first. Absent when there are none.
+	Alternatives         []PathHopAlternative `json:"alternatives,omitempty"`
+	CandidatesConsidered int                  `json:"candidatesConsidered"`
+
+	// Chosen Public key picked for this hop.
+	Chosen     string  `json:"chosen"`
+	EdgeWeight float64 `json:"edgeWeight"`
+	Prefix     string  `json:"prefix"`
+
+	// Trusted Whether the prefix is long enough to be trusted under the configured path-trust threshold.
+	Trusted bool `json:"trusted"`
+}
+
+// PathInspectColdStart defines model for PathInspectColdStart.
+type PathInspectColdStart struct {
+	Retry bool `json:"retry"`
+}
+
+// PathInspectContext Only part of the cache key today; it does not change the result.
+type PathInspectContext struct {
+	ObserverId *string `json:"observerId,omitempty"`
+	Since      *string `json:"since,omitempty"`
+	Until      *string `json:"until,omitempty"`
+}
+
+// PathInspectInput defines model for PathInspectInput.
+type PathInspectInput struct {
+	Hops int `json:"hops"`
+
+	// Prefixes The normalised prefixes (lower case, trimmed).
+	Prefixes []string `json:"prefixes"`
+}
+
+// PathInspectRequest defines model for PathInspectRequest.
+type PathInspectRequest struct {
+	// Context Only part of the cache key today; it does not change the result.
+	Context *PathInspectContext `json:"context,omitempty"`
+
+	// Limit How many candidates to return. Defaults to 10 when missing or not positive; capped at 50.
+	Limit *int `json:"limit,omitempty"`
+
+	// Prefixes Hop prefixes as hex, one to three bytes each, all the same length. Case and surrounding whitespace are ignored.
+	Prefixes []string `json:"prefixes"`
+}
+
+// PathInspectResponse defines model for PathInspectResponse.
+type PathInspectResponse struct {
+	Candidates []PathCandidate  `json:"candidates"`
+	Input      PathInspectInput `json:"input"`
+
+	// Stale Present and true when the answer used a stale neighbor graph while a rebuild runs. Such answers are not cached.
+	Stale bool             `json:"stale,omitempty"`
+	Stats PathInspectStats `json:"stats"`
+}
+
+// PathInspectStats defines model for PathInspectStats.
+type PathInspectStats struct {
+	BeamWidth int   `json:"beamWidth"`
+	ElapsedMs int64 `json:"elapsedMs"`
+
+	// ExpansionsRun Prefix count times beam width, not a measured count.
+	ExpansionsRun          int `json:"expansionsRun"`
+	MinHashBytesForMapping int `json:"minHashBytesForMapping"`
 }
 
 // PathTrustConfig defines model for PathTrustConfig.
@@ -2519,14 +2754,150 @@ type RoleStyle struct {
 	Color *string `json:"color,omitempty"`
 }
 
+// RxLeaderboardObserver defines model for RxLeaderboardObserver.
+type RxLeaderboardObserver struct {
+	// Cells Distinct fixed-resolution hex cells covered.
+	Cells int `json:"cells"`
+
+	// Name Empty when the observer is unnamed, blacklisted or hidden.
+	Name string `json:"name"`
+
+	// Nodes Distinct nodes heard.
+	Nodes      int    `json:"nodes"`
+	Pubkey     string `json:"pubkey"`
+	Receptions int    `json:"receptions"`
+
+	// Score Frontier-weighted coverage score.
+	Score float64 `json:"score"`
+}
+
+// RxLeaderboardResponse defines model for RxLeaderboardResponse.
+type RxLeaderboardResponse struct {
+	// Days The clamped window.
+	Days      int                     `json:"days"`
+	Observers []RxLeaderboardObserver `json:"observers"`
+}
+
 // ScatterPoint defines model for ScatterPoint.
 type ScatterPoint struct {
 	Rssi float64 `json:"rssi"`
 	Snr  float64 `json:"snr"`
 }
 
+// ScopeAdvertRoleCount Flood adverts sent by nodes of one role, split by scope state. Role is unknown when the sender cannot be identified.
+type ScopeAdvertRoleCount struct {
+	Named        int    `json:"named"`
+	Role         string `json:"role"`
+	UnknownScope int    `json:"unknownScope"`
+	Unscoped     int    `json:"unscoped"`
+}
+
+// ScopeAuditResponse defines model for ScopeAuditResponse.
+type ScopeAuditResponse struct {
+	Repeaters []ScopeAuditRow `json:"repeaters"`
+
+	// Since UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Since  TimestampSeconds `json:"since"`
+	Window string           `json:"window"`
+}
+
+// ScopeAuditRow defines model for ScopeAuditRow.
+type ScopeAuditRow struct {
+	// AmbiguousHops Forwarder hops whose prefix also matches another declared repeater. A caveat, not a finding: any notObserved entry may be explained by a colliding neighbour.
+	AmbiguousHops int64 `json:"ambiguousHops"`
+
+	// ConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
+	ConfigState ScopeConfigState `json:"configState"`
+
+	// DeclaredAt UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	DeclaredAt TimestampSeconds `json:"declaredAt"`
+
+	// DeclaredRegions Named regions the repeater declares, without a leading
+	DeclaredRegions []string `json:"declaredRegions"`
+
+	// DeclaredWildcard The raw declared list contains *, meaning plain unscoped floods are forwarded.
+	DeclaredWildcard bool `json:"declaredWildcard"`
+
+	// Name Null when this instance holds no nodes row for the repeater.
+	Name *string `json:"name"`
+
+	// NotObserved Declared regions with no matched forwarding in the window and no corroborating evidence.
+	NotObserved []string `json:"notObserved"`
+
+	// ObservedUnmatchedPackets Packets forwarded under a transport scope that matched no region key this instance holds. A caveat: a notObserved entry may name a region this instance cannot name.
+	ObservedUnmatchedPackets int64 `json:"observedUnmatchedPackets"`
+
+	// ObservedUnmatchedSampled How many of observedUnmatchedPackets verification could look at. The difference is an upper bound on unexplained traffic.
+	ObservedUnmatchedSampled int64 `json:"observedUnmatchedSampled"`
+
+	// ObservedUnscopedPackets Plain-flood packets the repeater was seen forwarding.
+	ObservedUnscopedPackets int64  `json:"observedUnscopedPackets"`
+	PublicKey               string `json:"publicKey"`
+
+	// RegionEvidence Declared region to the number of the repeater's own unmatched packets that derive to it. Empty object when none. A region with enough evidence is dropped from notObserved, so this does not decide the row state; it says how a region was established, and why one with a single hit stayed in notObserved.
+	RegionEvidence map[string]int `json:"regionEvidence"`
+	Role           *NodeRole      `json:"role"`
+
+	// Truncated The declared list may have had entries dropped.
+	Truncated bool `json:"truncated"`
+
+	// UndeclaredObserved Scopes the repeater was seen forwarding that its declared list omits.
+	UndeclaredObserved []ScopeObservation `json:"undeclaredObserved"`
+
+	// WildcardContradiction Seen forwarding unscoped floods although its declared list omits *.
+	WildcardContradiction bool `json:"wildcardContradiction"`
+}
+
 // ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
 type ScopeConfigState string
+
+// ScopeObservation One region scope a repeater was observed forwarding within the window.
+type ScopeObservation struct {
+	// FirstSeen UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	FirstSeen TimestampMillis `json:"firstSeen"`
+
+	// LastSeen UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
+	LastSeen TimestampMillis `json:"lastSeen"`
+	Packets  int64           `json:"packets"`
+
+	// Scope Matched region name without a leading #.
+	Scope string `json:"scope"`
+}
+
+// ScopeRegionCount defines model for ScopeRegionCount.
+type ScopeRegionCount struct {
+	Count int    `json:"count"`
+	Name  string `json:"name"`
+}
+
+// ScopeStatsResponse defines model for ScopeStatsResponse.
+type ScopeStatsResponse struct {
+	AdvertsByRole []ScopeAdvertRoleCount `json:"advertsByRole"`
+	ByRegion      []ScopeRegionCount     `json:"byRegion"`
+	Summary       ScopeStatsSummary      `json:"summary"`
+	TimeSeries    []ScopeTimePoint       `json:"timeSeries"`
+	Window        string                 `json:"window"`
+}
+
+// ScopeStatsSummary defines model for ScopeStatsSummary.
+type ScopeStatsSummary struct {
+	// Scoped Transport packets whose scope matched a region this instance holds.
+	Scoped         int `json:"scoped"`
+	TransportTotal int `json:"transportTotal"`
+
+	// UnknownScope Transport packets whose scope matched no region this instance holds.
+	UnknownScope int `json:"unknownScope"`
+	Unscoped     int `json:"unscoped"`
+}
+
+// ScopeTimePoint defines model for ScopeTimePoint.
+type ScopeTimePoint struct {
+	Scoped int `json:"scoped"`
+
+	// T UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	T        TimestampSeconds `json:"t"`
+	Unscoped int              `json:"unscoped"`
+}
 
 // SignalOverTimeEntry defines model for SignalOverTimeEntry.
 type SignalOverTimeEntry struct {
@@ -3299,6 +3670,15 @@ type GetNodeReachParams struct {
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
 
+// GetNodeRxCoverageParams defines parameters for GetNodeRxCoverage.
+type GetNodeRxCoverageParams struct {
+	// Bbox minLat,minLon,maxLat,maxLon.
+	Bbox string `form:"bbox" json:"bbox"`
+
+	// Z Map zoom, clamped to 3..18. Missing or non-numeric means 3.
+	Z *int `form:"z,omitempty" json:"z,omitempty"`
+}
+
 // GetObserverMetricsSummaryParams defines parameters for GetObserverMetricsSummary.
 type GetObserverMetricsSummaryParams struct {
 	// Window How far back to summarize. A number of days such as 7d, or any Go duration such as 24h.
@@ -3423,11 +3803,56 @@ type ResolveHopsParams struct {
 	Observer *string `form:"observer,omitempty" json:"observer,omitempty"`
 }
 
+// GetRxCoverageParams defines parameters for GetRxCoverage.
+type GetRxCoverageParams struct {
+	// Bbox minLat,minLon,maxLat,maxLon.
+	Bbox string `form:"bbox" json:"bbox"`
+
+	// Z Map zoom, clamped to 3..18. Missing or non-numeric means 3.
+	Z *int `form:"z,omitempty" json:"z,omitempty"`
+
+	// Days Look-back window in days; clamped to 1..30. Non-numeric values use 7.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
+
+	// Node Only receptions of this directly-heard node (pubkey or prefix).
+	Node *string `form:"node,omitempty" json:"node,omitempty"`
+
+	// Rx Only receptions contributed by this client pubkey.
+	Rx *string `form:"rx,omitempty" json:"rx,omitempty"`
+}
+
+// GetRxLeaderboardParams defines parameters for GetRxLeaderboard.
+type GetRxLeaderboardParams struct {
+	// Days Look-back window in days; clamped to 1..30. Non-numeric values use 7.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
+
+	// Limit Observers to return. Values outside 1..100 and non-numeric values use 20.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetScopeAuditParams defines parameters for GetScopeAudit.
+type GetScopeAuditParams struct {
+	// Window 1h, 24h or 7d. Default 24h.
+	Window *string `form:"window,omitempty" json:"window,omitempty"`
+}
+
+// GetScopeStatsParams defines parameters for GetScopeStats.
+type GetScopeStatsParams struct {
+	// Window 1h, 24h or 7d. Default 24h.
+	Window *string `form:"window,omitempty" json:"window,omitempty"`
+}
+
 // PutConfigGeoFilterJSONRequestBody defines body for PutConfigGeoFilter for application/json ContentType.
 type PutConfigGeoFilterJSONRequestBody = GeoFilterRequest
 
+// DecodePacketJSONRequestBody defines body for DecodePacket for application/json ContentType.
+type DecodePacketJSONRequestBody = DecodeRequest
+
 // BatchPacketObservationsJSONRequestBody defines body for BatchPacketObservations for application/json ContentType.
 type BatchPacketObservationsJSONRequestBody BatchPacketObservationsJSONBody
+
+// InspectPathJSONRequestBody defines body for InspectPath for application/json ContentType.
+type InspectPathJSONRequestBody = PathInspectRequest
 
 // AsPacket returns the union data inside the PacketDetailResponse_Packet as a Packet
 func (t PacketDetailResponse_Packet) AsPacket() (Packet, error) {

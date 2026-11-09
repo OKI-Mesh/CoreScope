@@ -991,9 +991,7 @@ var perfHexFallback = regexp.MustCompile(`[0-9a-f]{8,}`)
 // Response: {"results": {"abc123": [...observations...], "def456": [...], ...}}
 // Limited to 200 hashes per request to prevent abuse.
 func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Hex string `json:"hex"`
-	}
+	var body api.DecodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, 400, "invalid JSON body")
 		return
@@ -1008,11 +1006,11 @@ func (s *Server) handleDecode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, DecodeResponse{
-		Decoded: map[string]interface{}{
-			"header":  decoded.Header,
-			"path":    decoded.Path,
-			"payload": decoded.Payload,
+	writeJSON(w, api.DecodeResponse{
+		Decoded: api.DecodedPacket{
+			Header:  decoded.Header,
+			Path:    decoded.Path,
+			Payload: decoded.Payload,
 		},
 	})
 }
@@ -1542,7 +1540,7 @@ func hopsJSON(hops []string) string {
 	return string(b)
 }
 
-var iataCoords = map[string]IataCoord{
+var iataCoords = map[string]api.IataCoord{
 	"SJC": {Lat: 37.3626, Lon: -121.929},
 	"SFO": {Lat: 37.6213, Lon: -122.379},
 	"OAK": {Lat: 37.7213, Lon: -122.2208},
@@ -1600,11 +1598,11 @@ var iataCoords = map[string]IataCoord{
 }
 
 func (s *Server) handleIATACoords(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, IataCoordsResponse{Coords: iataCoords})
+	writeJSON(w, api.IataCoordsResponse{Coords: iataCoords})
 }
 
 func (s *Server) handleAudioLabBuckets(w http.ResponseWriter, r *http.Request) {
-	buckets := map[string][]AudioLabPacket{}
+	buckets := map[string][]api.AudioLabPacket{}
 
 	if s.store != nil {
 		// Use in-memory store (matches Node.js pktStore.packets approach)
@@ -1634,7 +1632,7 @@ func (s *Server) handleAudioLabBuckets(w http.ResponseWriter, r *http.Request) {
 				return len(pkts[i].RawHex) < len(pkts[j].RawHex)
 			})
 			count := min(8, len(pkts))
-			picked := make([]AudioLabPacket, 0, count)
+			picked := make([]api.AudioLabPacket, 0, count)
 			for i := 0; i < count; i++ {
 				idx := (i * len(pkts)) / count
 				tx := pkts[idx]
@@ -1642,22 +1640,22 @@ func (s *Server) handleAudioLabBuckets(w http.ResponseWriter, r *http.Request) {
 				if tx.PayloadType != nil {
 					pt = *tx.PayloadType
 				}
-				picked = append(picked, AudioLabPacket{
+				picked = append(picked, api.AudioLabPacket{
 					Hash:             tx.Hash,
 					RawHex:           tx.RawHex,
-					DecodedJSON:      tx.DecodedJSON,
+					DecodedJson:      tx.DecodedJSON,
 					ObservationCount: max(tx.ObservationCount, 1),
 					PayloadType:      pt,
-					PathJSON:         tx.PathJSON,
-					ObserverID:       tx.ObserverID,
-					Timestamp:        tx.FirstSeen,
+					PathJson:         tx.PathJSON,
+					ObserverId:       tx.ObserverID,
+					Timestamp:        types.WireTimeSeconds{Time: tx.FirstSeen},
 				})
 			}
 			buckets[typeName] = picked
 		}
 	}
 
-	writeJSON(w, AudioLabBucketsResponse{Buckets: buckets})
+	writeJSON(w, api.AudioLabBucketsResponse{Buckets: buckets})
 }
 
 // --- Helpers ---

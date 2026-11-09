@@ -32,12 +32,6 @@ type TimeBucket struct {
 	Bucket *string `json:"bucket,omitempty"`
 }
 
-// ─── Scope Stats ───────────────────────────────────────────────────────────────
-
-type DecodeResponse struct {
-	Decoded interface{} `json:"decoded"`
-}
-
 // ─── Nodes ─────────────────────────────────────────────────────────────────────
 
 // type NodeDetailResponse struct {
@@ -191,34 +185,6 @@ type NodeHopAnalyticsResponse struct {
 }
 
 // ─── Config ────────────────────────────────────────────────────────────────────
-
-// ─── IATA Coords ───────────────────────────────────────────────────────────────
-
-type IataCoord struct {
-	Lat float64 `json:"lat"`
-	Lon float64 `json:"lon"`
-}
-
-type IataCoordsResponse struct {
-	Coords map[string]IataCoord `json:"coords"`
-}
-
-// ─── Audio Lab ─────────────────────────────────────────────────────────────────
-
-type AudioLabPacket struct {
-	Hash             string            `json:"hash"`
-	RawHex           string            `json:"raw_hex"`
-	DecodedJSON      string            `json:"decoded_json"`
-	ObservationCount int               `json:"observation_count"`
-	PayloadType      types.PayloadType `json:"payload_type"`
-	PathJSON         string            `json:"path_json"`
-	ObserverID       string            `json:"observer_id"`
-	Timestamp        time.Time         `json:"timestamp"`
-}
-
-type AudioLabBucketsResponse struct {
-	Buckets map[string][]AudioLabPacket `json:"buckets"`
-}
 
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
 

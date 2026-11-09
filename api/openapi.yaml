@@ -27,8 +27,14 @@ tags:
     description: Hop resolution and per-packet traces
   - name: config
     description: Operator settings the web client reads
+  - name: tools
+    description: Packet decoder, path inspector and reference data for the web tools
   - name: system
     description: Server health, counters and ingestor status
+  - name: rx
+    description: Mobile client RX coverage (opt-in) and its contributor leaderboard
+  - name: scopes
+    description: Region scopes seen in transport traffic and declared by repeaters
 paths:
   /api/nodes/{pubkey}/neighbors:
     get:
@@ -1488,6 +1494,295 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           $ref: '#/components/responses/SubpathIndexLoading'
+  /api/rx-coverage:
+    get:
+      tags: [rx]
+      operationId: getRxCoverage
+      summary: Mobile client RX coverage as GeoJSON hexbins
+      description: >-
+        Receptions reported by mobile clients, binned into hex cells at a
+        resolution that follows the map zoom. Answers 404 when the operator has
+        not enabled client RX coverage (clientRxCoverage in /api/config/client).
+        At most 5000 cells are returned; when more exist the densest are kept
+        and truncated is true.
+      parameters:
+        - { name: bbox, in: query, required: true, description: "minLat,minLon,maxLat,maxLon.", schema: { type: string } }
+        - { name: z, in: query, description: "Map zoom, clamped to 3..18. Missing or non-numeric means 3.", schema: { type: integer } }
+        - { name: days, in: query, description: "Look-back window in days; clamped to 1..30. Non-numeric values use 7.", schema: { type: integer, default: 7 } }
+        - { name: node, in: query, description: "Only receptions of this directly-heard node (pubkey or prefix).", schema: { type: string } }
+        - { name: rx, in: query, description: "Only receptions contributed by this client pubkey.", schema: { type: string } }
+      responses:
+        "200":
+          description: Hex cells in view
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverageFeatureCollection' }
+        "400":
+          description: bbox missing or malformed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Client RX coverage is not enabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Query failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/nodes/{pubkey}/rx-coverage:
+    get:
+      tags: [rx, nodes]
+      operationId: getNodeRxCoverage
+      summary: Mobile client RX coverage of one node
+      description: >-
+        The same hex GeoJSON as /api/rx-coverage, restricted to receptions of
+        this node over all time. mobile_receptions and mobile_clients summarise
+        all of the node's mobile coverage regardless of bbox, and are absent
+        when zero. Answers 404 when client RX coverage is not enabled.
+      parameters:
+        - { name: pubkey, in: path, required: true, description: "Full 64-character hex pubkey.", schema: { type: string } }
+        - { name: bbox, in: query, required: true, description: "minLat,minLon,maxLat,maxLon.", schema: { type: string } }
+        - { name: z, in: query, description: "Map zoom, clamped to 3..18. Missing or non-numeric means 3.", schema: { type: integer } }
+      responses:
+        "200":
+          description: Hex cells in view
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverageFeatureCollection' }
+        "400":
+          description: Pubkey is not 64 hex characters, or bbox missing or malformed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Client RX coverage is not enabled, or the node is blacklisted or hidden
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Query failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "503":
+          description: No database
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/rx-leaderboard:
+    get:
+      tags: [rx]
+      operationId: getRxLeaderboard
+      summary: Top mobile observers by frontier-weighted coverage
+      description: >-
+        Each distinct cell an observer covered scores 1 divided by the number
+        of observers who covered it, so a stationary node scores one cell
+        however many receptions it logs. The scan is capped at 500000
+        receptions, so a very busy network gets a partial ranking. Answers 404
+        when client RX coverage is not enabled.
+      parameters:
+        - { name: days, in: query, description: "Look-back window in days; clamped to 1..30. Non-numeric values use 7.", schema: { type: integer, default: 7 } }
+        - { name: limit, in: query, description: "Observers to return. Values outside 1..100 and non-numeric values use 20.", schema: { type: integer, default: 20 } }
+      responses:
+        "200":
+          description: Ranked observers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RxLeaderboardResponse' }
+        "404":
+          description: Client RX coverage is not enabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Query failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/scope-stats:
+    get:
+      tags: [scopes]
+      operationId: getScopeStats
+      summary: Region scope usage across transport traffic
+      description: >-
+        Transport-routed packets split into scoped (a region this instance can
+        name), unscoped and unknown-scope, with a time series and a breakdown
+        of flood adverts by sender role. Cached for 30 seconds per window.
+      parameters:
+        - { name: window, in: query, description: "1h, 24h or 7d. Default 24h.", schema: { type: string, default: 24h } }
+      responses:
+        "200":
+          description: Scope statistics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScopeStatsResponse' }
+        "400":
+          description: Unknown window
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Query failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/scope-audit:
+    get:
+      tags: [scopes]
+      operationId: getScopeAudit
+      summary: Declared versus observed region scopes for every repeater
+      description: >-
+        One row per repeater that has answered a declared-regions request,
+        comparing what it says it forwards with what its traffic shows. Rows
+        with the most declared-but-unobserved regions come first. Cached for 30
+        seconds per window, 5 minutes for 7d.
+      parameters:
+        - { name: window, in: query, description: "1h, 24h or 7d. Default 24h.", schema: { type: string, default: 24h } }
+      responses:
+        "200":
+          description: The audit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScopeAuditResponse' }
+        "400":
+          description: Unknown window
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: Computation failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/decode:
+    post:
+      tags: [tools]
+      operationId: decodePacket
+      summary: Decode a raw packet
+      description: >-
+        Decodes the hex of one packet without storing it. The result carries the
+        header, the path and the payload; which payload fields are present
+        depends on the payload type. Channel payloads are not decrypted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecodeRequest'
+      responses:
+        "200":
+          description: The decoded packet. A packet the decoder only partly understands still returns 200; payload.error says what was missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecodeResponse'
+        "400":
+          description: The body is not JSON, hex is empty, or the hex is not a packet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/paths/inspect:
+    post:
+      tags: [tools]
+      operationId: inspectPath
+      summary: Score the likely paths behind a list of hop prefixes
+      description: >-
+        Beam search over the neighbor graph. Every prefix must be the same
+        length, at most 3 bytes. Results are cached for 30 seconds. While the
+        neighbor graph is still being built for the first time the server
+        answers 503 and starts the build.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PathInspectRequest'
+      responses:
+        "200":
+          description: Candidate paths, best first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PathInspectResponse'
+        "400":
+          description: >-
+            The body is not JSON (it is also limited to 4096 bytes), prefixes is
+            empty or has more than 64 entries, or a prefix is not even-length
+            hex, is longer than 3 bytes, or differs in length from the others.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The neighbor graph has not been built yet. Retry shortly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PathInspectColdStart'
+  /api/iata-coords:
+    get:
+      tags: [tools]
+      operationId: getIataCoords
+      summary: Airport-code coordinates
+      description: Coordinates of the IATA codes observers use as region labels. The table is built into the server.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IataCoordsResponse'
+  /api/audio-lab/buckets:
+    get:
+      tags: [tools]
+      operationId: getAudioLabBuckets
+      summary: Sample packets per payload type for the audio lab
+      description: >-
+        Up to 8 packets per payload type, spread from the shortest to the longest
+        raw hex. Types without any stored packet are absent.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioLabBucketsResponse'
+  /api/spec:
+    get:
+      tags: [system]
+      operationId: getRuntimeSpec
+      summary: The OpenAPI document built by the running server
+      description: >-
+        The older spec the server assembles from its routes at request time.
+        It is still served until every route is described in this document.
+      responses:
+        "200":
+          description: An OpenAPI document. Its shape is the OpenAPI schema itself, not described here.
+          headers:
+            Access-Control-Allow-Origin:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/docs:
+    get:
+      tags: [system]
+      operationId: getApiDocs
+      summary: Swagger UI page
+      description: An HTML page that renders the document at /api/spec.
+      responses:
+        "200":
+          description: HTML
+          content:
+            text/html:
+              schema:
+                type: string
 components:
   securitySchemes:
     apiKey:
@@ -4514,3 +4809,536 @@ components:
           description: The 10 observers that heard it most.
           items: { $ref: '#/components/schemas/NameCount' }
           
+    GeoPosition:
+      type: array
+      description: A GeoJSON position, [longitude, latitude].
+      items: { type: number, format: double }
+      minItems: 2
+      maxItems: 2
+    CoverageRing:
+      type: array
+      description: A closed GeoJSON linear ring.
+      items: { $ref: '#/components/schemas/GeoPosition' }
+    CoveragePolygon:
+      type: object
+      additionalProperties: false
+      required: [type, coordinates]
+      properties:
+        type: { type: string, description: Always Polygon. }
+        coordinates:
+          type: array
+          description: One ring.
+          items: { $ref: '#/components/schemas/CoverageRing' }
+    CoverageNode:
+      type: object
+      description: One directly-heard node within a cell, with its latest SNR.
+      additionalProperties: false
+      required: [prefix, snr, count]
+      properties:
+        prefix: { type: string, description: "The heard key: a 2 or 3 byte prefix or a full pubkey." }
+        name: { type: string, description: Present only when the key resolved to exactly one known node. }
+        snr: { type: [number, "null"], format: double, description: "SNR of the node's most recent reception in the cell. Null when heard without a signal metric." }
+        count: { type: integer }
+    CoverageProperties:
+      type: object
+      additionalProperties: false
+      required: [cell, count, best_snr, has_sig, nodes]
+      properties:
+        cell: { type: string }
+        count: { type: integer, description: Receptions in the cell. }
+        best_snr: { type: [number, "null"], format: double }
+        has_sig: { type: boolean, description: "False when no reception in the cell carried a signal metric." }
+        nodes:
+          type: array
+          description: Per-node breakdown, strongest latest SNR first. At most 25.
+          items: { $ref: '#/components/schemas/CoverageNode' }
+        nodes_truncated: { type: boolean, description: Present only when true. }
+    CoverageFeature:
+      type: object
+      additionalProperties: false
+      required: [type, geometry, properties]
+      properties:
+        type: { type: string, description: Always Feature. }
+        geometry: { $ref: '#/components/schemas/CoveragePolygon' }
+        properties: { $ref: '#/components/schemas/CoverageProperties' }
+    CoverageFeatureCollection:
+      type: object
+      description: GeoJSON FeatureCollection with three foreign members.
+      additionalProperties: false
+      required: [type, features]
+      properties:
+        type: { type: string, description: Always FeatureCollection. }
+        features:
+          type: array
+          items: { $ref: '#/components/schemas/CoverageFeature' }
+        truncated: { type: boolean, description: Present only when true. The cell list was capped at 5000. }
+        mobile_receptions: { type: integer, description: "Per-node route only; absent when zero. All mobile receptions of the node." }
+        mobile_clients: { type: integer, description: "Per-node route only; absent when zero. Distinct clients that heard the node." }
+    RxLeaderboardObserver:
+      type: object
+      additionalProperties: false
+      required: [pubkey, name, receptions, nodes, cells, score]
+      properties:
+        pubkey: { type: string }
+        name: { type: string, description: "Empty when the observer is unnamed, blacklisted or hidden." }
+        receptions: { type: integer }
+        nodes: { type: integer, description: Distinct nodes heard. }
+        cells: { type: integer, description: Distinct fixed-resolution hex cells covered. }
+        score: { type: number, format: double, description: Frontier-weighted coverage score. }
+    RxLeaderboardResponse:
+      type: object
+      additionalProperties: false
+      required: [days, observers]
+      properties:
+        days: { type: integer, description: The clamped window. }
+        observers:
+          type: array
+          items: { $ref: '#/components/schemas/RxLeaderboardObserver' }
+    ScopeStatsSummary:
+      type: object
+      additionalProperties: false
+      required: [transportTotal, scoped, unscoped, unknownScope]
+      properties:
+        transportTotal: { type: integer }
+        scoped: { type: integer, description: Transport packets whose scope matched a region this instance holds. }
+        unscoped: { type: integer }
+        unknownScope: { type: integer, description: Transport packets whose scope matched no region this instance holds. }
+    ScopeRegionCount:
+      type: object
+      additionalProperties: false
+      required: [name, count]
+      properties:
+        name: { type: string }
+        count: { type: integer }
+    ScopeTimePoint:
+      type: object
+      additionalProperties: false
+      required: [t, scoped, unscoped]
+      properties:
+        t: { $ref: '#/components/schemas/TimestampSeconds' }
+        scoped: { type: integer }
+        unscoped: { type: integer }
+    ScopeAdvertRoleCount:
+      type: object
+      description: >-
+        Flood adverts sent by nodes of one role, split by scope state. Role is
+        unknown when the sender cannot be identified.
+      additionalProperties: false
+      required: [role, unscoped, unknownScope, named]
+      properties:
+        role: { type: string }
+        unscoped: { type: integer }
+        unknownScope: { type: integer }
+        named: { type: integer }
+    ScopeStatsResponse:
+      type: object
+      additionalProperties: false
+      required: [window, summary, byRegion, timeSeries, advertsByRole]
+      properties:
+        window: { type: string }
+        summary: { $ref: '#/components/schemas/ScopeStatsSummary' }
+        byRegion:
+          type: array
+          items: { $ref: '#/components/schemas/ScopeRegionCount' }
+        timeSeries:
+          type: array
+          items: { $ref: '#/components/schemas/ScopeTimePoint' }
+        advertsByRole:
+          type: array
+          items: { $ref: '#/components/schemas/ScopeAdvertRoleCount' }
+    ScopeObservation:
+      type: object
+      description: One region scope a repeater was observed forwarding within the window.
+      additionalProperties: false
+      required: [scope, packets, firstSeen, lastSeen]
+      properties:
+        scope: { type: string, description: "Matched region name without a leading #." }
+        packets: { type: integer, format: int64 }
+        firstSeen: { $ref: '#/components/schemas/TimestampMillis' }
+        lastSeen: { $ref: '#/components/schemas/TimestampMillis' }
+    ScopeAuditRow:
+      type: object
+      additionalProperties: false
+      required:
+        - publicKey
+        - name
+        - role
+        - declaredRegions
+        - declaredWildcard
+        - configState
+        - declaredAt
+        - truncated
+        - notObserved
+        - undeclaredObserved
+        - observedUnscopedPackets
+        - wildcardContradiction
+        - ambiguousHops
+        - observedUnmatchedPackets
+        - observedUnmatchedSampled
+        - regionEvidence
+      properties:
+        publicKey: { type: string }
+        name: { type: [string, "null"], description: "Null when this instance holds no nodes row for the repeater." }
+        role:
+          oneOf:
+            - $ref: '#/components/schemas/NodeRole'
+            - { type: "null" }
+        declaredRegions:
+          type: array
+          description: Named regions the repeater declares, without a leading #. The * wildcard is excluded; see declaredWildcard.
+          items: { type: string }
+        declaredWildcard: { type: boolean, description: "The raw declared list contains *, meaning plain unscoped floods are forwarded." }
+        configState: { $ref: '#/components/schemas/ScopeConfigState' }
+        declaredAt: { $ref: '#/components/schemas/TimestampSeconds' }
+        truncated: { type: boolean, description: The declared list may have had entries dropped. }
+        notObserved:
+          type: array
+          description: Declared regions with no matched forwarding in the window and no corroborating evidence.
+          items: { type: string }
+        undeclaredObserved:
+          type: array
+          description: Scopes the repeater was seen forwarding that its declared list omits.
+          items: { $ref: '#/components/schemas/ScopeObservation' }
+        observedUnscopedPackets: { type: integer, format: int64, description: Plain-flood packets the repeater was seen forwarding. }
+        wildcardContradiction: { type: boolean, description: Seen forwarding unscoped floods although its declared list omits *. }
+        ambiguousHops:
+          type: integer
+          format: int64
+          description: >-
+            Forwarder hops whose prefix also matches another declared repeater.
+            A caveat, not a finding: any notObserved entry may be explained by a
+            colliding neighbour.
+        observedUnmatchedPackets:
+          type: integer
+          format: int64
+          description: >-
+            Packets forwarded under a transport scope that matched no region key
+            this instance holds. A caveat: a notObserved entry may name a region
+            this instance cannot name.
+        observedUnmatchedSampled:
+          type: integer
+          format: int64
+          description: >-
+            How many of observedUnmatchedPackets verification could look at. The
+            difference is an upper bound on unexplained traffic.
+        regionEvidence:
+          type: object
+          description: "Declared region to the number of the repeater's own unmatched packets that derive to it. Empty object when none. A region with enough evidence is dropped from notObserved, so this does not decide the row state; it says how a region was established, and why one with a single hit stayed in notObserved."
+          additionalProperties: { type: integer }
+    ScopeAuditResponse:
+      type: object
+      additionalProperties: false
+      required: [window, since, repeaters]
+      properties:
+        window: { type: string }
+        since: { $ref: '#/components/schemas/TimestampSeconds' }
+        repeaters:
+          type: array
+          items: { $ref: '#/components/schemas/ScopeAuditRow' }
+          
+    DecodeRequest:
+      type: object
+      additionalProperties: false
+      required: [hex]
+      properties:
+        hex:
+          type: string
+          description: The packet as hex. Surrounding whitespace is ignored.
+    DecodedHeader:
+      type: object
+      additionalProperties: false
+      x-go-type: decoder.Header
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/decoder }
+      required: [routeType, routeTypeName, payloadType, payloadTypeName, payloadVersion]
+      properties:
+        routeType:
+          type: integer
+          x-go-type: types.RouteType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        routeTypeName: { type: string }
+        payloadType:
+          type: integer
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        payloadTypeName: { type: string }
+        payloadVersion: { type: integer }
+    DecodedPath:
+      type: object
+      additionalProperties: false
+      x-go-type: decoder.Path
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/decoder }
+      required: [hashSize, hashCount, hops]
+      properties:
+        hashSize:
+          type: integer
+          description: Bytes per hop hash. 0 when the packet carries no path.
+        hashCount: { type: integer }
+        hops:
+          type: array
+          description: Hop hashes in upper-case hex.
+          items: { type: string }
+        hopsCompleted:
+          type: integer
+          description: Only on TRACE packets, how many hops have already been traversed.
+    DecodedAdvertFlags:
+      type: object
+      additionalProperties: false
+      x-go-type: decoder.AdvertFlags
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/decoder }
+      required: [raw, type, chat, repeater, room, sensor, hasLocation, hasFeat1, hasFeat2, hasName]
+      properties:
+        raw: { type: integer }
+        type: { type: integer }
+        chat: { type: boolean }
+        repeater: { type: boolean }
+        room: { type: boolean }
+        sensor: { type: boolean }
+        hasLocation: { type: boolean }
+        hasFeat1: { type: boolean }
+        hasFeat2: { type: boolean }
+        hasName: { type: boolean }
+    DecodedPayload:
+      type: object
+      additionalProperties: false
+      x-go-type: decoder.Payload
+      x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/decoder }
+      description: >-
+        One flat shape for every payload type. type is always present; each
+        other field appears only for the types that carry it and only when it
+        was decoded. Zero numbers and empty strings are left out.
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: Payload type name (REQ, RESPONSE, TXT_MSG, ACK, ADVERT, GRP_TXT, GRP_DATA, ANON_REQ, PATH, TRACE, MULTIPART, CONTROL, RAW_CUSTOM, UNKNOWN).
+        destHash: { type: string }
+        srcHash: { type: string }
+        mac: { type: string }
+        encryptedData: { type: string }
+        extraHash: { type: string }
+        ackLen: { type: integer, description: 'Wire length of an ACK payload, 4 to 6.' }
+        ackAttempt: { type: integer }
+        ackRand: { type: integer }
+        pubKey: { type: string }
+        timestamp: { type: integer, format: int64, minimum: 0, description: Advert timestamp in Unix seconds. }
+        timestampISO: { type: string }
+        signature: { type: string }
+        signatureValid: { type: boolean }
+        flags: { $ref: '#/components/schemas/DecodedAdvertFlags' }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+        name: { type: string }
+        feat1: { type: integer }
+        feat2: { type: integer }
+        battery_mv: { type: integer }
+        temperature_c: { type: number, format: double }
+        channelHash: { type: integer }
+        channelHashHex: { type: string }
+        decryptionStatus: { type: string }
+        channel: { type: string }
+        dataType: { type: integer }
+        dataLen: { type: integer }
+        decryptedBlob: { type: string }
+        text: { type: string }
+        sender: { type: string }
+        sender_timestamp: { type: integer, format: int64, minimum: 0 }
+        ephemeralPubKey: { type: string }
+        pathData: { type: string }
+        snrValues:
+          type: array
+          items: { type: number, format: double }
+        tag: { type: integer, format: int64, minimum: 0 }
+        authCode: { type: integer, format: int64, minimum: 0 }
+        traceFlags: { type: integer }
+        raw: { type: string, description: 'The payload as hex, for payloads that were not or could not be decoded.' }
+        error: { type: string, description: Why decoding stopped early. }
+        srcPubKey: { type: string }
+        remaining: { type: integer }
+        innerType: { type: integer }
+        innerTypeName: { type: string }
+        innerAckCrc: { type: string }
+        innerAckLen: { type: integer }
+        innerAckAttempt: { type: integer }
+        innerAckRand: { type: integer }
+        innerPayload: { type: string }
+        ctrlFlags: { type: string }
+        ctrlZeroHop: { type: boolean }
+        ctrlLength: { type: integer }
+        ctrlSubtype: { type: string }
+        ctrlFilter: { type: integer }
+        ctrlTag: { type: integer, format: int64, minimum: 0 }
+        ctrlSince: { type: integer, format: int64, minimum: 0 }
+        ctrlNodeType: { type: integer }
+        ctrlSNR: { type: integer }
+        ctrlPubKey: { type: string }
+        rawLength: { type: integer }
+        firstByteTag: { type: string }
+    DecodedPacket:
+      type: object
+      additionalProperties: false
+      required: [header, path, payload]
+      properties:
+        header: { $ref: '#/components/schemas/DecodedHeader' }
+        path: { $ref: '#/components/schemas/DecodedPath' }
+        payload: { $ref: '#/components/schemas/DecodedPayload' }
+    DecodeResponse:
+      type: object
+      additionalProperties: false
+      required: [decoded]
+      properties:
+        decoded: { $ref: '#/components/schemas/DecodedPacket' }
+    PathInspectContext:
+      type: object
+      additionalProperties: false
+      description: Only part of the cache key today; it does not change the result.
+      properties:
+        observerId: { type: string }
+        since: { type: string }
+        until: { type: string }
+    PathInspectRequest:
+      type: object
+      additionalProperties: false
+      required: [prefixes]
+      properties:
+        prefixes:
+          type: array
+          minItems: 1
+          maxItems: 64
+          description: Hop prefixes as hex, one to three bytes each, all the same length. Case and surrounding whitespace are ignored.
+          items: { type: string }
+        context: { $ref: '#/components/schemas/PathInspectContext' }
+        limit:
+          type: integer
+          description: How many candidates to return. Defaults to 10 when missing or not positive; capped at 50.
+    PathHopAlternative:
+      type: object
+      additionalProperties: false
+      required: [publicKey, name, score]
+      properties:
+        publicKey: { type: string }
+        name: { type: string }
+        score: { type: number, format: double }
+    PathHopEvidence:
+      type: object
+      additionalProperties: false
+      required: [prefix, candidatesConsidered, chosen, edgeWeight, trusted]
+      properties:
+        prefix: { type: string }
+        candidatesConsidered: { type: integer }
+        chosen: { type: string, description: Public key picked for this hop. }
+        edgeWeight: { type: number, format: double }
+        trusted:
+          type: boolean
+          description: Whether the prefix is long enough to be trusted under the configured path-trust threshold.
+        alternatives:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          description: Up to 5 other nodes that relay traffic and share the prefix, best first. Absent when there are none.
+          items: { $ref: '#/components/schemas/PathHopAlternative' }
+    PathEvidence:
+      type: object
+      additionalProperties: false
+      required: [perHop]
+      properties:
+        perHop:
+          type: array
+          items: { $ref: '#/components/schemas/PathHopEvidence' }
+    PathCandidate:
+      type: object
+      additionalProperties: false
+      required: [path, names, score, speculative, evidence]
+      properties:
+        path:
+          type: array
+          description: Public keys, one per prefix.
+          items: { type: string }
+        names:
+          type: array
+          items: { type: string }
+        score: { type: number, format: double, description: 'Geometric mean of the hop scores, rounded to 3 decimals.' }
+        speculative:
+          type: boolean
+          description: True when the score is under 0.7 or any hop is untrusted.
+        evidence: { $ref: '#/components/schemas/PathEvidence' }
+    PathInspectInput:
+      type: object
+      additionalProperties: false
+      required: [prefixes, hops]
+      properties:
+        prefixes:
+          type: array
+          description: The normalised prefixes (lower case, trimmed).
+          items: { type: string }
+        hops: { type: integer }
+    PathInspectStats:
+      type: object
+      additionalProperties: false
+      required: [beamWidth, expansionsRun, elapsedMs, minHashBytesForMapping]
+      properties:
+        beamWidth: { type: integer }
+        expansionsRun: { type: integer, description: 'Prefix count times beam width, not a measured count.' }
+        elapsedMs: { type: integer, format: int64 }
+        minHashBytesForMapping: { type: integer }
+    PathInspectResponse:
+      type: object
+      additionalProperties: false
+      required: [candidates, input, stats]
+      properties:
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/PathCandidate' }
+        input: { $ref: '#/components/schemas/PathInspectInput' }
+        stats: { $ref: '#/components/schemas/PathInspectStats' }
+        stale:
+          type: boolean
+          x-go-type-skip-optional-pointer: true
+          description: Present and true when the answer used a stale neighbor graph while a rebuild runs. Such answers are not cached.
+    PathInspectColdStart:
+      type: object
+      additionalProperties: false
+      required: [retry]
+      properties:
+        retry: { type: boolean }
+    IataCoord:
+      type: object
+      additionalProperties: false
+      required: [lat, lon]
+      properties:
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+    IataCoordsResponse:
+      type: object
+      additionalProperties: false
+      required: [coords]
+      properties:
+        coords:
+          type: object
+          description: Keyed by upper-case IATA code.
+          additionalProperties: { $ref: '#/components/schemas/IataCoord' }
+    AudioLabPacket:
+      type: object
+      additionalProperties: false
+      required: [hash, raw_hex, decoded_json, observation_count, payload_type, path_json, observer_id, timestamp]
+      properties:
+        hash: { type: string }
+        raw_hex: { type: string }
+        decoded_json: { type: string, description: The decoded payload as a JSON string. }
+        observation_count: { type: integer }
+        payload_type:
+          type: integer
+          x-go-type: types.PayloadType
+          x-go-type-import: { path: github.com/OKI-Mesh/CoreScope/internal/types }
+        path_json: { type: string, description: The hop list as a JSON string. }
+        observer_id: { type: string }
+        timestamp: { $ref: '#/components/schemas/TimestampSeconds' }
+    AudioLabBucketsResponse:
+      type: object
+      additionalProperties: false
+      required: [buckets]
+      properties:
+        buckets:
+          type: object
+          description: Keyed by payload type name.
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/AudioLabPacket' }
