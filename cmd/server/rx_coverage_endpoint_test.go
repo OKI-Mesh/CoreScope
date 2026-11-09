@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
@@ -160,15 +161,15 @@ func TestRxCoverageEndpointGeoJSON(t *testing.T) {
 	if rr.Code != 200 {
 		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
 	}
-	var fc CoverageFeatureCollection
+	var fc api.CoverageFeatureCollection
 	if err := json.Unmarshal(rr.Body.Bytes(), &fc); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if fc.Type != "FeatureCollection" || len(fc.Features) != 1 {
 		t.Fatalf("unexpected fc: %+v", fc)
 	}
-	if fc.MobileReceptions != 1 || fc.MobileClients != 1 {
-		t.Fatalf("want mobile_receptions=1 mobile_clients=1, got %d/%d", fc.MobileReceptions, fc.MobileClients)
+	if fc.MobileReceptions == nil || *fc.MobileReceptions != 1 || fc.MobileClients == nil || *fc.MobileClients != 1 {
+		t.Fatalf("want mobile_receptions=1 mobile_clients=1, got %v/%v", fc.MobileReceptions, fc.MobileClients)
 	}
 	if serveRxCoverage(srv, "/api/nodes/"+nodePK+"/rx-coverage").Code != 400 {
 		t.Fatal("missing bbox should be 400")

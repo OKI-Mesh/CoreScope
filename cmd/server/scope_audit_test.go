@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
@@ -205,7 +206,7 @@ func insertDeclared(t *testing.T, srv *Server, target string, observedAt time.Ti
 	}
 }
 
-func getScopeAudit(t *testing.T, router *mux.Router, query string) ScopeAuditResponse {
+func getScopeAudit(t *testing.T, router *mux.Router, query string) api.ScopeAuditResponse {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/scope-audit"+query, nil)
 	w := httptest.NewRecorder()
@@ -213,7 +214,7 @@ func getScopeAudit(t *testing.T, router *mux.Router, query string) ScopeAuditRes
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	var got ScopeAuditResponse
+	var got api.ScopeAuditResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestHandleScopeAuditNormalisesHashPrefix(t *testing.T) {
 // findScopeAuditRow locates the row for pk, failing the test if absent —
 // used wherever more than one repeater is seeded in the same response, since
 // sort order is not by pubkey and cannot be relied on to pick the right row.
-func findScopeAuditRow(t *testing.T, rows []ScopeAuditRow, pk string) ScopeAuditRow {
+func findScopeAuditRow(t *testing.T, rows []api.ScopeAuditRow, pk string) api.ScopeAuditRow {
 	t.Helper()
 	for _, r := range rows {
 		if r.PublicKey == pk {
@@ -286,7 +287,7 @@ func findScopeAuditRow(t *testing.T, rows []ScopeAuditRow, pk string) ScopeAudit
 		}
 	}
 	t.Fatalf("no row for pubkey %s in %+v", pk, rows)
-	return ScopeAuditRow{}
+	return api.ScopeAuditRow{}
 }
 
 // TestHandleScopeAuditExcludesWildcardFromComparison pins trap 2: '*' is the
@@ -357,7 +358,7 @@ func TestHandleScopeAuditUnknownNodeNameIsNullNotEmpty(t *testing.T) {
 		t.Error(`"name":"" collapses "unknown node" into "node with no name"`)
 	}
 
-	var got ScopeAuditResponse
+	var got api.ScopeAuditResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +605,7 @@ func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 		t.Fatalf("repeaters = %+v, want exactly 4", got.Repeaters)
 	}
 
-	want := map[string]string{
+	want := map[string]api.ScopeConfigState{
 		fullPk:       ScopeConfigFull,
 		noScopesPk:   ScopeConfigNoScopes,
 		noUnscopedPk: ScopeConfigNoUnscoped,
@@ -617,11 +618,11 @@ func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 		}
 	}
 
-	counts := map[string]int{}
+	counts := map[api.ScopeConfigState]int{}
 	for _, row := range got.Repeaters {
 		counts[row.ConfigState]++
 	}
-	for _, state := range []string{ScopeConfigFull, ScopeConfigNoScopes, ScopeConfigNoUnscoped, ScopeConfigNoFlood} {
+	for _, state := range []api.ScopeConfigState{ScopeConfigFull, ScopeConfigNoScopes, ScopeConfigNoUnscoped, ScopeConfigNoFlood} {
 		if counts[state] != 1 {
 			t.Errorf("count of state %q across repeaters = %d, want 1 (summary tally must match the seeded rows)", state, counts[state])
 		}

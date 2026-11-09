@@ -34,46 +34,6 @@ type TimeBucket struct {
 
 // ─── Scope Stats ───────────────────────────────────────────────────────────────
 
-type ScopeStatsSummary struct {
-	TransportTotal int `json:"transportTotal"`
-	Scoped         int `json:"scoped"`
-	Unscoped       int `json:"unscoped"`
-	UnknownScope   int `json:"unknownScope"`
-}
-
-type ScopeRegionCount struct {
-	Name  string `json:"name"`
-	Count int    `json:"count"`
-}
-
-type ScopeTimePoint struct {
-	T        string `json:"t"`
-	Scoped   int    `json:"scoped"`
-	Unscoped int    `json:"unscoped"`
-}
-
-// ScopeAdvertRoleCount is one row of the adverts-by-role breakdown (#1979):
-// flood adverts sent by nodes of one role, split by the three scope_name
-// states. Role is the sender's nodes.role, or "unknown" when the advert has
-// no from_pubkey (legacy row not yet reached by the #1143 backfill), when the
-// sender has no nodes row (also after MoveStaleNodes moved it to
-// inactive_nodes, possible inside the 7d window only with
-// retention.nodeDays < 7), or when its role is empty.
-type ScopeAdvertRoleCount struct {
-	Role         string `json:"role"`
-	Unscoped     int    `json:"unscoped"`
-	UnknownScope int    `json:"unknownScope"`
-	Named        int    `json:"named"`
-}
-
-type ScopeStatsResponse struct {
-	Window        string                 `json:"window"`
-	Summary       ScopeStatsSummary      `json:"summary"`
-	ByRegion      []ScopeRegionCount     `json:"byRegion"`
-	TimeSeries    []ScopeTimePoint       `json:"timeSeries"`
-	AdvertsByRole []ScopeAdvertRoleCount `json:"advertsByRole"`
-}
-
 type DecodeResponse struct {
 	Decoded interface{} `json:"decoded"`
 }

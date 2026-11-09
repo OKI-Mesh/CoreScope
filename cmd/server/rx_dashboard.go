@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"sort"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
@@ -141,7 +141,7 @@ func (s *Server) requireClientRxCoverage(w http.ResponseWriter, r *http.Request)
 	// (e.g. handlers exercised in isolation) rather than panicking (#4).
 	// ClientRxCoverageEnabled is itself nil-receiver-safe.
 	if s == nil || s.cfg == nil || !s.cfg.ClientRxCoverageEnabled() {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return false
 	}
 	return true
@@ -153,35 +153,21 @@ func (s *Server) handleRxCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 	b, ok := parseBBox(r.URL.Query().Get("bbox"))
 	if !ok {
-		http.Error(w, "bbox required as minLat,minLon,maxLat,maxLon", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bbox required as minLat,minLon,maxLat,maxLon")
 		return
 	}
 	days := clampDays(atoiDefault(r.URL.Query().Get("days"), 7))
 	z, _ := strconv.Atoi(r.URL.Query().Get("z"))
 	rows, err := s.queryCoverageFiltered(r.Context(), r.URL.Query().Get("node"), r.URL.Query().Get("rx"), days, b)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(r.Context(), rows))
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(fc)
+	writeJSON(w, fc)
 }
 
 // --- Leaderboard (top mobile observers) ---
-
-type LeaderObserver struct {
-	Pubkey     string  `json:"pubkey"`
-	Name       string  `json:"name"`
-	Receptions int     `json:"receptions"`
-	Nodes      int     `json:"nodes"`
-	Cells      int     `json:"cells"` // distinct fixed-res hex cells covered
-	Score      float64 `json:"score"` // frontier-weighted coverage score
-}
-type RxLeaderboardResp struct {
-	Days      int              `json:"days"`
-	Observers []LeaderObserver `json:"observers"`
-}
 
 // leaderboardHexRes is the fixed hex resolution used to bucket receptions into
 // "cells visited" for the frontier-weighted score. ~150 m ground cells at our
@@ -204,7 +190,7 @@ const leaderboardScanCap = 500000
 // spam-proof — a stationary node covers exactly one cell regardless of how many
 // receptions it logs. Bucketing + the rarity weight can't be expressed in SQL,
 // so we aggregate the window's rows in Go (bounded by leaderboardScanCap).
-func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderObserver, error) {
+func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]api.RxLeaderboardObserver, error) {
 	since := time.Now().UTC().AddDate(0, 0, -days)
 
 	type agg struct {
@@ -256,7 +242,7 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 		cellCount[cell] = n
 	}
 
-	out := make([]LeaderObserver, 0, len(obsAgg))
+	out := make([]api.RxLeaderboardObserver, 0, len(obsAgg))
 	for pk, a := range obsAgg {
 		var score float64
 		for cell := range a.cells {
@@ -264,7 +250,7 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 				score += 1.0 / float64(c)
 			}
 		}
-		out = append(out, LeaderObserver{
+		out = append(out, api.RxLeaderboardObserver{
 			Pubkey:     pk,
 			Name:       a.name,
 			Receptions: a.receptions,
@@ -288,7 +274,7 @@ func (s *Server) rxLeaderboard(ctx context.Context, days, limit int) ([]LeaderOb
 
 	// Identity hiding parity (#1727 r2): drop observer-blacklisted contributors,
 	// blank node-blacklisted / hidden-prefix names, cap at limit. nil cfg ⇒ no-ops.
-	filtered := make([]LeaderObserver, 0, limit)
+	filtered := make([]api.RxLeaderboardObserver, 0, limit)
 	for _, o := range out {
 		if s.cfg.IsObserverBlacklisted(o.Pubkey) {
 			continue
@@ -315,11 +301,10 @@ func (s *Server) handleRxLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 	obs, err := s.rxLeaderboard(r.Context(), days, limit)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(RxLeaderboardResp{Days: days, Observers: obs})
+	writeJSON(w, api.RxLeaderboardResponse{Days: days, Observers: obs})
 }
 
 func atoiDefault(s string, d int) int {

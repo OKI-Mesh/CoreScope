@@ -86,13 +86,13 @@ type Server struct {
 
 	// Cached /api/scope-stats response — per-window, recomputed at most once every 30s
 	scopeStatsMu       sync.Mutex
-	scopeStatsCache    map[string]*ScopeStatsResponse
+	scopeStatsCache    map[string]*api.ScopeStatsResponse
 	scopeStatsCachedAt map[string]time.Time
 
 	// #1975: cached /api/scope-audit response, per window, recomputed at most
 	// once every 30s. Mirrors the scopeStats cache directly above it.
 	scopeAuditMu       sync.Mutex
-	scopeAuditCache    map[string]*ScopeAuditResponse
+	scopeAuditCache    map[string]*api.ScopeAuditResponse
 	scopeAuditCachedAt map[string]time.Time
 	scopeAuditSF       singleflight.Group
 
@@ -1931,7 +1931,7 @@ func (s *Server) handleScopeStats(w http.ResponseWriter, r *http.Request) {
 
 	s.scopeStatsMu.Lock()
 	if s.scopeStatsCache == nil {
-		s.scopeStatsCache = make(map[string]*ScopeStatsResponse)
+		s.scopeStatsCache = make(map[string]*api.ScopeStatsResponse)
 		s.scopeStatsCachedAt = make(map[string]time.Time)
 	}
 	s.scopeStatsCache[window] = resp

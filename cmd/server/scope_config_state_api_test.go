@@ -302,7 +302,7 @@ func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
 	// so its PublicKey comes back lowercased whatever the collector stored.
 	auditState := map[string]string{}
 	for _, row := range audit.Repeaters {
-		auditState[strings.ToLower(row.PublicKey)] = row.ConfigState
+		auditState[strings.ToLower(row.PublicKey)] = string(row.ConfigState)
 	}
 	nodes := nodesByPubkey(t, router, "?limit=200")
 

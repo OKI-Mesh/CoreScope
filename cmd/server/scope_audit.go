@@ -30,19 +30,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"golang.org/x/sync/singleflight"
 )
-
-// ScopeObservation is one region scope this repeater has been observed
-// forwarding traffic for, within the query window.
-type ScopeObservation struct {
-	Scope     string `json:"scope"` // matched region name (transmissions.scope_name)
-	Packets   int64  `json:"packets"`
-	FirstSeen string `json:"firstSeen"`
-	LastSeen  string `json:"lastSeen"`
-}
 
 // RouteTypeMix is the route-type breakdown of packets this node was
 // observed FORWARDING — i.e. packets on which this pubkey was the last hop
@@ -104,7 +96,7 @@ func normScope(s string) string {
 // governs exactly those packets, not any named scope.
 
 type scopeAuditTargetAgg struct {
-	scopes          map[string]*ScopeObservation
+	scopes          map[string]*api.ScopeObservation
 	unscopedPackets int64
 	// unmatchedPackets counts packets this target was observed forwarding
 	// that carried a transport scope no configured region key matched
@@ -227,7 +219,7 @@ func (s *PacketStore) ScopeAuditForwarding(ctx context.Context, since time.Time,
 	getAgg := func(target string) *scopeAuditTargetAgg {
 		agg, ok := result[target]
 		if !ok {
-			agg = &scopeAuditTargetAgg{scopes: map[string]*ScopeObservation{}}
+			agg = &scopeAuditTargetAgg{scopes: map[string]*api.ScopeObservation{}}
 			result[target] = agg
 		}
 		return agg
@@ -252,7 +244,7 @@ func (s *PacketStore) ScopeAuditForwarding(ctx context.Context, since time.Time,
 			continue
 		}
 
-		firstSeen := formatTS(h.FirstSeen)
+		firstSeen := types.WireTimeMillis{Time: h.FirstSeen}
 		for _, target := range candidates {
 			key := scopeAuditSeenKey{target: target, txID: h.TxID}
 			if seen[key] {
@@ -281,14 +273,14 @@ func (s *PacketStore) ScopeAuditForwarding(ctx context.Context, since time.Time,
 			name := normScope(*h.ScopeName)
 			so, ok := agg.scopes[name]
 			if !ok {
-				so = &ScopeObservation{Scope: name, FirstSeen: firstSeen, LastSeen: firstSeen}
+				so = &api.ScopeObservation{Scope: name, FirstSeen: firstSeen, LastSeen: firstSeen}
 				agg.scopes[name] = so
 			}
 			so.Packets++
-			if firstSeen < so.FirstSeen {
+			if firstSeen.Before(so.FirstSeen.Time) {
 				so.FirstSeen = firstSeen
 			}
-			if firstSeen > so.LastSeen {
+			if firstSeen.After(so.LastSeen.Time) {
 				so.LastSeen = firstSeen
 			}
 		}
@@ -336,113 +328,6 @@ func scopeAuditConfigState(namedRegions []string, wildcard bool) string {
 	default:
 		return ScopeConfigNoFlood
 	}
-}
-
-// ScopeAuditRow is one repeater's declared-vs-observed comparison for
-// GET /api/scope-audit — the network-wide answer to "which repeaters
-// declare a region they are not actually forwarding". Every field is
-// already normalised (no leading '#') and '*' is never present in
-// DeclaredRegions/NotObserved/UndeclaredObserved — see DeclaredWildcard and
-// WildcardContradiction for its counterpart.
-
-type ScopeAuditRow struct {
-	PublicKey string `json:"publicKey"`
-	// Name/Role are pointers so "we hold no nodes row for this target" serialises
-	// as null rather than "". A declared-regions row can name a repeater this
-	// instance has never recorded, and an empty string would make that
-	// indistinguishable from a node we DO know that simply has no name — the
-	// same absent-is-not-empty rule the declared side already follows.
-	Name *string         `json:"name"`
-	Role *types.NodeRole `json:"role"`
-
-	DeclaredRegions  []string `json:"declaredRegions"`  // '*' excluded — see DeclaredWildcard
-	DeclaredWildcard bool     `json:"declaredWildcard"` // '*' present in the raw declared list
-	// ConfigState is scopeAuditConfigState(DeclaredRegions, DeclaredWildcard)
-	// — one of ScopeConfigFull/NoScopes/NoUnscoped/NoFlood, the config-state
-	// reading of those same two fields so a caller does not have to
-	// re-derive it from them. See scopeAuditConfigState's doc comment for
-	// the caveat on the "no named regions" half of NoScopes/NoFlood.
-	ConfigState string    `json:"configState"`
-	DeclaredAt  time.Time `json:"declaredAt"` // ISO — age of the declared answer, not the window
-	Truncated   bool      `json:"truncated"`  // declared list may have had entries silently dropped
-
-	// NotObserved is declared regions with zero matched-forwarding observed
-	// in the window — the headline this endpoint exists to surface.
-	NotObserved []string `json:"notObserved"`
-	// UndeclaredObserved is scopes this repeater was observed forwarding
-	// that are absent from its declared list.
-	UndeclaredObserved []ScopeObservation `json:"undeclaredObserved"`
-
-	// ObservedUnscopedPackets is plain-FLOOD (no transport scope) packets
-	// this repeater was observed forwarding in the window — the '*'
-	// counterpart, per DeclaredWildcard's doc comment.
-	ObservedUnscopedPackets int64 `json:"observedUnscopedPackets"`
-	// WildcardContradiction is true when this repeater was observed
-	// forwarding unscoped floods but its declared list omits '*' — it says
-	// it does NOT forward them, and the traffic says otherwise.
-	WildcardContradiction bool `json:"wildcardContradiction"`
-
-	// AmbiguousHops counts forwarder-hop observations in the window whose
-	// truncated hash prefix matched this target's pubkey AND at least one
-	// other declared target's — see ScopeAuditForwarding's doc comment for
-	// why those hops are attributed to neither and instead counted here on
-	// every candidate. A non-zero value is a caveat, not a finding: any
-	// NotObserved entry on this row could be explained by a colliding
-	// neighbour's traffic rather than a real absence, and any
-	// UndeclaredObserved entry is unaffected by it (ambiguous hops are never
-	// attributed to a scope at all).
-	AmbiguousHops int64 `json:"ambiguousHops"`
-
-	// ObservedUnmatchedPackets counts packets this repeater was observed
-	// forwarding whose transport scope matched no region key this instance
-	// holds. Like AmbiguousHops it is a caveat rather than a finding, but the
-	// two have different causes and different fixes: AmbiguousHops is a
-	// pubkey-prefix collision between two repeaters and nobody's fault,
-	// ObservedUnmatchedPackets is a missing entry in this instance's own
-	// hashRegions and the reader can act on it. A non-zero value means any
-	// NotObserved entry on this row may name a region this instance cannot
-	// name rather than one the repeater is not forwarding.
-	//
-	// It says nothing about DeclaredWildcard: unmatched traffic IS scoped, so
-	// it never feeds WildcardContradiction, which counts only plain unscoped
-	// floods.
-	ObservedUnmatchedPackets int64 `json:"observedUnmatchedPackets"`
-
-	// ObservedUnmatchedSampled is how many of those packets verification could
-	// actually look at: the per-target list is capped at
-	// scopeVerifyMaxPacketsPerTarget and the window sample at
-	// scopeVerifyMaxWindowPackets, while ObservedUnmatchedPackets keeps
-	// counting past both.
-	//
-	// It exists because a client cannot otherwise subtract the two fields
-	// honestly. RegionEvidence can only ever count packets inside this sample,
-	// so on a row where this is smaller than ObservedUnmatchedPackets the
-	// difference between them is an upper bound on the unexplained traffic, not
-	// a figure. Equal values mean the subtraction is exact.
-	ObservedUnmatchedSampled int64 `json:"observedUnmatchedSampled"`
-
-	// RegionEvidence maps a declared region to how many of this repeater's own
-	// unmatched forwarded packets derive to it — see scope_verify.go. A region
-	// reaching scopeVerifyMinCorroboration is removed from NotObserved, so this
-	// field is NOT what decides the chip's colour; NotObserved remains the sole
-	// source of that. This exists so a client can say HOW a region was
-	// established, and can explain a region that got exactly one hit and
-	// therefore stayed in NotObserved.
-	//
-	// Absent regions simply had no matching traffic. Never nil in the response
-	// — an empty object and a missing key mean the same thing, and an empty map
-	// is the cheaper thing for a client to iterate.
-	RegionEvidence map[string]int `json:"regionEvidence"`
-}
-
-// ScopeAuditResponse is the payload for GET /api/scope-audit. Only
-// repeaters with at least one declared-regions answer are included — a
-// repeater never successfully asked is absent, not shown declaring nothing
-// (see AllCurrentDeclaredRegions).
-type ScopeAuditResponse struct {
-	Window    string          `json:"window"`
-	Since     time.Time       `json:"since"` // ISO — start of the observed-forwarding window
-	Repeaters []ScopeAuditRow `json:"repeaters"`
 }
 
 // NodeScopesResponse is the payload for GET /api/nodes/{pubkey}/scopes: the
@@ -550,7 +435,7 @@ func (s *Server) handleScopeAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, v.(*ScopeAuditResponse))
+	writeJSON(w, v.(*api.ScopeAuditResponse))
 }
 
 // scopeAuditTTLFor is how long one window's computed audit stays fresh.
@@ -572,7 +457,7 @@ func scopeAuditTTLFor(window string) time.Duration {
 
 // scopeAuditCached returns the cached response for a window while it is within
 // that window's TTL.
-func (s *Server) scopeAuditCached(window string) (*ScopeAuditResponse, bool) {
+func (s *Server) scopeAuditCached(window string) (*api.ScopeAuditResponse, bool) {
 	s.scopeAuditMu.Lock()
 	defer s.scopeAuditMu.Unlock()
 	if s.scopeAuditCache == nil {
@@ -586,11 +471,11 @@ func (s *Server) scopeAuditCached(window string) (*ScopeAuditResponse, bool) {
 }
 
 // scopeAuditStore publishes a freshly computed response for a window.
-func (s *Server) scopeAuditStore(window string, resp *ScopeAuditResponse) {
+func (s *Server) scopeAuditStore(window string, resp *api.ScopeAuditResponse) {
 	s.scopeAuditMu.Lock()
 	defer s.scopeAuditMu.Unlock()
 	if s.scopeAuditCache == nil {
-		s.scopeAuditCache = make(map[string]*ScopeAuditResponse)
+		s.scopeAuditCache = make(map[string]*api.ScopeAuditResponse)
 		s.scopeAuditCachedAt = make(map[string]time.Time)
 	}
 	s.scopeAuditCache[window] = resp
@@ -600,7 +485,7 @@ func (s *Server) scopeAuditStore(window string, resp *ScopeAuditResponse) {
 // computeScopeAudit builds one window's audit response: the declared lists and
 // the forwarding evidence attributed to them. Split out of the handler so the
 // cache and its singleflight wrap a plain function instead of a request.
-func (s *Server) computeScopeAudit(ctx context.Context, window string, sinceISO time.Time) (*ScopeAuditResponse, error) {
+func (s *Server) computeScopeAudit(ctx context.Context, window string, sinceISO time.Time) (*api.ScopeAuditResponse, error) {
 	declared, err := s.db.AllCurrentDeclaredRegions(ctx)
 	if err != nil {
 		return nil, err
@@ -647,8 +532,11 @@ func (s *Server) computeScopeAudit(ctx context.Context, window string, sinceISO 
 	}
 
 	identities, err := s.db.ListNodeIdentities(ctx, targets)
+	if err != nil {
+		return nil, err
+	}
 
-	resp := &ScopeAuditResponse{Window: window, Since: sinceISO, Repeaters: []ScopeAuditRow{}}
+	resp := &api.ScopeAuditResponse{Window: window, Since: types.WireTimeSeconds{Time: sinceISO}, Repeaters: []api.ScopeAuditRow{}}
 	for _, d := range declared {
 		pk := strings.ToLower(d.Target)
 		if s.cfg != nil && s.cfg.IsBlacklisted(pk) {
@@ -706,7 +594,7 @@ func (s *Server) computeScopeAudit(ctx context.Context, window string, sinceISO 
 			}
 		}
 
-		undeclared := []ScopeObservation{}
+		undeclared := []api.ScopeObservation{}
 		if agg != nil {
 			names := make([]string, 0, len(agg.scopes))
 			for name := range agg.scopes {
@@ -730,14 +618,14 @@ func (s *Server) computeScopeAudit(ctx context.Context, window string, sinceISO 
 			unmatchedSampled = int64(len(agg.unmatchedTxIDs))
 		}
 
-		resp.Repeaters = append(resp.Repeaters, ScopeAuditRow{
+		resp.Repeaters = append(resp.Repeaters, api.ScopeAuditRow{
 			PublicKey:                pk,
 			Name:                     id.Name,
 			Role:                     id.Role,
 			DeclaredRegions:          declaredNamed,
 			DeclaredWildcard:         declaredWildcard,
-			ConfigState:              scopeAuditConfigState(declaredNamed, declaredWildcard),
-			DeclaredAt:               d.ObservedAt,
+			ConfigState:              api.ScopeConfigState(scopeAuditConfigState(declaredNamed, declaredWildcard)),
+			DeclaredAt:               types.WireTimeSeconds{Time: d.ObservedAt},
 			Truncated:                d.Truncated,
 			NotObserved:              notObserved,
 			UndeclaredObserved:       undeclared,

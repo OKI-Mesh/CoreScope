@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
@@ -132,7 +133,7 @@ func TestRxLeaderboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byPk := map[string]LeaderObserver{}
+	byPk := map[string]api.RxLeaderboardObserver{}
 	for _, o := range obs {
 		byPk[o.Pubkey] = o
 	}
@@ -207,7 +208,7 @@ func TestRxLeaderboardHidesBlacklistedAndHidden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byPk := map[string]LeaderObserver{}
+	byPk := map[string]api.RxLeaderboardObserver{}
 	for _, o := range obs {
 		byPk[o.Pubkey] = o
 	}
@@ -306,7 +307,7 @@ func TestRxLeaderboardFrontierScore(t *testing.T) {
 	if obs[0].Pubkey != roam || obs[1].Pubkey != park {
 		t.Fatalf("ranking: want [roam park], got [%s %s]", obs[0].Pubkey, obs[1].Pubkey)
 	}
-	byPk := map[string]LeaderObserver{}
+	byPk := map[string]api.RxLeaderboardObserver{}
 	for _, o := range obs {
 		byPk[o.Pubkey] = o
 	}
@@ -345,7 +346,7 @@ func TestRxLeaderboardScoreNotDilutedByBlacklisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byPk := map[string]LeaderObserver{}
+	byPk := map[string]api.RxLeaderboardObserver{}
 	for _, o := range obs {
 		byPk[o.Pubkey] = o
 	}
