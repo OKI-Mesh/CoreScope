@@ -356,6 +356,21 @@ func (e ListPacketsParamsExpand) Valid() bool {
 	}
 }
 
+// Defines values for GetPerfParamsMem.
+const (
+	N1 GetPerfParamsMem = "1"
+)
+
+// Valid indicates whether the value is a known member of the GetPerfParamsMem enum.
+func (e GetPerfParamsMem) Valid() bool {
+	switch e {
+	case N1:
+		return true
+	default:
+		return false
+	}
+}
+
 // AnalyticsWarmupResponse defines model for AnalyticsWarmupResponse.
 type AnalyticsWarmupResponse struct {
 	Error       string `json:"error"`
@@ -433,6 +448,18 @@ type BulkHealthStats struct {
 	TotalObservations  int               `json:"totalObservations"`
 	TotalPackets       int               `json:"totalPackets"`
 	TotalTransmissions int               `json:"totalTransmissions"`
+}
+
+// CacheStats defines model for CacheStats.
+type CacheStats struct {
+	Entries int `json:"entries"`
+
+	// HitRate Percent of lookups that hit, 0 to 100.
+	HitRate    float64 `json:"hitRate"`
+	Hits       int64   `json:"hits"`
+	Misses     int64   `json:"misses"`
+	Recomputes int64   `json:"recomputes"`
+	StaleHits  int     `json:"staleHits"`
 }
 
 // CalibrationSummary defines model for CalibrationSummary.
@@ -566,8 +593,24 @@ type ChannelTimelineEntry struct {
 	Hour string `json:"hour"`
 }
 
+// CheckpointStats defines model for CheckpointStats.
+type CheckpointStats struct {
+	BuffersWritten int64 `json:"buffersWritten"`
+	Requested      int64 `json:"requested"`
+	Timed          int64 `json:"timed"`
+}
+
 // CollisionClass local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
 type CollisionClass string
+
+// DbStats defines model for DbStats.
+type DbStats struct {
+	Checkpoints *CheckpointStats `json:"checkpoints,omitempty"`
+	DbSizeMB    float64          `json:"dbSizeMB"`
+	DeadTuples  int64            `json:"deadTuples"`
+	Rows        TableRowCounts   `json:"rows"`
+	WalSizeMB   float64          `json:"walSizeMB"`
+}
 
 // DirectObserverStats defines model for DirectObserverStats.
 type DirectObserverStats struct {
@@ -673,13 +716,51 @@ type DistanceSummary struct {
 	TotalPaths int     `json:"totalPaths"`
 }
 
+// EndpointStats defines model for EndpointStats.
+type EndpointStats struct {
+	AvgMs float64 `json:"avgMs"`
+	Count int     `json:"count"`
+	MaxMs float64 `json:"maxMs"`
+	P50Ms float64 `json:"p50Ms"`
+	P95Ms float64 `json:"p95Ms"`
+}
+
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// EventLoopStats Garbage-collection pauses, reported in the shape the Node event-loop lag had.
+type EventLoopStats struct {
+	CurrentLagMs float64 `json:"currentLagMs"`
+	MaxLagMs     float64 `json:"maxLagMs"`
+	P50Ms        float64 `json:"p50Ms"`
+	P95Ms        float64 `json:"p95Ms"`
+	P99Ms        float64 `json:"p99Ms"`
+}
+
 // FilterableRole A role the API accepts as a filter. Unlike NodeRole, it does not include unknown.
 type FilterableRole = types.NodeRole
+
+// FromPubkeyBackfill Progress of the backfill that attributes legacy adverts to their sender.
+type FromPubkeyBackfill struct {
+	Done      bool  `json:"done"`
+	Processed int64 `json:"processed"`
+	Total     int64 `json:"total"`
+}
+
+// GoRuntimeStats defines model for GoRuntimeStats.
+type GoRuntimeStats struct {
+	Goroutines   int     `json:"goroutines"`
+	HeapAllocMB  float64 `json:"heapAllocMB"`
+	HeapIdleMB   float64 `json:"heapIdleMB"`
+	HeapInuseMB  float64 `json:"heapInuseMB"`
+	HeapSysMB    float64 `json:"heapSysMB"`
+	LastPauseMs  float64 `json:"lastPauseMs"`
+	NumCPU       int     `json:"numCPU"`
+	NumGC        int64   `json:"numGC"`
+	PauseTotalMs float64 `json:"pauseTotalMs"`
+}
 
 // GraphEdge defines model for GraphEdge.
 type GraphEdge struct {
@@ -910,6 +991,82 @@ type HashSizeHourly struct {
 	Hour string `json:"hour"`
 }
 
+// HealthMemory Process memory in MB.
+type HealthMemory struct {
+	// External Always 0. Kept for the shape the Node server had.
+	External  int `json:"external"`
+	HeapTotal int `json:"heapTotal"`
+	HeapUsed  int `json:"heapUsed"`
+	Rss       int `json:"rss"`
+}
+
+// HealthPacketStore defines model for HealthPacketStore.
+type HealthPacketStore struct {
+	EstimatedMB float64 `json:"estimatedMB"`
+	Packets     int     `json:"packets"`
+	TrackedMB   float64 `json:"trackedMB"`
+}
+
+// HealthPerf defines model for HealthPerf.
+type HealthPerf struct {
+	AvgMs float64 `json:"avgMs"`
+
+	// RecentSlow The five most recent, oldest first.
+	RecentSlow []SlowQuery `json:"recentSlow"`
+
+	// SlowQueries How many slow requests are on record.
+	SlowQueries   int `json:"slowQueries"`
+	TotalRequests int `json:"totalRequests"`
+}
+
+// HealthResponse defines model for HealthResponse.
+type HealthResponse struct {
+	BuildTime string     `json:"buildTime"`
+	Cache     CacheStats `json:"cache"`
+	Commit    string     `json:"commit"`
+	Engine    string     `json:"engine"`
+
+	// EventLoop Garbage-collection pauses, reported in the shape the Node event-loop lag had.
+	EventLoop EventLoopStats `json:"eventLoop"`
+
+	// Memory Process memory in MB.
+	Memory      HealthMemory      `json:"memory"`
+	PacketStore HealthPacketStore `json:"packetStore"`
+	Perf        HealthPerf        `json:"perf"`
+
+	// Status Always ok.
+	Status string `json:"status"`
+
+	// Uptime Seconds since start.
+	Uptime      int            `json:"uptime"`
+	UptimeHuman string         `json:"uptimeHuman"`
+	Version     string         `json:"version"`
+	Websocket   WebSocketStats `json:"websocket"`
+}
+
+// HealthzLoadingResponse defines model for HealthzLoadingResponse.
+type HealthzLoadingResponse struct {
+	// Ready Always false.
+	Ready bool `json:"ready"`
+
+	// Reason Always loading.
+	Reason string `json:"reason"`
+}
+
+// HealthzResponse defines model for HealthzResponse.
+type HealthzResponse struct {
+	// FromPubkeyBackfill Progress of the backfill that attributes legacy adverts to their sender.
+	FromPubkeyBackfill FromPubkeyBackfill `json:"from_pubkey_backfill"`
+
+	// IngestLiveness Per MQTT source, by source name. Absent when the ingestor publishes none.
+	IngestLiveness *map[string]SourceLiveness `json:"ingest_liveness,omitempty"`
+	LoadedObs      int                        `json:"loadedObs"`
+	LoadedTx       int                        `json:"loadedTx"`
+
+	// Ready Always true.
+	Ready bool `json:"ready"`
+}
+
 // Histogram defines model for Histogram.
 type Histogram struct {
 	// Bins Empty when there is no data.
@@ -1088,6 +1245,46 @@ type MetricsSummaryObserver struct {
 // MetricsSummaryResponse defines model for MetricsSummaryResponse.
 type MetricsSummaryResponse struct {
 	Observers []MetricsSummaryObserver `json:"observers"`
+}
+
+// MqttSourceStatus defines model for MqttSourceStatus.
+type MqttSourceStatus struct {
+	// Broker Broker URL with any password masked.
+	Broker          string `json:"broker"`
+	ConnectCount    int64  `json:"connectCount"`
+	Connected       bool   `json:"connected"`
+	DisconnectCount int64  `json:"disconnectCount"`
+
+	// LastConnectUnix Unix seconds. 0 means never.
+	LastConnectUnix int64 `json:"lastConnectUnix"`
+
+	// LastDisconnectUnix Unix seconds. 0 means never.
+	LastDisconnectUnix int64 `json:"lastDisconnectUnix"`
+
+	// LastError Last connection error, with any broker password masked. Absent when there is none.
+	LastError *string `json:"lastError,omitempty"`
+
+	// LastPacketUnix Unix seconds. 0 means never.
+	LastPacketUnix int64  `json:"lastPacketUnix"`
+	Name           string `json:"name"`
+	PacketsLast5m  int64  `json:"packetsLast5m"`
+	PacketsTotal   int64  `json:"packetsTotal"`
+}
+
+// MqttStatusResponse defines model for MqttStatusResponse.
+type MqttStatusResponse struct {
+	// SampleAt When the ingestor wrote the status. Null when there is none.
+	SampleAt *TimestampSeconds  `json:"sampleAt"`
+	Sources  []MqttSourceStatus `json:"sources"`
+
+	// WatchdogLastTickUnix Unix seconds of the last ingestor watchdog tick. Absent when zero.
+	WatchdogLastTickUnix *int64 `json:"watchdogLastTickUnix,omitempty"`
+
+	// WatchdogLogDropCount Watchdog log lines dropped because the log sink was stuck. Absent when zero.
+	WatchdogLogDropCount *int64 `json:"watchdogLogDropCount,omitempty"`
+
+	// WatchdogPanicCount Recovered watchdog panics. Absent when zero.
+	WatchdogPanicCount *int64 `json:"watchdogPanicCount,omitempty"`
 }
 
 // MultiByteCapability defines model for MultiByteCapability.
@@ -1730,6 +1927,14 @@ type PacketObservation struct {
 	Timestamp TimestampMillis `json:"timestamp"`
 }
 
+// PacketStoreIndexes defines model for PacketStoreIndexes.
+type PacketStoreIndexes struct {
+	AdvertByObserver int `json:"advertByObserver"`
+	ByHash           int `json:"byHash"`
+	ByNode           int `json:"byNode"`
+	ByObserver       int `json:"byObserver"`
+}
+
 // PathCount defines model for PathCount.
 type PathCount struct {
 	Count int `json:"count"`
@@ -1757,6 +1962,114 @@ type PayloadTypeSignal struct {
 
 	// Name Payload type name; UNK when the packet has none.
 	Name string `json:"name"`
+}
+
+// PerfCacheStats The same counters as CacheStats, with size where CacheStats has entries.
+type PerfCacheStats struct {
+	HitRate    float64 `json:"hitRate"`
+	Hits       int64   `json:"hits"`
+	Misses     int64   `json:"misses"`
+	Recomputes int64   `json:"recomputes"`
+	Size       int     `json:"size"`
+	StaleHits  int     `json:"staleHits"`
+}
+
+// PerfIOResponse defines model for PerfIOResponse.
+type PerfIOResponse struct {
+	CancelledWriteBytesPerSec float64 `json:"cancelledWriteBytesPerSec"`
+
+	// Ingestor The ingestor's own rates. Absent when the ingestor publishes none.
+	Ingestor         *PerfIOSample `json:"ingestor,omitempty"`
+	ReadBytesPerSec  float64       `json:"readBytesPerSec"`
+	SyscallsRead     float64       `json:"syscallsRead"`
+	SyscallsWrite    float64       `json:"syscallsWrite"`
+	WriteBytesPerSec float64       `json:"writeBytesPerSec"`
+}
+
+// PerfIOSample defines model for PerfIOSample.
+type PerfIOSample struct {
+	CancelledWriteBytesPerSec float64 `json:"cancelledWriteBytesPerSec"`
+	ReadBytesPerSec           float64 `json:"readBytesPerSec"`
+
+	// SampledAt UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	SampledAt        *TimestampSeconds `json:"sampledAt,omitempty"`
+	SyscallsRead     float64           `json:"syscallsRead"`
+	SyscallsWrite    float64           `json:"syscallsWrite"`
+	WriteBytesPerSec float64           `json:"writeBytesPerSec"`
+}
+
+// PerfPacketStoreStats defines model for PerfPacketStoreStats.
+type PerfPacketStoreStats struct {
+	AvgBytesPerPacket      int64 `json:"avgBytesPerPacket"`
+	BackgroundLoadComplete bool  `json:"backgroundLoadComplete"`
+
+	// BackgroundLoadError Present only when the background load failed.
+	BackgroundLoadError  *string `json:"backgroundLoadError,omitempty"`
+	BackgroundLoadFailed bool    `json:"backgroundLoadFailed"`
+
+	// BackgroundLoadProgress Percent, 0 to 100.
+	BackgroundLoadProgress int64              `json:"backgroundLoadProgress"`
+	EstimatedMB            float64            `json:"estimatedMB"`
+	Evicted                int                `json:"evicted"`
+	HotStartupHours        float64            `json:"hotStartupHours"`
+	InMemory               int                `json:"inMemory"`
+	Indexes                PacketStoreIndexes `json:"indexes"`
+	Inserts                int64              `json:"inserts"`
+
+	// LoadCoverageRatio Share of the database the in-memory store holds, 0 to 1.
+	LoadCoverageRatio float64 `json:"loadCoverageRatio"`
+	MaxMB             int     `json:"maxMB"`
+	MaxPackets        int     `json:"maxPackets"`
+
+	// OldestLoaded UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	OldestLoaded   TimestampSeconds `json:"oldestLoaded"`
+	Queries        int64            `json:"queries"`
+	RetentionHours float64          `json:"retentionHours"`
+
+	// SqliteOnly Always false.
+	SqliteOnly        bool    `json:"sqliteOnly"`
+	TotalLoaded       int     `json:"totalLoaded"`
+	TotalObservations int     `json:"totalObservations"`
+	TrackedMB         float64 `json:"trackedMB"`
+}
+
+// PerfResponse defines model for PerfResponse.
+type PerfResponse struct {
+	AvgMs float64 `json:"avgMs"`
+
+	// Cache The same counters as CacheStats, with size where CacheStats has entries.
+	Cache PerfCacheStats `json:"cache"`
+
+	// DbStats Null when the database could not be queried.
+	DbStats *DbStats `json:"dbStats"`
+
+	// Endpoints Timings per route pattern, busiest first by total time.
+	Endpoints       map[string]EndpointStats `json:"endpoints"`
+	GoRuntime       GoRuntimeStats           `json:"goRuntime"`
+	MemoryBreakdown *StoreMemoryBreakdown    `json:"memoryBreakdown,omitempty"`
+
+	// MemoryBreakdownNote What memoryBreakdown counts and leaves out. Present with memoryBreakdown.
+	MemoryBreakdownNote *string               `json:"memoryBreakdownNote,omitempty"`
+	PacketStore         *PerfPacketStoreStats `json:"packetStore"`
+
+	// SlowQueries The 20 most recent requests over 100 ms, oldest first.
+	SlowQueries   []SlowQuery `json:"slowQueries"`
+	TotalRequests int64       `json:"totalRequests"`
+
+	// Uptime Seconds since the counters started.
+	Uptime int `json:"uptime"`
+}
+
+// PerfWriteSourcesResponse defines model for PerfWriteSourcesResponse.
+type PerfWriteSourcesResponse struct {
+	// SampleAt When the ingestor wrote the counters. Null when there are none.
+	SampleAt *TimestampSeconds `json:"sampleAt"`
+
+	// Sources Cumulative counters by name. Backfill counters are named backfill_ followed by the backfill.
+	Sources map[string]int64 `json:"sources"`
+
+	// WriterPerf Lock timings by writer kind. Sent by newer ingestor builds only.
+	WriterPerf *map[string]WriterLockStats `json:"writer_perf,omitempty"`
 }
 
 // RFAnalyticsResponse defines model for RFAnalyticsResponse.
@@ -2057,12 +2370,88 @@ type SkewSample struct {
 // SkewSeverity Derived from the recent median skew. ok is under 5 minutes, warning under 1 hour, critical under 30 days, absurd under 365 days and no_clock beyond that (an uninitialized RTC). bimodal_clock marks a node whose recent adverts mix good and nonsense timestamps.
 type SkewSeverity = types.SkewSeverity
 
+// SlowQuery defines model for SlowQuery.
+type SlowQuery struct {
+	Ms     float64 `json:"ms"`
+	Path   string  `json:"path"`
+	Status int     `json:"status"`
+
+	// Time UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	Time TimestampSeconds `json:"time"`
+}
+
 // SnrBucket defines model for SnrBucket.
 type SnrBucket struct {
 	Count int `json:"count"`
 
 	// Range Two-unit SNR range such as -4 to -2.
 	Range string `json:"range"`
+}
+
+// SourceLiveness Two clocks per MQTT source. A recent receipt with a stale message means the broker is alive and the write path is stuck.
+type SourceLiveness struct {
+	// LastMessageUnix Unix seconds of the last packet written. 0 means never.
+	LastMessageUnix int64 `json:"lastMessageUnix"`
+
+	// LastReceiptUnix Unix seconds of the last packet received. 0 means never.
+	LastReceiptUnix int64 `json:"lastReceiptUnix"`
+}
+
+// StatsResponse defines model for StatsResponse.
+type StatsResponse struct {
+	BuildTime string `json:"buildTime"`
+	Commit    string `json:"commit"`
+
+	// Counts All-time node counts per role.
+	Counts RoleCounts `json:"counts"`
+
+	// Engine Always go.
+	Engine                string  `json:"engine"`
+	GoHeapInuseMB         float64 `json:"goHeapInuseMB"`
+	GoSysMB               float64 `json:"goSysMB"`
+	HashMigrationComplete bool    `json:"hashMigrationComplete"`
+
+	// NeighborGraphCacheRebuildFailures Failed rebuilds of the neighbor-graph cache. Non-zero means a stale snapshot is being served.
+	NeighborGraphCacheRebuildFailures int64   `json:"neighborGraphCacheRebuildFailures"`
+	PacketsLast24h                    int     `json:"packetsLast24h"`
+	PacketsLastHour                   int     `json:"packetsLastHour"`
+	ProcessRSSMB                      float64 `json:"processRSSMB"`
+
+	// SignatureDrops Packets dropped for a bad signature.
+	SignatureDrops int64 `json:"signatureDrops"`
+
+	// StoreDataMB Packet bytes held in the store. A subset of the Go heap.
+	StoreDataMB float64 `json:"storeDataMB"`
+
+	// TotalNodes Nodes seen in the active window.
+	TotalNodes         int `json:"totalNodes"`
+	TotalNodesAllTime  int `json:"totalNodesAllTime"`
+	TotalObservations  int `json:"totalObservations"`
+	TotalObservers     int `json:"totalObservers"`
+	TotalPackets       int `json:"totalPackets"`
+	TotalTransmissions int `json:"totalTransmissions"`
+
+	// TrackedMB Same value as storeDataMB. Kept for older consumers.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	TrackedMB float64 `json:"trackedMB"`
+	Version   string  `json:"version"`
+}
+
+// StoreMemoryBreakdown defines model for StoreMemoryBreakdown.
+type StoreMemoryBreakdown struct {
+	// FloodTx Transmissions with route type 0 or 1.
+	FloodTx            int     `json:"floodTx"`
+	FloodTxEstimatedMB float64 `json:"floodTxEstimatedMB"`
+	FloodTxSharePct    float64 `json:"floodTxSharePct"`
+	ObsPathJsonMB      float64 `json:"obsPathJsonMB"`
+	ObsPerTx           float64 `json:"obsPerTx"`
+	ObsStringsMB       float64 `json:"obsStringsMB"`
+	Observations       int     `json:"observations"`
+	TotalTx            int     `json:"totalTx"`
+	TotalTxEstimatedMB float64 `json:"totalTxEstimatedMB"`
+	TxDecodedJsonMB    float64 `json:"txDecodedJsonMB"`
+	TxPathJsonMB       float64 `json:"txPathJsonMB"`
+	TxRawHexMB         float64 `json:"txRawHexMB"`
 }
 
 // SubpathBulkResponse defines model for SubpathBulkResponse.
@@ -2134,6 +2523,14 @@ type SubpathSignal struct {
 
 	// Samples Packets with an SNR.
 	Samples int `json:"samples"`
+}
+
+// TableRowCounts defines model for TableRowCounts.
+type TableRowCounts struct {
+	Nodes         int64 `json:"nodes"`
+	Observations  int64 `json:"observations"`
+	Observers     int64 `json:"observers"`
+	Transmissions int64 `json:"transmissions"`
 }
 
 // TimelineBucket defines model for TimelineBucket.
@@ -2270,6 +2667,34 @@ type TwoByteCell struct {
 
 // UsefulnessGrade Letter grade derived from usefulness_score.
 type UsefulnessGrade string
+
+// WebSocketStats defines model for WebSocketStats.
+type WebSocketStats struct {
+	Clients int `json:"clients"`
+
+	// RejectedConnCap Upgrades refused at the connection cap. Absent when zero.
+	RejectedConnCap *int64 `json:"rejectedConnCap,omitempty"`
+
+	// RejectedDeny Upgrades refused because the address is on the deny list. Absent when zero.
+	RejectedDeny *int64 `json:"rejectedDeny,omitempty"`
+
+	// RejectedRate Upgrades refused for connecting too fast. Absent when zero.
+	RejectedRate *int64 `json:"rejectedRate,omitempty"`
+}
+
+// WriterLockStats How long one kind of writer waited for, and then held, the database write lock.
+type WriterLockStats struct {
+	ContentionTotal int64   `json:"contention_total"`
+	Count           int64   `json:"count"`
+	HoldMsMax       float64 `json:"hold_ms_max"`
+	HoldMsP50       float64 `json:"hold_ms_p50"`
+	HoldMsP95       float64 `json:"hold_ms_p95"`
+	HoldMsP99       float64 `json:"hold_ms_p99"`
+	WaitMsMax       float64 `json:"wait_ms_max"`
+	WaitMsP50       float64 `json:"wait_ms_p50"`
+	WaitMsP95       float64 `json:"wait_ms_p95"`
+	WaitMsP99       float64 `json:"wait_ms_p99"`
+}
 
 // Area defines model for Area.
 type Area = string
@@ -2686,6 +3111,15 @@ type ListPacketTimestampsParams struct {
 	// Since RFC 3339 time or date.
 	Since string `form:"since" json:"since"`
 }
+
+// GetPerfParams defines parameters for GetPerf.
+type GetPerfParams struct {
+	// Mem Pass 1 to add memoryBreakdown and memoryBreakdownNote. That walks every stored transmission and observation, so it is slow on a large store.
+	Mem *GetPerfParamsMem `form:"mem,omitempty" json:"mem,omitempty"`
+}
+
+// GetPerfParamsMem defines parameters for GetPerf.
+type GetPerfParamsMem string
 
 // ResolveHopsParams defines parameters for ResolveHops.
 type ResolveHopsParams struct {

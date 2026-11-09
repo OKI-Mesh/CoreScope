@@ -9,27 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/perfio"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
-
-// PerfIOResponse holds per-process disk I/O metrics derived from /proc/self/io.
-//
-// `Ingestor` is the same shape as the top-level fields, sourced from the
-// ingestor's own /proc/self/io snapshot (published via the ingestor stats file).
-// Issue #1120 calls for "Both ingestor and server" — this is the ingestor half.
-//
-// `CancelledWriteBytesPerSec` surfaces `cancelled_write_bytes` from
-// /proc/self/io — bytes the kernel discarded before they hit disk (e.g. file
-// truncated/unlinked while dirty). Useful signal when chasing
-// write-amplification anomalies (cf. the BackfillPathJSON loop in #1119).
-type PerfIOResponse struct {
-	ReadBytesPerSec           float64       `json:"readBytesPerSec"`
-	WriteBytesPerSec          float64       `json:"writeBytesPerSec"`
-	CancelledWriteBytesPerSec float64       `json:"cancelledWriteBytesPerSec"`
-	SyscallsRead              float64       `json:"syscallsRead"`
-	SyscallsWrite             float64       `json:"syscallsWrite"`
-	Ingestor                  *PerfIOSample `json:"ingestor,omitempty"`
-}
 
 // PerfIOSample is the canonical per-process I/O rate sample, shared with the
 // ingestor via internal/perfio. Sharing the type prevents silent JSON contract
@@ -117,7 +100,7 @@ func parseProcIOInto(sc *bufio.Scanner, s *procIOSample) bool {
 // report the delta divided by elapsed seconds.
 func (s *Server) handlePerfIO(w http.ResponseWriter, r *http.Request) {
 	cur := readProcIO()
-	resp := PerfIOResponse{}
+	resp := api.PerfIOResponse{}
 
 	perfIOMu.Lock()
 	prev := perfIOLastSample
@@ -139,7 +122,14 @@ func (s *Server) handlePerfIO(w http.ResponseWriter, r *http.Request) {
 	// real parsing of the ingestor stats file's procIO section (#1120
 	// follow-up — "Both ingestor and server").
 	if ing := readIngestorIOSample(); ing != nil {
-		resp.Ingestor = ing
+		resp.Ingestor = &api.PerfIOSample{
+			ReadBytesPerSec:           ing.ReadBytesPerSec,
+			WriteBytesPerSec:          ing.WriteBytesPerSec,
+			CancelledWriteBytesPerSec: ing.CancelledWriteBytesPerSec,
+			SyscallsRead:              ing.SyscallsRead,
+			SyscallsWrite:             ing.SyscallsWrite,
+			SampledAt:                 statsTime(ing.SampledAt),
+		}
 	}
 	writeJSON(w, resp)
 }
@@ -386,10 +376,7 @@ func resetSourceLivenessCache() {
 // handlePerfWriteSources reads the ingestor's stats file and returns a flat
 // map of source-name -> counter, plus the sample timestamp.
 func (s *Server) handlePerfWriteSources(w http.ResponseWriter, r *http.Request) {
-	out := map[string]interface{}{
-		"sources":  map[string]int64{},
-		"sampleAt": "",
-	}
+	out := api.PerfWriteSourcesResponse{Sources: map[string]int64{}}
 
 	data, err := os.ReadFile(IngestorStatsPath())
 	if err != nil {
@@ -415,7 +402,21 @@ func (s *Server) handlePerfWriteSources(w http.ResponseWriter, r *http.Request) 
 	for name, v := range st.BackfillUpdates {
 		sources["backfill_"+name] = v
 	}
-	out["sources"] = sources
-	out["sampleAt"] = st.SampledAt
+	out.Sources = sources
+	out.SampleAt = statsTime(st.SampledAt)
 	writeJSON(w, out)
+}
+
+// statsTime reads a timestamp the ingestor wrote into its stats file. It
+// returns nil when the field is empty or not RFC 3339, so the response says
+// "no sample" and not a zero time.
+func statsTime(raw string) *types.WireTimeSeconds {
+	if raw == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil
+	}
+	return &types.WireTimeSeconds{Time: t}
 }

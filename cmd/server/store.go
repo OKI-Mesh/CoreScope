@@ -1844,7 +1844,7 @@ func (s *PacketStore) GetCacheStats() map[string]interface{} {
 }
 
 // GetCacheStatsTyped returns cache stats as a typed struct.
-func (s *PacketStore) GetCacheStatsTyped() CacheStats {
+func (s *PacketStore) GetCacheStatsTyped() api.CacheStats {
 	s.cacheMu.Lock()
 	size := len(s.rfCache) + len(s.relayAirtimeCache) + len(s.topoCache) + len(s.hashCache) + len(s.chanCache) + len(s.distCache) + len(s.subpathCache)
 	hits := s.cacheHits
@@ -1856,7 +1856,7 @@ func (s *PacketStore) GetCacheStatsTyped() CacheStats {
 		hitRate = math.Round(float64(hits)/float64(hits+misses)*1000) / 10
 	}
 
-	return CacheStats{
+	return api.CacheStats{
 		Entries:    size,
 		Hits:       hits,
 		Misses:     misses,
@@ -1961,7 +1961,7 @@ func (s *PacketStore) applyCacheInvalidation(inv cacheInvalidation) {
 }
 
 // GetPerfStoreStatsTyped returns packet store stats as a typed struct.
-func (s *PacketStore) GetPerfStoreStatsTyped() PerfPacketStoreStats {
+func (s *PacketStore) GetPerfStoreStatsTyped() api.PerfPacketStoreStats {
 	s.mu.RLock()
 	totalLoaded := len(s.packets)
 	totalObs := s.totalObs
@@ -1987,7 +1987,7 @@ func (s *PacketStore) GetPerfStoreStatsTyped() PerfPacketStoreStats {
 		avgBytesPerPacket = s.trackedBytes / int64(totalLoaded)
 	}
 
-	return PerfPacketStoreStats{
+	return api.PerfPacketStoreStats{
 		TotalLoaded:       totalLoaded,
 		TotalObservations: totalObs,
 		Evicted:           int(atomic.LoadInt64(&s.evicted)),
@@ -2000,7 +2000,7 @@ func (s *PacketStore) GetPerfStoreStatsTyped() PerfPacketStoreStats {
 		TrackedMB:         trackedMB,
 		AvgBytesPerPacket: avgBytesPerPacket,
 		MaxMB:             s.maxMemoryMB,
-		Indexes: PacketStoreIndexes{
+		Indexes: api.PacketStoreIndexes{
 			ByHash:           hashIdx,
 			ByObserver:       observerIdx,
 			ByNode:           nodeIdx,
@@ -2010,9 +2010,9 @@ func (s *PacketStore) GetPerfStoreStatsTyped() PerfPacketStoreStats {
 		BackgroundLoadComplete: s.backgroundLoadDone.Load(),
 		BackgroundLoadFailed:   s.backgroundLoadFailed.Load(),
 		BackgroundLoadProgress: s.backgroundLoadProgress.Load(),
-		BackgroundLoadError:    bgErr,
+		BackgroundLoadError:    optString(bgErr),
 		RetentionHours:         retentionHours,
-		OldestLoaded:           oldestLoaded,
+		OldestLoaded:           types.WireTimeSeconds{Time: oldestLoaded},
 		LoadCoverageRatio:      loadCov,
 	}
 }
@@ -2036,11 +2036,11 @@ func (s *PacketStore) GetPerfStoreStatsTyped() PerfPacketStoreStats {
 // not additive with TotalTxEstimatedMB. struct/index/map overhead, the neighbor
 // graph and analytics caches are excluded entirely — which is why the total
 // here sits below goHeapInuseMB.
-func (s *PacketStore) GetStoreMemoryBreakdown() *StoreMemoryBreakdown {
+func (s *PacketStore) GetStoreMemoryBreakdown() *api.StoreMemoryBreakdown {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := &StoreMemoryBreakdown{}
+	out := &api.StoreMemoryBreakdown{}
 	var txRawHex, txDecodedJSON, txPathJSON int64
 	var obsPathJSON, obsStrings int64
 	var floodTxBytes, totalTxBytes int64

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // readiness tracks whether background init goroutines have completed.
@@ -17,10 +19,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 	if readiness.Load() == 0 {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ready":  false,
-			"reason": "loading",
-		})
+		json.NewEncoder(w).Encode(api.HealthzLoadingResponse{Ready: false, Reason: "loading"})
 		return
 	}
 
@@ -42,14 +41,14 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// processed<total).
 	bfTotal, bfProcessed, bfDone := fromPubkeyBackfillSnapshot()
 	w.WriteHeader(http.StatusOK)
-	resp := map[string]interface{}{
-		"ready":     true,
-		"loadedTx":  loadedTx,
-		"loadedObs": loadedObs,
-		"from_pubkey_backfill": map[string]interface{}{
-			"total":     bfTotal,
-			"processed": bfProcessed,
-			"done":      bfDone,
+	resp := api.HealthzResponse{
+		Ready:     true,
+		LoadedTx:  loadedTx,
+		LoadedObs: loadedObs,
+		FromPubkeyBackfill: api.FromPubkeyBackfill{
+			Total:     bfTotal,
+			Processed: bfProcessed,
+			Done:      bfDone,
 		},
 	}
 	// PR #1609 M1: surface per-MQTT-source receipt vs write-path
@@ -59,7 +58,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// ingestor builds simply produce no entry and the field is
 	// omitted. Schema-compatible with prior /healthz consumers.
 	if liveness := readIngestorSourceLiveness(); len(liveness) > 0 {
-		resp["ingest_liveness"] = liveness
+		sources := make(map[string]api.SourceLiveness, len(liveness))
+		for name, l := range liveness {
+			sources[name] = api.SourceLiveness{LastReceiptUnix: l.LastReceiptUnix, LastMessageUnix: l.LastMessageUnix}
+		}
+		resp.IngestLiveness = &sources
 	}
 	json.NewEncoder(w).Encode(resp)
 }

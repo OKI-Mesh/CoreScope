@@ -1,0 +1,15 @@
+{
+  "readBytesPerSec": 129345.5142243046,
+  "writeBytesPerSec": 0,
+  "cancelledWriteBytesPerSec": 0,
+  "syscallsRead": 259.3547374019606,
+  "syscallsWrite": 571.2157292779493,
+  "ingestor": {
+    "readBytesPerSec": 16389.141486743232,
+    "writeBytesPerSec": 2433787.51078137,
+    "cancelledWriteBytesPerSec": 0,
+    "syscallsRead": 368.1154826123968,
+    "syscallsWrite": 814.2554425176386,
+    "sampledAt": "2026-11-09T13:04:45Z"
+  }
+}

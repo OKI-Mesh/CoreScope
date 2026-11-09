@@ -25,6 +25,8 @@ tags:
     description: Channels, their messages and the community channel catalogue
   - name: packets-tools
     description: Hop resolution and per-packet traces
+  - name: system
+    description: Server health, counters and ingestor status
 paths:
   /api/nodes/{pubkey}/neighbors:
     get:
@@ -559,6 +561,125 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TraceResponse'
+  /api/stats:
+    get:
+      tags: [system]
+      operationId: getStats
+      summary: Packet, node and observer totals with memory accounting
+      description: >-
+        Totals for the whole store plus node counts per role and the process
+        memory figures. The response is cached for 10 seconds.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+        "500":
+          description: The totals could not be read.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: Server version, uptime, memory and recent slow requests
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/healthz:
+    get:
+      tags: [system]
+      operationId: getHealthz
+      summary: Readiness probe
+      description: >-
+        Answers 503 until the store, the best-observation pass and the neighbor
+        graph have finished loading, then 200 with the loaded counts.
+      responses:
+        "200":
+          description: The server is ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzResponse'
+        "503":
+          description: Background initialization is still running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzLoadingResponse'
+  /api/perf:
+    get:
+      tags: [system]
+      operationId: getPerf
+      summary: Request timings, cache, packet store, database and Go runtime figures
+      parameters:
+        - name: mem
+          in: query
+          required: false
+          description: >-
+            Pass 1 to add memoryBreakdown and memoryBreakdownNote. That walks every
+            stored transmission and observation, so it is slow on a large store.
+          schema: { type: string, enum: ["1"] }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerfResponse'
+  /api/perf/io:
+    get:
+      tags: [system]
+      operationId: getPerfIO
+      summary: Disk I/O rates of the server process and the ingestor
+      description: >-
+        Rates are the change since the previous call to this endpoint, per second.
+        The first call after a start reports zeros.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerfIOResponse'
+  /api/perf/write-sources:
+    get:
+      tags: [system]
+      operationId: getPerfWriteSources
+      summary: Cumulative ingestor write counters
+      description: >-
+        Read from the ingestor stats file. When the file is missing or unreadable
+        the counters are empty and sampleAt is null.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerfWriteSourcesResponse'
+  /api/mqtt/status:
+    get:
+      tags: [system]
+      operationId: getMqttStatus
+      summary: Connection state and packet counts per MQTT source
+      description: >-
+        Read from the ingestor stats file, with passwords in broker URLs masked.
+        When the file is missing or unreadable there are no sources and sampleAt
+        is null.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MqttStatusResponse'
   /api/observers:
     get:
       tags: [observers]
@@ -2275,6 +2396,394 @@ components:
           type: array
           description: The newest observations, newest first, at most 20.
           items: { $ref: '#/components/schemas/ObserverPacket' }
+    StatsResponse:
+      type: object
+      additionalProperties: false
+      required: [totalPackets, totalTransmissions, totalObservations, totalNodes, totalNodesAllTime, totalObservers, packetsLastHour, packetsLast24h, engine, version, commit, buildTime, counts, signatureDrops, hashMigrationComplete, trackedMB, storeDataMB, processRSSMB, goHeapInuseMB, goSysMB, neighborGraphCacheRebuildFailures]
+      properties:
+        totalPackets: { type: integer }
+        totalTransmissions: { type: integer }
+        totalObservations: { type: integer }
+        totalNodes: { type: integer, description: Nodes seen in the active window. }
+        totalNodesAllTime: { type: integer }
+        totalObservers: { type: integer }
+        packetsLastHour: { type: integer }
+        packetsLast24h: { type: integer }
+        engine: { type: string, description: Always go. }
+        version: { type: string }
+        commit: { type: string }
+        buildTime: { type: string }
+        counts: { $ref: '#/components/schemas/RoleCounts' }
+        signatureDrops: { type: integer, format: int64, description: Packets dropped for a bad signature. }
+        hashMigrationComplete: { type: boolean }
+        trackedMB: { type: number, format: double, deprecated: true, description: Same value as storeDataMB. Kept for older consumers. }
+        storeDataMB: { type: number, format: double, description: Packet bytes held in the store. A subset of the Go heap. }
+        processRSSMB: { type: number, format: double }
+        goHeapInuseMB: { type: number, format: double }
+        goSysMB: { type: number, format: double }
+        neighborGraphCacheRebuildFailures:
+          type: integer
+          format: int64
+          description: Failed rebuilds of the neighbor-graph cache. Non-zero means a stale snapshot is being served.
+    HealthMemory:
+      type: object
+      additionalProperties: false
+      required: [rss, heapUsed, heapTotal, external]
+      description: Process memory in MB.
+      properties:
+        rss: { type: integer }
+        heapUsed: { type: integer }
+        heapTotal: { type: integer }
+        external: { type: integer, description: Always 0. Kept for the shape the Node server had. }
+    EventLoopStats:
+      type: object
+      additionalProperties: false
+      required: [currentLagMs, maxLagMs, p50Ms, p95Ms, p99Ms]
+      description: Garbage-collection pauses, reported in the shape the Node event-loop lag had.
+      properties:
+        currentLagMs: { type: number, format: double }
+        maxLagMs: { type: number, format: double }
+        p50Ms: { type: number, format: double }
+        p95Ms: { type: number, format: double }
+        p99Ms: { type: number, format: double }
+    CacheStats:
+      type: object
+      additionalProperties: false
+      required: [entries, hits, misses, staleHits, recomputes, hitRate]
+      properties:
+        entries: { type: integer }
+        hits: { type: integer, format: int64 }
+        misses: { type: integer, format: int64 }
+        staleHits: { type: integer }
+        recomputes: { type: integer, format: int64 }
+        hitRate: { type: number, format: double, description: "Percent of lookups that hit, 0 to 100." }
+    WebSocketStats:
+      type: object
+      additionalProperties: false
+      required: [clients]
+      properties:
+        clients: { type: integer }
+        rejectedDeny: { type: integer, format: int64, description: Upgrades refused because the address is on the deny list. Absent when zero. }
+        rejectedRate: { type: integer, format: int64, description: Upgrades refused for connecting too fast. Absent when zero. }
+        rejectedConnCap: { type: integer, format: int64, description: Upgrades refused at the connection cap. Absent when zero. }
+    HealthPacketStore:
+      type: object
+      additionalProperties: false
+      required: [packets, estimatedMB, trackedMB]
+      properties:
+        packets: { type: integer }
+        estimatedMB: { type: number, format: double }
+        trackedMB: { type: number, format: double }
+    SlowQuery:
+      type: object
+      additionalProperties: false
+      required: [path, ms, time, status]
+      properties:
+        path: { type: string }
+        ms: { type: number, format: double }
+        time: { $ref: '#/components/schemas/TimestampSeconds' }
+        status: { type: integer }
+    HealthPerf:
+      type: object
+      additionalProperties: false
+      required: [totalRequests, avgMs, slowQueries, recentSlow]
+      properties:
+        totalRequests: { type: integer }
+        avgMs: { type: number, format: double }
+        slowQueries: { type: integer, description: How many slow requests are on record. }
+        recentSlow:
+          type: array
+          description: The five most recent, oldest first.
+          items: { $ref: '#/components/schemas/SlowQuery' }
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, engine, version, commit, buildTime, uptime, uptimeHuman, memory, eventLoop, cache, websocket, packetStore, perf]
+      properties:
+        status: { type: string, description: Always ok. }
+        engine: { type: string }
+        version: { type: string }
+        commit: { type: string }
+        buildTime: { type: string }
+        uptime: { type: integer, description: Seconds since start. }
+        uptimeHuman: { type: string }
+        memory: { $ref: '#/components/schemas/HealthMemory' }
+        eventLoop: { $ref: '#/components/schemas/EventLoopStats' }
+        cache: { $ref: '#/components/schemas/CacheStats' }
+        websocket: { $ref: '#/components/schemas/WebSocketStats' }
+        packetStore: { $ref: '#/components/schemas/HealthPacketStore' }
+        perf: { $ref: '#/components/schemas/HealthPerf' }
+    FromPubkeyBackfill:
+      type: object
+      additionalProperties: false
+      required: [total, processed, done]
+      description: Progress of the backfill that attributes legacy adverts to their sender.
+      properties:
+        total: { type: integer, format: int64 }
+        processed: { type: integer, format: int64 }
+        done: { type: boolean }
+    SourceLiveness:
+      type: object
+      additionalProperties: false
+      required: [lastReceiptUnix, lastMessageUnix]
+      description: Two clocks per MQTT source. A recent receipt with a stale message means the broker is alive and the write path is stuck.
+      properties:
+        lastReceiptUnix: { type: integer, format: int64, description: Unix seconds of the last packet received. 0 means never. }
+        lastMessageUnix: { type: integer, format: int64, description: Unix seconds of the last packet written. 0 means never. }
+    HealthzResponse:
+      type: object
+      additionalProperties: false
+      required: [ready, loadedTx, loadedObs, from_pubkey_backfill]
+      properties:
+        ready: { type: boolean, description: Always true. }
+        loadedTx: { type: integer }
+        loadedObs: { type: integer }
+        from_pubkey_backfill: { $ref: '#/components/schemas/FromPubkeyBackfill' }
+        ingest_liveness:
+          type: object
+          description: Per MQTT source, by source name. Absent when the ingestor publishes none.
+          additionalProperties: { $ref: '#/components/schemas/SourceLiveness' }
+    HealthzLoadingResponse:
+      type: object
+      additionalProperties: false
+      required: [ready, reason]
+      properties:
+        ready: { type: boolean, description: Always false. }
+        reason: { type: string, description: Always loading. }
+    EndpointStats:
+      type: object
+      additionalProperties: false
+      required: [count, avgMs, p50Ms, p95Ms, maxMs]
+      properties:
+        count: { type: integer }
+        avgMs: { type: number, format: double }
+        p50Ms: { type: number, format: double }
+        p95Ms: { type: number, format: double }
+        maxMs: { type: number, format: double }
+    PerfCacheStats:
+      type: object
+      additionalProperties: false
+      required: [size, hits, misses, staleHits, recomputes, hitRate]
+      description: The same counters as CacheStats, with size where CacheStats has entries.
+      properties:
+        size: { type: integer }
+        hits: { type: integer, format: int64 }
+        misses: { type: integer, format: int64 }
+        staleHits: { type: integer }
+        recomputes: { type: integer, format: int64 }
+        hitRate: { type: number, format: double }
+    PacketStoreIndexes:
+      type: object
+      additionalProperties: false
+      required: [byHash, byObserver, byNode, advertByObserver]
+      properties:
+        byHash: { type: integer }
+        byObserver: { type: integer }
+        byNode: { type: integer }
+        advertByObserver: { type: integer }
+    PerfPacketStoreStats:
+      type: object
+      additionalProperties: false
+      required: [totalLoaded, totalObservations, evicted, inserts, queries, inMemory, sqliteOnly, maxPackets, estimatedMB, trackedMB, avgBytesPerPacket, maxMB, indexes, hotStartupHours, backgroundLoadComplete, backgroundLoadFailed, backgroundLoadProgress, retentionHours, oldestLoaded, loadCoverageRatio]
+      properties:
+        totalLoaded: { type: integer }
+        totalObservations: { type: integer }
+        evicted: { type: integer }
+        inserts: { type: integer, format: int64 }
+        queries: { type: integer, format: int64 }
+        inMemory: { type: integer }
+        sqliteOnly: { type: boolean, description: Always false. }
+        maxPackets: { type: integer }
+        estimatedMB: { type: number, format: double }
+        trackedMB: { type: number, format: double }
+        avgBytesPerPacket: { type: integer, format: int64 }
+        maxMB: { type: integer }
+        indexes: { $ref: '#/components/schemas/PacketStoreIndexes' }
+        hotStartupHours: { type: number, format: double }
+        backgroundLoadComplete: { type: boolean }
+        backgroundLoadFailed: { type: boolean }
+        backgroundLoadProgress: { type: integer, format: int64, description: "Percent, 0 to 100." }
+        backgroundLoadError: { type: string, description: Present only when the background load failed. }
+        retentionHours: { type: number, format: double }
+        oldestLoaded: { $ref: '#/components/schemas/TimestampSeconds' }
+        loadCoverageRatio: { type: number, format: double, description: "Share of the database the in-memory store holds, 0 to 1." }
+    CheckpointStats:
+      type: object
+      additionalProperties: false
+      required: [timed, requested, buffersWritten]
+      properties:
+        timed: { type: integer, format: int64 }
+        requested: { type: integer, format: int64 }
+        buffersWritten: { type: integer, format: int64 }
+    TableRowCounts:
+      type: object
+      additionalProperties: false
+      required: [transmissions, observations, nodes, observers]
+      properties:
+        transmissions: { type: integer, format: int64 }
+        observations: { type: integer, format: int64 }
+        nodes: { type: integer, format: int64 }
+        observers: { type: integer, format: int64 }
+    DbStats:
+      type: object
+      additionalProperties: false
+      required: [dbSizeMB, walSizeMB, deadTuples, rows]
+      properties:
+        dbSizeMB: { type: number, format: double }
+        walSizeMB: { type: number, format: double }
+        deadTuples: { type: integer, format: int64 }
+        checkpoints: { $ref: '#/components/schemas/CheckpointStats' }
+        rows: { $ref: '#/components/schemas/TableRowCounts' }
+    GoRuntimeStats:
+      type: object
+      additionalProperties: false
+      required: [goroutines, numGC, pauseTotalMs, lastPauseMs, heapAllocMB, heapSysMB, heapInuseMB, heapIdleMB, numCPU]
+      properties:
+        goroutines: { type: integer }
+        numGC: { type: integer, format: int64 }
+        pauseTotalMs: { type: number, format: double }
+        lastPauseMs: { type: number, format: double }
+        heapAllocMB: { type: number, format: double }
+        heapSysMB: { type: number, format: double }
+        heapInuseMB: { type: number, format: double }
+        heapIdleMB: { type: number, format: double }
+        numCPU: { type: integer }
+    StoreMemoryBreakdown:
+      type: object
+      additionalProperties: false
+      required: [totalTx, floodTx, floodTxSharePct, observations, obsPerTx, txRawHexMB, txDecodedJsonMB, txPathJsonMB, obsPathJsonMB, obsStringsMB, floodTxEstimatedMB, totalTxEstimatedMB]
+      properties:
+        totalTx: { type: integer }
+        floodTx: { type: integer, description: Transmissions with route type 0 or 1. }
+        floodTxSharePct: { type: number, format: double }
+        observations: { type: integer }
+        obsPerTx: { type: number, format: double }
+        txRawHexMB: { type: number, format: double }
+        txDecodedJsonMB: { type: number, format: double }
+        txPathJsonMB: { type: number, format: double }
+        obsPathJsonMB: { type: number, format: double }
+        obsStringsMB: { type: number, format: double }
+        floodTxEstimatedMB: { type: number, format: double }
+        totalTxEstimatedMB: { type: number, format: double }
+    PerfResponse:
+      type: object
+      additionalProperties: false
+      required: [uptime, totalRequests, avgMs, endpoints, slowQueries, cache, packetStore, dbStats, goRuntime]
+      properties:
+        uptime: { type: integer, description: Seconds since the counters started. }
+        totalRequests: { type: integer, format: int64 }
+        avgMs: { type: number, format: double }
+        endpoints:
+          type: object
+          description: Timings per route pattern, busiest first by total time.
+          additionalProperties: { $ref: '#/components/schemas/EndpointStats' }
+        slowQueries:
+          type: array
+          description: The 20 most recent requests over 100 ms, oldest first.
+          items: { $ref: '#/components/schemas/SlowQuery' }
+        cache: { $ref: '#/components/schemas/PerfCacheStats' }
+        packetStore:
+          oneOf:
+            - $ref: '#/components/schemas/PerfPacketStoreStats'
+            - { type: "null" }
+        dbStats:
+          description: Null when the database could not be queried.
+          oneOf:
+            - $ref: '#/components/schemas/DbStats'
+            - { type: "null" }
+        goRuntime: { $ref: '#/components/schemas/GoRuntimeStats' }
+        memoryBreakdown: { $ref: '#/components/schemas/StoreMemoryBreakdown' }
+        memoryBreakdownNote: { type: string, description: What memoryBreakdown counts and leaves out. Present with memoryBreakdown. }
+    PerfIOSample:
+      type: object
+      additionalProperties: false
+      required: [readBytesPerSec, writeBytesPerSec, cancelledWriteBytesPerSec, syscallsRead, syscallsWrite]
+      properties:
+        readBytesPerSec: { type: number, format: double }
+        writeBytesPerSec: { type: number, format: double }
+        cancelledWriteBytesPerSec: { type: number, format: double }
+        syscallsRead: { type: number, format: double }
+        syscallsWrite: { type: number, format: double }
+        sampledAt: { $ref: '#/components/schemas/TimestampSeconds' }
+    PerfIOResponse:
+      type: object
+      additionalProperties: false
+      required: [readBytesPerSec, writeBytesPerSec, cancelledWriteBytesPerSec, syscallsRead, syscallsWrite]
+      properties:
+        readBytesPerSec: { type: number, format: double }
+        writeBytesPerSec: { type: number, format: double }
+        cancelledWriteBytesPerSec: { type: number, format: double }
+        syscallsRead: { type: number, format: double }
+        syscallsWrite: { type: number, format: double }
+        ingestor:
+          description: The ingestor's own rates. Absent when the ingestor publishes none.
+          $ref: '#/components/schemas/PerfIOSample'
+    WriterLockStats:
+      type: object
+      additionalProperties: false
+      required: [count, contention_total, wait_ms_p50, wait_ms_p95, wait_ms_p99, wait_ms_max, hold_ms_p50, hold_ms_p95, hold_ms_p99, hold_ms_max]
+      description: How long one kind of writer waited for, and then held, the database write lock.
+      properties:
+        count: { type: integer, format: int64 }
+        contention_total: { type: integer, format: int64 }
+        wait_ms_p50: { type: number, format: double }
+        wait_ms_p95: { type: number, format: double }
+        wait_ms_p99: { type: number, format: double }
+        wait_ms_max: { type: number, format: double }
+        hold_ms_p50: { type: number, format: double }
+        hold_ms_p95: { type: number, format: double }
+        hold_ms_p99: { type: number, format: double }
+        hold_ms_max: { type: number, format: double }
+    PerfWriteSourcesResponse:
+      type: object
+      additionalProperties: false
+      required: [sources, sampleAt]
+      properties:
+        sources:
+          type: object
+          description: Cumulative counters by name. Backfill counters are named backfill_ followed by the backfill.
+          additionalProperties: { type: integer, format: int64 }
+        sampleAt:
+          description: When the ingestor wrote the counters. Null when there are none.
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - { type: "null" }
+        writer_perf:
+          type: object
+          description: Lock timings by writer kind. Sent by newer ingestor builds only.
+          additionalProperties: { $ref: '#/components/schemas/WriterLockStats' }
+    MqttSourceStatus:
+      type: object
+      additionalProperties: false
+      required: [name, broker, connected, lastConnectUnix, lastDisconnectUnix, lastPacketUnix, connectCount, disconnectCount, packetsTotal, packetsLast5m]
+      properties:
+        name: { type: string }
+        broker: { type: string, description: Broker URL with any password masked. }
+        connected: { type: boolean }
+        lastConnectUnix: { type: integer, format: int64, description: Unix seconds. 0 means never. }
+        lastDisconnectUnix: { type: integer, format: int64, description: Unix seconds. 0 means never. }
+        lastPacketUnix: { type: integer, format: int64, description: Unix seconds. 0 means never. }
+        connectCount: { type: integer, format: int64 }
+        disconnectCount: { type: integer, format: int64 }
+        packetsTotal: { type: integer, format: int64 }
+        packetsLast5m: { type: integer, format: int64 }
+        lastError: { type: string, description: "Last connection error, with any broker password masked. Absent when there is none." }
+    MqttStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [sources, sampleAt]
+      properties:
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/MqttSourceStatus' }
+        sampleAt:
+          description: When the ingestor wrote the status. Null when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - { type: "null" }
+        watchdogLastTickUnix: { type: integer, format: int64, description: Unix seconds of the last ingestor watchdog tick. Absent when zero. }
+        watchdogPanicCount: { type: integer, format: int64, description: Recovered watchdog panics. Absent when zero. }
+        watchdogLogDropCount: { type: integer, format: int64, description: Watchdog log lines dropped because the log sink was stuck. Absent when zero. }
     MetricsSample:
       type: object
       additionalProperties: false

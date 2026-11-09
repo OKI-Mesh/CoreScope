@@ -29,7 +29,7 @@ import (
 )
 
 // memBreakdownNote is the static accounting caveat attached to the opt-in
-// /api/perf?mem=1 store memory breakdown (PerfResponse.MemoryBreakdownNote).
+// /api/perf?mem=1 store memory breakdown (api.PerfResponse.MemoryBreakdownNote).
 const memBreakdownNote = "Per-component *MB count string content + one Go string header each and are a deliberate upper bound (the header is also in the *EstimatedMB base figures). struct/index/map overhead, the neighbor graph and analytics caches are excluded, so the totals sit below goHeapInuseMB. floodTxSharePct sizes the flood-forward multiplication: each flood hop is stored as its own transmission."
 
 // Server holds shared state for route handlers.
@@ -65,7 +65,7 @@ type Server struct {
 
 	// Cached /api/stats response — recomputed at most once every 10s
 	statsMu       sync.Mutex
-	statsCache    *StatsResponse
+	statsCache    *api.StatsResponse
 	statsCachedAt time.Time
 	// #1910: collapses concurrent rebuilds. The cache check below releases
 	// statsMu before building the response, so every request arriving while the
@@ -162,7 +162,7 @@ type PerfStats struct {
 	Requests    int64
 	TotalMs     float64
 	Endpoints   map[string]*EndpointPerf
-	SlowQueries []SlowQuery
+	SlowQueries []api.SlowQuery
 	StartedAt   time.Time
 }
 
@@ -183,7 +183,7 @@ func relayReport(canRelay, seen bool) *bool {
 func NewPerfStats() *PerfStats {
 	return &PerfStats{
 		Endpoints:   make(map[string]*EndpointPerf),
-		SlowQueries: make([]SlowQuery, 0),
+		SlowQueries: make([]api.SlowQuery, 0),
 		StartedAt:   time.Now(),
 	}
 }
@@ -428,10 +428,10 @@ func (s *Server) perfMiddleware(next http.Handler) http.Handler {
 			ep.Recent = ep.Recent[1:]
 		}
 		if ms > 100 {
-			slow := SlowQuery{
+			slow := api.SlowQuery{
 				Path:   r.URL.Path,
 				Ms:     round(ms, 1),
-				Time:   time.Now().UTC().Format(time.RFC3339),
+				Time:   types.WireTimeSeconds{Time: time.Now().UTC()},
 				Status: 200,
 			}
 			s.perfStats.SlowQueries = append(s.perfStats.SlowQueries, slow)
@@ -745,7 +745,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Real cache stats
-	cs := CacheStats{}
+	cs := api.CacheStats{}
 	if s.store != nil {
 		cs = s.store.GetCacheStatsTyped()
 	}
@@ -768,7 +768,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	// Build slow queries list (copy under lock)
 	s.perfStats.mu.Lock()
-	recentSlow := make([]SlowQuery, 0)
+	recentSlow := make([]api.SlowQuery, 0)
 	sliceEnd := s.perfStats.SlowQueries
 	if len(sliceEnd) > 5 {
 		sliceEnd = sliceEnd[len(sliceEnd)-5:]
@@ -781,7 +781,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	perfSlowCount := len(s.perfStats.SlowQueries)
 	s.perfStats.mu.Unlock()
 
-	writeJSON(w, HealthResponse{
+	ws := api.WebSocketStats{Clients: wsClients}
+	if wsDeny != 0 {
+		ws.RejectedDeny = &wsDeny
+	}
+	if wsRate != 0 {
+		ws.RejectedRate = &wsRate
+	}
+	if wsConnCap != 0 {
+		ws.RejectedConnCap = &wsConnCap
+	}
+
+	writeJSON(w, api.HealthResponse{
 		Status:      "ok",
 		Engine:      "go",
 		Version:     s.version,
@@ -789,28 +800,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		BuildTime:   s.buildTime,
 		Uptime:      int(uptime),
 		UptimeHuman: fmt.Sprintf("%dh %dm", int(uptime)/3600, (int(uptime)%3600)/60),
-		Memory: MemoryStats{
-			RSS:       int(m.Sys / 1024 / 1024),
+		Memory: api.HealthMemory{
+			Rss:       int(m.Sys / 1024 / 1024),
 			HeapUsed:  int(m.HeapAlloc / 1024 / 1024),
 			HeapTotal: int(m.HeapSys / 1024 / 1024),
 			External:  0,
 		},
-		EventLoop: EventLoopStats{
+		EventLoop: api.EventLoopStats{
 			CurrentLagMs: round(lastPauseMs, 1),
 			MaxLagMs:     round(percentile(sortedPauses, 1.0), 1),
 			P50Ms:        round(percentile(sortedPauses, 0.5), 1),
 			P95Ms:        round(percentile(sortedPauses, 0.95), 1),
 			P99Ms:        round(percentile(sortedPauses, 0.99), 1),
 		},
-		Cache: cs,
-		WebSocket: WebSocketStatsResp{Clients: wsClients,
-			RejectedDeny: wsDeny, RejectedRate: wsRate, RejectedConnCap: wsConnCap},
-		PacketStore: HealthPacketStoreStats{
+		Cache:     cs,
+		Websocket: ws,
+		PacketStore: api.HealthPacketStore{
 			Packets:     pktCount,
 			EstimatedMB: pktEstMB,
 			TrackedMB:   pktTrackedMB,
 		},
-		Perf: HealthPerfStats{
+		Perf: api.HealthPerf{
 			TotalRequests: int(perfRequests),
 			AvgMs:         safeAvg(perfTotalMs, float64(perfRequests)),
 			SlowQueries:   perfSlowCount,
@@ -865,9 +875,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("count dropped packets: %v", err)
 		}
-		resp := &StatsResponse{
+		resp := &api.StatsResponse{
 			TotalPackets:          stats.TotalPackets,
-			TotalTransmissions:    &stats.TotalTransmissions,
+			TotalTransmissions:    stats.TotalTransmissions,
 			TotalObservations:     stats.TotalObservations,
 			TotalNodes:            stats.TotalNodes,
 			TotalNodesAllTime:     stats.TotalNodesAllTime,
@@ -888,7 +898,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			GoHeapInuseMB: mem.GoHeapInuseMB,
 			GoSysMB:       mem.GoSysMB,
 
-			NeighborGraphCacheRebuildFailures: atomic.LoadUint64(&s.neighborGraphCacheRebuildFailures),
+			NeighborGraphCacheRebuildFailures: int64(atomic.LoadUint64(&s.neighborGraphCacheRebuildFailures)),
 		}
 
 		s.statsMu.Lock()
@@ -903,7 +913,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, built.(*StatsResponse))
+	writeJSON(w, built.(*api.StatsResponse))
 }
 
 func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
@@ -925,7 +935,7 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 	uptimeSec := int(time.Since(s.perfStats.StartedAt).Seconds())
 	totalRequests := s.perfStats.Requests
 	totalMs := s.perfStats.TotalMs
-	slowQueries := make([]SlowQuery, 0)
+	slowQueries := make([]api.SlowQuery, 0)
 	sliceEnd := s.perfStats.SlowQueries
 	if len(sliceEnd) > 20 {
 		sliceEnd = sliceEnd[len(sliceEnd)-20:]
@@ -938,12 +948,12 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 	// Process snapshots outside lock
 	type epEntry struct {
 		path string
-		data *EndpointStatsResp
+		data *api.EndpointStats
 	}
 	var entries []epEntry
 	for _, snap := range epSnapshots {
 		sorted := sortedCopy(snap.recent)
-		d := &EndpointStatsResp{
+		d := &api.EndpointStats{
 			Count: snap.count,
 			AvgMs: safeAvg(snap.totalMs, float64(snap.count)),
 			P50Ms: round(percentile(sorted, 0.5), 1),
@@ -958,16 +968,16 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 		tj := float64(entries[j].data.Count) * entries[j].data.AvgMs
 		return ti > tj
 	})
-	summary := make(map[string]*EndpointStatsResp)
+	summary := make(map[string]api.EndpointStats)
 	for _, e := range entries {
-		summary[e.path] = e.data
+		summary[e.path] = *e.data
 	}
 
 	// Cache stats from packet store
-	var perfCS PerfCacheStats
+	var perfCS api.PerfCacheStats
 	if s.store != nil {
 		cs := s.store.GetCacheStatsTyped()
-		perfCS = PerfCacheStats{
+		perfCS = api.PerfCacheStats{
 			Size:       cs.Entries,
 			Hits:       cs.Hits,
 			Misses:     cs.Misses,
@@ -978,7 +988,7 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Packet store stats
-	var pktStoreStats *PerfPacketStoreStats
+	var pktStoreStats *api.PerfPacketStoreStats
 	if s.store != nil {
 		ps := s.store.GetPerfStoreStatsTyped()
 		pktStoreStats = &ps
@@ -986,7 +996,7 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 
 	// Opt-in store memory diagnostic: an O(tx+obs) walk, only when explicitly
 	// requested so the hot /api/perf path stays cheap.
-	var memBreakdown *StoreMemoryBreakdown
+	var memBreakdown *api.StoreMemoryBreakdown
 	var breakdownNote string
 	if s.store != nil && r.URL.Query().Get("mem") == "1" {
 		memBreakdown = s.store.GetStoreMemoryBreakdown()
@@ -994,38 +1004,39 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SQLite stats
-	var dbStats *DbStats
+	var dbStats *api.DbStats
 	ss, err := s.db.GetDBSizeStats(r.Context())
 	if err == nil {
 		dbStats = dbSizeStatsToResponse(ss)
 	}
 
-	writeJSON(w, PerfResponse{
-		Uptime:              uptimeSec,
-		TotalRequests:       totalRequests,
-		AvgMs:               safeAvg(totalMs, float64(totalRequests)),
-		Endpoints:           summary,
-		SlowQueries:         slowQueries,
-		Cache:               perfCS,
-		PacketStore:         pktStoreStats,
-		DatabaseStats:       dbStats,
-		MemoryBreakdown:     memBreakdown,
-		MemoryBreakdownNote: breakdownNote,
-		GoRuntime: func() *GoRuntimeStats {
-			ms := s.getMemStats()
-			return &GoRuntimeStats{
-				Goroutines:   runtime.NumGoroutine(),
-				NumGC:        ms.NumGC,
-				PauseTotalMs: float64(ms.PauseTotalNs) / 1e6,
-				LastPauseMs:  float64(ms.PauseNs[(ms.NumGC+255)%256]) / 1e6,
-				HeapAllocMB:  float64(ms.HeapAlloc) / 1024 / 1024,
-				HeapSysMB:    float64(ms.HeapSys) / 1024 / 1024,
-				HeapInuseMB:  float64(ms.HeapInuse) / 1024 / 1024,
-				HeapIdleMB:   float64(ms.HeapIdle) / 1024 / 1024,
-				NumCPU:       runtime.NumCPU(),
-			}
-		}(),
-	})
+	ms := s.getMemStats()
+	resp := api.PerfResponse{
+		Uptime:        uptimeSec,
+		TotalRequests: totalRequests,
+		AvgMs:         safeAvg(totalMs, float64(totalRequests)),
+		Endpoints:     summary,
+		SlowQueries:   slowQueries,
+		Cache:         perfCS,
+		PacketStore:   pktStoreStats,
+		DbStats:       dbStats,
+		GoRuntime: api.GoRuntimeStats{
+			Goroutines:   runtime.NumGoroutine(),
+			NumGC:        int64(ms.NumGC),
+			PauseTotalMs: float64(ms.PauseTotalNs) / 1e6,
+			LastPauseMs:  float64(ms.PauseNs[(ms.NumGC+255)%256]) / 1e6,
+			HeapAllocMB:  float64(ms.HeapAlloc) / 1024 / 1024,
+			HeapSysMB:    float64(ms.HeapSys) / 1024 / 1024,
+			HeapInuseMB:  float64(ms.HeapInuse) / 1024 / 1024,
+			HeapIdleMB:   float64(ms.HeapIdle) / 1024 / 1024,
+			NumCPU:       runtime.NumCPU(),
+		},
+	}
+	if memBreakdown != nil {
+		resp.MemoryBreakdown = memBreakdown
+		resp.MemoryBreakdownNote = optString(breakdownNote)
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handlePerfReset(w http.ResponseWriter, r *http.Request) {
@@ -1033,7 +1044,7 @@ func (s *Server) handlePerfReset(w http.ResponseWriter, r *http.Request) {
 	s.perfStats.Requests = 0
 	s.perfStats.TotalMs = 0
 	s.perfStats.Endpoints = make(map[string]*EndpointPerf)
-	s.perfStats.SlowQueries = make([]SlowQuery, 0)
+	s.perfStats.SlowQueries = make([]api.SlowQuery, 0)
 	s.perfStats.StartedAt = time.Now()
 	s.perfStats.mu.Unlock()
 	writeJSON(w, OkResp{Ok: true})

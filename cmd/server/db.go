@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
@@ -29,11 +30,11 @@ func bytesToMB(b int64) float64 {
 	return roundMB(float64(b) / 1048576)
 }
 
-func dbSizeStatsToResponse(s database.DBSizeStats) *DbStats {
-	resp := &DbStats{
+func dbSizeStatsToResponse(s database.DBSizeStats) *api.DbStats {
+	resp := &api.DbStats{
 		DbSizeMB:   bytesToMB(s.DBSizeBytes),
 		DeadTuples: s.DeadTuples,
-		Rows: TableRowCounts{
+		Rows: api.TableRowCounts{
 			Transmissions: s.Rows.Transmissions,
 			Observations:  s.Rows.Observations,
 			Nodes:         s.Rows.Nodes,
@@ -44,7 +45,7 @@ func dbSizeStatsToResponse(s database.DBSizeStats) *DbStats {
 		resp.WalSizeMB = bytesToMB(*s.WALSizeBytes)
 	}
 	if s.Checkpoints != nil {
-		resp.Checkpoints = &CheckpointStats{
+		resp.Checkpoints = &api.CheckpointStats{
 			Timed:          s.Checkpoints.Timed,
 			Requested:      s.Checkpoints.Requested,
 			BuffersWritten: s.Checkpoints.BuffersWritten,
@@ -62,4 +63,10 @@ func nilIfEmpty(s string) interface{} {
 	return s
 }
 
-
+// nonNil returns s, or an empty slice if s is nil, so it marshals to [] instead of null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}

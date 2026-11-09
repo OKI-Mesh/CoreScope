@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // mqttBrokerSchemes is the set of broker URL schemes whose embedded
@@ -84,12 +86,12 @@ func redactBrokerURL(s string) (string, bool) {
 	return s[:schemeEnd] + "://" + u.User.Username() + ":****@" + hostAndAfter, true
 }
 
-// MqttSourceStatus is the per-MQTT-source status row surfaced via
-// /api/mqtt/status. Mirrors the on-disk shape the ingestor publishes
-// (cmd/ingestor SourceStatusSnapshot) but with the broker URL credentials
-// redacted before serving — operators must not see the broker password
-// in the API response (#1043 acceptance criterion).
-type MqttSourceStatus struct {
+// ingestorMqttSource is the per-MQTT-source status row as the ingestor writes
+// it to its stats file (cmd/ingestor SourceStatusSnapshot). handleMqttStatus
+// copies it into api.MqttSourceStatus with the broker URL credentials
+// redacted — operators must not see the broker password in the API response
+// (#1043 acceptance criterion).
+type ingestorMqttSource struct {
 	Name               string `json:"name"`
 	Broker             string `json:"broker"`
 	Connected          bool   `json:"connected"`
@@ -103,45 +105,14 @@ type MqttSourceStatus struct {
 	LastError          string `json:"lastError,omitempty"`
 }
 
-// MqttStatusResponse is the JSON envelope returned by /api/mqtt/status.
-type MqttStatusResponse struct {
-	Sources  []MqttSourceStatus `json:"sources"`
-	SampleAt string             `json:"sampleAt"`
-	// WatchdogLastTickUnix (#1749) is the unix-seconds timestamp of the
-	// most recent ingestor watchdog tick. Surfaced so external monitoring
-	// can detect a wedged watchdog goroutine (value older than ~2× the
-	// scan interval — typically 60s — means the watchdog itself died,
-	// not just one source). 0 / omitted: ingestor has never ticked yet
-	// or is running an older build that did not publish this field.
-	WatchdogLastTickUnix int64 `json:"watchdogLastTickUnix,omitempty"`
-	// WatchdogPanicCount (#1810 round-1) is the running total of
-	// recovered panics inside the ingestor's watchdog per-source work
-	// IIFE. Surfaced alongside WatchdogLastTickUnix because the tick
-	// clock is stamped BEFORE per-source work — a loop panicking on
-	// every source still advances the tick and looks healthy by tick
-	// alone. A rapidly-growing value means the watchdog is alive but
-	// per-source processing is broken. 0 / omitted: no recovered
-	// panics OR older ingestor build.
-	WatchdogPanicCount int64 `json:"watchdogPanicCount,omitempty"`
-	// WatchdogLogDropCount (#1749 root-cause fix) is the running total
-	// of watchdog log lines dropped because the async emit queue's
-	// background writer could not keep up — almost always because its
-	// underlying write() is itself stuck (Docker JSON-file log driver
-	// backpressure, full stderr pipe, etc.). Distinguishes "watchdog
-	// dead" (WatchdogLastTickUnix stale) from "watchdog alive, but its
-	// log sink is stuck" (ticking normally, this climbing). 0 /
-	// omitted: writer never fell behind OR older ingestor build.
-	WatchdogLogDropCount int64 `json:"watchdogLogDropCount,omitempty"`
-}
-
 // ingestorMqttStatusEnvelope is the partial shape the server decodes from
 // the ingestor stats file (additive — older ingestors omit the field).
 type ingestorMqttStatusEnvelope struct {
-	SampledAt            string             `json:"sampledAt"`
-	SourceStatuses       []MqttSourceStatus `json:"source_statuses"`
-	WatchdogLastTickUnix int64              `json:"watchdogLastTickUnix"`
-	WatchdogPanicCount   int64              `json:"watchdogPanicCount"`
-	WatchdogLogDropCount int64              `json:"watchdogLogDropCount"`
+	SampledAt            string               `json:"sampledAt"`
+	SourceStatuses       []ingestorMqttSource `json:"source_statuses"`
+	WatchdogLastTickUnix int64                `json:"watchdogLastTickUnix"`
+	WatchdogPanicCount   int64                `json:"watchdogPanicCount"`
+	WatchdogLogDropCount int64                `json:"watchdogLogDropCount"`
 }
 
 // handleMqttStatus serves GET /api/mqtt/status. Reads the ingestor stats
@@ -149,7 +120,7 @@ type ingestorMqttStatusEnvelope struct {
 // list. Returns an empty list (200 OK) when the stats file is missing
 // or unparseable — the UI panel renders a "no data yet" state.
 func (s *Server) handleMqttStatus(w http.ResponseWriter, r *http.Request) {
-	resp := MqttStatusResponse{Sources: []MqttSourceStatus{}, SampleAt: ""}
+	resp := api.MqttStatusResponse{Sources: []api.MqttSourceStatus{}}
 	data, err := os.ReadFile(IngestorStatsPath())
 	if err != nil {
 		writeJSON(w, resp)
@@ -160,16 +131,39 @@ func (s *Server) handleMqttStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, resp)
 		return
 	}
-	resp.SampleAt = env.SampledAt
-	resp.WatchdogLastTickUnix = env.WatchdogLastTickUnix
-	resp.WatchdogPanicCount = env.WatchdogPanicCount
-	resp.WatchdogLogDropCount = env.WatchdogLogDropCount
+	resp.SampleAt = statsTime(env.SampledAt)
+	resp.WatchdogLastTickUnix = nonZero(env.WatchdogLastTickUnix)
+	resp.WatchdogPanicCount = nonZero(env.WatchdogPanicCount)
+	resp.WatchdogLogDropCount = nonZero(env.WatchdogLogDropCount)
 	for _, src := range env.SourceStatuses {
-		src.Broker = maskBrokerURL(src.Broker)
+		status := api.MqttSourceStatus{
+			Name:               src.Name,
+			Broker:             maskBrokerURL(src.Broker),
+			Connected:          src.Connected,
+			LastConnectUnix:    src.LastConnectUnix,
+			LastDisconnectUnix: src.LastDisconnectUnix,
+			LastPacketUnix:     src.LastPacketUnix,
+			ConnectCount:       src.ConnectCount,
+			DisconnectCount:    src.DisconnectCount,
+			PacketsTotal:       src.PacketsTotal,
+			PacketsLast5m:      src.PacketsLast5m,
+		}
 		// Broker libraries occasionally quote the failing URL in the
 		// error string — redact there too as defense-in-depth.
-		src.LastError = maskBrokerURL(src.LastError)
-		resp.Sources = append(resp.Sources, src)
+		if src.LastError != "" {
+			masked := maskBrokerURL(src.LastError)
+			status.LastError = &masked
+		}
+		resp.Sources = append(resp.Sources, status)
 	}
 	writeJSON(w, resp)
+}
+
+// nonZero returns a pointer to v, or nil when v is zero, for response fields
+// that are left out when they are zero.
+func nonZero(v int64) *int64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
 }
