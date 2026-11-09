@@ -359,13 +359,11 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/rx-leaderboard", s.handleRxLeaderboard).Methods("GET")
 
 	// Analytics endpoints
-	r.HandleFunc("/api/analytics/roles", s.handleAnalyticsRoles).Methods("GET")
+	s.registerAnalyticsRoutes(r)
 	r.HandleFunc("/api/analytics/rf", s.handleAnalyticsRF).Methods("GET")
 	r.HandleFunc("/api/analytics/topology", s.handleAnalyticsTopology).Methods("GET")
 	r.HandleFunc("/api/analytics/channels", s.handleAnalyticsChannels).Methods("GET")
 	r.HandleFunc("/api/analytics/distance", s.handleAnalyticsDistance).Methods("GET")
-	r.HandleFunc("/api/analytics/hash-sizes", s.handleAnalyticsHashSizes).Methods("GET")
-	r.HandleFunc("/api/analytics/hash-collisions", s.handleAnalyticsHashCollisions).Methods("GET")
 	r.HandleFunc("/api/analytics/subpaths", s.handleAnalyticsSubpaths).Methods("GET")
 	r.HandleFunc("/api/analytics/subpaths-bulk", s.handleAnalyticsSubpathsBulk).Methods("GET")
 	r.HandleFunc("/api/analytics/subpath-detail", s.handleAnalyticsSubpathDetail).Methods("GET")
@@ -1251,38 +1249,6 @@ func (s *Server) handleAnalyticsDistance(w http.ResponseWriter, r *http.Request)
 		CatStats:      map[string]*CategoryDistStats{},
 		DistHistogram: nil,
 		DistOverTime:  []DistOverTimeEntry{},
-	})
-}
-
-func (s *Server) handleAnalyticsHashSizes(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if s.store != nil {
-		region := r.URL.Query().Get("region")
-		area := r.URL.Query().Get("area")
-		writeJSON(w, s.store.GetAnalyticsHashSizes(ctx, region, area))
-		return
-	}
-	writeJSON(w, map[string]interface{}{
-		"total":                   0,
-		"distribution":            map[string]int{"1": 0, "2": 0, "3": 0},
-		"distributionByRepeaters": map[string]int{"1": 0, "2": 0, "3": 0},
-		"hourly":                  []HashSizeHourly{},
-		"topHops":                 []HashSizeHop{},
-		"multiByteNodes":          []MultiByteNode{},
-	})
-}
-
-func (s *Server) handleAnalyticsHashCollisions(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if s.store != nil {
-		region := r.URL.Query().Get("region")
-		area := r.URL.Query().Get("area")
-		writeJSON(w, s.store.GetAnalyticsHashCollisions(ctx, region, area))
-		return
-	}
-	writeJSON(w, map[string]interface{}{
-		"inconsistent_nodes": []interface{}{},
-		"by_size":            map[string]interface{}{},
 	})
 }
 

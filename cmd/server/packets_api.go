@@ -310,17 +310,16 @@ func (s *Server) handlePacketDetail(w http.ResponseWriter, r *http.Request) {
 	if len(observations) > 0 {
 		resp.Observations = &observations
 	}
-	// The packet is one of two shapes, so the generated field is raw JSON.
-	var raw []byte
+	// The packet is one of two shapes. A later release gives the observation-id
+	// lookup its own route, which removes this union.
 	if packet != nil {
-		raw, err = json.Marshal(packet)
+		err = resp.Packet.FromPacket(*packet)
 	} else {
-		raw, err = json.Marshal(obsPacket)
+		err = resp.Packet.FromObservationPacket(*obsPacket)
 	}
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
-	resp.Packet = json.RawMessage(raw)
 	writeJSON(w, resp)
 }

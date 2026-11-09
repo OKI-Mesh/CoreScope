@@ -7,26 +7,114 @@ import (
 	"encoding/json"
 
 	"github.com/OKI-Mesh/CoreScope/internal/types"
+	"github.com/oapi-codegen/runtime"
 )
+
+// Defines values for AttributionMethod.
+const (
+	Observer AttributionMethod = "observer"
+	Repeater AttributionMethod = "repeater"
+)
+
+// Valid indicates whether the value is a known member of the AttributionMethod enum.
+func (e AttributionMethod) Valid() bool {
+	switch e {
+	case Observer:
+		return true
+	case Repeater:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for BatteryStatus.
 const (
-	Critical BatteryStatus = "critical"
-	Low      BatteryStatus = "low"
-	Ok       BatteryStatus = "ok"
-	Unknown  BatteryStatus = "unknown"
+	BatteryStatusCritical BatteryStatus = "critical"
+	BatteryStatusLow      BatteryStatus = "low"
+	BatteryStatusOk       BatteryStatus = "ok"
+	BatteryStatusUnknown  BatteryStatus = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the BatteryStatus enum.
 func (e BatteryStatus) Valid() bool {
 	switch e {
-	case Critical:
+	case BatteryStatusCritical:
 		return true
-	case Low:
+	case BatteryStatusLow:
 		return true
-	case Ok:
+	case BatteryStatusOk:
 		return true
-	case Unknown:
+	case BatteryStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CapabilityEvidence.
+const (
+	Advert CapabilityEvidence = "advert"
+	Empty  CapabilityEvidence = ""
+	Path   CapabilityEvidence = "path"
+)
+
+// Valid indicates whether the value is a known member of the CapabilityEvidence enum.
+func (e CapabilityEvidence) Valid() bool {
+	switch e {
+	case Advert:
+		return true
+	case Empty:
+		return true
+	case Path:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CapabilityStatus.
+const (
+	CapabilityStatusConfirmed CapabilityStatus = "confirmed"
+	CapabilityStatusSuspected CapabilityStatus = "suspected"
+	CapabilityStatusUnknown   CapabilityStatus = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the CapabilityStatus enum.
+func (e CapabilityStatus) Valid() bool {
+	switch e {
+	case CapabilityStatusConfirmed:
+		return true
+	case CapabilityStatusSuspected:
+		return true
+	case CapabilityStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CollisionClass.
+const (
+	CollisionClassDistant    CollisionClass = "distant"
+	CollisionClassIncomplete CollisionClass = "incomplete"
+	CollisionClassLocal      CollisionClass = "local"
+	CollisionClassRegional   CollisionClass = "regional"
+	CollisionClassUnknown    CollisionClass = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the CollisionClass enum.
+func (e CollisionClass) Valid() bool {
+	switch e {
+	case CollisionClassDistant:
+		return true
+	case CollisionClassIncomplete:
+		return true
+	case CollisionClassLocal:
+		return true
+	case CollisionClassRegional:
+		return true
+	case CollisionClassUnknown:
 		return true
 	default:
 		return false
@@ -153,6 +241,9 @@ func (e ListPacketsParamsExpand) Valid() bool {
 	}
 }
 
+// AttributionMethod observer: multi-byte nodes are attributed to the observers that heard them. repeater: to the repeater's home region, used whenever a region filter is given.
+type AttributionMethod string
+
 // BadSample defines model for BadSample.
 type BadSample struct {
 	// AdvertTS The offending advert Unix timestamp.
@@ -219,6 +310,15 @@ type CandidateEntry struct {
 	Pubkey string    `json:"pubkey"`
 	Role   *NodeRole `json:"role"`
 }
+
+// CapabilityEvidence What the capability status rests on. Empty when the status is unknown.
+type CapabilityEvidence string
+
+// CapabilityStatus confirmed: an advert declared a size of 2 or more. suspected: the node's prefix appeared in a multi-byte path. unknown: only 1-byte evidence.
+type CapabilityStatus string
+
+// CollisionClass local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
+type CollisionClass string
 
 // DirectObserverStats defines model for DirectObserverStats.
 type DirectObserverStats struct {
@@ -314,6 +414,87 @@ type GroupedPacketListResponse struct {
 	Total   int             `json:"total"`
 }
 
+// HashCollision defines model for HashCollision.
+type HashCollision struct {
+	// Appearances Nodes sharing the prefix.
+	Appearances int `json:"appearances"`
+	ByteSize    int `json:"byte_size"`
+
+	// Classification local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
+	Classification CollisionClass `json:"classification"`
+
+	// MaxDistKm Largest distance between two positioned nodes in the group.
+	MaxDistKm float64             `json:"max_dist_km"`
+	Nodes     []HashCollisionNode `json:"nodes"`
+
+	// Prefix The shared prefix as uppercase hex.
+	Prefix string `json:"prefix"`
+
+	// WithCoords Nodes in the group that have a position.
+	WithCoords int `json:"with_coords"`
+}
+
+// HashCollisionNode defines model for HashCollisionNode.
+type HashCollisionNode struct {
+	HashSize             int  `json:"hash_size"`
+	HashSizeInconsistent bool `json:"hash_size_inconsistent"`
+
+	// HashSizesSeen Omitted unless the node advertised more than one size.
+	HashSizesSeen []int `json:"hash_sizes_seen,omitempty"`
+
+	// Lat 0 when the node has no position.
+	Lat float64 `json:"lat"`
+
+	// Lon 0 when the node has no position.
+	Lon       float64 `json:"lon"`
+	Name      string  `json:"name"`
+	PublicKey string  `json:"public_key"`
+
+	// Role MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
+	Role NodeRole `json:"role"`
+}
+
+// HashCollisionResponse defines model for HashCollisionResponse.
+type HashCollisionResponse struct {
+	// BySize Collision data keyed by prefix size in bytes, 1 to 3.
+	BySize map[string]HashCollisionSize `json:"by_size"`
+
+	// InconsistentNodes Nodes whose adverts declared more than one hash size.
+	InconsistentNodes []HashCollisionNode `json:"inconsistent_nodes"`
+}
+
+// HashCollisionSize defines model for HashCollisionSize.
+type HashCollisionSize struct {
+	// Collisions Local collisions first, then regional, distant and incomplete.
+	Collisions []HashCollision `json:"collisions"`
+
+	// OneByteCells Present for 1-byte only. All 256 first bytes keyed by uppercase hex.
+	OneByteCells map[string][]HashCollisionNode `json:"one_byte_cells,omitempty"`
+	Stats        HashCollisionStats             `json:"stats"`
+
+	// TwoByteCells Present for 2-byte only. All 256 first bytes keyed by uppercase hex.
+	TwoByteCells map[string]TwoByteCell `json:"two_byte_cells,omitempty"`
+}
+
+// HashCollisionStats defines model for HashCollisionStats.
+type HashCollisionStats struct {
+	CollisionCount int `json:"collision_count"`
+
+	// NodesForByte Nodes counted for this prefix size.
+	NodesForByte int `json:"nodes_for_byte"`
+
+	// PctUsed Percent of the prefix space in use.
+	PctUsed float64 `json:"pct_used"`
+
+	// SpaceSize Possible prefixes at this size.
+	SpaceSize      int `json:"space_size"`
+	TotalNodes     int `json:"total_nodes"`
+	UniquePrefixes int `json:"unique_prefixes"`
+
+	// UsingThisSize Nodes whose declared hash size is this size.
+	UsingThisSize int `json:"using_this_size"`
+}
+
 // HashEvidence defines model for HashEvidence.
 type HashEvidence struct {
 	Hash                   string                 `json:"hash"`
@@ -330,6 +511,97 @@ type HashEvidenceObserver struct {
 	ObserverName      string  `json:"observerName"`
 	ObserverOffsetSec float64 `json:"observerOffsetSec"`
 	RawSkewSec        float64 `json:"rawSkewSec"`
+}
+
+// HashSizeAnalyticsResponse defines model for HashSizeAnalyticsResponse.
+type HashSizeAnalyticsResponse struct {
+	// AttributionMethod observer: multi-byte nodes are attributed to the observers that heard them. repeater: to the repeater's home region, used whenever a region filter is given.
+	AttributionMethod AttributionMethod `json:"attributionMethod"`
+
+	// Distribution Packets per hash size in bytes, keys 1 to 3.
+	Distribution map[string]int `json:"distribution"`
+
+	// DistributionByRepeaters Repeaters per hash size in bytes. Key 0 counts repeaters whose size could not be read.
+	DistributionByRepeaters map[string]int        `json:"distributionByRepeaters"`
+	Hourly                  []HashSizeHourly      `json:"hourly"`
+	MultiByteCapability     []MultiByteCapability `json:"multiByteCapability"`
+
+	// MultiByteNodes Nodes advertising 2-byte or 3-byte hashes, busiest first.
+	MultiByteNodes []MultiByteNode `json:"multiByteNodes"`
+
+	// TopHops The 50 most frequent hops.
+	TopHops []HashSizeHop `json:"topHops"`
+
+	// Total Packets with at least one relay hop.
+	Total int `json:"total"`
+}
+
+// HashSizeHop defines model for HashSizeHop.
+type HashSizeHop struct {
+	// Count Packets that carried the hop.
+	Count int `json:"count"`
+
+	// Hex The hop's hash prefix as hex.
+	Hex string `json:"hex"`
+
+	// Name The node the prefix resolves to; null when unknown.
+	Name *string `json:"name"`
+
+	// Pubkey The resolved node's public key; null when unknown.
+	Pubkey *string `json:"pubkey"`
+
+	// Size The prefix length in bytes.
+	Size int `json:"size"`
+}
+
+// HashSizeHourly defines model for HashSizeHourly.
+type HashSizeHourly struct {
+	// N1 Packets with 1-byte hashes.
+	N1 int `json:"1"`
+
+	// N2 Packets with 2-byte hashes.
+	N2 int `json:"2"`
+
+	// N3 Packets with 3-byte hashes.
+	N3 int `json:"3"`
+
+	// Hour UTC hour bucket, 2026-11-05T15.
+	Hour string `json:"hour"`
+}
+
+// MultiByteCapability defines model for MultiByteCapability.
+type MultiByteCapability struct {
+	// Evidence What the capability status rests on. Empty when the status is unknown.
+	Evidence CapabilityEvidence `json:"evidence"`
+
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen    TimestampSeconds `json:"lastSeen"`
+	MaxHashSize int              `json:"maxHashSize"`
+	Name        string           `json:"name"`
+	Pubkey      string           `json:"pubkey"`
+
+	// Role MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
+	Role NodeRole `json:"role"`
+
+	// Status confirmed: an advert declared a size of 2 or more. suspected: the node's prefix appeared in a multi-byte path. unknown: only 1-byte evidence.
+	Status CapabilityStatus `json:"status"`
+}
+
+// MultiByteNode defines model for MultiByteNode.
+type MultiByteNode struct {
+	// HashSize The hash size in bytes the node's latest advert declared.
+	HashSize int `json:"hashSize"`
+
+	// LastSeen UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
+	LastSeen TimestampSeconds `json:"lastSeen"`
+	Name     string           `json:"name"`
+
+	// Packets Adverts counted for the node.
+	Packets int    `json:"packets"`
+	Pubkey  string `json:"pubkey"`
+
+	// Role MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
+	Role NodeRole `json:"role"`
 }
 
 // NeighborEntry One neighbor of the queried node, with affinity score and observation metadata.
@@ -751,11 +1023,16 @@ type PacketDetailResponse struct {
 	// Observations Omitted when empty.
 	Observations *[]ObservationDetail `json:"observations,omitempty"`
 
-	// Packet Packet when id was a hash or a transmission id, ObservationPacket when it was an observation id. Generated as raw JSON so the models need no union runtime package.
-	Packet json.RawMessage `json:"packet"`
+	// Packet Packet when id was a hash or a transmission id, ObservationPacket when it was an observation id.
+	Packet PacketDetailResponse_Packet `json:"packet"`
 
 	// Path Hop prefixes parsed from the packet's path_json; empty when it has none.
 	Path []string `json:"path"`
+}
+
+// PacketDetailResponse_Packet Packet when id was a hash or a transmission id, ObservationPacket when it was an observation id.
+type PacketDetailResponse_Packet struct {
+	union json.RawMessage
 }
 
 // PacketListResponse defines model for PacketListResponse.
@@ -871,12 +1148,37 @@ type ResolvePrefixResponse struct {
 	Pubkey *string `json:"pubkey,omitempty"`
 }
 
+// RoleAnalyticsResponse defines model for RoleAnalyticsResponse.
+type RoleAnalyticsResponse struct {
+	// Roles One entry per role, largest first.
+	Roles      []RoleStats `json:"roles"`
+	TotalNodes int         `json:"totalNodes"`
+}
+
 // RoleCounts All-time node counts per role.
 type RoleCounts struct {
 	Companions int `json:"companions"`
 	Repeaters  int `json:"repeaters"`
 	Rooms      int `json:"rooms"`
 	Sensors    int `json:"sensors"`
+}
+
+// RoleStats defines model for RoleStats.
+type RoleStats struct {
+	AbsurdCount      int     `json:"absurdCount"`
+	CriticalCount    int     `json:"criticalCount"`
+	MeanAbsSkewSec   float64 `json:"meanAbsSkewSec"`
+	MedianAbsSkewSec float64 `json:"medianAbsSkewSec"`
+	NoClockCount     int     `json:"noClockCount"`
+	NodeCount        int     `json:"nodeCount"`
+	OkCount          int     `json:"okCount"`
+
+	// Role MeshCore node role. observer marks a standalone observer; unknown marks a pubkey seen only in packets and is not a real MeshCore role.
+	Role         NodeRole `json:"role"`
+	WarningCount int      `json:"warningCount"`
+
+	// WithSkew Nodes with clock-skew data.
+	WithSkew int `json:"withSkew"`
 }
 
 // ScopeConfigState How a repeater's region configuration reads. full: named regions and the * wildcard. no-scopes: * only. no-unscoped: named regions, no *. no-flood: neither. observed: no declared answer, but scoped traffic was seen through it. none: no declared answer and no scoped traffic seen; this means "not told", not a fault.
@@ -900,8 +1202,41 @@ type TimestampMillis = types.WireTimeMillis
 // TimestampSeconds UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
 type TimestampSeconds = types.WireTimeSeconds
 
+// TwoByteCell defines model for TwoByteCell.
+type TwoByteCell struct {
+	// CollisionCount 2-byte prefixes shared by more than one node.
+	CollisionCount int `json:"collision_count"`
+
+	// GroupNodes Nodes whose key starts with this first byte.
+	GroupNodes []HashCollisionNode `json:"group_nodes"`
+
+	// MaxCollision Most nodes sharing one 2-byte prefix in this cell.
+	MaxCollision int `json:"max_collision"`
+
+	// TwoByteMap Those nodes keyed by their 2-byte prefix.
+	TwoByteMap map[string][]HashCollisionNode `json:"two_byte_map"`
+}
+
 // UsefulnessGrade Letter grade derived from usefulness_score.
 type UsefulnessGrade string
+
+// GetHashCollisionAnalyticsParams defines parameters for GetHashCollisionAnalytics.
+type GetHashCollisionAnalyticsParams struct {
+	// Region Region (observer IATA) filter.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key; keeps only nodes inside the area.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+}
+
+// GetHashSizeAnalyticsParams defines parameters for GetHashSizeAnalytics.
+type GetHashSizeAnalyticsParams struct {
+	// Region Region (observer IATA) filter.
+	Region *string `form:"region,omitempty" json:"region,omitempty"`
+
+	// Area Area key; filters adverts by the transmitting node's position.
+	Area *string `form:"area,omitempty" json:"area,omitempty"`
+}
 
 // GetNeighborGraphParams defines parameters for GetNeighborGraph.
 type GetNeighborGraphParams struct {
@@ -1063,6 +1398,11 @@ type ListPacketsParams struct {
 // ListPacketsParamsExpand defines parameters for ListPackets.
 type ListPacketsParamsExpand string
 
+// ListPackets200JSONResponseBody defines parameters for ListPackets.
+type ListPackets200JSONResponseBody struct {
+	union json.RawMessage
+}
+
 // BatchPacketObservationsJSONBody defines parameters for BatchPacketObservations.
 type BatchPacketObservationsJSONBody struct {
 	Hashes []string `json:"hashes"`
@@ -1076,3 +1416,127 @@ type ListPacketTimestampsParams struct {
 
 // BatchPacketObservationsJSONRequestBody defines body for BatchPacketObservations for application/json ContentType.
 type BatchPacketObservationsJSONRequestBody BatchPacketObservationsJSONBody
+
+// AsPacket returns the union data inside the PacketDetailResponse_Packet as a Packet
+func (t PacketDetailResponse_Packet) AsPacket() (Packet, error) {
+	var body Packet
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPacket overwrites any union data inside the PacketDetailResponse_Packet as the provided Packet
+func (t *PacketDetailResponse_Packet) FromPacket(v Packet) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePacket performs a merge with any union data inside the PacketDetailResponse_Packet, using the provided Packet
+func (t *PacketDetailResponse_Packet) MergePacket(v Packet) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsObservationPacket returns the union data inside the PacketDetailResponse_Packet as a ObservationPacket
+func (t PacketDetailResponse_Packet) AsObservationPacket() (ObservationPacket, error) {
+	var body ObservationPacket
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromObservationPacket overwrites any union data inside the PacketDetailResponse_Packet as the provided ObservationPacket
+func (t *PacketDetailResponse_Packet) FromObservationPacket(v ObservationPacket) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeObservationPacket performs a merge with any union data inside the PacketDetailResponse_Packet, using the provided ObservationPacket
+func (t *PacketDetailResponse_Packet) MergeObservationPacket(v ObservationPacket) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PacketDetailResponse_Packet) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PacketDetailResponse_Packet) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPacketListResponse returns the union data inside the ListPackets200JSONResponseBody as a PacketListResponse
+func (t ListPackets200JSONResponseBody) AsPacketListResponse() (PacketListResponse, error) {
+	var body PacketListResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPacketListResponse overwrites any union data inside the ListPackets200JSONResponseBody as the provided PacketListResponse
+func (t *ListPackets200JSONResponseBody) FromPacketListResponse(v PacketListResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePacketListResponse performs a merge with any union data inside the ListPackets200JSONResponseBody, using the provided PacketListResponse
+func (t *ListPackets200JSONResponseBody) MergePacketListResponse(v PacketListResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsGroupedPacketListResponse returns the union data inside the ListPackets200JSONResponseBody as a GroupedPacketListResponse
+func (t ListPackets200JSONResponseBody) AsGroupedPacketListResponse() (GroupedPacketListResponse, error) {
+	var body GroupedPacketListResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromGroupedPacketListResponse overwrites any union data inside the ListPackets200JSONResponseBody as the provided GroupedPacketListResponse
+func (t *ListPackets200JSONResponseBody) FromGroupedPacketListResponse(v GroupedPacketListResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeGroupedPacketListResponse performs a merge with any union data inside the ListPackets200JSONResponseBody, using the provided GroupedPacketListResponse
+func (t *ListPackets200JSONResponseBody) MergeGroupedPacketListResponse(v GroupedPacketListResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ListPackets200JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ListPackets200JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}

@@ -11,8 +11,8 @@ func newTestStore(t *testing.T) *PacketStore {
 	return &PacketStore{
 		rfCache:        make(map[string]*cachedResult),
 		topoCache:      make(map[string]*cachedResult),
-		hashCache:      make(map[string]*cachedResult),
-		collisionCache: make(map[string]*cachedResult),
+		hashCache:      make(map[string]*cachedHashSizes),
+		collisionCache: make(map[string]*cachedHashCollisions),
 		chanCache:      make(map[string]*cachedResult),
 		distCache:      make(map[string]*cachedResult),
 		subpathCache:   make(map[string]*cachedResult),
@@ -29,8 +29,8 @@ func populateAllCaches(s *PacketStore) {
 	dummy := &cachedResult{data: map[string]interface{}{"test": true}, expiresAt: time.Now().Add(time.Hour)}
 	s.rfCache["global"] = dummy
 	s.topoCache["global"] = dummy
-	s.hashCache["global"] = dummy
-	s.collisionCache["global"] = dummy
+	s.hashCache["global"] = &cachedHashSizes{expiresAt: time.Now().Add(time.Hour)}
+	s.collisionCache["global"] = &cachedHashCollisions{expiresAt: time.Now().Add(time.Hour)}
 	s.chanCache["global"] = dummy
 	s.distCache["global"] = dummy
 	s.subpathCache["global"] = dummy
@@ -296,7 +296,7 @@ func BenchmarkCacheHitDuringIngestion(b *testing.B) {
 	s := &PacketStore{
 		rfCache:      make(map[string]*cachedResult),
 		topoCache:    make(map[string]*cachedResult),
-		hashCache:    make(map[string]*cachedResult),
+		hashCache:    make(map[string]*cachedHashSizes),
 		chanCache:    make(map[string]*cachedResult),
 		distCache:    make(map[string]*cachedResult),
 		subpathCache: make(map[string]*cachedResult),
@@ -461,8 +461,8 @@ func BenchmarkAnalyticsLatencyCacheHitVsMiss(b *testing.B) {
 	s := &PacketStore{
 		rfCache:        make(map[string]*cachedResult),
 		topoCache:      make(map[string]*cachedResult),
-		hashCache:      make(map[string]*cachedResult),
-		collisionCache: make(map[string]*cachedResult),
+		hashCache:      make(map[string]*cachedHashSizes),
+		collisionCache: make(map[string]*cachedHashCollisions),
 		chanCache:      make(map[string]*cachedResult),
 		distCache:      make(map[string]*cachedResult),
 		subpathCache:   make(map[string]*cachedResult),

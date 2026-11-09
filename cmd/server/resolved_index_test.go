@@ -77,7 +77,7 @@ func newBareStore(db *database.DB) *PacketStore {
 		distPaths:            make([]distPathRecord, 0),
 		rfCache:              make(map[string]*cachedResult),
 		topoCache:            make(map[string]*cachedResult),
-		hashCache:            make(map[string]*cachedResult),
+		hashCache:            make(map[string]*cachedHashSizes),
 		chanCache:            make(map[string]*cachedResult),
 		distCache:            make(map[string]*cachedResult),
 		subpathCache:         make(map[string]*cachedResult),

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
@@ -85,25 +86,21 @@ func TestMultiByteCapability_RegionFiltered_PreservesConfirmedStatus(t *testing.
 		t.Logf("advert %s raw=%q first_seen=%q route=%v decoded_empty=%v", tx.Hash, tx.RawHex, tx.FirstSeen, tx.RouteType, tx.DecodedJSON == "")
 	}
 	store.mu.RUnlock()
-	if _, ok := unfiltered["multiByteCapability"]; !ok {
+	if len(unfiltered.MultiByteCapability) == 0 {
 		t.Fatal("unfiltered result missing multiByteCapability — test setup is wrong")
 	}
 
 	// The actual assertion: region-filtered view MUST also expose the field
 	// AND must report Node A as "confirmed", not "unknown".
 	result := store.GetAnalyticsHashSizes(ctx, "JKG", "")
-	capsRaw, ok := result["multiByteCapability"]
-	if !ok {
-		t.Fatalf("expected multiByteCapability in region=JKG result, got keys: %v", keysOf(result))
-	}
-	caps, ok := capsRaw.([]MultiByteCapEntry)
-	if !ok {
-		t.Fatalf("expected []MultiByteCapEntry, got %T", capsRaw)
+	caps := result.MultiByteCapability
+	if len(caps) == 0 {
+		t.Fatal("expected multiByteCapability in region=JKG result")
 	}
 
-	var foundA *MultiByteCapEntry
+	var foundA *api.MultiByteCapability
 	for i := range caps {
-		if caps[i].PublicKey == pkA {
+		if caps[i].Pubkey == pkA {
 			foundA = &caps[i]
 			break
 		}
@@ -114,12 +111,4 @@ func TestMultiByteCapability_RegionFiltered_PreservesConfirmedStatus(t *testing.
 	if foundA.Status != "confirmed" {
 		t.Errorf("Node A status under region=JKG = %q, want %q (region filter wrongly downgraded multi-byte capability evidence)", foundA.Status, "confirmed")
 	}
-}
-
-func keysOf(m map[string]interface{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
 }

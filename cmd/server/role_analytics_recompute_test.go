@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // TestRolesAnalyticsRecomputerRegistered asserts that the
@@ -41,7 +43,7 @@ func TestRolesAnalyticsRecomputerRegistered(t *testing.T) {
 	if v == nil {
 		t.Fatalf("recompRoles snapshot is nil after initial compute")
 	}
-	if _, ok := v.(RoleAnalyticsResponse); !ok {
+	if _, ok := v.(api.RoleAnalyticsResponse); !ok {
 		t.Fatalf("recompRoles snapshot type = %T, want RoleAnalyticsResponse", v)
 	}
 
@@ -86,7 +88,7 @@ func TestRolesHandlerSnapshotLatency(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rr.Code)
 		}
-		var out RoleAnalyticsResponse
+		var out api.RoleAnalyticsResponse
 		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 			t.Fatalf("invalid json: %v", err)
 		}

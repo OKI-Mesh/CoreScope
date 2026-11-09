@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
@@ -23,7 +24,7 @@ func seedCollisionAdvert(t *testing.T, db *database.DB, observerIdx int64, hash,
 }
 
 // collisionsForSize3 loads the store and returns the by_size[3] collision list.
-func collisionsForSize3(t *testing.T, db *database.DB) []collisionEntry {
+func collisionsForSize3(t *testing.T, db *database.DB) []api.HashCollision {
 	ctx := t.Context()
 	t.Helper()
 
@@ -33,19 +34,11 @@ func collisionsForSize3(t *testing.T, db *database.DB) []collisionEntry {
 	}
 
 	result := store.GetAnalyticsHashCollisions(ctx, "", "")
-	bySize, ok := result["by_size"].(map[string]interface{})
+	size3, ok := result.BySize["3"]
 	if !ok {
-		t.Fatal("expected by_size map")
+		t.Fatal("expected by_size[3]")
 	}
-	size3, ok := bySize["3"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected by_size[3] map")
-	}
-	collisions, ok := size3["collisions"].([]collisionEntry)
-	if !ok {
-		t.Fatalf("expected collisions as []collisionEntry, got %T", size3["collisions"])
-	}
-	return collisions
+	return size3.Collisions
 }
 
 // TestCollisionDetailsIncludeNodePairs verifies that collision details contain
@@ -67,7 +60,7 @@ func TestCollisionDetailsIncludeNodePairs(t *testing.T) {
 
 	collisions := collisionsForSize3(t, db)
 
-	var found *collisionEntry
+	var found *api.HashCollision
 	for i := range collisions {
 		if collisions[i].Prefix == "AABB11" {
 			found = &collisions[i]

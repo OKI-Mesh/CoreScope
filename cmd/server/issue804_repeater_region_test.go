@@ -91,14 +91,9 @@ func TestIssue804_AnalyticsAttributesByRepeaterRegion(t *testing.T) {
 		ctx := t.Context()
 		result := store.GetAnalyticsHashSizes(ctx, "SJC", "")
 
-		mb, ok := result["multiByteNodes"].([]map[string]interface{})
-		if !ok {
-			t.Fatal("expected multiByteNodes slice")
-		}
-
 		var foundPDX, foundSJC bool
-		for _, n := range mb {
-			pk, _ := n["pubkey"].(string)
+		for _, n := range result.MultiByteNodes {
+			pk := n.Pubkey
 			if pk == pdxPK {
 				foundPDX = true
 			}
@@ -118,10 +113,7 @@ func TestIssue804_AnalyticsAttributesByRepeaterRegion(t *testing.T) {
 	t.Run("API exposes attributionMethod", func(t *testing.T) {
 		ctx := t.Context()
 		result := store.GetAnalyticsHashSizes(ctx, "SJC", "")
-		method, ok := result["attributionMethod"].(string)
-		if !ok {
-			t.Fatal("expected attributionMethod string field on result")
-		}
+		method := result.AttributionMethod
 		if method != "repeater" {
 			t.Errorf("attributionMethod = %q, want %q", method, "repeater")
 		}
@@ -130,11 +122,10 @@ func TestIssue804_AnalyticsAttributesByRepeaterRegion(t *testing.T) {
 	t.Run("region=PDX excludes SJC-Repeater", func(t *testing.T) {
 		ctx := t.Context()
 		result := store.GetAnalyticsHashSizes(ctx, "PDX", "")
-		mb, _ := result["multiByteNodes"].([]map[string]interface{})
 
 		var foundPDX, foundSJC bool
-		for _, n := range mb {
-			pk, _ := n["pubkey"].(string)
+		for _, n := range result.MultiByteNodes {
+			pk := n.Pubkey
 			if pk == pdxPK {
 				foundPDX = true
 			}

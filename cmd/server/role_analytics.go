@@ -6,28 +6,9 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
-
-// RoleStats summarises one role's population and clock-skew posture.
-type RoleStats struct {
-	Role             types.NodeRole `json:"role"`
-	NodeCount        int            `json:"nodeCount"`
-	WithSkew         int            `json:"withSkew"`
-	MeanAbsSkewSec   float64        `json:"meanAbsSkewSec"`
-	MedianAbsSkewSec float64        `json:"medianAbsSkewSec"`
-	OkCount          int            `json:"okCount"`
-	WarningCount     int            `json:"warningCount"`
-	CriticalCount    int            `json:"criticalCount"`
-	AbsurdCount      int            `json:"absurdCount"`
-	NoClockCount     int            `json:"noClockCount"`
-}
-
-// RoleAnalyticsResponse is the payload returned by /api/analytics/roles.
-type RoleAnalyticsResponse struct {
-	TotalNodes int         `json:"totalNodes"`
-	Roles      []RoleStats `json:"roles"`
-}
 
 // computeRoleAnalytics groups nodes by role and aggregates clock-skew per
 // role. Pure function: takes the node roster and the per-pubkey skew map and
@@ -36,9 +17,9 @@ type RoleAnalyticsResponse struct {
 // `nodesByPubkey` lists every known node (pubkey → role). `skewByPubkey`
 // is the subset of pubkeys that have clock-skew data with their severity and
 // most-recent corrected skew (in seconds, signed — we take |x| for averages).
-func computeRoleAnalytics(nodesByPubkey map[string]types.NodeRole, skewByPubkey map[string]*NodeClockSkew) RoleAnalyticsResponse {
+func computeRoleAnalytics(nodesByPubkey map[string]types.NodeRole, skewByPubkey map[string]*NodeClockSkew) api.RoleAnalyticsResponse {
 	type bucket struct {
-		stats    RoleStats
+		stats    api.RoleStats
 		absSkews []float64
 	}
 	buckets := make(map[types.NodeRole]*bucket)
@@ -48,7 +29,7 @@ func computeRoleAnalytics(nodesByPubkey map[string]types.NodeRole, skewByPubkey 
 		}
 		b, ok := buckets[role]
 		if !ok {
-			b = &bucket{stats: RoleStats{Role: role}}
+			b = &bucket{stats: api.RoleStats{Role: role}}
 			buckets[role] = b
 		}
 		b.stats.NodeCount++
@@ -75,7 +56,7 @@ func computeRoleAnalytics(nodesByPubkey map[string]types.NodeRole, skewByPubkey 
 			b.stats.NoClockCount++
 		}
 	}
-	resp := RoleAnalyticsResponse{Roles: make([]RoleStats, 0, len(buckets))}
+	resp := api.RoleAnalyticsResponse{Roles: make([]api.RoleStats, 0, len(buckets))}
 	for _, b := range buckets {
 		if n := len(b.absSkews); n > 0 {
 			sum := 0.0
@@ -112,7 +93,7 @@ func computeRoleAnalytics(nodesByPubkey map[string]types.NodeRole, skewByPubkey 
 func (s *Server) handleAnalyticsRoles(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if s.store == nil {
-		writeJSON(w, RoleAnalyticsResponse{Roles: []RoleStats{}})
+		writeJSON(w, api.RoleAnalyticsResponse{Roles: []api.RoleStats{}})
 		return
 	}
 	writeJSON(w, s.store.GetAnalyticsRoles(ctx))
@@ -124,13 +105,13 @@ func (s *Server) handleAnalyticsRoles(w http.ResponseWriter, r *http.Request) {
 // during the brief startup window before the initial compute completes
 // — Start runs it synchronously, so this fallback is effectively only
 // hit in tests that skip the recomputer entirely).
-func (s *PacketStore) GetAnalyticsRoles(ctx context.Context) RoleAnalyticsResponse {
+func (s *PacketStore) GetAnalyticsRoles(ctx context.Context) api.RoleAnalyticsResponse {
 	s.analyticsRecomputerMu.RLock()
 	rc := s.recompRoles
 	s.analyticsRecomputerMu.RUnlock()
 	if rc != nil {
 		if v := rc.Load(); v != nil {
-			if r, ok := v.(RoleAnalyticsResponse); ok {
+			if r, ok := v.(api.RoleAnalyticsResponse); ok {
 				s.cacheMu.Lock()
 				s.cacheHits++
 				s.cacheMu.Unlock()
@@ -144,7 +125,7 @@ func (s *PacketStore) GetAnalyticsRoles(ctx context.Context) RoleAnalyticsRespon
 // computeAnalyticsRoles runs the actual role aggregation. Used by the
 // background recomputer (issue #1256) and as a fallback for callers
 // arriving before the snapshot is populated.
-func (s *PacketStore) computeAnalyticsRoles(ctx context.Context) RoleAnalyticsResponse {
+func (s *PacketStore) computeAnalyticsRoles(ctx context.Context) api.RoleAnalyticsResponse {
 	nodes, _ := s.getCachedNodesAndPM()
 	roles := make(map[string]types.NodeRole, len(nodes))
 	for _, n := range nodes {

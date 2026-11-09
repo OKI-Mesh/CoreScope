@@ -1964,14 +1964,9 @@ func TestStoreGetAnalyticsHashSizes(t *testing.T) {
 	}
 
 	result := store.GetAnalyticsHashSizes(ctx, "", "")
-	if result["total"] == nil {
-		t.Error("expected total field")
-	}
-	dist, ok := result["distribution"].(map[string]int)
-	if !ok {
+	if result.Distribution == nil {
 		t.Error("expected distribution map")
 	}
-	_ = dist
 
 	t.Run("with region", func(t *testing.T) {
 		r := store.GetAnalyticsHashSizes(ctx, "SJC", "")
@@ -1997,8 +1992,8 @@ func TestHashSizesDistributionByRepeatersFiltersRole(t *testing.T) {
 
 	// distributionByRepeaters should only count repeater nodes.
 	// Rich test DB: aabbccdd11223344 = repeater (hash size 2), eeff00112233aabb = companion (hash size 3).
-	dbr, ok := result["distributionByRepeaters"].(map[string]int)
-	if !ok {
+	dbr := result.DistributionByRepeaters
+	if dbr == nil {
 		t.Fatal("expected distributionByRepeaters map")
 	}
 	// Only the repeater node should be counted.
@@ -2010,22 +2005,19 @@ func TestHashSizesDistributionByRepeatersFiltersRole(t *testing.T) {
 	}
 
 	// multiByteNodes should include role field for frontend filtering.
-	mbn, ok := result["multiByteNodes"].([]map[string]interface{})
-	if !ok {
-		t.Fatal("expected multiByteNodes slice")
-	}
+	mbn := result.MultiByteNodes
 	for _, node := range mbn {
-		if _, hasRole := node["role"]; !hasRole {
-			t.Errorf("multiByteNodes entry missing 'role' field: %v", node)
+		if node.Role == "" {
+			t.Errorf("multiByteNodes entry missing role: %v", node)
 		}
 	}
 	// Verify companion is included in multiByteNodes (it's multi-byte) with correct role.
 	foundCompanion := false
 	for _, node := range mbn {
-		if node["pubkey"] == "eeff00112233aabb" {
+		if node.Pubkey == "eeff00112233aabb" {
 			foundCompanion = true
-			if node["role"] != types.RoleCompanion {
-				t.Errorf("companion node role = %v, want %v", node["role"], types.RoleCompanion)
+			if node.Role != types.RoleCompanion {
+				t.Errorf("companion node role = %v, want %v", node.Role, types.RoleCompanion)
 			}
 		}
 	}
@@ -2886,12 +2878,12 @@ func TestCacheHitHashSizes(t *testing.T) {
 	}
 
 	r1 := store.GetAnalyticsHashSizes(ctx, "", "")
-	if r1 == nil {
+	if r1.Distribution == nil {
 		t.Fatal("expected hash sizes result")
 	}
 
 	r2 := store.GetAnalyticsHashSizes(ctx, "", "")
-	if r2 == nil {
+	if r2.Distribution == nil {
 		t.Fatal("expected cached hash sizes result")
 	}
 
@@ -3293,17 +3285,12 @@ func TestAnalyticsHashSizesZeroHopSkip(t *testing.T) {
 	// The node should appear in multiByteNodes (hashSize=2 from the flood advert)
 	// If the zero-hop bug is present, hashSize would be 1 and the node would NOT
 	// appear in multiByteNodes.
-	multiByteNodes, ok := result["multiByteNodes"].([]map[string]interface{})
-	if !ok {
-		t.Fatal("expected multiByteNodes slice in analytics hash sizes")
-	}
-
 	found := false
-	for _, n := range multiByteNodes {
-		if n["pubkey"] == pk {
+	for _, n := range result.MultiByteNodes {
+		if n.Pubkey == pk {
 			found = true
-			if hs, ok := n["hashSize"].(int); ok && hs != 2 {
-				t.Errorf("expected hashSize=2 from flood advert, got %d", hs)
+			if n.HashSize != 2 {
+				t.Errorf("expected hashSize=2 from flood advert, got %d", n.HashSize)
 			}
 		}
 	}

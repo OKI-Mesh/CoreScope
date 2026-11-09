@@ -206,13 +206,13 @@ type PacketStore struct {
 	queryCount    int64
 	// Response caches (separate mutex to avoid contention with store RWMutex)
 	cacheMu           sync.RWMutex
-	rfCache           map[string]*cachedResult // region → cached RF result
-	topoCache         map[string]*cachedResult // region → cached topology result
-	hashCache         map[string]*cachedResult // region → cached hash-sizes result
-	collisionCache    map[string]*cachedResult // cached hash-collisions result keyed by region ("" = global)
-	chanCache         map[string]*cachedResult // region → cached channels result
-	distCache         map[string]*cachedResult // region → cached distance result
-	subpathCache      map[string]*cachedResult // params → cached subpaths result
+	rfCache           map[string]*cachedResult         // region → cached RF result
+	topoCache         map[string]*cachedResult         // region → cached topology result
+	hashCache         map[string]*cachedHashSizes      // region → cached hash-sizes result
+	collisionCache    map[string]*cachedHashCollisions // cached hash-collisions result keyed by region ("" = global)
+	chanCache         map[string]*cachedResult         // region → cached channels result
+	distCache         map[string]*cachedResult         // region → cached distance result
+	subpathCache      map[string]*cachedResult         // params → cached subpaths result
 	rfCacheTTL        time.Duration
 	collisionCacheTTL time.Duration
 
@@ -650,6 +650,19 @@ type cachedResult struct {
 	expiresAt time.Time
 }
 
+// cachedHashSizes is a hash-sizes result held in hashCache until it expires.
+type cachedHashSizes struct {
+	data      api.HashSizeAnalyticsResponse
+	expiresAt time.Time
+}
+
+// cachedHashCollisions is a hash-collisions result held in collisionCache
+// until it expires.
+type cachedHashCollisions struct {
+	data      api.HashCollisionResponse
+	expiresAt time.Time
+}
+
 // cacheTTLSec extracts a duration from the cacheTTL config map.
 // Values may be float64 (from JSON) or int. Returns false if key is missing or non-positive.
 func cacheTTLSec(m map[string]interface{}, key string) (time.Duration, bool) {
@@ -690,9 +703,9 @@ func NewPacketStore(db *database.DB, cfg *PacketStoreConfig, cacheTTLs ...map[st
 		byPayloadType: make(map[types.PayloadType][]*StoreTx),
 		rfCache:       make(map[string]*cachedResult),
 		topoCache:     make(map[string]*cachedResult),
-		hashCache:     make(map[string]*cachedResult),
+		hashCache:     make(map[string]*cachedHashSizes),
 
-		collisionCache: make(map[string]*cachedResult),
+		collisionCache: make(map[string]*cachedHashCollisions),
 		chanCache:      make(map[string]*cachedResult),
 		distCache:      make(map[string]*cachedResult),
 		subpathCache:   make(map[string]*cachedResult),
@@ -1836,8 +1849,8 @@ func (s *PacketStore) invalidateCachesFor(inv cacheInvalidation) {
 	if inv.eviction {
 		s.rfCache = make(map[string]*cachedResult)
 		s.topoCache = make(map[string]*cachedResult)
-		s.hashCache = make(map[string]*cachedResult)
-		s.collisionCache = make(map[string]*cachedResult)
+		s.hashCache = make(map[string]*cachedHashSizes)
+		s.collisionCache = make(map[string]*cachedHashCollisions)
 		s.chanCache = make(map[string]*cachedResult)
 		s.distCache = make(map[string]*cachedResult)
 		s.subpathCache = make(map[string]*cachedResult)
@@ -1891,10 +1904,10 @@ func (s *PacketStore) applyCacheInvalidation(inv cacheInvalidation) {
 		s.retransCache = nil
 	}
 	if inv.hasNewTransmissions {
-		s.hashCache = make(map[string]*cachedResult)
+		s.hashCache = make(map[string]*cachedHashSizes)
 	}
 	if inv.hasNewNodes {
-		s.collisionCache = make(map[string]*cachedResult)
+		s.collisionCache = make(map[string]*cachedHashCollisions)
 	}
 	if inv.hasChannelData {
 		s.chanCache = make(map[string]*cachedResult)
@@ -7347,18 +7360,18 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 
 // --- Hash Sizes Analytics ---
 
-func (s *PacketStore) GetAnalyticsHashSizes(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsHashSizes(ctx context.Context, region, area string) api.HashSizeAnalyticsResponse {
 	if region == "" && area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompHashSizes
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
 			if v := rc.Load(); v != nil {
-				if m, ok := v.(map[string]interface{}); ok {
+				if r, ok := v.(api.HashSizeAnalyticsResponse); ok {
 					s.cacheMu.Lock()
 					s.cacheHits++
 					s.cacheMu.Unlock()
-					return m
+					return r
 				}
 			}
 		}
@@ -7376,7 +7389,7 @@ func (s *PacketStore) GetAnalyticsHashSizes(ctx context.Context, region, area st
 	result := s.computeAnalyticsHashSizesWithCapability(ctx, region, area)
 
 	s.cacheMu.Lock()
-	s.hashCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	s.hashCache[cacheKey] = &cachedHashSizes{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
@@ -7386,36 +7399,30 @@ func (s *PacketStore) GetAnalyticsHashSizes(ctx context.Context, region, area st
 // then layers in the multiByteCapability augmentation. Extracted so the
 // steady-state recomputer (issue #1240) produces the same shape as the
 // cached GetAnalyticsHashSizes call.
-func (s *PacketStore) computeAnalyticsHashSizesWithCapability(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsHashSizesWithCapability(ctx context.Context, region, area string) api.HashSizeAnalyticsResponse {
 	result := s.computeAnalyticsHashSizes(ctx, region, area)
-	globalAdopterHS := make(map[string]int)
-	if region == "" {
-		if mbNodes, ok := result["multiByteNodes"].([]map[string]interface{}); ok {
-			for _, n := range mbNodes {
-				pk, _ := n["pubkey"].(string)
-				hs, _ := n["hashSize"].(int)
-				if pk != "" && hs >= 2 {
-					globalAdopterHS[pk] = hs
-				}
-			}
-		}
-	} else {
-		// Pull the global multiByteNodes set without the region/area filter.
-		// Use a separate compute call (not the cached path) to avoid
-		// recursive locking on hashCache and to keep this side-effect free.
-		globalRes := s.computeAnalyticsHashSizes(ctx, "", "")
-		if mbNodes, ok := globalRes["multiByteNodes"].([]map[string]interface{}); ok {
-			for _, n := range mbNodes {
-				pk, _ := n["pubkey"].(string)
-				hs, _ := n["hashSize"].(int)
-				if pk != "" && hs >= 2 {
-					globalAdopterHS[pk] = hs
-				}
-			}
+
+	// The adopters that decide a node's confirmed status are always the
+	// global set. With a region filter the filtered result holds only part of
+	// it, so compute the global set separately: a separate compute call, not
+	// the cached path, avoids recursive locking on hashCache and keeps this
+	// side-effect free.
+	adopters := result.MultiByteNodes
+	if region != "" {
+		adopters = s.computeAnalyticsHashSizes(ctx, "", "").MultiByteNodes
+	}
+	globalAdopterHS := make(map[string]int, len(adopters))
+	for _, n := range adopters {
+		if n.Pubkey != "" && n.HashSize >= 2 {
+			globalAdopterHS[n.Pubkey] = n.HashSize
 		}
 	}
 	mbEntries := s.computeMultiByteCapability(globalAdopterHS)
-	result["multiByteCapability"] = mbEntries
+	capabilities := make([]api.MultiByteCapability, 0, len(mbEntries))
+	for _, e := range mbEntries {
+		capabilities = append(capabilities, e.Capability())
+	}
+	result.MultiByteCapability = capabilities
 
 	// Build the O(1) lookup index OUTSIDE the cache lock — at Cascadia
 	// scale this is a ~2400-entry allocation + hash + insert per cycle.
@@ -7456,7 +7463,7 @@ func (s *PacketStore) loadObserverIATA(ctx context.Context) map[string]string {
 	return obsIATA
 }
 
-func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, area string) api.HashSizeAnalyticsResponse {
 
 	var regionObs, areaNodes map[string]bool
 	if region != "" {
@@ -7475,7 +7482,7 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 	// relayed). When non-empty, multi-byte node attribution prefers this
 	// over observer-region. Falls back to observer-region when unknown.
 	nodeHomeRegion := s.computeNodeHomeRegions(obsIATA)
-	attributionMethod := "observer"
+	attributionMethod := api.AttributionMethod("observer")
 	if region != "" && len(nodeHomeRegion) > 0 {
 		attributionMethod = "repeater"
 	}
@@ -7490,8 +7497,8 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 
 	distribution := map[string]int{"1": 0, "2": 0, "3": 0}
 	byHour := map[string]map[string]int{}
-	byNode := map[string]map[string]interface{}{}
-	uniqueHops := map[string]map[string]interface{}{}
+	byNode := map[string]*hashSizeAdopter{}
+	uniqueHops := map[string]*hopTally{}
 	total := 0
 
 	for _, tx := range s.packets {
@@ -7595,23 +7602,30 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 			// computeNodeHashSizeInfo. Skipped packets still count and still
 			// update lastSeen.
 			isUndeclaredZeroHop := (routeType == uint64(types.RouteDirect) || routeType == uint64(types.RouteTransportDirect)) && actualPathByte == 0x00
-			if byNode[pk] == nil {
-				role := nodeRoleByPK[pk] // empty if unknown
+			adopter := byNode[pk]
+			if adopter == nil {
 				initHS := hashSize
 				if isUndeclaredZeroHop {
 					initHS = 0
 				}
-				byNode[pk] = map[string]interface{}{
-					"hashSize": initHS, "packets": 0,
-					"lastSeen": tx.FirstSeen, "name": name,
-					"role": role,
+				// A pubkey that has advertised but is not in the nodes table
+				// yet has no role. The wire format has a value for that.
+				role, known := nodeRoleByPK[pk]
+				if !known || role == "" {
+					role = types.RoleUnknown
 				}
+				adopter = &hashSizeAdopter{
+					name:     name,
+					role:     role,
+					hashSize: initHS,
+				}
+				byNode[pk] = adopter
 			}
-			byNode[pk]["packets"] = byNode[pk]["packets"].(int) + 1
+			adopter.packets++
 			if !isUndeclaredZeroHop {
-				byNode[pk]["hashSize"] = hashSize
+				adopter.hashSize = hashSize
 			}
-			byNode[pk]["lastSeen"] = tx.FirstSeen
+			adopter.lastSeen = tx.FirstSeen
 		}
 
 		// Distribution/hourly/uniqueHops only for packets with relay hops
@@ -7635,20 +7649,18 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 
 		// Track unique hops with their sizes
 		for _, hop := range hops {
-			if uniqueHops[hop] == nil {
-				hopLower := strings.ToLower(hop)
-				candidates := pm.m[hopLower]
-				var matchName, matchPk interface{}
-				if len(candidates) > 0 {
-					matchName = candidates[0].Name
-					matchPk = candidates[0].PublicKey
+			tally := uniqueHops[hop]
+			if tally == nil {
+				tally = &hopTally{hex: hop, size: (len(hop) + 1) / 2}
+				if candidates := pm.m[strings.ToLower(hop)]; len(candidates) > 0 {
+					name := candidates[0].Name
+					pubkey := candidates[0].PublicKey
+					tally.name = &name
+					tally.pubkey = &pubkey
 				}
-				uniqueHops[hop] = map[string]interface{}{
-					"size": (len(hop) + 1) / 2, "count": 0,
-					"name": matchName, "pubkey": matchPk,
-				}
+				uniqueHops[hop] = tally
 			}
-			uniqueHops[hop]["count"] = uniqueHops[hop]["count"].(int) + 1
+			tally.count++
 		}
 	}
 
@@ -7658,40 +7670,36 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 		hourKeys = append(hourKeys, k)
 	}
 	sort.Strings(hourKeys)
-	hourly := make([]map[string]interface{}, 0, len(hourKeys))
+	hourly := make([]api.HashSizeHourly, 0, len(hourKeys))
 	for _, hour := range hourKeys {
 		sizes := byHour[hour]
-		hourly = append(hourly, map[string]interface{}{
-			"hour": hour, "1": sizes["1"], "2": sizes["2"], "3": sizes["3"],
+		hourly = append(hourly, api.HashSizeHourly{
+			Hour: hour, N1: sizes["1"], N2: sizes["2"], N3: sizes["3"],
 		})
 	}
 
 	// Top hops by frequency
-	type hopEntry struct {
-		hex  string
-		data map[string]interface{}
-	}
-	hopList := make([]hopEntry, 0, len(uniqueHops))
-	for hex, data := range uniqueHops {
-		hopList = append(hopList, hopEntry{hex, data})
+	hopList := make([]*hopTally, 0, len(uniqueHops))
+	for _, tally := range uniqueHops {
+		hopList = append(hopList, tally)
 	}
 	sort.Slice(hopList, func(i, j int) bool {
-		return hopList[i].data["count"].(int) > hopList[j].data["count"].(int)
+		return hopList[i].count > hopList[j].count
 	})
-	topHops := make([]map[string]interface{}, 0)
-	for i, e := range hopList {
+	topHops := make([]api.HashSizeHop, 0)
+	for i, tally := range hopList {
 		if i >= 50 {
 			break
 		}
-		topHops = append(topHops, map[string]interface{}{
-			"hex": e.hex, "size": e.data["size"], "count": e.data["count"],
-			"name": e.data["name"], "pubkey": e.data["pubkey"],
+		topHops = append(topHops, api.HashSizeHop{
+			Hex: tally.hex, Size: tally.size, Count: tally.count,
+			Name: tally.name, Pubkey: tally.pubkey,
 		})
 	}
 
 	// Multi-byte nodes
-	multiByteNodes := make([]map[string]interface{}, 0)
-	for pk, data := range byNode {
+	multiByteNodes := make([]api.MultiByteNode, 0)
+	for pk, adopter := range byNode {
 		// #804: when a region filter is active, prefer the repeater's HOME
 		// region over the observer that happened to relay it. Falls back to
 		// the (already-applied) observer-region filter when the node's home
@@ -7701,23 +7709,25 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 				continue
 			}
 		}
-		if data["hashSize"].(int) > 1 {
-			multiByteNodes = append(multiByteNodes, map[string]interface{}{
-				"name": data["name"], "hashSize": data["hashSize"],
-				"packets": data["packets"], "lastSeen": data["lastSeen"],
-				"pubkey": pk, "role": data["role"],
+		if adopter.hashSize > 1 {
+			multiByteNodes = append(multiByteNodes, api.MultiByteNode{
+				Name:     adopter.name,
+				HashSize: adopter.hashSize,
+				Packets:  adopter.packets,
+				LastSeen: types.WireTimeSeconds{Time: adopter.lastSeen},
+				Pubkey:   pk,
+				Role:     adopter.role,
 			})
 		}
 	}
 	sort.Slice(multiByteNodes, func(i, j int) bool {
-		return multiByteNodes[i]["packets"].(int) > multiByteNodes[j]["packets"].(int)
+		return multiByteNodes[i].Packets > multiByteNodes[j].Packets
 	})
 
 	// Distribution by repeaters: count unique REPEATER nodes per hash size
 	distributionByRepeaters := map[string]int{"1": 0, "2": 0, "3": 0}
-	for pk, data := range byNode {
-		role, _ := data["role"].(types.NodeRole)
-		if role != types.RoleRepeater {
+	for pk, adopter := range byNode {
+		if adopter.role != types.RoleRepeater {
 			continue
 		}
 		// #804: same repeater-region preference as multiByteNodes.
@@ -7726,20 +7736,38 @@ func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, are
 				continue
 			}
 		}
-		hs := data["hashSize"].(int)
-		key := strconv.Itoa(hs)
-		distributionByRepeaters[key]++
+		distributionByRepeaters[strconv.Itoa(adopter.hashSize)]++
 	}
 
-	return map[string]interface{}{
-		"total":                   total,
-		"distribution":            distribution,
-		"distributionByRepeaters": distributionByRepeaters,
-		"hourly":                  hourly,
-		"topHops":                 topHops,
-		"multiByteNodes":          multiByteNodes,
-		"attributionMethod":       attributionMethod,
+	return api.HashSizeAnalyticsResponse{
+		AttributionMethod:       attributionMethod,
+		Total:                   total,
+		Distribution:            distribution,
+		DistributionByRepeaters: distributionByRepeaters,
+		Hourly:                  hourly,
+		TopHops:                 topHops,
+		MultiByteNodes:          multiByteNodes,
+		MultiByteCapability:     []api.MultiByteCapability{},
 	}
+}
+
+// hashSizeAdopter tallies the adverts one node sent while hash sizes are
+// counted.
+type hashSizeAdopter struct {
+	name     string
+	role     types.NodeRole
+	hashSize int
+	packets  int
+	lastSeen time.Time
+}
+
+// hopTally counts how many relayed packets carried one hop prefix.
+type hopTally struct {
+	hex    string
+	size   int
+	count  int
+	name   *string
+	pubkey *string
 }
 
 // hashSizeNodeInfo holds per-node hash size tracking data.
@@ -7754,18 +7782,18 @@ type hashSizeNodeInfo struct {
 
 // GetAnalyticsHashCollisions returns pre-computed hash collision analysis.
 // This moves the O(n²) distance computation from the frontend to the server.
-func (s *PacketStore) GetAnalyticsHashCollisions(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) GetAnalyticsHashCollisions(ctx context.Context, region, area string) api.HashCollisionResponse {
 	if region == "" && area == "" {
 		s.analyticsRecomputerMu.RLock()
 		rc := s.recompHashCollisions
 		s.analyticsRecomputerMu.RUnlock()
 		if rc != nil {
 			if v := rc.Load(); v != nil {
-				if m, ok := v.(map[string]interface{}); ok {
+				if r, ok := v.(api.HashCollisionResponse); ok {
 					s.cacheMu.Lock()
 					s.cacheHits++
 					s.cacheMu.Unlock()
-					return m
+					return r
 				}
 			}
 		}
@@ -7783,44 +7811,13 @@ func (s *PacketStore) GetAnalyticsHashCollisions(ctx context.Context, region, ar
 	result := s.computeHashCollisions(ctx, region, area)
 
 	s.cacheMu.Lock()
-	s.collisionCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.collisionCacheTTL)}
+	s.collisionCache[cacheKey] = &cachedHashCollisions{data: result, expiresAt: time.Now().Add(s.collisionCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result
 }
 
-// collisionNode is a lightweight node representation for collision analysis.
-type collisionNode struct {
-	PublicKey            string         `json:"public_key"`
-	Name                 string         `json:"name"`
-	Role                 types.NodeRole `json:"role"`
-	Lat                  float64        `json:"lat"`
-	Lon                  float64        `json:"lon"`
-	HashSize             int            `json:"hash_size"`
-	HashSizeInconsistent bool           `json:"hash_size_inconsistent"`
-	HashSizesSeen        []int          `json:"hash_sizes_seen,omitempty"`
-}
-
-// collisionEntry represents a prefix collision with pre-computed distances.
-type collisionEntry struct {
-	Prefix         string          `json:"prefix"`
-	ByteSize       int             `json:"byte_size"`
-	Appearances    int             `json:"appearances"`
-	Nodes          []collisionNode `json:"nodes"`
-	MaxDistKm      float64         `json:"max_dist_km"`
-	Classification string          `json:"classification"`
-	WithCoords     int             `json:"with_coords"`
-}
-
-// twoByteCellInfo holds per-first-byte-group data for 2-byte matrix.
-type twoByteCellInfo struct {
-	GroupNodes     []collisionNode            `json:"group_nodes"`
-	TwoByteMap     map[string][]collisionNode `json:"two_byte_map"`
-	MaxCollision   int                        `json:"max_collision"`
-	CollisionCount int                        `json:"collision_count"`
-}
-
-func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area string) map[string]interface{} {
+func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area string) api.HashCollisionResponse {
 	// Get all nodes from DB
 	nodes, _ := s.getAllNodes(ctx)
 	hashInfo := s.GetNodeHashSizeInfo()
@@ -7888,9 +7885,9 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 	}
 
 	// Build collision nodes with hash info
-	var allCNodes []collisionNode
+	var allCNodes []api.HashCollisionNode
 	for _, n := range nodes {
-		cn := collisionNode{
+		cn := api.HashCollisionNode{
 			PublicKey: n.PublicKey,
 			Name:      n.Name,
 			Role:      n.Role,
@@ -7913,18 +7910,18 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 	}
 
 	// Inconsistent nodes
-	var inconsistentNodes []collisionNode
+	var inconsistentNodes []api.HashCollisionNode
 	for _, cn := range allCNodes {
 		if cn.HashSizeInconsistent && (cn.Role == types.RoleRepeater || cn.Role == types.RoleRoom) {
 			inconsistentNodes = append(inconsistentNodes, cn)
 		}
 	}
 	if inconsistentNodes == nil {
-		inconsistentNodes = make([]collisionNode, 0)
+		inconsistentNodes = make([]api.HashCollisionNode, 0)
 	}
 
 	// Compute collisions for each byte size (1, 2, 3)
-	collisionsBySize := make(map[string]interface{})
+	collisionsBySize := make(map[string]api.HashCollisionSize, 3)
 	for _, bytes := range []int{1, 2, 3} {
 		// Filter nodes relevant to this byte size.
 		// - Exclude hash_size==0 nodes: no adverts seen, so actual hash
@@ -7933,7 +7930,7 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 		// - Exclude companions: they are mobile/temporary and don't form
 		//   the mesh backbone, so collisions with them aren't meaningful.
 		// (Fixes #441)
-		var nodesForByte []collisionNode
+		var nodesForByte []api.HashCollisionNode
 		for _, cn := range allCNodes {
 			if cn.HashSize == bytes && cn.Role == "repeater" {
 				nodesForByte = append(nodesForByte, cn)
@@ -7941,7 +7938,7 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 		}
 
 		// Build prefix map
-		prefixMap := make(map[string][]collisionNode)
+		prefixMap := make(map[string][]api.HashCollisionNode)
 		for _, cn := range nodesForByte {
 			if len(cn.PublicKey) < bytes*2 {
 				continue
@@ -7951,20 +7948,20 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 		}
 
 		// Compute collisions with pairwise distances
-		var collisions []collisionEntry
+		var collisions []api.HashCollision
 		for prefix, pnodes := range prefixMap {
 			if len(pnodes) <= 1 {
 				continue
 			}
 			// Pairwise distance
-			var withCoords []collisionNode
+			var withCoords []api.HashCollisionNode
 			for _, cn := range pnodes {
 				if cn.Lat != 0 || cn.Lon != 0 {
 					withCoords = append(withCoords, cn)
 				}
 			}
 			var maxDistKm float64
-			classification := "unknown"
+			classification := api.CollisionClass("unknown")
 			if len(withCoords) >= 2 {
 				for i := 0; i < len(withCoords); i++ {
 					for j := i + 1; j < len(withCoords); j++ {
@@ -7984,7 +7981,7 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 			} else {
 				classification = "incomplete"
 			}
-			collisions = append(collisions, collisionEntry{
+			collisions = append(collisions, api.HashCollision{
 				Prefix:         prefix,
 				ByteSize:       bytes,
 				Appearances:    len(pnodes),
@@ -7995,11 +7992,11 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 			})
 		}
 		if collisions == nil {
-			collisions = make([]collisionEntry, 0)
+			collisions = make([]api.HashCollision, 0)
 		}
 
 		// Sort: local first, then regional, distant, incomplete
-		classOrder := map[string]int{"local": 0, "regional": 1, "distant": 2, "incomplete": 3, "unknown": 4}
+		classOrder := map[api.CollisionClass]int{"local": 0, "regional": 1, "distant": 2, "incomplete": 3, "unknown": 4}
 		sort.Slice(collisions, func(i, j int) bool {
 			oi, oj := classOrder[collisions[i].Classification], classOrder[collisions[j].Classification]
 			if oi != oj {
@@ -8033,15 +8030,15 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 		}
 
 		// For 1-byte and 2-byte, include the full prefix cell data for matrix rendering
-		var oneByteCells map[string][]collisionNode
-		var twoByteCells map[string]*twoByteCellInfo
+		var oneByteCells map[string][]api.HashCollisionNode
+		var twoByteCells map[string]*api.TwoByteCell
 		if bytes == 1 {
-			oneByteCells = make(map[string][]collisionNode)
+			oneByteCells = make(map[string][]api.HashCollisionNode)
 			for i := 0; i < 256; i++ {
 				hex := strings.ToUpper(fmt.Sprintf("%02x", i))
 				oneByteCells[hex] = prefixMap[hex]
 				if oneByteCells[hex] == nil {
-					oneByteCells[hex] = make([]collisionNode, 0)
+					oneByteCells[hex] = make([]api.HashCollisionNode, 0)
 				}
 			}
 			// Fix #1218: a repeater configured for a 2- or 3-byte hash still
@@ -8067,12 +8064,12 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 				oneByteCells[hex] = append(oneByteCells[hex], cn)
 			}
 		} else if bytes == 2 {
-			twoByteCells = make(map[string]*twoByteCellInfo)
+			twoByteCells = make(map[string]*api.TwoByteCell)
 			for i := 0; i < 256; i++ {
 				hex := strings.ToUpper(fmt.Sprintf("%02x", i))
-				cell := &twoByteCellInfo{
-					GroupNodes: make([]collisionNode, 0),
-					TwoByteMap: make(map[string][]collisionNode),
+				cell := &api.TwoByteCell{
+					GroupNodes: make([]api.HashCollisionNode, 0),
+					TwoByteMap: make(map[string][]api.HashCollisionNode),
 				}
 				twoByteCells[hex] = cell
 			}
@@ -8101,30 +8098,31 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 			}
 		}
 
-		sizeData := map[string]interface{}{
-			"stats": map[string]interface{}{
-				"total_nodes":     len(allCNodes),
-				"nodes_for_byte":  nodeCount,
-				"using_this_size": usingThisSize,
-				"unique_prefixes": uniquePrefixes,
-				"collision_count": collisionCount,
-				"space_size":      spaceSize,
-				"pct_used":        pctUsed,
+		sizeData := api.HashCollisionSize{
+			Stats: api.HashCollisionStats{
+				TotalNodes:     len(allCNodes),
+				NodesForByte:   nodeCount,
+				UsingThisSize:  usingThisSize,
+				UniquePrefixes: uniquePrefixes,
+				CollisionCount: collisionCount,
+				SpaceSize:      spaceSize,
+				PctUsed:        pctUsed,
 			},
-			"collisions": collisions,
-		}
-		if oneByteCells != nil {
-			sizeData["one_byte_cells"] = oneByteCells
+			Collisions:   collisions,
+			OneByteCells: oneByteCells,
 		}
 		if twoByteCells != nil {
-			sizeData["two_byte_cells"] = twoByteCells
+			sizeData.TwoByteCells = make(map[string]api.TwoByteCell, len(twoByteCells))
+			for hex, cell := range twoByteCells {
+				sizeData.TwoByteCells[hex] = *cell
+			}
 		}
 		collisionsBySize[strconv.Itoa(bytes)] = sizeData
 	}
 
-	return map[string]interface{}{
-		"inconsistent_nodes": inconsistentNodes,
-		"by_size":            collisionsBySize,
+	return api.HashCollisionResponse{
+		InconsistentNodes: inconsistentNodes,
+		BySize:            collisionsBySize,
 	}
 }
 
@@ -8420,6 +8418,19 @@ type MultiByteCapEntry struct {
 	Evidence    string         `json:"evidence"` // "advert", "path", ""
 	MaxHashSize int            `json:"maxHashSize"`
 	LastSeen    time.Time      `json:"lastSeen"`
+}
+
+// Capability is the entry as the hash-sizes endpoint serves it.
+func (e MultiByteCapEntry) Capability() api.MultiByteCapability {
+	return api.MultiByteCapability{
+		Pubkey:      e.PublicKey,
+		Name:        e.Name,
+		Role:        e.Role,
+		Status:      api.CapabilityStatus(e.Status),
+		Evidence:    api.CapabilityEvidence(e.Evidence),
+		MaxHashSize: e.MaxHashSize,
+		LastSeen:    types.WireTimeSeconds{Time: e.LastSeen},
+	}
 }
 
 // computeMultiByteCapability determines multi-byte capability for each

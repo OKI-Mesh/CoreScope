@@ -725,39 +725,6 @@ type DistanceAnalyticsResponse struct {
 	DistOverTime  []DistOverTimeEntry           `json:"distOverTime"`
 }
 
-// ─── Analytics — Hash Sizes ────────────────────────────────────────────────────
-
-type HashSizeHourly struct {
-	Hour  string `json:"hour"`
-	Size1 int    `json:"1"`
-	Size2 int    `json:"2"`
-	Size3 int    `json:"3"`
-}
-
-type HashSizeHop struct {
-	Hex    string      `json:"hex"`
-	Size   int         `json:"size"`
-	Count  int         `json:"count"`
-	Name   interface{} `json:"name"`
-	Pubkey interface{} `json:"pubkey"`
-}
-
-type MultiByteNode struct {
-	Name     string      `json:"name"`
-	HashSize int         `json:"hashSize"`
-	Packets  int         `json:"packets"`
-	LastSeen string      `json:"lastSeen"`
-	Pubkey   interface{} `json:"pubkey"`
-}
-
-type HashSizeAnalyticsResponse struct {
-	Total          int              `json:"total"`
-	Distribution   map[string]int   `json:"distribution"`
-	Hourly         []HashSizeHourly `json:"hourly"`
-	TopHops        []HashSizeHop    `json:"topHops"`
-	MultiByteNodes []MultiByteNode  `json:"multiByteNodes"`
-}
-
 // ─── Analytics — Subpaths ──────────────────────────────────────────────────────
 
 type SubpathResp struct {

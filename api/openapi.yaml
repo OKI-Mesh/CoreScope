@@ -489,9 +489,8 @@ paths:
           content:
             application/json:
               schema:
-                x-go-type: json.RawMessage
-                x-go-type-import: { path: encoding/json }
-                oneOf:
+                # anyOf, not oneOf: an empty page fits both shapes.
+                anyOf:
                   - $ref: '#/components/schemas/PacketListResponse'
                   - $ref: '#/components/schemas/GroupedPacketListResponse'
         "400":
@@ -588,6 +587,76 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/analytics/hash-sizes:
+    get:
+      tags: [analytics]
+      operationId: getHashSizeAnalytics
+      summary: Hash size analytics
+      description: >-
+        How the network's path hash sizes (1 to 3 bytes) are distributed, which
+        nodes advertise multi-byte hashes, and each node's multi-byte capability.
+        An unknown region applies no filter. With any region the attribution
+        method switches to repeater.
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Region (observer IATA) filter.
+          schema: { type: string }
+        - name: area
+          in: query
+          required: false
+          description: Area key; filters adverts by the transmitting node's position.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HashSizeAnalyticsResponse'
+  /api/analytics/hash-collisions:
+    get:
+      tags: [analytics]
+      operationId: getHashCollisionAnalytics
+      summary: Hash prefix collisions
+      description: >-
+        Nodes that share a 1-, 2- or 3-byte public key prefix, with the distance
+        between them, plus the prefix matrices used by the collision view. An
+        unknown region applies no filter.
+      parameters:
+        - name: region
+          in: query
+          required: false
+          description: Region (observer IATA) filter.
+          schema: { type: string }
+        - name: area
+          in: query
+          required: false
+          description: Area key; keeps only nodes inside the area.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HashCollisionResponse'
+  /api/analytics/roles:
+    get:
+      tags: [analytics]
+      operationId: getRoleAnalytics
+      summary: Role analytics
+      description: >-
+        Node counts and clock-skew posture per role, from a snapshot rebuilt in
+        the background.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAnalyticsResponse'
 components:
   schemas:
     NodeRole:
@@ -1621,10 +1690,9 @@ components:
         packet:
           description: >-
             Packet when id was a hash or a transmission id, ObservationPacket
-            when it was an observation id. Generated as raw JSON so the models
-            need no union runtime package.
-          x-go-type: json.RawMessage
-          x-go-type-import: { path: encoding/json }
+            when it was an observation id.
+          # Follow-up: give the observation-id lookup its own route so this
+          # field stops being a union.
           oneOf:
             - $ref: '#/components/schemas/Packet'
             - $ref: '#/components/schemas/ObservationPacket'
@@ -1648,4 +1716,229 @@ components:
           additionalProperties:
             type: array
             items: { $ref: '#/components/schemas/ObservationDetail' }
-            
+    AttributionMethod:
+      type: string
+      description: >-
+        observer: multi-byte nodes are attributed to the observers that heard
+        them. repeater: to the repeater's home region, used whenever a region
+        filter is given.
+      enum: [observer, repeater]
+    CapabilityStatus:
+      type: string
+      description: >-
+        confirmed: an advert declared a size of 2 or more. suspected: the
+        node's prefix appeared in a multi-byte path. unknown: only 1-byte
+        evidence.
+      enum: [confirmed, suspected, unknown]
+    CapabilityEvidence:
+      type: string
+      description: What the capability status rests on. Empty when the status is unknown.
+      enum: [advert, path, ""]
+    CollisionClass:
+      type: string
+      description: >-
+        local: under 50 km. regional: under 200 km. distant: farther.
+        incomplete: fewer than two positioned nodes.
+      enum: [local, regional, distant, incomplete, unknown]
+    HashSizeHourly:
+      type: object
+      additionalProperties: false
+      required: ["hour", "1", "2", "3"]
+      properties:
+        hour: { type: string, description: "UTC hour bucket, 2026-11-05T15." }
+        "1": { type: integer, description: Packets with 1-byte hashes. }
+        "2": { type: integer, description: Packets with 2-byte hashes. }
+        "3": { type: integer, description: Packets with 3-byte hashes. }
+    HashSizeHop:
+      type: object
+      additionalProperties: false
+      required: [hex, size, count, name, pubkey]
+      properties:
+        hex: { type: string, description: The hop's hash prefix as hex. }
+        size: { type: integer, description: The prefix length in bytes. }
+        count: { type: integer, description: Packets that carried the hop. }
+        name: { type: string, nullable: true, description: The node the prefix resolves to; null when unknown. }
+        pubkey: { type: string, nullable: true, description: The resolved node's public key; null when unknown. }
+    MultiByteNode:
+      type: object
+      additionalProperties: false
+      required: [name, hashSize, packets, lastSeen, pubkey, role]
+      properties:
+        name: { type: string }
+        hashSize: { type: integer, description: The hash size in bytes the node's latest advert declared. }
+        packets: { type: integer, description: Adverts counted for the node. }
+        lastSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+        pubkey: { type: string }
+        role: { $ref: '#/components/schemas/NodeRole' }
+    MultiByteCapability:
+      type: object
+      additionalProperties: false
+      required: [pubkey, name, role, status, evidence, maxHashSize, lastSeen]
+      properties:
+        pubkey: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/NodeRole' }
+        status: { $ref: '#/components/schemas/CapabilityStatus' }
+        evidence: { $ref: '#/components/schemas/CapabilityEvidence' }
+        maxHashSize: { type: integer }
+        lastSeen: { $ref: '#/components/schemas/TimestampSeconds' }
+    HashSizeAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - attributionMethod
+        - total
+        - distribution
+        - distributionByRepeaters
+        - hourly
+        - topHops
+        - multiByteNodes
+        - multiByteCapability
+      properties:
+        attributionMethod: { $ref: '#/components/schemas/AttributionMethod' }
+        total:
+          type: integer
+          description: Packets with at least one relay hop.
+        distribution:
+          type: object
+          description: Packets per hash size in bytes, keys 1 to 3.
+          additionalProperties: { type: integer }
+        distributionByRepeaters:
+          type: object
+          description: Repeaters per hash size in bytes. Key 0 counts repeaters whose size could not be read.
+          additionalProperties: { type: integer }
+        hourly:
+          type: array
+          items: { $ref: '#/components/schemas/HashSizeHourly' }
+        topHops:
+          type: array
+          description: The 50 most frequent hops.
+          items: { $ref: '#/components/schemas/HashSizeHop' }
+        multiByteNodes:
+          type: array
+          description: Nodes advertising 2-byte or 3-byte hashes, busiest first.
+          items: { $ref: '#/components/schemas/MultiByteNode' }
+        multiByteCapability:
+          type: array
+          items: { $ref: '#/components/schemas/MultiByteCapability' }
+    HashCollisionNode:
+      type: object
+      additionalProperties: false
+      required: [public_key, name, role, lat, lon, hash_size, hash_size_inconsistent]
+      properties:
+        public_key: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/NodeRole' }
+        lat: { type: number, format: double, description: 0 when the node has no position. }
+        lon: { type: number, format: double, description: 0 when the node has no position. }
+        hash_size: { type: integer }
+        hash_size_inconsistent: { type: boolean }
+        hash_sizes_seen:
+          type: array
+          description: Omitted unless the node advertised more than one size.
+          x-go-type-skip-optional-pointer: true
+          items: { type: integer }
+    HashCollision:
+      type: object
+      additionalProperties: false
+      required: [prefix, byte_size, appearances, nodes, max_dist_km, classification, with_coords]
+      properties:
+        prefix: { type: string, description: The shared prefix as uppercase hex. }
+        byte_size: { type: integer }
+        appearances: { type: integer, description: Nodes sharing the prefix. }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/HashCollisionNode' }
+        max_dist_km: { type: number, format: double, description: Largest distance between two positioned nodes in the group. }
+        classification: { $ref: '#/components/schemas/CollisionClass' }
+        with_coords: { type: integer, description: Nodes in the group that have a position. }
+    HashCollisionStats:
+      type: object
+      additionalProperties: false
+      required: [total_nodes, nodes_for_byte, using_this_size, unique_prefixes, collision_count, space_size, pct_used]
+      properties:
+        total_nodes: { type: integer }
+        nodes_for_byte: { type: integer, description: Nodes counted for this prefix size. }
+        using_this_size: { type: integer, description: Nodes whose declared hash size is this size. }
+        unique_prefixes: { type: integer }
+        collision_count: { type: integer }
+        space_size: { type: integer, description: Possible prefixes at this size. }
+        pct_used: { type: number, format: double, description: Percent of the prefix space in use. }
+    TwoByteCell:
+      type: object
+      additionalProperties: false
+      required: [group_nodes, two_byte_map, max_collision, collision_count]
+      properties:
+        group_nodes:
+          type: array
+          description: Nodes whose key starts with this first byte.
+          items: { $ref: '#/components/schemas/HashCollisionNode' }
+        two_byte_map:
+          type: object
+          description: Those nodes keyed by their 2-byte prefix.
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/HashCollisionNode' }
+        max_collision: { type: integer, description: Most nodes sharing one 2-byte prefix in this cell. }
+        collision_count: { type: integer, description: 2-byte prefixes shared by more than one node. }
+    HashCollisionSize:
+      type: object
+      additionalProperties: false
+      required: [stats, collisions]
+      properties:
+        stats: { $ref: '#/components/schemas/HashCollisionStats' }
+        collisions:
+          type: array
+          description: Local collisions first, then regional, distant and incomplete.
+          items: { $ref: '#/components/schemas/HashCollision' }
+        one_byte_cells:
+          type: object
+          description: Present for 1-byte only. All 256 first bytes keyed by uppercase hex.
+          x-go-type-skip-optional-pointer: true
+          additionalProperties:
+            type: array
+            items: { $ref: '#/components/schemas/HashCollisionNode' }
+        two_byte_cells:
+          type: object
+          description: Present for 2-byte only. All 256 first bytes keyed by uppercase hex.
+          x-go-type-skip-optional-pointer: true
+          additionalProperties: { $ref: '#/components/schemas/TwoByteCell' }
+    HashCollisionResponse:
+      type: object
+      additionalProperties: false
+      required: [by_size, inconsistent_nodes]
+      properties:
+        by_size:
+          type: object
+          description: Collision data keyed by prefix size in bytes, 1 to 3.
+          additionalProperties: { $ref: '#/components/schemas/HashCollisionSize' }
+        inconsistent_nodes:
+          type: array
+          description: Nodes whose adverts declared more than one hash size.
+          items: { $ref: '#/components/schemas/HashCollisionNode' }
+    RoleStats:
+      type: object
+      additionalProperties: false
+      required: [role, nodeCount, withSkew, meanAbsSkewSec, medianAbsSkewSec, okCount, warningCount, criticalCount, absurdCount, noClockCount]
+      properties:
+        role: { $ref: '#/components/schemas/NodeRole' }
+        nodeCount: { type: integer }
+        withSkew: { type: integer, description: Nodes with clock-skew data. }
+        meanAbsSkewSec: { type: number, format: double }
+        medianAbsSkewSec: { type: number, format: double }
+        okCount: { type: integer }
+        warningCount: { type: integer }
+        criticalCount: { type: integer }
+        absurdCount: { type: integer }
+        noClockCount: { type: integer }
+    RoleAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required: [totalNodes, roles]
+      properties:
+        totalNodes: { type: integer }
+        roles:
+          type: array
+          description: One entry per role, largest first.
+          items: { $ref: '#/components/schemas/RoleStats' }
+          

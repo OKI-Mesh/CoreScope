@@ -2484,15 +2484,12 @@ func TestHashAnalyticsZeroHopAdvert(t *testing.T) {
 
 	result := store.computeAnalyticsHashSizes(ctx, "", "")
 
-	distByRepeaters, ok := result["distributionByRepeaters"].(map[string]int)
-	if !ok {
-		t.Fatal("distributionByRepeaters missing or wrong type")
-	}
+	distByRepeaters := result.DistributionByRepeaters
 	if distByRepeaters["1"] < 1 {
 		t.Errorf("distributionByRepeaters[\"1\"]=%d, want >=1 (zero-hop advert should be tracked per-node)", distByRepeaters["1"])
 	}
-	total, _ := result["total"].(int)
-	dist, _ := result["distribution"].(map[string]int)
+	total := result.Total
+	dist := result.Distribution
 	if total != 0 {
 		t.Errorf("total=%d, want 0 (zero-hop adverts must not inflate total)", total)
 	}
@@ -2526,10 +2523,7 @@ func TestAnalyticsHashSizeSameNameDifferentPubkey(t *testing.T) {
 	store := loadedStore(t, db)
 
 	result := store.GetAnalyticsHashSizes(ctx, "", "")
-	distByRepeaters, ok := result["distributionByRepeaters"].(map[string]int)
-	if !ok {
-		t.Fatal("distributionByRepeaters missing or wrong type")
-	}
+	distByRepeaters := result.DistributionByRepeaters
 	if distByRepeaters["2"] < 2 {
 		t.Errorf("distributionByRepeaters[\"2\"]=%d, want >=2 (same-name nodes with different pubkeys should be counted separately)", distByRepeaters["2"])
 	}
@@ -3401,25 +3395,14 @@ func TestHashCollisionsOnlyRepeaters(t *testing.T) {
 
 	result := store.computeHashCollisions(ctx, "", "")
 
-	bySize, ok := result["by_size"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing by_size")
-	}
-	size1, ok := bySize["1"].(map[string]interface{})
+	size1, ok := result.BySize["1"]
 	if !ok {
 		t.Fatal("missing by_size[1]")
 	}
-	stats, ok := size1["stats"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing stats")
-	}
-	if nodesForByte := stats["nodes_for_byte"]; nodesForByte != 2 {
+	if nodesForByte := size1.Stats.NodesForByte; nodesForByte != 2 {
 		t.Errorf("expected nodes_for_byte=2 (only repeaters with hash_size=1), got %v", nodesForByte)
 	}
-	collisions, ok := size1["collisions"].([]collisionEntry)
-	if !ok {
-		t.Fatalf("collisions is not []collisionEntry")
-	}
+	collisions := size1.Collisions
 	if len(collisions) != 1 {
 		t.Errorf("expected 1 collision entry, got %d", len(collisions))
 	}
@@ -3460,12 +3443,9 @@ func TestHashCollisionsOneByteIncludesMultiBytePrefixRepeaters(t *testing.T) {
 	store.hashSizeInfoMu.Unlock()
 
 	result := store.computeHashCollisions(ctx, "", "")
-	bySize := result["by_size"].(map[string]interface{})
-	size1 := bySize["1"].(map[string]interface{})
-
-	cells, ok := size1["one_byte_cells"].(map[string][]collisionNode)
-	if !ok {
-		t.Fatalf("one_byte_cells has unexpected type %T", size1["one_byte_cells"])
+	cells := result.BySize["1"].OneByteCells
+	if cells == nil {
+		t.Fatal("by_size[1] has no one_byte_cells")
 	}
 	ccNodes := cells["CC"]
 	if len(ccNodes) != 3 {
@@ -3484,10 +3464,8 @@ func TestHashCollisionsOneByteIncludesMultiBytePrefixRepeaters(t *testing.T) {
 		t.Errorf("one_byte_cells[CC] unexpectedly contains DD repeater")
 	}
 
-	size2 := bySize["2"].(map[string]interface{})
-	stats2 := size2["stats"].(map[string]interface{})
-	if n, _ := stats2["nodes_for_byte"].(int); n != 1 {
-		t.Errorf("expected 2-byte view nodes_for_byte=1, got %v", stats2["nodes_for_byte"])
+	if n := result.BySize["2"].Stats.NodesForByte; n != 1 {
+		t.Errorf("expected 2-byte view nodes_for_byte=1, got %v", n)
 	}
 }
 
