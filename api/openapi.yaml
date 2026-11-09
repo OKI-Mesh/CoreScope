@@ -25,6 +25,8 @@ tags:
     description: Channels, their messages and the community channel catalogue
   - name: packets-tools
     description: Hop resolution and per-packet traces
+  - name: config
+    description: Operator settings the web client reads
   - name: system
     description: Server health, counters and ingestor status
 paths:
@@ -680,6 +682,164 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MqttStatusResponse'
+  /api/config/cache:
+    get:
+      tags: [config]
+      operationId: getConfigCache
+      summary: Server cache lifetimes by cache name, in seconds
+      description: >-
+        The cacheTTL block of config.json, passed through. The web client uses it
+        to scale its own cache lifetimes, so only names it knows are used.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheTTLConfig'
+  /api/config/client:
+    get:
+      tags: [config]
+      operationId: getConfigClient
+      summary: Operator settings the web client applies at start-up
+      description: >-
+        Blocks the operator did not set in config.json are null. The client then
+        keeps its built-in defaults.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientConfigResponse'
+  /api/config/regions:
+    get:
+      tags: [config]
+      operationId: getConfigRegions
+      summary: Region code to display name
+      description: >-
+        Configured regions, plus every IATA code an observer has reported that has
+        no configured name. Those map to themselves.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegionsResponse'
+  /api/config/theme:
+    get:
+      tags: [config]
+      operationId: getConfigTheme
+      summary: Branding, colors and home-page content
+      description: >-
+        Built-in defaults, overlaid with config.json and then theme.json. Keys the
+        client does not know are dropped.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThemeResponse'
+  /api/config/map:
+    get:
+      tags: [config]
+      operationId: getConfigMap
+      summary: Default map center and zoom
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MapConfigResponse'
+  /api/config/geo-filter:
+    get:
+      tags: [config]
+      operationId: getConfigGeoFilter
+      summary: The geographic ingest filter
+      description: >-
+        polygon is null when no filter is set. writeEnabled says whether a strong
+        API key is configured, so the customizer can offer editing.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoFilterResponse'
+    put:
+      tags: [config]
+      operationId: putConfigGeoFilter
+      summary: Replace the geographic ingest filter
+      description: >-
+        An empty or null polygon clears the filter. Otherwise the polygon needs 3
+        to 1000 points. The change is saved to the config directory and takes
+        effect at once.
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoFilterRequest'
+      responses:
+        "200":
+          description: The filter that is now in force.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoFilterResponse'
+        "400":
+          description: The body is not valid JSON or a value is out of range.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "401":
+          description: Missing or wrong X-API-Key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Write endpoints are disabled or the API key is too weak.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "500":
+          description: The filter could not be saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/config/areas:
+    get:
+      tags: [config]
+      operationId: getConfigAreas
+      summary: Areas offered by the dashboard filter
+      description: Configured areas that have a label, in no fixed order.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AreaSummary' }
+  /api/config/areas/polygons:
+    get:
+      tags: [config]
+      operationId: getConfigAreasPolygons
+      summary: Area boundaries, for checking the configuration
+      description: Every configured area with its polygon or bounding box, in no fixed order.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AreaBoundary' }
   /api/observers:
     get:
       tags: [observers]
@@ -1329,6 +1489,11 @@ paths:
         "503":
           $ref: '#/components/responses/SubpathIndexLoading'
 components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
   parameters:
     Region:
       name: region
@@ -2784,6 +2949,341 @@ components:
         watchdogLastTickUnix: { type: integer, format: int64, description: Unix seconds of the last ingestor watchdog tick. Absent when zero. }
         watchdogPanicCount: { type: integer, format: int64, description: Recovered watchdog panics. Absent when zero. }
         watchdogLogDropCount: { type: integer, format: int64, description: Watchdog log lines dropped because the log sink was stuck. Absent when zero. }
+    CacheTTLConfig:
+      type: object
+      description: Seconds by cache name.
+      additionalProperties: { type: number, format: double }
+    RegionsResponse:
+      type: object
+      description: Display name by region code.
+      additionalProperties: { type: string }
+    LatLon:
+      type: array
+      description: A point as latitude then longitude.
+      minItems: 2
+      maxItems: 2
+      items: { type: number, format: double }
+    LatLonList:
+      type: array
+      items: { $ref: '#/components/schemas/LatLon' }
+    ExternalUrls:
+      type: object
+      description: Link targets by name, such as the firmware flasher.
+      additionalProperties: { type: string }
+    MapConfigResponse:
+      type: object
+      additionalProperties: false
+      required: [center, zoom]
+      properties:
+        center: { $ref: '#/components/schemas/LatLon' }
+        zoom: { type: integer }
+    GeoFilterResponse:
+      type: object
+      additionalProperties: false
+      required: [polygon, bufferKm]
+      properties:
+        polygon:
+          description: Null when no filter is set.
+          oneOf:
+            - $ref: '#/components/schemas/LatLonList'
+            - { type: "null" }
+        bufferKm: { type: number, format: double, description: Distance outside the polygon that still passes. }
+        writeEnabled: { type: boolean, description: Sent by GET only. }
+    GeoFilterRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        polygon:
+          description: 3 to 1000 points. Empty or null clears the filter.
+          oneOf:
+            - $ref: '#/components/schemas/LatLonList'
+            - { type: "null" }
+        bufferKm: { type: number, format: double, minimum: 0, maximum: 20000 }
+    AreaSummary:
+      type: object
+      additionalProperties: false
+      required: [key, label]
+      properties:
+        key: { type: string }
+        label: { type: string }
+    AreaBoundary:
+      type: object
+      additionalProperties: false
+      required: [key, label]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        polygon:
+          type: array
+          items: { $ref: '#/components/schemas/LatLon' }
+        latMin: { type: number, format: double }
+        latMax: { type: number, format: double }
+        lonMin: { type: number, format: double }
+        lonMax: { type: number, format: double }
+    TimestampConfig:
+      type: object
+      additionalProperties: false
+      required: [defaultMode, timezone, formatPreset, customFormat, allowCustomFormat]
+      properties:
+        defaultMode: { type: string, description: "ago or absolute." }
+        timezone: { type: string, description: "local or utc." }
+        formatPreset: { type: string, description: "iso, iso-seconds or locale." }
+        customFormat: { type: string, description: Used only when allowCustomFormat is true. }
+        allowCustomFormat: { type: boolean }
+    HealthThresholdsMs:
+      type: object
+      additionalProperties: false
+      required: [infraDegradedMs, infraSilentMs, nodeDegradedMs, nodeSilentMs, observerOnlineMs, observerStaleMs]
+      properties:
+        infraDegradedMs: { type: integer, format: int64 }
+        infraSilentMs: { type: integer, format: int64 }
+        nodeDegradedMs: { type: integer, format: int64 }
+        nodeSilentMs: { type: integer, format: int64 }
+        observerOnlineMs: { type: integer, format: int64 }
+        observerStaleMs: { type: integer, format: int64 }
+    CustomizerClientConfig:
+      type: object
+      additionalProperties: false
+      required: [disabledTabs]
+      properties:
+        disabledTabs:
+          type: array
+          description: Customizer tabs hidden from end users. Never null.
+          items: { type: string }
+    PathTrustConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        minHashBytesForMapping: { type: integer, description: Absent when 0. }
+    RoleStyle:
+      type: object
+      additionalProperties: false
+      properties:
+        color: { type: string }
+    ClientRoles:
+      type: object
+      additionalProperties: false
+      description: Per-role display overrides, keyed by role name.
+      properties:
+        colors:
+          type: object
+          additionalProperties: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        style:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/RoleStyle' }
+        emoji:
+          type: object
+          additionalProperties: { type: string }
+        sort:
+          type: array
+          items: { type: string }
+    TileProvider:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean }
+        key: { type: string }
+        token: { type: string }
+        provider: { type: string }
+        domain: { type: string }
+    TileConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        darkDefault: { type: string }
+        lightDefault: { type: string }
+        darkUrl: { type: string }
+        lightUrl: { type: string }
+        providers:
+          type: object
+          description: Entries that are not objects, such as _comment keys, are dropped.
+          additionalProperties: { $ref: '#/components/schemas/TileProvider' }
+    ClientMap:
+      type: object
+      additionalProperties: false
+      properties:
+        tiles: { $ref: '#/components/schemas/TileConfig' }
+    LegacyTiles:
+      type: object
+      additionalProperties: false
+      description: Tile URL overrides from older configs.
+      properties:
+        dark: { type: string }
+        light: { type: string }
+    SnrThresholds:
+      type: object
+      additionalProperties: false
+      properties:
+        excellent: { type: number, format: double }
+        good: { type: number, format: double }
+    DistThresholds:
+      type: object
+      additionalProperties: false
+      properties:
+        local: { type: number, format: double }
+        regional: { type: number, format: double }
+    ClientLimits:
+      type: object
+      additionalProperties: false
+      properties:
+        topNodes: { type: integer }
+        topPairs: { type: integer }
+        topRingNodes: { type: integer }
+        topSenders: { type: integer }
+        topCollisionNodes: { type: integer }
+        recentReplay: { type: integer }
+        feedMax: { type: integer }
+    ClientConfigResponse:
+      type: object
+      additionalProperties: false
+      required: [roles, healthThresholds, map, tiles, snrThresholds, distThresholds, maxHopDist, limits, perfSlowMs, wsReconnectMs, cacheInvalidateMs, externalUrls, propagationBufferMs, liveMapMaxNodes, timestamps, customizer, clientRxCoverage]
+      properties:
+        roles:
+          oneOf:
+            - $ref: '#/components/schemas/ClientRoles'
+            - { type: "null" }
+        healthThresholds: { $ref: '#/components/schemas/HealthThresholdsMs' }
+        map:
+          oneOf:
+            - $ref: '#/components/schemas/ClientMap'
+            - { type: "null" }
+        tiles:
+          deprecated: true
+          oneOf:
+            - $ref: '#/components/schemas/LegacyTiles'
+            - { type: "null" }
+        snrThresholds:
+          oneOf:
+            - $ref: '#/components/schemas/SnrThresholds'
+            - { type: "null" }
+        distThresholds:
+          oneOf:
+            - $ref: '#/components/schemas/DistThresholds'
+            - { type: "null" }
+        maxHopDist: { type: [number, "null"], format: double, description: Degrees. }
+        limits:
+          oneOf:
+            - $ref: '#/components/schemas/ClientLimits'
+            - { type: "null" }
+        perfSlowMs: { type: [integer, "null"] }
+        wsReconnectMs: { type: [integer, "null"] }
+        cacheInvalidateMs: { type: [integer, "null"] }
+        externalUrls:
+          oneOf:
+            - $ref: '#/components/schemas/ExternalUrls'
+            - { type: "null" }
+        propagationBufferMs: { type: number, format: double }
+        liveMapMaxNodes: { type: integer }
+        timestamps: { $ref: '#/components/schemas/TimestampConfig' }
+        debugAffinity: { type: boolean, description: Present only when true. }
+        mapDarkTileProvider: { type: string, deprecated: true, description: Present only when set. }
+        customizer: { $ref: '#/components/schemas/CustomizerClientConfig' }
+        clientRxCoverage: { type: boolean }
+        pathTrust: { $ref: '#/components/schemas/PathTrustConfig' }
+    ThemeBranding:
+      type: object
+      additionalProperties: false
+      required: [siteName, tagline]
+      properties:
+        siteName: { type: string }
+        tagline: { type: string }
+        faviconUrl: { type: string }
+        logoUrl: { type: string }
+        homeUrl: { type: string }
+    ThemeColors:
+      type: object
+      additionalProperties: false
+      description: Colors by the name of the CSS variable they set.
+      required: [accent, accentHover, navBg, navBg2, navText, navTextMuted, background, text, textMuted, border, surface1, surface2, surface3, sectionBg, cardBg, contentBg, detailBg, inputBg, rowStripe, rowHover, selectedBg, statusGreen, statusYellow, statusRed]
+      properties:
+        accent: { type: string }
+        accentHover: { type: string }
+        navBg: { type: string }
+        navBg2: { type: string }
+        navText: { type: string }
+        navTextMuted: { type: string }
+        navActiveBg: { type: string }
+        background: { type: string }
+        text: { type: string }
+        textMuted: { type: string }
+        border: { type: string }
+        surface1: { type: string }
+        surface2: { type: string }
+        surface3: { type: string }
+        sectionBg: { type: string }
+        cardBg: { type: string }
+        contentBg: { type: string }
+        detailBg: { type: string }
+        inputBg: { type: string }
+        rowStripe: { type: string }
+        rowHover: { type: string }
+        selectedBg: { type: string }
+        statusGreen: { type: string }
+        statusYellow: { type: string }
+        statusRed: { type: string }
+        font: { type: string }
+        mono: { type: string }
+    HomeStep:
+      type: object
+      additionalProperties: false
+      required: [emoji, title, description]
+      properties:
+        emoji: { type: string, description: "A ph:name icon token or a literal emoji." }
+        title: { type: string }
+        description: { type: string, description: Markdown. }
+    HomeLink:
+      type: object
+      additionalProperties: false
+      required: [label, url]
+      properties:
+        label: { type: string }
+        url: { type: string }
+    HomeConfig:
+      type: object
+      additionalProperties: false
+      required: [heroTitle, heroSubtitle, steps, footerLinks]
+      properties:
+        heroTitle: { type: string }
+        heroSubtitle: { type: string }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/HomeStep' }
+        footerLinks:
+          type: array
+          items: { $ref: '#/components/schemas/HomeLink' }
+        checklist:
+          type: array
+          description: Older name for steps. Sent only when the operator set it.
+          items: { $ref: '#/components/schemas/HomeStep' }
+    MarkerStroke:
+      type: object
+      additionalProperties: false
+      required: [color, width, opacity]
+      properties:
+        color: { type: string }
+        width: { type: number, format: double }
+        opacity: { type: number, format: double }
+    ThemeResponse:
+      type: object
+      additionalProperties: false
+      required: [branding, theme, themeDark, nodeColors, typeColors, home, markerStroke]
+      properties:
+        branding: { $ref: '#/components/schemas/ThemeBranding' }
+        theme: { $ref: '#/components/schemas/ThemeColors' }
+        themeDark: { $ref: '#/components/schemas/ThemeColors' }
+        nodeColors:
+          type: object
+          description: Marker color by role name.
+          additionalProperties: { type: string }
+        typeColors:
+          type: object
+          description: Color by payload type name. REQUEST repeats REQ for older clients.
+          additionalProperties: { type: string }
+        home: { $ref: '#/components/schemas/HomeConfig' }
+        markerStroke: { $ref: '#/components/schemas/MarkerStroke' }
     MetricsSample:
       type: object
       additionalProperties: false

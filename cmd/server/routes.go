@@ -465,11 +465,7 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 // --- Config Handlers ---
 
 func (s *Server) handleConfigCache(w http.ResponseWriter, r *http.Request) {
-	ct := s.cfg.CacheTTL
-	if ct == nil {
-		ct = map[string]interface{}{}
-	}
-	writeJSON(w, ct) // CacheTTL is user-provided opaque config — map is appropriate
+	writeJSON(w, numberMap(s.cfg.CacheTTL))
 }
 
 func (s *Server) handleConfigClient(w http.ResponseWriter, r *http.Request) {
@@ -483,73 +479,70 @@ func (s *Server) handleConfigClient(w http.ResponseWriter, r *http.Request) {
 		disabledTabs = s.cfg.Customizer.DisabledTabs
 	}
 	pathTrust := s.cfg.GetPathTrust()
-	writeJSON(w, ClientConfigResponse{
-		Roles:               s.cfg.Roles,
+	resp := api.ClientConfigResponse{
+		Roles:               decodeOperatorBlock[api.ClientRoles](s.cfg.Roles, "roles"),
 		HealthThresholds:    s.cfg.GetHealthThresholds().ToClientMs(),
-		Map:                 s.cfg.Map,
-		SnrThresholds:       s.cfg.SnrThresholds,
-		DistThresholds:      s.cfg.DistThresholds,
+		Map:                 clientMapConfig(s.cfg.Map),
+		Tiles:               decodeOperatorBlock[api.LegacyTiles](s.cfg.Tiles, "tiles"),
+		SnrThresholds:       decodeOperatorBlock[api.SnrThresholds](s.cfg.SnrThresholds, "snrThresholds"),
+		DistThresholds:      decodeOperatorBlock[api.DistThresholds](s.cfg.DistThresholds, "distThresholds"),
 		MaxHopDist:          s.cfg.MaxHopDist,
-		Limits:              s.cfg.Limits,
+		Limits:              decodeOperatorBlock[api.ClientLimits](s.cfg.Limits, "limits"),
 		PerfSlowMs:          s.cfg.PerfSlowMs,
 		WsReconnectMs:       s.cfg.WsReconnectMs,
 		CacheInvalidateMs:   s.cfg.CacheInvalidMs,
-		ExternalUrls:        s.cfg.ExternalUrls,
+		ExternalUrls:        externalUrls(s.cfg.ExternalUrls),
 		PropagationBufferMs: float64(s.cfg.PropagationBufferMs()),
 		LiveMapMaxNodes:     s.cfg.LiveMapMaxNodes(),
-		Timestamps:          s.cfg.GetTimestampConfig(),
-		DebugAffinity:       s.cfg.DebugAffinity,
-		MapDarkTileProvider: s.cfg.MapDarkTileProvider,
-		Tiles:               s.cfg.Tiles,
-		Customizer:          CustomizerClientConfig{DisabledTabs: disabledTabs},
+		Timestamps:          s.cfg.GetTimestampConfig().ToAPI(),
+		Customizer:          api.CustomizerClientConfig{DisabledTabs: disabledTabs},
 		ClientRxCoverage:    s.cfg.ClientRxCoverageEnabled(),
-		PathTrust:           &pathTrust,
-	})
+		PathTrust:           &api.PathTrustConfig{},
+	}
+	if pathTrust.MinHashBytesForMapping != 0 {
+		resp.PathTrust.MinHashBytesForMapping = &pathTrust.MinHashBytesForMapping
+	}
+	if s.cfg.DebugAffinity {
+		resp.DebugAffinity = &s.cfg.DebugAffinity
+	}
+	resp.MapDarkTileProvider = optString(s.cfg.MapDarkTileProvider)
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleConfigAreas(w http.ResponseWriter, r *http.Request) {
-	type areaListEntry struct {
-		Key   string `json:"key"`
-		Label string `json:"label"`
-	}
-	result := make([]areaListEntry, 0, len(s.cfg.Areas))
+	result := make([]api.AreaSummary, 0, len(s.cfg.Areas))
 	for k, v := range s.cfg.Areas {
 		if v.Label == "" {
 			continue // skip comment/invalid entries (e.g. "_comment" keys in config)
 		}
-		result = append(result, areaListEntry{Key: k, Label: v.Label})
+		result = append(result, api.AreaSummary{Key: k, Label: v.Label})
 	}
 	writeJSON(w, result)
 }
 
 func (s *Server) handleConfigAreasPolygons(w http.ResponseWriter, r *http.Request) {
-	type areaDebugEntry struct {
-		Key     string       `json:"key"`
-		Label   string       `json:"label"`
-		Polygon [][2]float64 `json:"polygon,omitempty"`
-		LatMin  *float64     `json:"latMin,omitempty"`
-		LatMax  *float64     `json:"latMax,omitempty"`
-		LonMin  *float64     `json:"lonMin,omitempty"`
-		LonMax  *float64     `json:"lonMax,omitempty"`
-	}
-	result := make([]areaDebugEntry, 0, len(s.cfg.Areas))
+	result := make([]api.AreaBoundary, 0, len(s.cfg.Areas))
 	for k, v := range s.cfg.Areas {
-		result = append(result, areaDebugEntry{
-			Key:     k,
-			Label:   v.Label,
-			Polygon: v.Polygon,
-			LatMin:  v.LatMin,
-			LatMax:  v.LatMax,
-			LonMin:  v.LonMin,
-			LonMax:  v.LonMax,
-		})
+		area := api.AreaBoundary{
+			Key:    k,
+			Label:  v.Label,
+			LatMin: v.LatMin,
+			LatMax: v.LatMax,
+			LonMin: v.LonMin,
+			LonMax: v.LonMax,
+		}
+		if len(v.Polygon) > 0 {
+			polygon := latLonList(v.Polygon)
+			area.Polygon = &polygon
+		}
+		result = append(result, area)
 	}
 	writeJSON(w, result)
 }
 
 func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	regions := make(map[string]string)
+	regions := make(api.RegionsResponse)
 	for k, v := range s.cfg.Regions {
 		regions[k] = v
 	}
@@ -565,127 +558,45 @@ func (s *Server) handleConfigRegions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfigTheme(w http.ResponseWriter, r *http.Request) {
 	theme := LoadTheme(".")
 
-	branding := mergeMap(map[string]interface{}{
-		"siteName": "CoreScope",
-		"tagline":  "Real-time MeshCore LoRa mesh network analyzer",
-	}, s.cfg.Branding, theme.Branding)
+	branding := defaultThemeBranding()
+	overlayOperatorBlocks(&branding, "branding", s.cfg.Branding, theme.Branding)
 
-	themeColors := mergeMap(map[string]interface{}{
-		"accent":       "#4a9eff",
-		"accentHover":  "#6db3ff",
-		"navBg":        "#0f0f23",
-		"navBg2":       "#1a1a2e",
-		"navText":      "#ffffff",
-		"navTextMuted": "#cbd5e1",
-		"background":   "#f4f5f7",
-		"text":         "#1a1a2e",
-		"textMuted":    "#5b6370",
-		"border":       "#e2e5ea",
-		"surface1":     "#ffffff",
-		"surface2":     "#ffffff",
-		"surface3":     "#ffffff",
-		"sectionBg":    "#eef2ff",
-		"cardBg":       "#ffffff",
-		"contentBg":    "#f4f5f7",
-		"detailBg":     "#ffffff",
-		"inputBg":      "#ffffff",
-		"rowStripe":    "#f9fafb",
-		"rowHover":     "#eef2ff",
-		"selectedBg":   "#dbeafe",
-		"statusGreen":  "#22c55e",
-		"statusYellow": "#eab308",
-		"statusRed":    "#ef4444",
-	}, s.cfg.Theme, theme.Theme)
+	themeColors := defaultLightThemeColors()
+	overlayOperatorBlocks(&themeColors, "theme", s.cfg.Theme, theme.Theme)
 
-	nodeColors := mergeMap(map[string]interface{}{
-		"repeater":  "#dc2626",
-		"companion": "#2563eb",
-		"room":      "#16a34a",
-		"sensor":    "#d97706",
-		"observer":  "#8b5cf6",
-	}, s.cfg.NodeColors, theme.NodeColors)
+	themeDark := defaultDarkThemeColors()
+	overlayOperatorBlocks(&themeDark, "themeDark", s.cfg.ThemeDark, theme.ThemeDark)
 
-	themeDark := mergeMap(map[string]interface{}{
-		"accent":       "#4a9eff",
-		"accentHover":  "#6db3ff",
-		"navBg":        "#0f0f23",
-		"navBg2":       "#1a1a2e",
-		"navText":      "#ffffff",
-		"navTextMuted": "#cbd5e1",
-		"background":   "#0f0f23",
-		"text":         "#e2e8f0",
-		"textMuted":    "#a8b8cc",
-		"border":       "#334155",
-		"surface1":     "#1a1a2e",
-		"surface2":     "#232340",
-		"cardBg":       "#1a1a2e",
-		"contentBg":    "#0f0f23",
-		"detailBg":     "#232340",
-		"inputBg":      "#1e1e34",
-		"rowStripe":    "#1e1e34",
-		"rowHover":     "#2d2d50",
-		"selectedBg":   "#1e3a5f",
-		"statusGreen":  "#22c55e",
-		"statusYellow": "#eab308",
-		"statusRed":    "#ef4444",
-		"surface3":     "#2d2d50",
-		"sectionBg":    "#1e1e34",
-	}, s.cfg.ThemeDark, theme.ThemeDark)
+	nodeColors := overlayStrings(defaultNodeColors(), s.cfg.NodeColors, theme.NodeColors)
+
 	// #1799 PR #1804 r1 item 6: REQUEST→REQ rename is a BREAKING change to
 	// the /api/config/theme shape. Compat policy for >=1 release cycle:
 	//   - INCOMING: if an operator's config.json / theme.json carries the
-	//     legacy "REQUEST" key, normalise it to "REQ" before mergeMap so
+	//     legacy "REQUEST" key, normalise it to "REQ" before the overlay so
 	//     the override wins the canonical slot.
 	//   - OUTGOING: dual-emit REQ AND REQUEST in the GET response so any
 	//     consumer still reading the legacy key keeps working.
-	typeColors := mergeMap(map[string]interface{}{
-		"ADVERT":   "#22c55e",
-		"GRP_TXT":  "#3b82f6",
-		"TXT_MSG":  "#f59e0b",
-		"ACK":      "#6b7280",
-		"REQ":      "#a855f7",
-		"RESPONSE": "#06b6d4",
-		"TRACE":    "#ec4899",
-		"PATH":     "#14b8a6",
-		"ANON_REQ": "#f43f5e",
-		"UNKNOWN":  "#6b7280",
-	}, normaliseTypeColorsLegacyKeys(s.cfg.TypeColors), normaliseTypeColorsLegacyKeys(theme.TypeColors))
+	typeColors := overlayStrings(defaultTypeColors(), normaliseTypeColorsLegacyKeys(s.cfg.TypeColors), normaliseTypeColorsLegacyKeys(theme.TypeColors))
 	// Dual-emit REQUEST = REQ for back-compat (drop after >=1 release cycle).
-	if v, ok := typeColors["REQ"]; ok {
-		typeColors["REQUEST"] = v
-	}
+	typeColors["REQUEST"] = typeColors["REQ"]
 
-	defaultHome := map[string]interface{}{
-		"heroTitle":    "CoreScope",
-		"heroSubtitle": "Real-time MeshCore LoRa mesh network analyzer",
-		"steps": []interface{}{
-			// #1648 M5: defaults use 'ph:<name>' Phosphor sprite tokens.
-			// The frontend render path (home.js _renderHomeGlyph, customize-v2.js
-			// renderConfigGlyph) ALSO accepts legacy emoji strings, so any
-			// operator config.json that still stores raw emoji values continues
-			// to render as-is — this changes ONLY the built-in default set.
-			map[string]interface{}{"emoji": "ph:bluetooth", "title": "Connect via Bluetooth", "description": "Flash **BLE companion** firmware from [MeshCore Flasher](https://flasher.meshcore.io/).\n- Screenless devices: default PIN `123456`\n- Screen devices: random PIN shown on display\n- If pairing fails: forget device, reboot, re-pair"},
-			map[string]interface{}{"emoji": "ph:radio", "title": "Set the right frequency preset", "description": "**US Recommended:**\n`910.525 MHz · BW 62.5 kHz · SF 7 · CR 5`\nSelect **\"US Recommended\"** in the app or flasher."},
-			map[string]interface{}{"emoji": "ph:broadcast", "title": "Advertise yourself", "description": "Tap the signal icon → **Flood** to broadcast your node to the mesh. Companions only advert when you trigger it manually."},
-			map[string]interface{}{"emoji": "ph:repeat", "title": "Check \"Heard N repeats\"", "description": "- **\"Sent\"** = transmitted, no confirmation\n- **\"Heard 0 repeats\"** = no repeater picked it up\n- **\"Heard 1+ repeats\"** = you're on the mesh!"},
-		},
-		"footerLinks": []interface{}{
-			map[string]interface{}{"label": "ph:package Packets", "url": "#/packets"},
-			map[string]interface{}{"label": "ph:map-trifold Network Map", "url": "#/map"},
-		},
+	home := defaultHomeConfig()
+	for _, block := range []map[string]interface{}{s.cfg.Home, theme.Home} {
+		if block == nil {
+			continue
+		}
+		if overlay := decodeOperatorBlock[homeOverlay](block, "home"); overlay != nil {
+			overlay.applyTo(&home)
+		}
 	}
-	home := mergeMap(defaultHome, s.cfg.Home, theme.Home)
 
 	// #1488 — marker stroke overlay. Defaults mirror the :root values in
 	// public/style.css so a fresh visitor with no config + no override
 	// still gets the same painted outline as the static CSS fallback.
-	markerStroke := mergeMap(map[string]interface{}{
-		"color":   "rgba(255,255,255,0.85)",
-		"width":   1,
-		"opacity": 1,
-	}, s.cfg.MarkerStroke, theme.MarkerStroke)
+	markerStroke := defaultMarkerStroke()
+	overlayOperatorBlocks(&markerStroke, "markerStroke", s.cfg.MarkerStroke, theme.MarkerStroke)
 
-	writeJSON(w, ThemeResponse{
+	writeJSON(w, api.ThemeResponse{
 		Branding:     branding,
 		Theme:        themeColors,
 		ThemeDark:    themeDark,
@@ -705,7 +616,7 @@ func (s *Server) handleConfigMap(w http.ResponseWriter, r *http.Request) {
 	if zoom == 0 {
 		zoom = 9
 	}
-	writeJSON(w, MapConfigResponse{Center: center, Zoom: zoom})
+	writeJSON(w, api.MapConfigResponse{Center: center, Zoom: zoom})
 }
 
 func (s *Server) handleConfigGeoFilter(w http.ResponseWriter, r *http.Request) {
@@ -713,11 +624,18 @@ func (s *Server) handleConfigGeoFilter(w http.ResponseWriter, r *http.Request) {
 	// writeEnabled signals to clients (e.g. the customizer UI) whether a
 	// strong API key is configured. Low-sensitivity by design.
 	writeEnabled := s.cfg != nil && s.cfg.APIKey != "" && !IsWeakAPIKey(s.cfg.APIKey)
+	resp := geoFilterResponse(gf)
+	resp.WriteEnabled = &writeEnabled
+	writeJSON(w, resp)
+}
+
+// geoFilterResponse describes the filter in force. gf is nil when none is set.
+func geoFilterResponse(gf *GeoFilterConfig) api.GeoFilterResponse {
 	if gf == nil || len(gf.Polygon) == 0 {
-		writeJSON(w, map[string]interface{}{"polygon": nil, "bufferKm": 0, "writeEnabled": writeEnabled})
-		return
+		return api.GeoFilterResponse{}
 	}
-	writeJSON(w, map[string]interface{}{"polygon": gf.Polygon, "bufferKm": gf.BufferKm, "writeEnabled": writeEnabled})
+	polygon := latLonList(gf.Polygon)
+	return api.GeoFilterResponse{Polygon: &polygon, BufferKm: gf.BufferKm}
 }
 
 // --- System Handlers ---
@@ -1792,15 +1710,15 @@ func normaliseTypeColorsLegacyKeys(m map[string]interface{}) map[string]interfac
 	return out
 }
 
+// mergeMap returns a new map holding base overlaid with each overlay in order.
+// The theme handler no longer uses it (it overlays typed structs now); it is
+// kept for its own tests until they are retired with the old runtime spec.
 func mergeMap(base map[string]interface{}, overlays ...map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
+	result := make(map[string]interface{}, len(base))
 	for k, v := range base {
 		result[k] = v
 	}
 	for _, o := range overlays {
-		if o == nil {
-			continue
-		}
 		for k, v := range o {
 			result[k] = v
 		}
@@ -2197,39 +2115,52 @@ func (s *Server) handlePruneGeoFilterStatus(w http.ResponseWriter, r *http.Reque
 func (s *Server) handlePutConfigGeoFilter(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB cap
 
-	var body struct {
-		Polygon  [][2]float64 `json:"polygon"`
-		BufferKm float64      `json:"bufferKm"`
-	}
+	var body api.GeoFilterRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
-	if len(body.Polygon) > 0 && len(body.Polygon) < 3 {
+	var polygon [][2]float64
+	if body.Polygon != nil {
+		polygon = make([][2]float64, 0, len(*body.Polygon))
+		for _, pt := range *body.Polygon {
+			if len(pt) != 2 {
+				writeError(w, http.StatusBadRequest, "polygon points must be [lat, lon] pairs")
+				return
+			}
+			polygon = append(polygon, [2]float64{pt[0], pt[1]})
+		}
+	}
+
+	if len(polygon) > 0 && len(polygon) < 3 {
 		writeError(w, http.StatusBadRequest, "polygon must have at least 3 points")
 		return
 	}
-	if len(body.Polygon) > 1000 {
+	if len(polygon) > 1000 {
 		writeError(w, http.StatusBadRequest, "polygon must have at most 1000 points")
 		return
 	}
-	for _, pt := range body.Polygon {
+	for _, pt := range polygon {
 		if math.IsNaN(pt[0]) || math.IsNaN(pt[1]) || math.IsInf(pt[0], 0) || math.IsInf(pt[1], 0) ||
 			pt[0] < -90 || pt[0] > 90 || pt[1] < -180 || pt[1] > 180 {
 			writeError(w, http.StatusBadRequest, "polygon point out of range: lat must be in [-90,90], lon in [-180,180]")
 			return
 		}
 	}
-	if math.IsNaN(body.BufferKm) || math.IsInf(body.BufferKm, 0) ||
-		body.BufferKm < 0 || body.BufferKm > 20000 {
+	bufferKm := 0.0
+	if body.BufferKm != nil {
+		bufferKm = *body.BufferKm
+	}
+	if math.IsNaN(bufferKm) || math.IsInf(bufferKm, 0) ||
+		bufferKm < 0 || bufferKm > 20000 {
 		writeError(w, http.StatusBadRequest, "bufferKm must be a finite number in [0, 20000]")
 		return
 	}
 
 	var gf *GeoFilterConfig
-	if len(body.Polygon) >= 3 {
-		gf = &GeoFilterConfig{Polygon: body.Polygon, BufferKm: body.BufferKm}
+	if len(polygon) >= 3 {
+		gf = &GeoFilterConfig{Polygon: polygon, BufferKm: bufferKm}
 	}
 
 	s.saveMu.Lock()
@@ -2244,9 +2175,5 @@ func (s *Server) handlePutConfigGeoFilter(w http.ResponseWriter, r *http.Request
 	s.setGeoFilter(gf)
 	s.saveMu.Unlock()
 
-	if gf != nil {
-		writeJSON(w, map[string]interface{}{"polygon": gf.Polygon, "bufferKm": gf.BufferKm})
-	} else {
-		writeJSON(w, map[string]interface{}{"polygon": nil, "bufferKm": 0})
-	}
+	writeJSON(w, geoFilterResponse(gf))
 }

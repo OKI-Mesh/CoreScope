@@ -380,6 +380,23 @@ type AnalyticsWarmupResponse struct {
 // AnalyticsWindow A trailing time window.
 type AnalyticsWindow string
 
+// AreaBoundary defines model for AreaBoundary.
+type AreaBoundary struct {
+	Key     string    `json:"key"`
+	Label   string    `json:"label"`
+	LatMax  *float64  `json:"latMax,omitempty"`
+	LatMin  *float64  `json:"latMin,omitempty"`
+	LonMax  *float64  `json:"lonMax,omitempty"`
+	LonMin  *float64  `json:"lonMin,omitempty"`
+	Polygon *[]LatLon `json:"polygon,omitempty"`
+}
+
+// AreaSummary defines model for AreaSummary.
+type AreaSummary struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
 // AttributionMethod observer: multi-byte nodes are attributed to the observers that heard them. repeater: to the repeater's home region, used whenever a region filter is given.
 type AttributionMethod string
 
@@ -461,6 +478,9 @@ type CacheStats struct {
 	Recomputes int64   `json:"recomputes"`
 	StaleHits  int     `json:"staleHits"`
 }
+
+// CacheTTLConfig Seconds by cache name.
+type CacheTTLConfig map[string]float64
 
 // CalibrationSummary defines model for CalibrationSummary.
 type CalibrationSummary struct {
@@ -600,8 +620,71 @@ type CheckpointStats struct {
 	Timed          int64 `json:"timed"`
 }
 
+// ClientConfigResponse defines model for ClientConfigResponse.
+type ClientConfigResponse struct {
+	CacheInvalidateMs *int                   `json:"cacheInvalidateMs"`
+	ClientRxCoverage  bool                   `json:"clientRxCoverage"`
+	Customizer        CustomizerClientConfig `json:"customizer"`
+
+	// DebugAffinity Present only when true.
+	DebugAffinity    *bool              `json:"debugAffinity,omitempty"`
+	DistThresholds   *DistThresholds    `json:"distThresholds"`
+	ExternalUrls     *ExternalUrls      `json:"externalUrls"`
+	HealthThresholds HealthThresholdsMs `json:"healthThresholds"`
+	Limits           *ClientLimits      `json:"limits"`
+	LiveMapMaxNodes  int                `json:"liveMapMaxNodes"`
+	Map              *ClientMap         `json:"map"`
+
+	// MapDarkTileProvider Present only when set.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	MapDarkTileProvider *string `json:"mapDarkTileProvider,omitempty"`
+
+	// MaxHopDist Degrees.
+	MaxHopDist          *float64         `json:"maxHopDist"`
+	PathTrust           *PathTrustConfig `json:"pathTrust,omitempty"`
+	PerfSlowMs          *int             `json:"perfSlowMs"`
+	PropagationBufferMs float64          `json:"propagationBufferMs"`
+	Roles               *ClientRoles     `json:"roles"`
+	SnrThresholds       *SnrThresholds   `json:"snrThresholds"`
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	Tiles         *LegacyTiles    `json:"tiles"`
+	Timestamps    TimestampConfig `json:"timestamps"`
+	WsReconnectMs *int            `json:"wsReconnectMs"`
+}
+
+// ClientLimits defines model for ClientLimits.
+type ClientLimits struct {
+	FeedMax           *int `json:"feedMax,omitempty"`
+	RecentReplay      *int `json:"recentReplay,omitempty"`
+	TopCollisionNodes *int `json:"topCollisionNodes,omitempty"`
+	TopNodes          *int `json:"topNodes,omitempty"`
+	TopPairs          *int `json:"topPairs,omitempty"`
+	TopRingNodes      *int `json:"topRingNodes,omitempty"`
+	TopSenders        *int `json:"topSenders,omitempty"`
+}
+
+// ClientMap defines model for ClientMap.
+type ClientMap struct {
+	Tiles *TileConfig `json:"tiles,omitempty"`
+}
+
+// ClientRoles Per-role display overrides, keyed by role name.
+type ClientRoles struct {
+	Colors *map[string]string    `json:"colors,omitempty"`
+	Emoji  *map[string]string    `json:"emoji,omitempty"`
+	Labels *map[string]string    `json:"labels,omitempty"`
+	Sort   *[]string             `json:"sort,omitempty"`
+	Style  *map[string]RoleStyle `json:"style,omitempty"`
+}
+
 // CollisionClass local: under 50 km. regional: under 200 km. distant: farther. incomplete: fewer than two positioned nodes.
 type CollisionClass string
+
+// CustomizerClientConfig defines model for CustomizerClientConfig.
+type CustomizerClientConfig struct {
+	// DisabledTabs Customizer tabs hidden from end users. Never null.
+	DisabledTabs []string `json:"disabledTabs"`
+}
 
 // DbStats defines model for DbStats.
 type DbStats struct {
@@ -631,6 +714,12 @@ type DistOverTimeEntry struct {
 
 	// Hour UTC hour bucket, 2026-11-05T15.
 	Hour string `json:"hour"`
+}
+
+// DistThresholds defines model for DistThresholds.
+type DistThresholds struct {
+	Local    *float64 `json:"local,omitempty"`
+	Regional *float64 `json:"regional,omitempty"`
 }
 
 // DistanceAnalyticsResponse defines model for DistanceAnalyticsResponse.
@@ -739,6 +828,9 @@ type EventLoopStats struct {
 	P99Ms        float64 `json:"p99Ms"`
 }
 
+// ExternalUrls Link targets by name, such as the firmware flasher.
+type ExternalUrls map[string]string
+
 // FilterableRole A role the API accepts as a filter. Unlike NodeRole, it does not include unknown.
 type FilterableRole = types.NodeRole
 
@@ -747,6 +839,26 @@ type FromPubkeyBackfill struct {
 	Done      bool  `json:"done"`
 	Processed int64 `json:"processed"`
 	Total     int64 `json:"total"`
+}
+
+// GeoFilterRequest defines model for GeoFilterRequest.
+type GeoFilterRequest struct {
+	BufferKm *float64 `json:"bufferKm,omitempty"`
+
+	// Polygon 3 to 1000 points. Empty or null clears the filter.
+	Polygon *LatLonList `json:"polygon,omitempty"`
+}
+
+// GeoFilterResponse defines model for GeoFilterResponse.
+type GeoFilterResponse struct {
+	// BufferKm Distance outside the polygon that still passes.
+	BufferKm float64 `json:"bufferKm"`
+
+	// Polygon Null when no filter is set.
+	Polygon *LatLonList `json:"polygon"`
+
+	// WriteEnabled Sent by GET only.
+	WriteEnabled *bool `json:"writeEnabled,omitempty"`
 }
 
 // GoRuntimeStats defines model for GoRuntimeStats.
@@ -1044,6 +1156,16 @@ type HealthResponse struct {
 	Websocket   WebSocketStats `json:"websocket"`
 }
 
+// HealthThresholdsMs defines model for HealthThresholdsMs.
+type HealthThresholdsMs struct {
+	InfraDegradedMs  int64 `json:"infraDegradedMs"`
+	InfraSilentMs    int64 `json:"infraSilentMs"`
+	NodeDegradedMs   int64 `json:"nodeDegradedMs"`
+	NodeSilentMs     int64 `json:"nodeSilentMs"`
+	ObserverOnlineMs int64 `json:"observerOnlineMs"`
+	ObserverStaleMs  int64 `json:"observerStaleMs"`
+}
+
 // HealthzLoadingResponse defines model for HealthzLoadingResponse.
 type HealthzLoadingResponse struct {
 	// Ready Always false.
@@ -1084,6 +1206,32 @@ type HistogramBin struct {
 
 	// X Lower edge of the bin.
 	X float64 `json:"x"`
+}
+
+// HomeConfig defines model for HomeConfig.
+type HomeConfig struct {
+	// Checklist Older name for steps. Sent only when the operator set it.
+	Checklist    *[]HomeStep `json:"checklist,omitempty"`
+	FooterLinks  []HomeLink  `json:"footerLinks"`
+	HeroSubtitle string      `json:"heroSubtitle"`
+	HeroTitle    string      `json:"heroTitle"`
+	Steps        []HomeStep  `json:"steps"`
+}
+
+// HomeLink defines model for HomeLink.
+type HomeLink struct {
+	Label string `json:"label"`
+	Url   string `json:"url"`
+}
+
+// HomeStep defines model for HomeStep.
+type HomeStep struct {
+	// Description Markdown.
+	Description string `json:"description"`
+
+	// Emoji A ph:name icon token or a literal emoji.
+	Emoji string `json:"emoji"`
+	Title string `json:"title"`
 }
 
 // HopCandidate A node whose public key starts with the hop prefix.
@@ -1195,6 +1343,32 @@ type KnownChannelsResponse struct {
 
 	// Source Where the catalogue came from. Empty while it has none.
 	Source string `json:"source"`
+}
+
+// LatLon A point as latitude then longitude.
+type LatLon = []float64
+
+// LatLonList defines model for LatLonList.
+type LatLonList = []LatLon
+
+// LegacyTiles Tile URL overrides from older configs.
+type LegacyTiles struct {
+	Dark  *string `json:"dark,omitempty"`
+	Light *string `json:"light,omitempty"`
+}
+
+// MapConfigResponse defines model for MapConfigResponse.
+type MapConfigResponse struct {
+	// Center A point as latitude then longitude.
+	Center LatLon `json:"center"`
+	Zoom   int    `json:"zoom"`
+}
+
+// MarkerStroke defines model for MarkerStroke.
+type MarkerStroke struct {
+	Color   string  `json:"color"`
+	Opacity float64 `json:"opacity"`
+	Width   float64 `json:"width"`
 }
 
 // MetricsSample One metrics sample. The rate fields are null for the first sample, after a gap of more than two sample intervals, at a reboot, and when the observer did not report the counters.
@@ -1943,6 +2117,12 @@ type PathCount struct {
 	Path string `json:"path"`
 }
 
+// PathTrustConfig defines model for PathTrustConfig.
+type PathTrustConfig struct {
+	// MinHashBytesForMapping Absent when 0.
+	MinHashBytesForMapping *int `json:"minHashBytesForMapping,omitempty"`
+}
+
 // PayloadTypeEntry defines model for PayloadTypeEntry.
 type PayloadTypeEntry struct {
 	// Count Distinct packets of this type.
@@ -2189,6 +2369,9 @@ type ReachWindow struct {
 	Since TimestampSeconds `json:"since"`
 }
 
+// RegionsResponse Display name by region code.
+type RegionsResponse map[string]string
+
 // RelayAirtimeRow defines model for RelayAirtimeRow.
 type RelayAirtimeRow struct {
 	AirtimePct float64 `json:"airtime_pct"`
@@ -2331,6 +2514,11 @@ type RoleStats struct {
 	WithSkew int `json:"withSkew"`
 }
 
+// RoleStyle defines model for RoleStyle.
+type RoleStyle struct {
+	Color *string `json:"color,omitempty"`
+}
+
 // ScatterPoint defines model for ScatterPoint.
 type ScatterPoint struct {
 	Rssi float64 `json:"rssi"`
@@ -2386,6 +2574,12 @@ type SnrBucket struct {
 
 	// Range Two-unit SNR range such as -4 to -2.
 	Range string `json:"range"`
+}
+
+// SnrThresholds defines model for SnrThresholds.
+type SnrThresholds struct {
+	Excellent *float64 `json:"excellent,omitempty"`
+	Good      *float64 `json:"good,omitempty"`
 }
 
 // SourceLiveness Two clocks per MQTT source. A recent receipt with a stale message means the broker is alive and the write path is stuck.
@@ -2533,12 +2727,108 @@ type TableRowCounts struct {
 	Transmissions int64 `json:"transmissions"`
 }
 
+// ThemeBranding defines model for ThemeBranding.
+type ThemeBranding struct {
+	FaviconUrl *string `json:"faviconUrl,omitempty"`
+	HomeUrl    *string `json:"homeUrl,omitempty"`
+	LogoUrl    *string `json:"logoUrl,omitempty"`
+	SiteName   string  `json:"siteName"`
+	Tagline    string  `json:"tagline"`
+}
+
+// ThemeColors Colors by the name of the CSS variable they set.
+type ThemeColors struct {
+	Accent       string  `json:"accent"`
+	AccentHover  string  `json:"accentHover"`
+	Background   string  `json:"background"`
+	Border       string  `json:"border"`
+	CardBg       string  `json:"cardBg"`
+	ContentBg    string  `json:"contentBg"`
+	DetailBg     string  `json:"detailBg"`
+	Font         *string `json:"font,omitempty"`
+	InputBg      string  `json:"inputBg"`
+	Mono         *string `json:"mono,omitempty"`
+	NavActiveBg  *string `json:"navActiveBg,omitempty"`
+	NavBg        string  `json:"navBg"`
+	NavBg2       string  `json:"navBg2"`
+	NavText      string  `json:"navText"`
+	NavTextMuted string  `json:"navTextMuted"`
+	RowHover     string  `json:"rowHover"`
+	RowStripe    string  `json:"rowStripe"`
+	SectionBg    string  `json:"sectionBg"`
+	SelectedBg   string  `json:"selectedBg"`
+	StatusGreen  string  `json:"statusGreen"`
+	StatusRed    string  `json:"statusRed"`
+	StatusYellow string  `json:"statusYellow"`
+	Surface1     string  `json:"surface1"`
+	Surface2     string  `json:"surface2"`
+	Surface3     string  `json:"surface3"`
+	Text         string  `json:"text"`
+	TextMuted    string  `json:"textMuted"`
+}
+
+// ThemeResponse defines model for ThemeResponse.
+type ThemeResponse struct {
+	Branding     ThemeBranding `json:"branding"`
+	Home         HomeConfig    `json:"home"`
+	MarkerStroke MarkerStroke  `json:"markerStroke"`
+
+	// NodeColors Marker color by role name.
+	NodeColors map[string]string `json:"nodeColors"`
+
+	// Theme Colors by the name of the CSS variable they set.
+	Theme ThemeColors `json:"theme"`
+
+	// ThemeDark Colors by the name of the CSS variable they set.
+	ThemeDark ThemeColors `json:"themeDark"`
+
+	// TypeColors Color by payload type name. REQUEST repeats REQ for older clients.
+	TypeColors map[string]string `json:"typeColors"`
+}
+
+// TileConfig defines model for TileConfig.
+type TileConfig struct {
+	DarkDefault  *string `json:"darkDefault,omitempty"`
+	DarkUrl      *string `json:"darkUrl,omitempty"`
+	LightDefault *string `json:"lightDefault,omitempty"`
+	LightUrl     *string `json:"lightUrl,omitempty"`
+
+	// Providers Entries that are not objects, such as _comment keys, are dropped.
+	Providers *map[string]TileProvider `json:"providers,omitempty"`
+}
+
+// TileProvider defines model for TileProvider.
+type TileProvider struct {
+	Domain   *string `json:"domain,omitempty"`
+	Enabled  *bool   `json:"enabled,omitempty"`
+	Key      *string `json:"key,omitempty"`
+	Provider *string `json:"provider,omitempty"`
+	Token    *string `json:"token,omitempty"`
+}
+
 // TimelineBucket defines model for TimelineBucket.
 type TimelineBucket struct {
 	Count int `json:"count"`
 
 	// Label The bucket start: 15:04 for hourly buckets, Mon 15:04 for four-hourly, Jan 02 for daily. UTC.
 	Label string `json:"label"`
+}
+
+// TimestampConfig defines model for TimestampConfig.
+type TimestampConfig struct {
+	AllowCustomFormat bool `json:"allowCustomFormat"`
+
+	// CustomFormat Used only when allowCustomFormat is true.
+	CustomFormat string `json:"customFormat"`
+
+	// DefaultMode ago or absolute.
+	DefaultMode string `json:"defaultMode"`
+
+	// FormatPreset iso, iso-seconds or locale.
+	FormatPreset string `json:"formatPreset"`
+
+	// Timezone local or utc.
+	Timezone string `json:"timezone"`
 }
 
 // TimestampMillis UTC timestamp with millisecond precision (2026-11-06T02:15:52.000Z). Used where the server formats with formatTS (observation timestamps).
@@ -3132,6 +3422,9 @@ type ResolveHopsParams struct {
 	// Observer Public key of the observer that heard the path. Used like from_node.
 	Observer *string `form:"observer,omitempty" json:"observer,omitempty"`
 }
+
+// PutConfigGeoFilterJSONRequestBody defines body for PutConfigGeoFilter for application/json ContentType.
+type PutConfigGeoFilterJSONRequestBody = GeoFilterRequest
 
 // BatchPacketObservationsJSONRequestBody defines body for BatchPacketObservations for application/json ContentType.
 type BatchPacketObservationsJSONRequestBody BatchPacketObservationsJSONBody

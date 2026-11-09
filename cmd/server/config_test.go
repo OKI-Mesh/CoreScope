@@ -386,11 +386,11 @@ func TestObserverThresholdsOverride(t *testing.T) {
 		t.Errorf("ObserverStaleMinutes = %d, want 120", h.ObserverStaleMinutes)
 	}
 	m := h.ToClientMs()
-	if m["observerOnlineMs"] != 30*60*1000 {
-		t.Errorf("observerOnlineMs = %d, want %d", m["observerOnlineMs"], 30*60*1000)
+	if m.ObserverOnlineMs != 30*60*1000 {
+		t.Errorf("observerOnlineMs = %d, want %d", m.ObserverOnlineMs, 30*60*1000)
 	}
-	if m["observerStaleMs"] != 120*60*1000 {
-		t.Errorf("observerStaleMs = %d, want %d", m["observerStaleMs"], 120*60*1000)
+	if m.ObserverStaleMs != 120*60*1000 {
+		t.Errorf("observerStaleMs = %d, want %d", m.ObserverStaleMs, 120*60*1000)
 	}
 }
 
@@ -404,11 +404,11 @@ func TestObserverThresholdsDefaults(t *testing.T) {
 		t.Errorf("default ObserverStaleMinutes = %d, want 1440", h.ObserverStaleMinutes)
 	}
 	m := h.ToClientMs()
-	if m["observerOnlineMs"] != 3600000 {
-		t.Errorf("default observerOnlineMs = %d, want 3600000", m["observerOnlineMs"])
+	if m.ObserverOnlineMs != 3600000 {
+		t.Errorf("default observerOnlineMs = %d, want 3600000", m.ObserverOnlineMs)
 	}
-	if m["observerStaleMs"] != 86400000 {
-		t.Errorf("default observerStaleMs = %d, want 86400000", m["observerStaleMs"])
+	if m.ObserverStaleMs != 86400000 {
+		t.Errorf("default observerStaleMs = %d, want 86400000", m.ObserverStaleMs)
 	}
 }
 

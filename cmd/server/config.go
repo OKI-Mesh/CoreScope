@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/dbconfig"
 	"github.com/OKI-Mesh/CoreScope/internal/geofilter"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
@@ -681,16 +682,16 @@ func (h HealthThresholds) GetHealthMs(role types.NodeRole) (degradedMs, silentMs
 }
 
 // ToClientMs returns the thresholds as ms for the frontend.
-func (h HealthThresholds) ToClientMs() map[string]int {
+func (h HealthThresholds) ToClientMs() api.HealthThresholdsMs {
 	const hourMs = 3600000
 	const minMs = 60000
-	return map[string]int{
-		"infraDegradedMs":  int(h.InfraDegradedHours * hourMs),
-		"infraSilentMs":    int(h.InfraSilentHours * hourMs),
-		"nodeDegradedMs":   int(h.NodeDegradedHours * hourMs),
-		"nodeSilentMs":     int(h.NodeSilentHours * hourMs),
-		"observerOnlineMs": h.ObserverOnlineMinutes * minMs,
-		"observerStaleMs":  h.ObserverStaleMinutes * minMs,
+	return api.HealthThresholdsMs{
+		InfraDegradedMs:  int64(h.InfraDegradedHours * hourMs),
+		InfraSilentMs:    int64(h.InfraSilentHours * hourMs),
+		NodeDegradedMs:   int64(h.NodeDegradedHours * hourMs),
+		NodeSilentMs:     int64(h.NodeSilentHours * hourMs),
+		ObserverOnlineMs: int64(h.ObserverOnlineMinutes) * minMs,
+		ObserverStaleMs:  int64(h.ObserverStaleMinutes) * minMs,
 	}
 }
 
@@ -741,6 +742,17 @@ func (c *Config) NormalizeTimestampConfig() {
 	default:
 		log.Printf("[config] warning: timestamps.formatPreset=%q is invalid, using %q", origPreset, defaults.FormatPreset)
 		c.Timestamps.FormatPreset = defaults.FormatPreset
+	}
+}
+
+// ToAPI returns the wire form of the timestamp settings.
+func (t TimestampConfig) ToAPI() api.TimestampConfig {
+	return api.TimestampConfig{
+		DefaultMode:       t.DefaultMode,
+		Timezone:          t.Timezone,
+		FormatPreset:      t.FormatPreset,
+		CustomFormat:      t.CustomFormat,
+		AllowCustomFormat: t.AllowCustomFormat,
 	}
 }
 

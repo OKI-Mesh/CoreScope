@@ -232,54 +232,6 @@ type NodeHopAnalyticsResponse struct {
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 
-type ThemeResponse struct {
-	Branding   map[string]interface{} `json:"branding"`
-	Theme      map[string]interface{} `json:"theme"`
-	ThemeDark  map[string]interface{} `json:"themeDark"`
-	NodeColors map[string]interface{} `json:"nodeColors"`
-	TypeColors map[string]interface{} `json:"typeColors"`
-	Home       interface{}            `json:"home"`
-	// #1488 — marker stroke overlay so the frontend can apply server-side
-	// defaults before the operator's localStorage override loads.
-	MarkerStroke map[string]interface{} `json:"markerStroke,omitempty"`
-}
-
-type MapConfigResponse struct {
-	Center []float64 `json:"center"`
-	Zoom   int       `json:"zoom"`
-}
-
-type ClientConfigResponse struct {
-	Roles               interface{}            `json:"roles"`
-	HealthThresholds    interface{}            `json:"healthThresholds"`
-	Map                 interface{}            `json:"map"`
-	Tiles               interface{}            `json:"tiles,omitempty"` // deprecated
-	SnrThresholds       interface{}            `json:"snrThresholds"`
-	DistThresholds      interface{}            `json:"distThresholds"`
-	MaxHopDist          interface{}            `json:"maxHopDist"`
-	Limits              interface{}            `json:"limits"`
-	PerfSlowMs          interface{}            `json:"perfSlowMs"`
-	WsReconnectMs       interface{}            `json:"wsReconnectMs"`
-	CacheInvalidateMs   interface{}            `json:"cacheInvalidateMs"`
-	ExternalUrls        interface{}            `json:"externalUrls"`
-	PropagationBufferMs float64                `json:"propagationBufferMs"`
-	LiveMapMaxNodes     int                    `json:"liveMapMaxNodes"`
-	Timestamps          TimestampConfig        `json:"timestamps"`
-	DebugAffinity       bool                   `json:"debugAffinity,omitempty"`
-	MapDarkTileProvider string                 `json:"mapDarkTileProvider,omitempty"` // deprecated. TODO: remove after v3.5.0
-	Customizer          CustomizerClientConfig `json:"customizer"`
-	ClientRxCoverage    bool                   `json:"clientRxCoverage"`
-	PathTrust           *PathTrustConfig       `json:"pathTrust,omitempty"`
-}
-
-// CustomizerClientConfig is the operator-side customizer-modal knobs that
-// /api/config/client surfaces to the frontend. Issue #1508. The field is
-// always present (DisabledTabs defaults to an empty slice) so the frontend
-// can blindly call `.disabledTabs.includes(...)` without an undefined guard.
-type CustomizerClientConfig struct {
-	DisabledTabs []string `json:"disabledTabs"`
-}
-
 // ─── IATA Coords ───────────────────────────────────────────────────────────────
 
 type IataCoord struct {
