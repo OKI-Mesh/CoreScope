@@ -481,7 +481,7 @@ func (q *Queries) RecordNaiveSkew(ctx context.Context, arg RecordNaiveSkewParams
 const softDeleteBlacklistedObservers = `-- name: SoftDeleteBlacklistedObservers :execrows
 UPDATE observers
 SET inactive = true
-WHERE lower(pubkey) = ANY($1::text[])
+WHERE pubkey = ANY($1::text[])
   AND inactive = false
 `
 

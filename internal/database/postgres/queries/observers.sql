@@ -100,7 +100,7 @@ WHERE last_seen < sqlc.arg(cutoff)::timestamptz
 -- name: SoftDeleteBlacklistedObservers :execrows
 UPDATE observers
 SET inactive = true
-WHERE lower(pubkey) = ANY(sqlc.arg(pubkeys)::text[])
+WHERE pubkey = ANY(sqlc.arg(pubkeys)::text[])
   AND inactive = false;
 
 -- name: CountActiveObservers :one

@@ -582,6 +582,7 @@ type NodeMatch struct {
 // MatchNodesByPrefix maps each lowercase hex prefix to its matches. Prefixes
 // with no node are absent from the map.
 func (db *DB) MatchNodesByPrefix(ctx context.Context, prefixes []string) (map[string]NodeMatch, error) {
+	prefixes = normalizeKeys(prefixes)
 	rows, err := db.q.MatchNodesByPrefix(ctx, prefixes)
 	if err != nil {
 		return nil, err
