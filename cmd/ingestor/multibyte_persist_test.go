@@ -27,8 +27,8 @@ func TestRunMultibyteCapPersist_AppliesSnapshot(t *testing.T) {
 	snapdir := filepath.Join(t.TempDir(), "queue")
 	store.snapshotDir = snapdir
 
-	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
-	             VALUES ($1, $2, 'repeater', $3, $4, $5, $6)`
+	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
+	             VALUES ($1, $2, 'repeater', $3, $3, $4, $5, $6)`
 	seed := func(key, name, lastSeen string, sup types.MultibyteSupport, evid *string, inactive bool) {
 		t.Helper()
 		if n := testExec(t, store, ins, key, name, lastSeen, int(sup), evid, inactive); n != 1 {
@@ -113,8 +113,8 @@ func TestRunMultibyteCapPersist_RoundTrip(t *testing.T) {
 	ctx := t.Context()
 	store.snapshotDir = filepath.Join(t.TempDir(), "queue")
 
-	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
-	             VALUES ($1, $2, $3, $4, 0, NULL, $5)`
+	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
+	             VALUES ($1, $2, $3, $4, $4, 0, NULL, $5)`
 	testExec(t, store, ins, "dd44", "Delta", "repeater", "2026-01-01T00:00:00Z", false)
 	testExec(t, store, ins, "ee55", "Echo", "companion", "2025-12-01T00:00:00Z", true)
 
@@ -215,13 +215,13 @@ func TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown(t *testing.T) {
 	store.snapshotDir = filepath.Join(dir, "queue")
 	defer store.Close()
 
-	activeNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
-		VALUES ('gg77', 'Golf', 'repeater', '2026-01-01T00:00:00Z', 2, 'advert', FALSE)`)
+	activeNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
+		VALUES ('gg77', 'Golf', 'repeater', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 2, 'advert', FALSE)`)
 	if activeNodeCount != 1 {
 		t.Fatalf("expected 1 active node, got %d", activeNodeCount)
 	}
-	inactiveNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, multibyte_sup, multibyte_evidence, inactive)
-		VALUES ('hh88', 'Hotel', 'companion', '2025-12-01T00:00:00Z', 1, 'path', TRUE)`)
+	inactiveNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
+		VALUES ('hh88', 'Hotel', 'companion', '2025-12-01T00:00:00Z', '2025-12-01T00:00:00Z', 1, 'path', TRUE)`)
 	if inactiveNodeCount != 1 {
 		t.Fatalf("expected 1 inactive node, got %d", inactiveNodeCount)
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -79,11 +80,23 @@ func readObservers(ctx context.Context, src *Source, report *Report) ([]observer
 		if pubkey != id {
 			report.Add("observers: id lowercased", 1)
 		}
+		var normalizedIATA *string
+		if iata.Valid {
+			if code := types.NewIATA(iata.String); !code.IsZero() {
+				value := code.String()
+				normalizedIATA = &value
+				if value != iata.String {
+					report.Add("observers: iata trimmed and upper-cased", 1)
+				}
+			} else {
+				report.Add("observers: blank iata set to NULL", 1)
+			}
+		}
 		observers = append(observers, observer{
 			ID:                rowID,
 			Pubkey:            pubkey,
 			Name:              cleanText(report, "observers.name", id, textOrNil(name)),
-			IATA:              ptr(iata.String, iata.Valid),
+			IATA:              normalizedIATA,
 			LastSeen:          report.Time("observers.last_seen", lastSeen),
 			FirstSeen:         report.Time("observers.first_seen", firstSeen),
 			PacketCount:       packetCount.Int64,

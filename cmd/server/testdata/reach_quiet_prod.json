@@ -9,7 +9,8 @@
     },
     "window": {
         "days": 7,
-        "since": "2026-11-02T02:10:34Z"
+        "since": "2026-11-02T02:10:34Z",
+        "truncated": false
     },
     "reliable_tokens": [
         "D1E2",

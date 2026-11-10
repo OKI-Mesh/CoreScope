@@ -134,11 +134,53 @@ func TestRequireEmptyTarget(t *testing.T) {
 	if err := requireEmptyTarget(ctx, tx); err != nil {
 		t.Fatalf("empty target rejected: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO nodes (public_key) VALUES ('aa01')`); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO nodes (public_key, last_seen, first_seen) VALUES ('aa01', now(), now())`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	err := requireEmptyTarget(ctx, tx)
 	if err == nil || !strings.Contains(err.Error(), "nodes") {
 		t.Fatalf("err = %v, want one naming the nodes table", err)
+	}
+}
+
+func TestLoadObserversNormalizesIATA(t *testing.T) {
+	ctx := context.Background()
+	src := newSnapshot(t,
+		`INSERT INTO observers (rowid, id, name, iata, last_seen, first_seen) VALUES
+			(1, 'aa01', 'Lower', 'cvg', '2026-04-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+			(2, 'bb02', 'Padded', ' day ', '2026-04-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+			(3, 'cc03', 'Blank', '  ', '2026-04-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+			(4, 'dd04', 'Clean', 'LUK', '2026-04-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	tx := beginTx(t, newTarget(t))
+	report := newReport()
+
+	if _, err := loadObservers(ctx, src, tx, report); err != nil {
+		t.Fatalf("loadObservers: %v", err)
+	}
+
+	got := map[string]*string{}
+	rows, err := tx.Query(ctx, `SELECT pubkey, iata FROM observers`)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var iata *string
+		if err := rows.Scan(&key, &iata); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[key] = iata
+	}
+	cvg, day, luk := "CVG", "DAY", "LUK"
+	want := map[string]*string{"aa01": &cvg, "bb02": &day, "cc03": nil, "dd04": &luk}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("iata = %v, want %v", got, want)
+	}
+	if n := report.Count("observers: iata trimmed and upper-cased"); n != 2 {
+		t.Errorf("normalized count = %d, want 2", n)
+	}
+	if n := report.Count("observers: blank iata set to NULL"); n != 1 {
+		t.Errorf("blank count = %d, want 1", n)
 	}
 }

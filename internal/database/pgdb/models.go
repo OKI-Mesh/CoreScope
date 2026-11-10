@@ -107,25 +107,24 @@ type NeighborEdge struct {
 }
 
 type Node struct {
-	ID                   pgtype.Int4
-	PublicKey            string
-	Name                 pgtype.Text
-	Role                 *types.NodeRole
-	Lat                  pgtype.Float8
-	Lon                  pgtype.Float8
-	LastSeen             pgtype.Timestamptz
-	FirstSeen            pgtype.Timestamptz
-	AdvertCount          int32
-	BatteryMv            pgtype.Int4
-	TemperatureC         pgtype.Float8
-	ForeignAdvert        bool
-	DefaultScope         pgtype.Text
-	MultibyteSup         types.MultibyteSupport
-	MultibyteEvidence    *types.MultibyteEvidence
-	MultibyteMaxHashSize int32
-	ConfiguredScope      pgtype.Text
-	ConfiguredScopeAt    pgtype.Timestamptz
-	Inactive             bool
+	ID                pgtype.Int4
+	PublicKey         string
+	Name              pgtype.Text
+	Role              *types.NodeRole
+	Lat               pgtype.Float8
+	Lon               pgtype.Float8
+	LastSeen          time.Time
+	FirstSeen         time.Time
+	AdvertCount       int32
+	BatteryMv         pgtype.Int4
+	TemperatureC      pgtype.Float8
+	ForeignAdvert     bool
+	DefaultScope      pgtype.Text
+	MultibyteSup      types.MultibyteSupport
+	MultibyteEvidence *types.MultibyteEvidence
+	ConfiguredScope   pgtype.Text
+	ConfiguredScopeAt pgtype.Timestamptz
+	Inactive          bool
 }
 
 type NodeDeclaredRegion struct {
@@ -222,7 +221,7 @@ type Transmission struct {
 	ChannelHash      pgtype.Text
 	ChannelEncrypted bool
 	ScopeName        pgtype.Text
-	LastSeen         pgtype.Timestamptz
+	LastSeen         time.Time
 	Code1            pgtype.Text
 	Code2            pgtype.Text
 }

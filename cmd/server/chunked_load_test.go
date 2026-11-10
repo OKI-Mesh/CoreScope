@@ -165,9 +165,9 @@ func TestLoadChunked_LoadsRowsAtOrBelowZero(t *testing.T) {
 	ids := []int64{-1000000, 0, 1}
 	for i, id := range ids {
 		if _, err := db.Pool().Exec(ctx, `
-			INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version)
-			OVERRIDING SYSTEM VALUE
-			VALUES ($1, $2, $3, $4, 1, 6, 0)`,
+			INSERT INTO transmissions (id, raw_hex, hash, first_seen, last_seen, route_type, payload_type, payload_version)
+OVERRIDING SYSTEM VALUE
+VALUES ($1, $2, $3, $4, $4, 1, 6, 0)`,
 			id, []byte{0x19, 0x00, 0x01, byte(i)}, fmt.Sprintf("cursor%016d", i), firstSeen.Add(time.Duration(i)*time.Minute),
 		); err != nil {
 			t.Fatalf("insert transmission %d: %v", id, err)

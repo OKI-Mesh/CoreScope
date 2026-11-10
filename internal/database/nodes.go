@@ -62,8 +62,8 @@ type Node struct {
 	Role              *types.NodeRole
 	Lat               *float64
 	Lon               *float64
-	LastSeen          *time.Time
-	FirstSeen         *time.Time
+	LastSeen          time.Time
+	FirstSeen         time.Time
 	AdvertCount       int
 	BatteryMv         *int
 	TemperatureC      *float64
@@ -77,7 +77,7 @@ type MultibyteCapNode struct {
 	Pubkey   string
 	Name     string
 	Role     types.NodeRole
-	LastSeen time.Time // zero if NULL
+	LastSeen time.Time
 	Sup      int
 	Evidence string
 }
@@ -158,14 +158,14 @@ func (db *DB) IncrementNodeAdvertCount(ctx context.Context, pubKey string) error
 
 func (db *DB) TouchNodeLastSeen(ctx context.Context, pubkey string, rxTime time.Time) (int64, error) {
 	return db.q.UpdateNodeLastSeen(ctx, pgdb.UpdateNodeLastSeenParams{
-		LastSeen:  pgtype.Timestamptz{Time: rxTime, Valid: true},
+		LastSeen:  rxTime,
 		PublicKey: normalizeKey(pubkey),
 	})
 }
 
 // database — pure persistence, plain-Go in, pgtype internal
 func (db *DB) MarkStaleNodesInactive(ctx context.Context, cutoff time.Time) (int64, error) {
-	return db.q.MarkStaleNodesInactive(ctx, pgtype.Timestamptz{Time: cutoff, Valid: true})
+	return db.q.MarkStaleNodesInactive(ctx, cutoff)
 }
 
 func (db *DB) UpdateBatteryVoltageAndTempC(ctx context.Context, pubKey string, bv *int, tc *float64) error {
@@ -259,12 +259,10 @@ func (db *DB) ListMultibyteCapNodes(ctx context.Context) ([]MultibyteCapNode, er
 			Name:     r.Name,
 			Sup:      int(r.MultibyteSup),
 			Evidence: r.MultibyteEvidence,
+			LastSeen: r.LastSeen.UTC(),
 		}
 		if r.Role != nil {
 			n.Role = *r.Role
-		}
-		if r.LastSeen.Valid {
-			n.LastSeen = r.LastSeen.Time.UTC()
 		}
 		out = append(out, n)
 	}
@@ -415,8 +413,8 @@ func nodeFromRow(r pgdb.Node) Node {
 		Role:              r.Role,
 		Lat:               fromPgFloat8(r.Lat),
 		Lon:               fromPgFloat8(r.Lon),
-		LastSeen:          utcPtr(fromPgTimestamptz(r.LastSeen)),
-		FirstSeen:         utcPtr(fromPgTimestamptz(r.FirstSeen)),
+		LastSeen:          r.LastSeen.UTC(),
+		FirstSeen:         r.FirstSeen.UTC(),
 		AdvertCount:       int(r.AdvertCount),
 		BatteryMv:         fromPgInt4(r.BatteryMv),
 		TemperatureC:      fromPgFloat8(r.TemperatureC),
@@ -536,7 +534,7 @@ func (db *DB) GetNodeByPubkey(ctx context.Context, pubkey string) (*Node, error)
 // NodeHealth is the minimum a node contributes to the network-health summary.
 type NodeHealth struct {
 	Role     types.NodeRole // "unknown" when the node has no role
-	LastSeen *time.Time     // nil when never seen
+	LastSeen time.Time
 }
 
 func (db *DB) ListNodeHealth(ctx context.Context) ([]NodeHealth, error) {
@@ -550,7 +548,7 @@ func (db *DB) ListNodeHealth(ctx context.Context) ([]NodeHealth, error) {
 		if r.Role != nil {
 			role = *r.Role
 		}
-		out[i] = NodeHealth{Role: role, LastSeen: utcPtr(fromPgTimestamptz(r.LastSeen))}
+		out[i] = NodeHealth{Role: role, LastSeen: r.LastSeen.UTC()}
 	}
 	return out, nil
 }

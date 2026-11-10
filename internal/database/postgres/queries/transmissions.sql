@@ -2,7 +2,10 @@
 SELECT id, first_seen FROM transmissions WHERE hash = $1;
 
 -- name: InsertTransmission :one
--- name: InsertTransmission :one
+-- A repeat of a known hash moves last_seen forward and, when the stored row
+-- was an undecryptable channel message and this copy decrypted, takes the
+-- decrypted channel_hash and decoded_json. A copy that fails to decrypt never
+-- turns a decrypted row back into an encrypted one.
 INSERT INTO transmissions (
     raw_hex, hash, first_seen, route_type, payload_type, payload_version,
     decoded_json, channel_hash, scope_name, from_pubkey, last_seen, code1, code2, channel_encrypted
@@ -11,7 +14,13 @@ VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 )
 ON CONFLICT (hash) DO UPDATE SET
-    first_seen = LEAST(transmissions.first_seen, EXCLUDED.first_seen)
+    first_seen        = LEAST(transmissions.first_seen, EXCLUDED.first_seen),
+    last_seen         = GREATEST(transmissions.last_seen, EXCLUDED.last_seen),
+    channel_hash      = CASE WHEN transmissions.channel_encrypted AND NOT EXCLUDED.channel_encrypted AND EXCLUDED.channel_hash IS NOT NULL
+                             THEN EXCLUDED.channel_hash ELSE transmissions.channel_hash END,
+    decoded_json      = CASE WHEN transmissions.channel_encrypted AND NOT EXCLUDED.channel_encrypted AND EXCLUDED.channel_hash IS NOT NULL
+                             THEN EXCLUDED.decoded_json ELSE transmissions.decoded_json END,
+    channel_encrypted = transmissions.channel_encrypted AND EXCLUDED.channel_encrypted
 RETURNING id, (xmax = 0) AS inserted;
 
 -- name: UpdateTransmissionFirstSeen :one
@@ -20,7 +29,7 @@ UPDATE transmissions SET first_seen = $1 WHERE id = $2 RETURNING id;
 -- name: BumpTxLastSeen :exec
 UPDATE transmissions
 SET last_seen = $1
-WHERE id = $2 AND (last_seen IS NULL OR last_seen < $1);
+WHERE id = $2 AND last_seen < $1;
 
 -- name: PruneTransmissionsBatch :execrows
 WITH batch AS (
@@ -55,8 +64,8 @@ WHERE (sqlc.narg(since)::timestamptz IS NULL OR t2.last_seen >= sqlc.narg(since)
 SELECT id, hash, raw_hex, first_seen, route_type, payload_type, decoded_json, scope_name
 FROM transmissions
 WHERE id > sqlc.arg(after_id)::bigint
-  AND (sqlc.narg(since)::timestamptz IS NULL OR COALESCE(last_seen, first_seen) >= sqlc.narg(since)::timestamptz)
-  AND (sqlc.narg(until)::timestamptz IS NULL OR COALESCE(last_seen, first_seen) <  sqlc.narg(until)::timestamptz)
+  AND (sqlc.narg(since)::timestamptz IS NULL OR last_seen >= sqlc.narg(since)::timestamptz)
+  AND (sqlc.narg(until)::timestamptz IS NULL OR last_seen <  sqlc.narg(until)::timestamptz)
 ORDER BY id ASC
 LIMIT sqlc.arg(row_limit)::int;
 
@@ -135,7 +144,7 @@ LIMIT sqlc.arg(row_limit)::int;
 -- name: NthNewestTransmissionID :one
 SELECT id
 FROM transmissions
-WHERE (sqlc.narg(since)::timestamptz IS NULL OR COALESCE(last_seen, first_seen) >= sqlc.narg(since)::timestamptz)
+WHERE (sqlc.narg(since)::timestamptz IS NULL OR last_seen >= sqlc.narg(since)::timestamptz)
 ORDER BY id DESC
 OFFSET sqlc.arg(skip)::bigint
 LIMIT 1;

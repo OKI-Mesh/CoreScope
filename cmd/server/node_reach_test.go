@@ -151,12 +151,15 @@ func TestScanReachRows_CapTruncates(t *testing.T) {
 	reachScanRowLimit = 1
 	db := reachFixtureDB(t, 2, 1)
 	srv := &Server{db: db}
-	rows, err := srv.scanReachRows(t.Context(), map[string]bool{"01fa": true}, time.Time{})
+	rows, truncated, err := srv.scanReachRows(t.Context(), map[string]bool{"01fa": true}, time.Time{})
 	if err != nil {
 		t.Fatalf("scanReachRows: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("scan must hard-cap at reachScanRowLimit (1), got %d rows", len(rows))
+	}
+	if !truncated {
+		t.Fatalf("2 rows matched a cap of 1, so truncated must be true")
 	}
 }
 
@@ -301,12 +304,15 @@ func TestScanReachRows_DecodesRows(t *testing.T) {
 	}
 
 	srv := &Server{db: db}
-	rows, err := srv.scanReachRows(ctx, map[string]bool{"01fa": true}, time.Time{})
+	rows, truncated, err := srv.scanReachRows(ctx, map[string]bool{"01fa": true}, time.Time{})
 	if err != nil {
 		t.Fatalf("scanReachRows: %v", err)
 	}
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 matching rows (non-matching path excluded), got %d", len(rows))
+	}
+	if truncated {
+		t.Fatalf("expected truncated to be false, got true")
 	}
 	var got *pathRow
 	for i := range rows {
@@ -320,8 +326,8 @@ func TestScanReachRows_DecodesRows(t *testing.T) {
 	if got.observerPK != "obs1" || got.fromPubkey != sender {
 		t.Fatalf("decoded fields wrong: %+v", *got)
 	}
-	if len(got.path) != 3 || got.path[1] != "01FA" {
-		t.Fatalf("path not parsed/uppercased: %v", got.path)
+	if len(got.path) != 3 || got.path[1] != "01fa" {
+		t.Fatalf("path not parsed (hop prefixes stay lowercase): %v", got.path)
 	}
 	if !got.snrValid || got.snr != -7.0 {
 		t.Fatalf("snr not decoded: valid=%v val=%v", got.snrValid, got.snr)

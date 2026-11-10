@@ -55,7 +55,7 @@ func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 
 	var txID int64
 	mustScan(t, testRow(t, store,
-		`INSERT INTO transmissions (raw_hex, hash, first_seen) VALUES (decode('aa','hex'), 'h1', $1) RETURNING id`, now), &txID)
+		`INSERT INTO transmissions (raw_hex, hash, first_seen, last_seen) VALUES (decode('aa','hex'), 'h1', $1, $1) RETURNING id`, now), &txID)
 	if n := testExec(t, store,
 		`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES ($1, $2, $3)`,
 		txID, obsID, now); n != 1 {

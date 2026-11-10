@@ -5999,12 +5999,8 @@ func (s *PacketStore) getAllNodes(ctx context.Context) ([]nodeInfo, error) {
 		if r.Role != nil {
 			n.Role = *r.Role
 		}
-		if r.LastSeen != nil {
-			n.LastSeen = r.LastSeen.UTC()
-		}
-		if r.FirstSeen != nil {
-			n.FirstSeen = r.FirstSeen.UTC()
-		}
+		n.LastSeen = r.LastSeen.UTC()
+		n.FirstSeen = r.FirstSeen.UTC()
 		if r.Lat != nil && r.Lon != nil {
 			n.Lat, n.Lon = *r.Lat, *r.Lon
 			n.HasGPS = !(n.Lat == 0 && n.Lon == 0)

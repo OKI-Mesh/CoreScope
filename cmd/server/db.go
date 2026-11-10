@@ -62,11 +62,3 @@ func nilIfEmpty(s string) interface{} {
 	}
 	return s
 }
-
-// nonNil returns s, or an empty slice if s is nil, so it marshals to [] instead of null.
-func nonNil[T any](s []T) []T {
-	if s == nil {
-		return []T{}
-	}
-	return s
-}

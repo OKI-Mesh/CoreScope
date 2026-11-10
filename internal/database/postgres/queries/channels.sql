@@ -17,7 +17,7 @@ WHERE t.channel_hash = sqlc.arg(channel_hash)::text
       FROM observations o
       JOIN observers obs ON obs.id = o.observer_idx
       WHERE o.transmission_id = t.id
-        AND upper(btrim(obs.iata)) = ANY(sqlc.arg(regions)::text[])
+        AND obs.iata = ANY(sqlc.arg(regions)::text[])
     )
   );
 
@@ -44,7 +44,7 @@ WITH page AS (
         FROM observations o
         JOIN observers obs ON obs.id = o.observer_idx
         WHERE o.transmission_id = t.id
-          AND upper(btrim(obs.iata)) = ANY(sqlc.arg(regions)::text[])
+          AND obs.iata = ANY(sqlc.arg(regions)::text[])
       )
     )
   ORDER BY a.latest_seen DESC, t.id DESC
@@ -95,7 +95,7 @@ SELECT t.channel_hash::text           AS channel_hash,
                         OR EXISTS (SELECT 1 FROM observations o2
                                    JOIN observers obs2 ON obs2.id = o2.observer_idx
                                    WHERE o2.transmission_id = t2.id
-                                     AND upper(btrim(obs2.iata)) = ANY(sqlc.arg(regions)::text[])))
+                                     AND obs2.iata = ANY(sqlc.arg(regions)::text[])))
                  ORDER BY t2.first_seen DESC, t2.id DESC
                  LIMIT 1) AS sample_json
 FROM transmissions t
@@ -107,7 +107,7 @@ WHERE t.payload_type = 5
        OR EXISTS (SELECT 1 FROM observations o
                   JOIN observers obs ON obs.id = o.observer_idx
                   WHERE o.transmission_id = t.id
-                    AND upper(btrim(obs.iata)) = ANY(sqlc.arg(regions)::text[])))
+                    AND obs.iata = ANY(sqlc.arg(regions)::text[])))
 GROUP BY t.channel_hash
 ORDER BY last_activity DESC, t.channel_hash;
 
@@ -122,6 +122,6 @@ WHERE t.payload_type = 5
        OR EXISTS (SELECT 1 FROM observations o
                   JOIN observers obs ON obs.id = o.observer_idx
                   WHERE o.transmission_id = t.id
-                    AND upper(btrim(obs.iata)) = ANY(sqlc.arg(regions)::text[])))
+                    AND obs.iata = ANY(sqlc.arg(regions)::text[])))
 GROUP BY t.channel_hash
 ORDER BY last_activity DESC, t.channel_hash;

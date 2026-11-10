@@ -167,6 +167,9 @@ func loadTransmissions(ctx context.Context, src *Source, tx pgx.Tx, nodes *Loade
 		case observedLastSeen.Valid:
 			lastSeen = unixTime(observedLastSeen.Int64)
 			report.Add("transmissions: last_seen computed from observations", 1)
+		default:
+			lastSeen = first
+			report.Add("transmissions: no last_seen, set to first_seen", 1)
 		}
 
 		code1, code2 := ptr(storedCode1.String, storedCode1.Valid), ptr(storedCode2.String, storedCode2.Valid)

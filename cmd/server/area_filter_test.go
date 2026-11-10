@@ -60,10 +60,10 @@ func TestGetNodePubkeysInArea_Polygon(t *testing.T) {
 	db := setupTestDB(t)
 	s := &Server{db: db}
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-inside', 50.85, 4.35)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-outside', 48.0, 4.35)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-nogps', NULL, NULL)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk-zero', 0.0, 0.0)`)
+	dbtest.NodeAt(t, db, "pk-inside", 50.85, 4.35)
+	dbtest.NodeAt(t, db, "pk-outside", 48.0, 4.35)
+	dbtest.Node(t, db, "pk-nogps", "", "")
+	dbtest.NodeAt(t, db, "pk-zero", 0.0, 0.0)
 
 	entry := AreaEntry{
 		Label:   "Belgium",
@@ -118,7 +118,7 @@ func TestResolveAreaNodes_CacheHit(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('pk1', 50.85, 4.35)`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('pk1', 50.85, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -183,8 +183,8 @@ func TestAnalyticsRFAreaFilter(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('inside-node', 50.85, 4.35)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('outside-node', 48.0, 4.35)`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('inside-node', 50.85, 4.35, now(), now())`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('outside-node', 48.0, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -222,8 +222,8 @@ func TestAnalyticsChannelsAreaFilter(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('inside-node', 50.85, 4.35)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('outside-node', 48.0, 4.35)`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('inside-node', 50.85, 4.35, now(), now())`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('outside-node', 48.0, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -248,8 +248,8 @@ func TestGetNodePubkeysInArea_BoundingBox(t *testing.T) {
 	db := setupTestDB(t)
 	t.Cleanup(func() { db.Close() })
 	s := &Server{db: db}
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('in', 50.5, 5.0)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('out', 52.0, 5.0)`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('in', 50.5, 5.0, now(), now())`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('out', 52.0, 5.0, now(), now())`)
 
 	minLat, maxLat, minLon, maxLon := 50.0, 51.5, 2.5, 6.4
 	entry := AreaEntry{LatMin: &minLat, LatMax: &maxLat, LonMin: &minLon, LonMax: &maxLon}
@@ -329,7 +329,7 @@ func TestResolveAreaNodes_CalledBeforeRLock(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('n1', 50.85, 4.35)`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('n1', 50.85, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -352,8 +352,8 @@ func TestResolveAreaNodes_PerKeyTTL(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('bel-node', 50.85, 4.35)`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon) VALUES ('nl-node', 52.4, 4.9)`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('bel-node', 50.85, 4.35, now(), now())`)
+	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('nl-node', 52.4, 4.9, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},

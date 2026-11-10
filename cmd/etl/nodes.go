@@ -193,8 +193,20 @@ func loadNodes(ctx context.Context, src *Source, tx pgx.Tx, report *Report) (*Lo
 		id := int32(i + 1)
 		ids[key] = id
 		n := byKey[key]
+		firstSeen, lastSeen := n.FirstSeen, n.LastSeen
+		switch {
+		case firstSeen == nil && lastSeen == nil:
+			firstSeen, lastSeen = &epoch, &epoch
+			report.Add("nodes: no first_seen or last_seen, both set to the epoch", 1)
+		case lastSeen == nil:
+			lastSeen = firstSeen
+			report.Add("nodes: no last_seen, set to first_seen", 1)
+		case firstSeen == nil:
+			firstSeen = lastSeen
+			report.Add("nodes: no first_seen, set to last_seen", 1)
+		}
 		rows = append(rows, []any{
-			id, n.PublicKey, n.Name, n.Role, n.Lat, n.Lon, n.LastSeen, n.FirstSeen, n.AdvertCount,
+			id, n.PublicKey, n.Name, n.Role, n.Lat, n.Lon, lastSeen, firstSeen, n.AdvertCount,
 			n.BatteryMv, n.TemperatureC, n.ForeignAdvert, n.DefaultScope, n.MultibyteSup,
 			n.MultibyteEvidence, n.ConfiguredScope, n.ConfiguredScopeAt, n.Inactive,
 		})

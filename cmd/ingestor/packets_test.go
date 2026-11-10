@@ -19,8 +19,8 @@ func TestIngestorPruneOldPackets(t *testing.T) {
 	for i, ts := range []string{old, old, new} {
 
 		rowcount := testExec(t, store,
-			`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json)
-			 VALUES ($1, $2, $3, 0, 1, 1, '{}')`,
+			`INSERT INTO transmissions (raw_hex, hash, first_seen, last_seen, route_type, payload_type, payload_version, decoded_json)
+ VALUES ($1, $2, $3, $3, 0, 1, 1, '{}')`,
 			"AA", "h"+string(rune('a'+i)), ts,
 		)
 		if rowcount != 1 {

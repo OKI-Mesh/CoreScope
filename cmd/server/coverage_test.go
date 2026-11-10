@@ -1815,8 +1815,8 @@ func insertTestTx(t *testing.T, db *database.DB, rawHex, hash string, firstSeen 
 	var fromArg any // NULL when empty
 	if from != "" {
 		if _, err := db.SQL().ExecContext(ctx, `
-			INSERT INTO nodes (public_key, name, role, last_seen)
-			VALUES ($1, $1, 'repeater', $2) ON CONFLICT (public_key) DO NOTHING`, from, firstSeen); err != nil {
+			INSERT INTO nodes (public_key, name, role, last_seen, first_seen)
+			VALUES ($1, $1, 'repeater', $2, $2) ON CONFLICT (public_key) DO NOTHING`, from, firstSeen); err != nil {
 			t.Fatalf("seed node %s: %v", from, err)
 		}
 		fromArg = from

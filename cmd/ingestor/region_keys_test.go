@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 func TestRankDeclaredRegionsPrefersWidelyDeclared(t *testing.T) {
@@ -184,9 +186,10 @@ func codeFor(name string, payloadType byte, payload []byte) string {
 	mac.Write(payload)
 	h := mac.Sum(nil)
 	code := uint16(h[0]) | uint16(h[1])<<8
-	if code == 0 {
+	switch code {
+	case 0:
 		code = 1
-	} else if code == 0xFFFF {
+	case 0xFFFF:
 		code = 0xFFFE
 	}
 	return strings.ToUpper(hex.EncodeToString([]byte{byte(code & 0xFF), byte(code >> 8)}))
@@ -581,9 +584,8 @@ func TestDeclaredRegionSourcesCountsSpellingsOfOneRegionOnce(t *testing.T) {
 // shape handleNeighborsReport produces.
 func seedNodeWithConfiguredScope(t *testing.T, s *Store, pubkey string, scopes string, at time.Time) {
 	t.Helper()
-	count := testExec(t, s, `INSERT INTO nodes (public_key, configured_scope, configured_scope_at) VALUES ($1, $2, $3)`,
-		pubkey, scopes, at)
-	if count != 1 {
-		t.Fatalf("expected 1 row to be inserted, got %d", count)
+	dbtest.Node(t, s.db, pubkey, "", "")
+	if err := s.db.UpdateNodeConfiguredScope(t.Context(), pubkey, scopes, &at); err != nil {
+		t.Fatalf("seed configured_scope: %v", err)
 	}
 }

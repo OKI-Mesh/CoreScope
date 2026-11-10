@@ -46,7 +46,7 @@ WHERE ($1::text IS NULL OR n.role = $1::text)
             JOIN observers obs ON obs.id = o.observer_idx
             WHERE t.from_pubkey = n.public_key
               AND t.payload_type = 4
-              AND UPPER(TRIM(obs.iata)) = ANY($7::text[])
+              AND obs.iata = ANY($7::text[])
        ))
 `
 
@@ -127,7 +127,7 @@ ON CONFLICT (public_key) DO UPDATE SET
     lat       = COALESCE($4, nodes.lat),
     lon       = COALESCE($5, nodes.lon),
     last_seen = LEAST(
-                    GREATEST(COALESCE(nodes.last_seen, 'epoch'::timestamptz), $6::timestamptz),
+                    GREATEST(nodes.last_seen, $6::timestamptz),
                     $7::timestamptz
                 )
 `
@@ -173,7 +173,7 @@ func (q *Queries) DeleteNodesByPubkeys(ctx context.Context, pubkeys []string) (i
 }
 
 const findNodesByKeyPrefix = `-- name: FindNodesByKeyPrefix :many
-SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, configured_scope, configured_scope_at, inactive
 FROM nodes
 WHERE public_key LIKE $1::text || '%'
 ORDER BY public_key
@@ -208,7 +208,6 @@ func (q *Queries) FindNodesByKeyPrefix(ctx context.Context, prefix string) ([]No
 			&i.DefaultScope,
 			&i.MultibyteSup,
 			&i.MultibyteEvidence,
-			&i.MultibyteMaxHashSize,
 			&i.ConfiguredScope,
 			&i.ConfiguredScopeAt,
 			&i.Inactive,
@@ -224,7 +223,7 @@ func (q *Queries) FindNodesByKeyPrefix(ctx context.Context, prefix string) ([]No
 }
 
 const getNodeByPublicKey = `-- name: GetNodeByPublicKey :one
-SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, configured_scope, configured_scope_at, inactive
 FROM nodes
 WHERE public_key = $1::text
 `
@@ -248,7 +247,6 @@ func (q *Queries) GetNodeByPublicKey(ctx context.Context, publicKey string) (Nod
 		&i.DefaultScope,
 		&i.MultibyteSup,
 		&i.MultibyteEvidence,
-		&i.MultibyteMaxHashSize,
 		&i.ConfiguredScope,
 		&i.ConfiguredScopeAt,
 		&i.Inactive,
@@ -266,7 +264,7 @@ func (q *Queries) IncrementNodeAdvertCount(ctx context.Context, publicKey string
 }
 
 const listAllNodes = `-- name: ListAllNodes :many
-SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive FROM nodes ORDER BY public_key
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, configured_scope, configured_scope_at, inactive FROM nodes ORDER BY public_key
 `
 
 // Every node, for the resolver cache. No filters or paging.
@@ -295,7 +293,6 @@ func (q *Queries) ListAllNodes(ctx context.Context) ([]Node, error) {
 			&i.DefaultScope,
 			&i.MultibyteSup,
 			&i.MultibyteEvidence,
-			&i.MultibyteMaxHashSize,
 			&i.ConfiguredScope,
 			&i.ConfiguredScopeAt,
 			&i.Inactive,
@@ -357,7 +354,7 @@ type ListMultibyteCapNodesRow struct {
 	PublicKey         string
 	Name              string
 	Role              *types.NodeRole
-	LastSeen          pgtype.Timestamptz
+	LastSeen          time.Time
 	MultibyteSup      int32
 	MultibyteEvidence string
 }
@@ -430,7 +427,7 @@ FROM nodes
 
 type ListNodeHealthRow struct {
 	Role     *types.NodeRole
-	LastSeen pgtype.Timestamptz
+	LastSeen time.Time
 }
 
 func (q *Queries) ListNodeHealth(ctx context.Context) ([]ListNodeHealthRow, error) {
@@ -548,7 +545,7 @@ func (q *Queries) ListNodePublicKeys(ctx context.Context) ([]string, error) {
 }
 
 const listNodes = `-- name: ListNodes :many
-SELECT n.id, n.public_key, n.name, n.role, n.lat, n.lon, n.last_seen, n.first_seen, n.advert_count, n.battery_mv, n.temperature_c, n.foreign_advert, n.default_scope, n.multibyte_sup, n.multibyte_evidence, n.multibyte_max_hash_size, n.configured_scope, n.configured_scope_at, n.inactive
+SELECT n.id, n.public_key, n.name, n.role, n.lat, n.lon, n.last_seen, n.first_seen, n.advert_count, n.battery_mv, n.temperature_c, n.foreign_advert, n.default_scope, n.multibyte_sup, n.multibyte_evidence, n.configured_scope, n.configured_scope_at, n.inactive
 FROM nodes n
 WHERE ($1::text IS NULL OR n.role = $1::text)
   AND ($2::text IS NULL
@@ -564,7 +561,7 @@ WHERE ($1::text IS NULL OR n.role = $1::text)
             JOIN observers obs ON obs.id = o.observer_idx
             WHERE t.from_pubkey = n.public_key
               AND t.payload_type = 4
-              AND UPPER(TRIM(obs.iata)) = ANY($5::text[])
+              AND obs.iata = ANY($5::text[])
        ))
   AND n.public_key <> ALL(COALESCE($6::text[], '{}'))
   AND NOT EXISTS (
@@ -575,7 +572,7 @@ WHERE ($1::text IS NULL OR n.role = $1::text)
 ORDER BY
     CASE WHEN $8::text = 'name' THEN n.name END ASC NULLS FIRST,
     CASE WHEN $8::text = 'packetCount' THEN n.advert_count END DESC NULLS LAST,
-    CASE WHEN $8::text NOT IN ('name', 'packetCount') THEN n.last_seen END DESC NULLS LAST,
+    CASE WHEN $8::text NOT IN ('name', 'packetCount') THEN n.last_seen END DESC,
     n.public_key ASC
 LIMIT $10 OFFSET $9
 `
@@ -632,7 +629,6 @@ func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, e
 			&i.DefaultScope,
 			&i.MultibyteSup,
 			&i.MultibyteEvidence,
-			&i.MultibyteMaxHashSize,
 			&i.ConfiguredScope,
 			&i.ConfiguredScopeAt,
 			&i.Inactive,
@@ -710,7 +706,7 @@ const markStaleNodesInactive = `-- name: MarkStaleNodesInactive :execrows
 UPDATE nodes SET inactive = true WHERE last_seen < $1 AND inactive = false
 `
 
-func (q *Queries) MarkStaleNodesInactive(ctx context.Context, lastSeen pgtype.Timestamptz) (int64, error) {
+func (q *Queries) MarkStaleNodesInactive(ctx context.Context, lastSeen time.Time) (int64, error) {
 	result, err := q.db.Exec(ctx, markStaleNodesInactive, lastSeen)
 	if err != nil {
 		return 0, err
@@ -797,11 +793,11 @@ func (q *Queries) ResolveNodePubkeys(ctx context.Context, inputs []string) ([]Re
 }
 
 const searchNodes = `-- name: SearchNodes :many
-SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, multibyte_max_hash_size, configured_scope, configured_scope_at, inactive
+SELECT id, public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c, foreign_advert, default_scope, multibyte_sup, multibyte_evidence, configured_scope, configured_scope_at, inactive
 FROM nodes
 WHERE strpos(lower(name), lower($1::text)) > 0
    OR starts_with(public_key, lower($1::text))
-ORDER BY last_seen DESC NULLS LAST, public_key ASC
+ORDER BY last_seen DESC, public_key ASC
 LIMIT $2
 `
 
@@ -837,7 +833,6 @@ func (q *Queries) SearchNodes(ctx context.Context, arg SearchNodesParams) ([]Nod
 			&i.DefaultScope,
 			&i.MultibyteSup,
 			&i.MultibyteEvidence,
-			&i.MultibyteMaxHashSize,
 			&i.ConfiguredScope,
 			&i.ConfiguredScopeAt,
 			&i.Inactive,
@@ -920,11 +915,11 @@ const updateNodeLastSeen = `-- name: UpdateNodeLastSeen :execrows
 UPDATE nodes
 SET last_seen = $1
 WHERE public_key = $2
-  AND (last_seen IS NULL OR last_seen < $1)
+  AND last_seen < $1
 `
 
 type UpdateNodeLastSeenParams struct {
-	LastSeen  pgtype.Timestamptz
+	LastSeen  time.Time
 	PublicKey string
 }
 

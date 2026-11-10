@@ -4073,10 +4073,11 @@ components:
     ReachWindow:
       type: object
       additionalProperties: false
-      required: [days, since]
+      required: [days, since, truncated]
       properties:
         days: { type: integer, description: "The clamped window, 1..30." }
         since: { $ref: '#/components/schemas/TimestampSeconds' }
+        truncated: { type: boolean, description: "True when more observations matched than the scan cap, so the counts cover the newest ones only." }
 
     ReachImportance:
       type: object

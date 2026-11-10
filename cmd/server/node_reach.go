@@ -21,19 +21,28 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// reachScanRowLimit hard-caps the windowed observation scan so a hot relay node
-// with weeks of traffic can't pull an unbounded result set into memory. A node
-// with >200k matching observations in the window is far past dashboard scale;
-// beyond the cap the counts are a (still representative) truncation. The LIKE
-// filter is unavoidably a text scan of path_json over the timestamp-narrowed
-// window — an indexed path-token column would need an ingestor-side schema
-// migration (the server is read-only by invariant), so it's a follow-up.
-// var (not const) so tests can lower the cap to exercise the truncation path
-// without inserting 200k rows.
-var reachScanRowLimit = 200000
+// reachScanRowLimit caps the windowed observation scan so a hot relay with
+// weeks of traffic cannot pull an unbounded result set into memory. The query
+// is index-driven (GIN on hop_prefixes, newest first), so cost scales with the
+// rows returned, not the table size. Past the cap the counts cover the newest
+// reachScanRowLimit observations; computeNodeReach logs it and sets
+// Window.Truncated on the response.
+// var (not const) so tests can lower the cap to exercise the truncation path.
+var reachScanRowLimit = 500000
 
-// pathRow is one observation fed to attributeDirections. path tokens are
-// uppercase hex hop prefixes (as stored in observations.path_json). SNR is a
+const (
+	// reachMaxConcurrentScans bounds how many cold scans hold their full result
+	// set in memory at once. Further misses wait for a slot.
+	reachMaxConcurrentScans = 2
+
+	// reachComputeTimeout bounds one shared computation. It runs detached from
+	// the request that started it, so it needs its own deadline.
+	reachComputeTimeout = 45 * time.Second
+)
+
+// pathRow is one observation fed to attributeDirections. Path tokens are the
+// lowercase hex hop prefixes exactly as stored in observations.hop_prefixes,
+// and the slice is shared with the query result (never mutate it). SNR is a
 // value + validity flag (not *float64) to avoid a heap escape per row.
 type pathRow struct {
 	observerPK  string // lowercase pubkey of the observer (may be "")
@@ -58,14 +67,13 @@ type dirCounts struct {
 }
 
 // attributeDirections walks each path and attributes directional evidence for
-// the target node (identified by any token in ourTokens). resolve maps a hop
-// token → a unique relay pubkey ("" when ambiguous/unknown → skipped). ourPK is
-// the target's own pubkey (lowercase) so self-edges are ignored.
+// the target node (identified by any token in ourTokens). Tokens in ourTokens
+// and in the paths must use the same case. resolve maps a hop token → a unique
+// relay pubkey ("" when ambiguous/unknown → skipped). ourPK is the target's own
+// pubkey (lowercase) so self-edges are ignored.
 func attributeDirections(rows []pathRow, ourTokens map[string]bool, ourPK string, resolve func(string) string) dirCounts {
 	// Size hint: a small constant covers typical neighbour fan-out (dozens)
-	// without over-allocating ~12.5k buckets on a 100k-row scan. Independent
-	// r2 #4: the old `len(rows)/8+1` was ~250× too large for relays with
-	// modest fan-out.
+	// without over-allocating on a large scan.
 	const hint = 64
 	d := dirCounts{
 		we:   make(map[string]int, hint),
@@ -137,8 +145,8 @@ func reliableTokens(pubkey string, pm *prefixMap) map[string]bool {
 
 // uniqueResolve returns the single relay pubkey (lowercase) for a hop token, or
 // "" when the token resolves to zero or multiple candidates (conservative).
-// Callers should memoize across a request (see newResolver) so the per-hop
-// ToLower + map lookup runs once per distinct token, not once per row.
+// Callers should memoize across a request (see newResolver) so the prefix-map
+// lookup runs once per distinct token, not once per row.
 func uniqueResolve(pm *prefixMap, token string) string {
 	if pm == nil {
 		return ""
@@ -178,7 +186,7 @@ func parsePathTokens(pj string) []string {
 
 // newResolver returns a memoized hop-token → pubkey resolver. Paths reuse the
 // same hop tokens across thousands of rows, so caching collapses the repeated
-// ToLower + prefix-map lookups to once per distinct token.
+// prefix-map lookups to once per distinct token.
 func newResolver(pm *prefixMap) func(string) string {
 	cache := make(map[string]string)
 	return func(tok string) string {
@@ -267,9 +275,8 @@ type reachCacheEntry struct {
 	raw []byte
 }
 
-// reachState bundles per-server reach caches. Was a set of package-level
-// globals — moved onto *Server so two Server instances (tests, future
-// per-listener) don't share observable state (Independent r2 #2).
+// reachState bundles per-server reach caches. Lives on *Server so two Server
+// instances (tests, future per-listener) don't share observable state.
 type reachState struct {
 	cacheMu sync.RWMutex
 	cache   map[string]reachCacheEntry
@@ -284,8 +291,27 @@ type reachState struct {
 	// round-2, adversarial #5).
 	lastSeenBlacklistGen atomic.Uint64
 
-	degreeMu   sync.Mutex
-	degreeSnap *degreeSnapshot
+	degreeMu         sync.Mutex
+	degreeSnap       *degreeSnapshot
+	degreeSF         singleflight.Group
+	degreeRefreshing atomic.Bool
+
+	scanOnce  sync.Once
+	scanSlots chan struct{}
+}
+
+// acquireScanSlot blocks until fewer than reachMaxConcurrentScans scans are
+// running, or ctx ends. The returned function releases the slot.
+func (s *Server) acquireScanSlot(ctx context.Context) (func(), error) {
+	s.reach.scanOnce.Do(func() {
+		s.reach.scanSlots = make(chan struct{}, reachMaxConcurrentScans)
+	})
+	select {
+	case s.reach.scanSlots <- struct{}{}:
+		return func() { <-s.reach.scanSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // reachCacheGet returns the cached marshalled JSON for key. The returned slice
@@ -423,14 +449,16 @@ func (s *Server) handleNodeReach(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// singleflight: collapse a thundering herd on a cold key to one scan. The
-	// shared computation uses the triggering request's context; a disconnect
-	// there can cancel the in-flight scan for all waiters (acceptable — the
-	// next request recomputes).
-	v, err, _ := s.reach.sf.Do(cacheKey, func() (interface{}, error) {
+	// shared computation is detached from the triggering request (a client
+	// disconnect must not fail every waiter) and bounded by its own timeout.
+	// Each waiter still gives up when its own request ends.
+	ch := s.reach.sf.DoChan(cacheKey, func() (interface{}, error) {
 		if raw, ok := s.reachCacheGet(cacheKey); ok {
 			return raw, nil
 		}
-		resp, ok, cErr := s.computeNodeReach(r.Context(), pubkey, days)
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reachComputeTimeout)
+		defer cancel()
+		resp, ok, cErr := s.computeNodeReach(cctx, pubkey, days)
 		if cErr != nil {
 			// Real backend failure (e.g. DB scan exploded) — propagate so the
 			// caller renders 500 instead of the misleading empty-reach
@@ -448,11 +476,19 @@ func (s *Server) handleNodeReach(w http.ResponseWriter, r *http.Request) {
 		s.reachCachePut(cacheKey, raw)
 		return raw, nil
 	})
-	if err != nil {
+
+	var res singleflight.Result
+	select {
+	case <-ctx.Done():
+		return
+	case res = <-ch:
+	}
+	if res.Err != nil {
+		log.Printf("[reach] %s: %v", cacheKey, res.Err)
 		writeError(w, 500, "reach computation failed")
 		return
 	}
-	raw, _ := v.([]byte)
+	raw, _ := res.Val.([]byte)
 	if len(raw) == 0 {
 		writeError(w, 404, "Not found")
 		return
@@ -480,12 +516,24 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 	since := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
 
 	var d dirCounts
+	truncated := false
 	if len(tokens) > 0 {
-		rows, err := s.scanReachRows(ctx, tokens, since)
+		// The database stores hop prefixes lowercase, so the scan and the
+		// attribution both run on lowercase tokens; only the response shows
+		// the uppercase form.
+		lower := make(map[string]bool, len(tokens))
+		for tok := range tokens {
+			lower[strings.ToLower(tok)] = true
+		}
+		rows, trunc, err := s.scanReachRows(ctx, lower, since)
 		if err != nil {
 			return api.NodeReachResponse{}, false, err
 		}
-		d = attributeDirections(rows, tokens, pubkey, newResolver(pm))
+		if trunc {
+			log.Printf("[reach] %s: scan hit the %d-row cap; counts cover the newest observations only", pubkey, reachScanRowLimit)
+			truncated = true
+		}
+		d = attributeDirections(rows, lower, pubkey, newResolver(pm))
 	} else {
 		d = dirCounts{we: map[string]int{}, they: map[string]int{}, obs: map[string]obsAgg{}}
 	}
@@ -570,7 +618,7 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 		Node: api.ReachNode{Pubkey: pubkey, Name: self.Name, Role: self.Role,
 			Lat: selfLat, Lon: selfLon, FirstSeen: optionalWireSeconds(&firstSeen),
 			DefaultScope: nonEmpty(defScope), ConfiguredScope: nonEmpty(confScope), ConfiguredScopeAt: optionalWireSeconds(confAt)},
-		Window:         api.ReachWindow{Days: days, Since: types.WireTimeSeconds{Time: since}},
+		Window:         api.ReachWindow{Days: days, Since: types.WireTimeSeconds{Time: since}, Truncated: truncated},
 		ReliableTokens: toks,
 		Importance: api.ReachImportance{
 			NeighborDegree: degree, DegreeRank: rank, NodesWithEdges: nodesWithEdges,
@@ -585,7 +633,14 @@ func (s *Server) computeNodeReach(ctx context.Context, pubkey string, days int) 
 // The degree/rank importance is identical across all reach requests except the
 // pubkey match, so the full neighbor_edges aggregate is computed once and shared
 // behind a coarse TTL. Rank is a binary search over the descending degree list.
-const reachDegreeTTL = 60 * time.Second
+//
+// A stale snapshot is served immediately while one background refresh runs; only
+// the very first call (no snapshot yet) waits for the query.
+const (
+	reachDegreeTTL     = 60 * time.Second
+	reachDegreeTimeout = 30 * time.Second
+	reachDegreeRetry   = 10 * time.Second
+)
 
 type degreeSnapshot struct {
 	at         time.Time
@@ -612,24 +667,25 @@ func (s *Server) reachDegreeRank(ctx context.Context, pubkey string) (degree, ra
 	return degree, rank, snap.total
 }
 
-func (s *Server) getDegreeSnapshot(ctx context.Context) *degreeSnapshot {
-	// Fast path: serve a fresh snapshot under a short lock.
-	s.reach.degreeMu.Lock()
-	if s.reach.degreeSnap != nil && time.Since(s.reach.degreeSnap.at) < reachDegreeTTL {
-		snap := s.reach.degreeSnap
-		s.reach.degreeMu.Unlock()
-		return snap
-	}
-	stale := s.reach.degreeSnap
-	s.reach.degreeMu.Unlock()
+// loadDegreeSnapshot queries the aggregate on a context detached from any
+// request, stores the result, and returns it. On failure it keeps serving the
+// previous snapshot (re-dated so the next retry is reachDegreeRetry away) and
+// returns nil.
+func (s *Server) loadDegreeSnapshot() *degreeSnapshot {
+	ctx, cancel := context.WithTimeout(context.Background(), reachDegreeTimeout)
+	defer cancel()
 
-	// Rebuild WITHOUT holding the lock so concurrent reach requests aren't
-	// serialized behind the aggregate query. A brief cold-start herd may run a
-	// few redundant queries; the last writer wins.
 	degrees, err := s.db.ListNodeDegrees(ctx)
 	if err != nil {
 		log.Printf("[reach] degree snapshot query failed: %v (serving stale)", err)
-		return stale // serve stale on error rather than zeroing
+		s.reach.degreeMu.Lock()
+		if old := s.reach.degreeSnap; old != nil {
+			retry := *old
+			retry.at = time.Now().Add(reachDegreeRetry - reachDegreeTTL)
+			s.reach.degreeSnap = &retry
+		}
+		s.reach.degreeMu.Unlock()
+		return nil
 	}
 	deg := make(map[string]int, len(degrees))
 	sortedDesc := make([]int, 0, len(degrees))
@@ -645,40 +701,78 @@ func (s *Server) getDegreeSnapshot(ctx context.Context) *degreeSnapshot {
 	return snap
 }
 
+func (s *Server) getDegreeSnapshot(ctx context.Context) *degreeSnapshot {
+	s.reach.degreeMu.Lock()
+	snap := s.reach.degreeSnap
+	s.reach.degreeMu.Unlock()
+
+	if snap != nil {
+		if time.Since(snap.at) >= reachDegreeTTL && s.reach.degreeRefreshing.CompareAndSwap(false, true) {
+			go func() {
+				defer s.reach.degreeRefreshing.Store(false)
+				s.loadDegreeSnapshot()
+			}()
+		}
+		return snap
+	}
+
+	// Cold start: nothing to serve, so wait for the shared load (or give up
+	// when this request ends; the load itself continues for the others).
+	ch := s.reach.degreeSF.DoChan("degree", func() (interface{}, error) {
+		return s.loadDegreeSnapshot(), nil
+	})
+	select {
+	case <-ctx.Done():
+		return nil
+	case res := <-ch:
+		loaded, _ := res.Val.(*degreeSnapshot)
+		return loaded
+	}
+}
+
 // scanReachRows reads windowed observations whose path contains any reliable
-// token, with the originator + observer + snr needed for attribution. Observer
-// id and originator pubkey are lowercased in SQL (not per row), the path slice
-// is uppercased in place (no second allocation), and the result is hard-capped
-// at reachScanRowLimit.
+// token, with the originator + observer + snr needed for attribution. tokens
+// must be lowercase (the form stored in observations.hop_prefixes). Paths share
+// the query result's slices, so nothing is copied or case-converted per hop.
+// The result is capped at reachScanRowLimit; truncated reports that more rows
+// matched than the cap, in which case the rows are the newest ones.
 //
-// Returns a non-nil error if the underlying QueryContext or rows.Err() fails;
-// callers MUST treat that as a 500 (issue #1631 — previously the error was
-// swallowed, surfacing a transient DB failure as a misleading 404 / empty
-// reach to operators).
-func (s *Server) scanReachRows(ctx context.Context, tokens map[string]bool, since time.Time) ([]pathRow, error) {
+// Returns a non-nil error if the underlying query fails or the scan slot cannot
+// be acquired; callers MUST treat that as a 500 (issue #1631 — previously the
+// error was swallowed, surfacing a transient DB failure as a misleading 404 /
+// empty reach to operators).
+func (s *Server) scanReachRows(ctx context.Context, tokens map[string]bool, since time.Time) (rows []pathRow, truncated bool, err error) {
 	if len(tokens) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	stored := make([]string, 0, len(tokens))
 	for tok := range tokens {
-		stored = append(stored, strings.ToLower(tok))
+		stored = append(stored, tok)
 	}
-	rows, err := s.db.ListObservedPathsThrough(ctx, stored, since, reachScanRowLimit)
+
+	release, err := s.acquireScanSlot(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
+
+	limit := reachScanRowLimit
+	observed, err := s.db.ListObservedPathsThrough(ctx, stored, since, limit+1)
 	if err != nil {
 		log.Printf("[reach] scan query failed: %v", err)
-		return nil, err
+		return nil, false, err
 	}
-	out := make([]pathRow, len(rows))
-	for i, r := range rows {
-		path := make([]string, len(r.Path))
-		for j, h := range r.Path {
-			path[j] = strings.ToUpper(h)
-		}
-		pr := pathRow{observerPK: r.ObserverPK, fromPubkey: r.FromPubkey, payloadType: r.PayloadType, path: path}
+	if len(observed) > limit {
+		truncated = true
+		observed = observed[:limit]
+	}
+	out := make([]pathRow, len(observed))
+	for i, r := range observed {
+		pr := pathRow{observerPK: r.ObserverPK, fromPubkey: r.FromPubkey, payloadType: r.PayloadType, path: r.Path}
 		if r.SNR != nil {
 			pr.snr, pr.snrValid = *r.SNR, true
 		}
 		out[i] = pr
 	}
-	return out, nil
+	return out, truncated, nil
 }

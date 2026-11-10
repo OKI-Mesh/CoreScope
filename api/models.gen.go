@@ -2972,6 +2972,9 @@ type ReachWindow struct {
 
 	// Since UTC timestamp truncated to whole seconds (2026-11-06T19:18:09Z). Used for node, neighbor and packet-level times.
 	Since TimestampSeconds `json:"since"`
+
+	// Truncated True when more observations matched than the scan cap, so the counts cover the newest ones only.
+	Truncated bool `json:"truncated"`
 }
 
 // RegionsResponse Display name by region code.

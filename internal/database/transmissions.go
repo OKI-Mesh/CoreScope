@@ -212,7 +212,7 @@ func (db *DB) CreateOrUpdateTransmission(ctx context.Context, data TransmissionI
 			ChannelHash:      toPgTextIfNotEmpty(data.ChannelHash),
 			ScopeName:        toPgTextPtr(data.ScopeName),
 			FromPubkey:       from,
-			LastSeen:         pgtype.Timestamptz{Time: rxTime, Valid: true},
+			LastSeen:         rxTime,
 			Code1:            toPgTextIfNotEmpty(data.Code1),
 			Code2:            toPgTextIfNotEmpty(data.Code2),
 			ChannelEncrypted: data.ChannelEncrypted,
@@ -232,7 +232,7 @@ func (db *DB) CreateOrUpdateTransmission(ctx context.Context, data TransmissionI
 // BumpTransmissionLastSeen records that the transmission was heard again at rxTime.
 func (db *DB) BumpTransmissionLastSeen(ctx context.Context, txID int64, rxTime time.Time) error {
 	err := db.q.BumpTxLastSeen(ctx, pgdb.BumpTxLastSeenParams{
-		LastSeen: pgtype.Timestamptz{Time: rxTime, Valid: true},
+		LastSeen: rxTime,
 		ID:       txID,
 	})
 	if err != nil {
@@ -470,15 +470,15 @@ SELECT t.hash, t.first_seen, upper(encode(t.raw_hex, 'hex'))::text AS raw_hex,
        t.payload_type, t.route_type, t.scope_name,
        (SELECT COUNT(*) FROM observations oi WHERE oi.transmission_id = t.id)::int AS count,
        (SELECT COUNT(DISTINCT oi.observer_idx) FROM observations oi WHERE oi.transmission_id = t.id)::int AS observer_count,
-       COALESCE(t.last_seen, t.first_seen) AS latest,
+       t.last_seen AS latest,
        obs.pubkey AS observer_id, obs.name AS observer_name,
        COALESCE(obs.iata, '')::text AS observer_iata,
        o.snr, o.rssi,
        COALESCE(o.hop_prefixes, '{}')::text[] AS hop_prefixes,
-       COALESCE((SELECT array_agg(DISTINCT TRIM(obi.iata) ORDER BY TRIM(obi.iata))
+       COALESCE((SELECT array_agg(DISTINCT obi.iata ORDER BY obi.iata)
                FROM observations oi JOIN observers obi ON obi.id = oi.observer_idx
               WHERE oi.transmission_id = t.id
-                AND obi.iata IS NOT NULL AND TRIM(obi.iata) <> ''), '{}')::text[] AS distinct_iatas
+                AND obi.iata IS NOT NULL), '{}')::text[] AS distinct_iatas
 FROM transmissions t
 LEFT JOIN LATERAL (
     SELECT oo.id, oo.observer_idx, oo.snr, oo.rssi, oo.hop_prefixes
@@ -489,7 +489,7 @@ LEFT JOIN LATERAL (
 ) o ON true
 LEFT JOIN observers obs ON obs.id = o.observer_idx
 %s
-ORDER BY COALESCE(t.last_seen, t.first_seen) DESC, t.id DESC
+ORDER BY t.last_seen DESC, t.id DESC
 LIMIT $%d OFFSET $%d`, clause, len(args)+1, len(args)+2)
 
 	rows, err := db.pool.Query(ctx, querySQL, append(args, q.Limit, q.Offset)...)

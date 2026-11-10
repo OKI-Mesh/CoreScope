@@ -149,11 +149,10 @@ func TestCreateOrUpdateNode_LastSeenCapAndMonotonicity_DB(t *testing.T) {
 		seedNodes(t, db, database.NodeInput{
 			PublicKey: "aa01", Name: "N", Role: "repeater", RxTime: nodesNow.Add(10 * time.Hour), IngestNow: nodesNow,
 		})
-		if got := mustGetNode(t, db, "aa01"); got.LastSeen == nil || !got.LastSeen.Equal(nodesNow) {
+		if got := mustGetNode(t, db, "aa01"); !got.LastSeen.Equal(nodesNow) {
 			t.Errorf("want last_seen capped at %v, got %v", nodesNow, got.LastSeen)
 		}
 	})
-
 	t.Run("update caps a receive time ahead of ingest time", func(t *testing.T) {
 		seedNodes(t, db, database.NodeInput{
 			PublicKey: "aa02", Name: "N", Role: "repeater", RxTime: nodesNow.Add(-2 * time.Hour), IngestNow: nodesNow.Add(-2 * time.Hour),
@@ -161,7 +160,7 @@ func TestCreateOrUpdateNode_LastSeenCapAndMonotonicity_DB(t *testing.T) {
 		seedNodes(t, db, database.NodeInput{
 			PublicKey: "aa02", Name: "N", Role: "repeater", RxTime: nodesNow.Add(10 * time.Hour), IngestNow: nodesNow,
 		})
-		if got := mustGetNode(t, db, "aa02"); got.LastSeen == nil || !got.LastSeen.Equal(nodesNow) {
+		if got := mustGetNode(t, db, "aa02"); !got.LastSeen.Equal(nodesNow) {
 			t.Errorf("want last_seen capped at %v, got %v", nodesNow, got.LastSeen)
 		}
 	})
@@ -172,7 +171,7 @@ func TestCreateOrUpdateNode_LastSeenCapAndMonotonicity_DB(t *testing.T) {
 			PublicKey: "aa03", Name: "N", Role: "repeater", RxTime: nodesNow.Add(-time.Hour), IngestNow: nodesNow,
 		})
 		got := mustGetNode(t, db, "aa03")
-		if got.LastSeen == nil || !got.LastSeen.Equal(nodesNow) || got.LastSeen.Location() != time.UTC {
+		if !got.LastSeen.Equal(nodesNow) || got.LastSeen.Location() != time.UTC {
 			t.Errorf("want last_seen to stay %v in UTC, got %v", nodesNow, got.LastSeen)
 		}
 	})
@@ -212,7 +211,7 @@ func TestNodeWrites_AcceptMixedCaseKeys_DB(t *testing.T) {
 	if got.AdvertCount != before.AdvertCount+1 {
 		t.Errorf("advert count: want %d, got %d", before.AdvertCount+1, got.AdvertCount)
 	}
-	if got.LastSeen == nil || !got.LastSeen.Equal(nodesNow) {
+	if !got.LastSeen.Equal(nodesNow) {
 		t.Errorf("last_seen: want %v, got %v", nodesNow, got.LastSeen)
 	}
 	if got.BatteryMv == nil || *got.BatteryMv != 3700 || got.TemperatureC == nil || *got.TemperatureC != 21.5 {

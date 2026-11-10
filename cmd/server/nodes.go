@@ -125,8 +125,8 @@ func nodeToResponse(n *database.Node) api.Node {
 		Role:              n.Role,
 		Lat:               n.Lat,
 		Lon:               n.Lon,
-		LastSeen:          types.NewWireTimeSecondsPtr(n.LastSeen),
-		FirstSeen:         types.NewWireTimeSecondsPtr(n.FirstSeen),
+		LastSeen:          types.NewWireTimeSecondsPtr(&n.LastSeen),
+		FirstSeen:         types.NewWireTimeSecondsPtr(&n.FirstSeen),
 		AdvertCount:       int(n.AdvertCount),
 		Foreign:           n.Foreign,
 		BatteryMv:         n.BatteryMv,
@@ -134,7 +134,7 @@ func nodeToResponse(n *database.Node) api.Node {
 		DefaultScope:      n.DefaultScope,
 		ConfiguredScope:   n.ConfiguredScope,
 		ConfiguredScopeAt: types.NewWireTimeSecondsPtr(n.ConfiguredScopeAt),
-		LastHeard:         types.NewWireTimeSecondsPtr(n.LastSeen), // same value as last_seen, as nodeMap had it
+		LastHeard:         types.NewWireTimeSecondsPtr(&n.LastSeen), // same value as last_seen, as nodeMap had it
 	}
 	return out
 }
@@ -1089,18 +1089,14 @@ func pubkeysInArea(positions []database.NodePosition, entry AreaEntry) []string 
 }
 
 // classifyNetworkStatus buckets nodes by how long ago they were last seen, using the
-// per-role degraded and silent thresholds. Never-seen nodes count as silent.
+// per-role degraded and silent thresholds.
 func classifyNetworkStatus(nodes []database.NodeHealth, th HealthThresholds, now time.Time) api.NetworkStatusResponse {
 	st := api.NetworkStatusResponse{Total: len(nodes), RoleCounts: map[string]int{}}
 	for _, n := range nodes {
 		st.RoleCounts[string(n.Role)]++
 
 		degradedMs, silentMs := th.GetHealthMs(n.Role)
-		if n.LastSeen == nil {
-			st.Silent++
-			continue
-		}
-		age := now.Sub(*n.LastSeen).Milliseconds()
+		age := now.Sub(n.LastSeen).Milliseconds()
 		switch {
 		case age < int64(degradedMs):
 			st.Active++

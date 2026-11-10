@@ -375,7 +375,7 @@ func TestGetPacketByHash_TransmissionWithoutObservations_DB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a transmission nobody has observed yet must still be found: %v", err)
 	}
-	if got.ID != tx || got.ObservationCount != 0 || got.ObserverPubkey != nil || got.SNR != nil || got.HopPrefixes != nil && len(got.HopPrefixes) != 0 {
+	if got.ID != tx || got.ObservationCount != 0 || got.ObserverPubkey != nil || got.SNR != nil || len(got.HopPrefixes) != 0 {
 		t.Errorf("want the bare transmission with no observation data, got %+v", got)
 	}
 }

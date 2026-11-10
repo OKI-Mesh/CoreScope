@@ -52,7 +52,7 @@ ON CONFLICT (pubkey) DO UPDATE SET
     name           = COALESCE($2, observers.name),
     iata           = COALESCE($3, observers.iata),
     last_seen      = GREATEST(
-                         LEAST(COALESCE(observers.last_seen, 'epoch'::timestamptz), $13::timestamptz),
+                         LEAST(observers.last_seen, $13::timestamptz),
                          $4::timestamptz
                      ),
     packet_count   = observers.packet_count + 1,
@@ -342,7 +342,7 @@ func (q *Queries) ListObserverNames(ctx context.Context) ([]ListObserverNamesRow
 const listObserverPubkeysByIATA = `-- name: ListObserverPubkeysByIATA :many
 SELECT pubkey
 FROM observers
-WHERE upper(btrim(iata)) = ANY($1::text[])
+WHERE iata = ANY($1::text[])
 ORDER BY pubkey
 `
 

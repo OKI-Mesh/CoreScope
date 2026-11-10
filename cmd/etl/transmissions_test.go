@@ -119,16 +119,16 @@ func TestLoadTransmissions(t *testing.T) {
 	}
 	rows.Close()
 	want := []loadedTransmission{
-		{ID: 1, RawHex: "0100aa", FromPubkey: text("aa01"), RouteType: 1, PayloadType: 4},
-		{ID: 2, RawHex: "0100ab", FromPubkey: text("bb02"), RouteType: 1, PayloadType: 4},
-		{ID: 3, RawHex: "0100ac", RouteType: 1, PayloadType: 4},
-		{ID: 4, RawHex: "0100ad", RouteType: 1, PayloadType: 4},
-		{ID: 5, RawHex: "0100ae", RouteType: 1, PayloadType: 5, ChannelHash: text("3A"), ChannelEncrypted: true},
-		{ID: 6, RawHex: "0100af", RouteType: 1, PayloadType: 5, ChannelHash: text("#wardriving")},
+		{ID: 1, RawHex: "0100aa", LastSeen: text("2026-03-01T00:00:00Z"), FromPubkey: text("aa01"), RouteType: 1, PayloadType: 4},
+		{ID: 2, RawHex: "0100ab", LastSeen: text("2026-03-01T00:00:01Z"), FromPubkey: text("bb02"), RouteType: 1, PayloadType: 4},
+		{ID: 3, RawHex: "0100ac", LastSeen: text("2026-03-01T00:00:02Z"), RouteType: 1, PayloadType: 4},
+		{ID: 4, RawHex: "0100ad", LastSeen: text("2026-03-01T00:00:03Z"), RouteType: 1, PayloadType: 4},
+		{ID: 5, RawHex: "0100ae", LastSeen: text("2026-03-01T00:00:04Z"), RouteType: 1, PayloadType: 5, ChannelHash: text("3A"), ChannelEncrypted: true},
+		{ID: 6, RawHex: "0100af", LastSeen: text("2026-03-01T00:00:05Z"), RouteType: 1, PayloadType: 5, ChannelHash: text("#wardriving")},
 		{ID: 7, RawHex: "0100b0", RouteType: -1, PayloadType: -1, LastSeen: text("2026-02-10T00:00:00Z")},
 		{ID: 8, RawHex: "0100b1", RouteType: 1, PayloadType: 2, LastSeen: text("2026-03-15T00:00:00Z")},
-		{ID: 9, RawHex: "08ce6f000000aabbcc", RouteType: 0, PayloadType: 2, Code1: text("CE6F"), Code2: text("0000")},
-		{ID: 11, RawHex: "0100b2", RouteType: 1, PayloadType: 2},
+		{ID: 9, RawHex: "08ce6f000000aabbcc", LastSeen: text("2026-03-01T00:00:08Z"), RouteType: 0, PayloadType: 2, Code1: text("CE6F"), Code2: text("0000")},
+		{ID: 11, RawHex: "0100b2", LastSeen: text("2026-03-01T00:00:09Z"), RouteType: 1, PayloadType: 2},
 	}
 	if !reflect.DeepEqual(got, want) {
 		for i := range got {
@@ -142,7 +142,7 @@ func TestLoadTransmissions(t *testing.T) {
 	}
 
 	var next int64
-	if err := tx.QueryRow(ctx, `INSERT INTO transmissions (raw_hex, hash, first_seen) VALUES ('\x00', 'next', now()) RETURNING id`).Scan(&next); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO transmissions (raw_hex, hash, first_seen, last_seen) VALUES ('\x00', 'next', now(), now()) RETURNING id`).Scan(&next); err != nil {
 		t.Fatalf("insert after load: %v", err)
 	}
 	if next != 12 {
@@ -157,6 +157,7 @@ func TestLoadTransmissions(t *testing.T) {
 		"transmissions: from_pubkey set NULL, no node row":                1,
 		"transmissions: enc_ prefix stripped, channel_encrypted set":      1,
 		"transmissions: last_seen computed from observations":             1,
+		"transmissions: no last_seen, set to first_seen":                  8,
 		"transmissions: transport codes decoded from raw_hex":             1,
 		"transmissions: transport codes undecodable":                      0,
 		"transmissions.first_seen: unparseable timestamp, loaded as NULL": 0,

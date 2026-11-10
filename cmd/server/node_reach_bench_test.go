@@ -71,8 +71,10 @@ func reachFixtureDB(tb testing.TB, nObs, matchEvery int) *database.DB {
 
 // BenchmarkNodeReachScan measures the windowed scan + path-decode at increasing
 // scale, all-matching (worst case for memory/allocs).
+// BenchmarkNodeReachScan measures the windowed scan at increasing scale,
+// all-matching (worst case for memory/allocs).
 func BenchmarkNodeReachScan(b *testing.B) {
-	tokens := map[string]bool{"01FA": true}
+	tokens := map[string]bool{"01fa": true}
 	for _, n := range []int{1000, 10000, 100000} {
 		b.Run(fmt.Sprintf("rows=%d", n), func(b *testing.B) {
 			db := reachFixtureDB(b, n, 1)
@@ -80,7 +82,10 @@ func BenchmarkNodeReachScan(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				rows, _ := srv.scanReachRows(context.Background(), tokens, time.Time{})
+				rows, _, err := srv.scanReachRows(context.Background(), tokens, time.Time{})
+				if err != nil {
+					b.Fatal(err)
+				}
 				if len(rows) == 0 {
 					b.Fatal("expected rows")
 				}
@@ -92,31 +97,34 @@ func BenchmarkNodeReachScan(b *testing.B) {
 // BenchmarkNodeReachScanMixed measures the scan when only half the windowed
 // rows actually contain the token — closer to production path mixes.
 func BenchmarkNodeReachScanMixed(b *testing.B) {
-	tokens := map[string]bool{"01FA": true}
+	tokens := map[string]bool{"01fa": true}
 	db := reachFixtureDB(b, 100000, 2)
 	srv := &Server{db: db}
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
-		rows, _ := srv.scanReachRows(context.Background(), tokens, time.Time{})
+		rows, _, err := srv.scanReachRows(context.Background(), tokens, time.Time{})
+		if err != nil {
+			b.Fatal(err)
+		}
 		if len(rows) == 0 {
 			b.Fatal("expected rows")
 		}
 	}
 }
 
-// BenchmarkNodeReachScanLowerCase measures the worst case for path decoding:
-// lowercase hops force parsePathTokens' ToUpper to allocate a new string per
-// hop (production path_json is uppercase, where ToUpper is a no-op). Publishing
-// this alongside the all-uppercase numbers keeps the perf claims honest.
-func BenchmarkNodeReachScanLowerCase(b *testing.B) {
-	tokens := map[string]bool{"01FA": true}
+// BenchmarkNodeReachScanLarge measures the scan at 100,000 all-matching rows.
+func BenchmarkNodeReachScanLarge(b *testing.B) {
+	tokens := map[string]bool{"01fa": true}
 	db := reachFixtureDB(b, 100000, 1)
 	srv := &Server{db: db}
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
-		rows, _ := srv.scanReachRows(context.Background(), tokens, time.Time{})
+		rows, _, err := srv.scanReachRows(context.Background(), tokens, time.Time{})
+		if err != nil {
+			b.Fatal(err)
+		}
 		if len(rows) == 0 {
 			b.Fatal("expected rows")
 		}
@@ -127,24 +135,27 @@ func BenchmarkNodeReachScanLowerCase(b *testing.B) {
 // already-scanned row set (the in-memory hot loop + map building), isolated
 // from DB I/O.
 func BenchmarkNodeReachAttribute(b *testing.B) {
-	tokens := map[string]bool{"01FA": true}
+	tokens := map[string]bool{"01fa": true}
 	db := reachFixtureDB(b, 100000, 1)
 	srv := &Server{db: db}
-	rows, _ := srv.scanReachRows(context.Background(), tokens, time.Time{})
+	rows, _, err := srv.scanReachRows(context.Background(), tokens, time.Time{})
+	if err != nil {
+		b.Fatal(err)
+	}
 	if len(rows) == 0 {
 		b.Fatal("expected rows")
 	}
 	resolve := func(tok string) string {
 		switch tok {
-		case "AA":
+		case "aa":
 			return "aa00000000000000"
-		case "BB":
+		case "bb":
 			return "bb00000000000000"
 		}
 		return ""
 	}
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
 		d := attributeDirections(rows, tokens, "01fa326b", resolve)
 		if d.relay == 0 {
@@ -153,20 +164,19 @@ func BenchmarkNodeReachAttribute(b *testing.B) {
 	}
 }
 
-// TestScanReachRows_ErrorReturn anchors the new ([]pathRow, error) signature
-// at the unit-level (issue #1631). Passing a Server whose db.conn is closed
-// must surface an error, not a swallowed nil. Lives in this file because
-// the bench callers in the same file rely on the same signature.
+// TestScanReachRows_ErrorReturn anchors the ([]pathRow, bool, error) signature
+// at the unit level (issue #1631). Passing a Server whose db.conn is closed
+// must surface an error, not a swallowed nil.
 func TestScanReachRows_ErrorReturn(t *testing.T) {
 	db := setupTestDB(t)
 	db.Close()
 
 	srv := &Server{db: db}
-	rows, err := srv.scanReachRows(t.Context(), map[string]bool{"01fa": true}, time.Time{})
+	rows, truncated, err := srv.scanReachRows(t.Context(), map[string]bool{"01fa": true}, time.Time{})
 	if err == nil {
 		t.Fatalf("expected error from closed DB, got nil (rows=%d)", len(rows))
 	}
-	if rows != nil {
-		t.Fatalf("expected nil rows on error, got %d", len(rows))
+	if rows != nil || truncated {
+		t.Fatalf("expected nil rows and truncated=false on error, got %d rows, truncated=%v", len(rows), truncated)
 	}
 }

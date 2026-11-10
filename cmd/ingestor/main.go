@@ -1677,9 +1677,10 @@ func matchingRegions(regionKeys map[string][]byte, payloadType types.PayloadType
 		mac.Write(payloadRaw)
 		hmacBytes := mac.Sum(nil)
 		code := uint16(hmacBytes[0]) | uint16(hmacBytes[1])<<8
-		if code == 0 {
+		switch code {
+		case 0:
 			code = 1
-		} else if code == 0xFFFF {
+		case 0xFFFF:
 			code = 0xFFFE
 		}
 		codeBytes := [2]byte{byte(code & 0xFF), byte(code >> 8)}

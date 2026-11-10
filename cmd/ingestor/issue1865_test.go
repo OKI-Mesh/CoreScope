@@ -9,21 +9,19 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // seedNode inserts an active node (lowercase key).
 func seedNode(t *testing.T, store *Store, pubkey string) {
 	t.Helper()
-	if n := testExec(t, store,
-		`INSERT INTO nodes (public_key, name, inactive) VALUES ($1, $2, FALSE)`,
-		pubkey, "n_"+pubkey[:4]); n < 1 {
-		t.Fatalf("failed to insert node %s", pubkey)
-	}
+	dbtest.Node(t, store.db, pubkey, "n_"+pubkey[:4], "")
 }
 
 func seedInactiveNode(t *testing.T, store *Store, pubkey string) {
 	t.Helper()
-	testExec(t, store, `INSERT INTO nodes (public_key, name, inactive) VALUES ($1, $2, TRUE)`, pubkey, "n_"+pubkey[:4])
+	testExec(t, store, `INSERT INTO nodes (public_key, name, inactive, last_seen, first_seen) VALUES ($1, $2, TRUE, now(), now())`, pubkey, "n_"+pubkey[:4])
 }
 
 func configuredScope(t *testing.T, store *Store, pubkey string) (sql.NullString, *time.Time) {

@@ -40,7 +40,7 @@ func TestStatsFileWriterBench_Sanity(t *testing.T) {
 // regress vs. the previous in-package implementation.
 func BenchmarkParseProcSelfIOInto(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		var s procIOSnapshot
 		parseProcSelfIOInto(bufio.NewScanner(strings.NewReader(benchProcSelfIOSample)), &s)
 	}
@@ -75,8 +75,8 @@ func BenchmarkStatsFileWriter_Tick(b *testing.B) {
 	n.Store(123456)
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		snap := IngestorStatsSnapshot{
 			SampledAt:          stamp,
 			TxInserted:         n.Load(),

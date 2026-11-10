@@ -8,8 +8,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     role                    TEXT CONSTRAINT nodes_role_valid CHECK (role IN ('repeater', 'companion', 'room', 'sensor')),
     lat                     DOUBLE PRECISION,
     lon                     DOUBLE PRECISION,
-    last_seen               TIMESTAMPTZ,
-    first_seen              TIMESTAMPTZ,
+    last_seen               TIMESTAMPTZ NOT NULL,
+    first_seen              TIMESTAMPTZ NOT NULL,
     advert_count            INTEGER NOT NULL DEFAULT 0,
     battery_mv              INTEGER,
     temperature_c           DOUBLE PRECISION,
@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS nodes (
     default_scope           TEXT,
     multibyte_sup           INTEGER NOT NULL DEFAULT 0 CONSTRAINT nodes_multibyte_sup_valid CHECK (multibyte_sup IN (0,1,2)),
     multibyte_evidence      TEXT,
-    multibyte_max_hash_size INTEGER NOT NULL DEFAULT 1,
     configured_scope        TEXT,
     configured_scope_at     TIMESTAMPTZ,
     inactive                BOOLEAN NOT NULL DEFAULT false
@@ -46,16 +45,17 @@ CREATE TABLE IF NOT EXISTS observers (
     clock_skew_seconds     INTEGER,
     clock_skew_count_24h   INTEGER NOT NULL DEFAULT 0,
     clock_last_naive_at    TIMESTAMPTZ,
-    iata                   TEXT,
+    iata                   TEXT CONSTRAINT observers_iata_normalized CHECK (iata = upper(btrim(iata)) AND iata <> ''),
     can_relay              BOOLEAN NOT NULL DEFAULT true,
     can_relay_seen         BOOLEAN NOT NULL DEFAULT false
 );
 
 -- transmission table and related indexes
 -- route_type/payload_type: -1 is the explicit "unknown" sentinel (was NULL on
--- a *int in Go). from_pubkey_* implements the prefix-resolution state machine:
--- a packet only carries a 2/4/6-byte pubkey prefix, which may currently match
--- zero, one, or multiple known nodes.
+-- a *int in Go). from_pubkey is the full key of the originating node, set only
+-- when the payload carries one; it goes NULL if that node is deleted.
+-- last_seen is when the transmission was last heard and is never NULL: it
+-- starts at first_seen and only moves forward.
 CREATE TABLE IF NOT EXISTS transmissions (
     id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     raw_hex            BYTEA NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS transmissions (
     channel_hash       TEXT,
     channel_encrypted  BOOLEAN NOT NULL DEFAULT false,
     scope_name         TEXT,
-    last_seen          TIMESTAMPTZ,
+    last_seen          TIMESTAMPTZ NOT NULL,
     code1              TEXT,
     code2              TEXT,
     CONSTRAINT tx_channel_encrypted_needs_hash CHECK (NOT channel_encrypted OR channel_hash IS NOT NULL),
@@ -82,8 +82,6 @@ CREATE INDEX IF NOT EXISTS idx_transmissions_type_time  ON transmissions (payloa
 CREATE INDEX IF NOT EXISTS idx_transmissions_from_pubkey_time ON transmissions (from_pubkey, first_seen DESC) WHERE from_pubkey IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tx_channel ON transmissions (channel_hash, channel_encrypted, first_seen DESC) WHERE payload_type = 5;
 CREATE INDEX IF NOT EXISTS idx_tx_scope_name   ON transmissions (scope_name)   WHERE scope_name IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_tx_code1        ON transmissions (code1)        WHERE code1 IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_tx_last_seen_null ON transmissions (id)         WHERE last_seen IS NULL;
 
 -- Mobile client RX coverage: a roaming companion = a mobile observer with a
 -- moving GPS position, so it gets its own table rather than observations.
@@ -140,9 +138,6 @@ CREATE INDEX IF NOT EXISTS idx_observations_observer_idx_timestamp
     ON observations (observer_idx, timestamp);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_dedup
     ON observations (transmission_id, observer_idx, COALESCE(path_hash, '')) NULLS NOT DISTINCT;
-
-CREATE INDEX IF NOT EXISTS idx_observations_hop_prefixes ON observations USING GIN (hop_prefixes);
-
 
 CREATE TABLE IF NOT EXISTS observer_metrics (
     observer_id    TEXT NOT NULL REFERENCES observers (pubkey) ON DELETE CASCADE,
@@ -258,7 +253,7 @@ CREATE TABLE IF NOT EXISTS scope_match_totals (
 
 CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen);
 CREATE INDEX IF NOT EXISTS idx_observers_last_seen ON observers(last_seen);
-CREATE INDEX IF NOT EXISTS idx_tx_activity ON transmissions ((COALESCE(last_seen, first_seen)));
+CREATE INDEX IF NOT EXISTS idx_tx_activity ON transmissions (last_seen);
 CREATE INDEX IF NOT EXISTS idx_client_recept_heard_geo ON client_receptions(heard_key, heard_keylen, lat, lon);
 CREATE INDEX IF NOT EXISTS idx_client_recept_latlon ON client_receptions(lat, lon);
 CREATE INDEX IF NOT EXISTS idx_client_recept_rxat ON client_receptions(rx_at);
@@ -275,6 +270,8 @@ CREATE INDEX IF NOT EXISTS idx_cro_scope ON client_rx_observations(scope_name, r
 CREATE INDEX IF NOT EXISTS idx_ndr_target ON node_declared_regions(target, observed_at);
 CREATE INDEX IF NOT EXISTS idx_ndr_prune ON node_declared_regions(observed_at);
 CREATE INDEX IF NOT EXISTS idx_neighbor_edges_node_b ON neighbor_edges(node_b);
+CREATE INDEX IF NOT EXISTS idx_neighbor_edges_last_seen ON neighbor_edges(last_seen);
+CREATE INDEX IF NOT EXISTS idx_observers_iata ON observers(iata) WHERE iata IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_iata_boundaries_iata ON iata_boundaries(iata);
 CREATE INDEX IF NOT EXISTS idx_iata_boundaries_boundary ON iata_boundaries USING GIST (boundary);
 CREATE INDEX idx_crf_sampled_at ON client_rf_samples(sampled_at);

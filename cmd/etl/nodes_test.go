@@ -71,7 +71,7 @@ func TestLoadNodes(t *testing.T) {
 	rows.Close()
 	want := []loadedNode{
 		{1, "aa01", text("Alpha"), false, false, 9, 1, text("2026-01-01T00:00:00Z"), text("2026-03-01T00:00:00Z")},
-		{2, "bb02", nil, false, true, 1, 0, nil, text("2026-03-02T00:00:00Z")},
+		{2, "bb02", nil, false, true, 1, 0, text("2026-03-02T00:00:00Z"), text("2026-03-02T00:00:00Z")},
 		{3, "dd04", text("Dormant"), true, false, 2, 0, text("2025-10-01T00:00:00Z"), text("2025-11-01T00:00:00Z")},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -79,7 +79,7 @@ func TestLoadNodes(t *testing.T) {
 	}
 
 	var next int
-	if err := tx.QueryRow(ctx, `INSERT INTO nodes (public_key) VALUES ('zz99') RETURNING id`).Scan(&next); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO nodes (public_key, last_seen, first_seen) VALUES ('zz99', now(), now()) RETURNING id`).Scan(&next); err != nil {
 		t.Fatalf("insert after load: %v", err)
 	}
 	if next != 4 {
@@ -93,6 +93,7 @@ func TestLoadNodes(t *testing.T) {
 		"nodes: loaded active":                                        2,
 		"nodes: loaded inactive":                                      1,
 		"nodes.first_seen: unparseable timestamp, loaded as NULL":     1,
+		"nodes: no first_seen, set to last_seen":                      1,
 	}
 	for name, want := range counts {
 		if got := report.Count(name); got != want {
@@ -120,5 +121,55 @@ func TestLoadNodesStopsOnKeysThatCollideAfterLowercasing(t *testing.T) {
 	_, err := loadNodes(context.Background(), src, tx, newReport())
 	if err == nil || !strings.Contains(err.Error(), "appears twice") {
 		t.Fatalf("err = %v, want a duplicate-key error", err)
+	}
+}
+
+func TestLoadNodesFillsMissingTimes(t *testing.T) {
+	ctx := context.Background()
+	src := newSnapshot(t,
+		`INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count, foreign_advert, multibyte_sup) VALUES
+			('aa01', 'NoLast', 'repeater', NULL, '2026-01-02T00:00:00Z', 1, 0, 0),
+			('bb02', 'NoFirst', 'repeater', '2026-03-04T00:00:00Z', NULL, 1, 0, 0),
+			('cc03', 'Neither', 'repeater', NULL, NULL, 1, 0, 0)`)
+	tx := beginTx(t, newTarget(t))
+	report := newReport()
+
+	if _, err := loadNodes(ctx, src, tx, report); err != nil {
+		t.Fatalf("loadNodes: %v", err)
+	}
+
+	type times struct{ First, Last string }
+	got := map[string]times{}
+	rows, err := tx.Query(ctx, `SELECT public_key,
+		to_char(first_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+		to_char(last_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM nodes`)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var seen times
+		if err := rows.Scan(&key, &seen.First, &seen.Last); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[key] = seen
+	}
+	want := map[string]times{
+		"aa01": {"2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"},
+		"bb02": {"2026-03-04T00:00:00Z", "2026-03-04T00:00:00Z"},
+		"cc03": {"1970-01-01T00:00:00Z", "1970-01-01T00:00:00Z"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("times = %v, want %v", got, want)
+	}
+	for name, wantCount := range map[string]int64{
+		"nodes: no last_seen, set to first_seen":                   1,
+		"nodes: no first_seen, set to last_seen":                   1,
+		"nodes: no first_seen or last_seen, both set to the epoch": 1,
+	} {
+		if n := report.Count(name); n != wantCount {
+			t.Errorf("report %q = %d, want %d", name, n, wantCount)
+		}
 	}
 }

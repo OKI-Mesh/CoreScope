@@ -100,11 +100,17 @@ func (db *DB) CreateOrUpdateObserver(ctx context.Context, o ObserverInput) (int6
 	if err := int4Fits("battery_mv", meta.BatteryMv); err != nil {
 		return 0, err
 	}
+	if o.LastSeen.IsZero() {
+		o.LastSeen = o.IngestNow
+	}
+	if o.LastSeen.IsZero() {
+		return 0, fmt.Errorf("observer %s has neither LastSeen nor IngestNow", o.ID)
+	}
 
 	id, err := db.q.CreateOrUpdateObserver(ctx, pgdb.CreateOrUpdateObserverParams{
 		Pubkey:        o.ID,
 		Name:          toPgTextIfNotEmpty(o.Name),
-		Iata:          toPgTextIfNotEmpty(o.IATA),
+		Iata:          toPgTextIfNotEmpty(types.NewIATA(o.IATA).String()),
 		LastSeen:      o.LastSeen,
 		IngestNow:     o.IngestNow,
 		Model:         toPgTextPtr(meta.Model),
@@ -145,7 +151,7 @@ func (db *DB) UpdateObserverMetadataIfRetained(ctx context.Context, in ObserverM
 	return db.q.UpdateObserverMetadataIfRetained(ctx, pgdb.UpdateObserverMetadataIfRetainedParams{
 		Pubkey:        normalizeKey(in.ID),
 		Name:          toPgTextIfNotEmpty(in.Name),
-		Iata:          toPgTextIfNotEmpty(in.IATA),
+		Iata:          toPgTextIfNotEmpty(types.NewIATA(in.IATA).String()),
 		Model:         toPgTextPtr(meta.Model),
 		Firmware:      toPgTextPtr(meta.Firmware),
 		ClientVersion: toPgTextPtr(meta.ClientVersion),

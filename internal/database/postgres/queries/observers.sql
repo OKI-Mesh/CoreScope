@@ -37,7 +37,7 @@ ON CONFLICT (pubkey) DO UPDATE SET
     name           = COALESCE(sqlc.narg(name), observers.name),
     iata           = COALESCE(sqlc.narg(iata), observers.iata),
     last_seen      = GREATEST(
-                         LEAST(COALESCE(observers.last_seen, 'epoch'::timestamptz), sqlc.arg(ingest_now)::timestamptz),
+                         LEAST(observers.last_seen, sqlc.arg(ingest_now)::timestamptz),
                          sqlc.arg(last_seen)::timestamptz
                      ),
     packet_count   = observers.packet_count + 1,
@@ -125,7 +125,7 @@ ORDER BY pubkey;
 -- name: ListObserverPubkeysByIATA :many
 SELECT pubkey
 FROM observers
-WHERE upper(btrim(iata)) = ANY(sqlc.arg(codes)::text[])
+WHERE iata = ANY(sqlc.arg(codes)::text[])
 ORDER BY pubkey;
 
 -- name: ListDistinctObserverIATAs :many

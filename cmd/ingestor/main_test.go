@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
@@ -1094,9 +1095,9 @@ func TestHandleMessageAdvert_EmptyScopeSkipsDefaultScopeUpdate(t *testing.T) {
 
 	// Pre-seed the node with a non-empty default_scope so we can detect an
 	// erroneous overwrite with "".
-	count := testExec(t, store, "INSERT INTO nodes (public_key, name, default_scope) VALUES ($1, 'Node1', '#belgium')", pubkey)
-	if count != 1 {
-		t.Fatalf("expected 1 row affected, got %d", count)
+	dbtest.Node(t, store.db, pubkey, "Node1", "")
+	if err := store.db.UpdateNodeDefaultScope(ctx, pubkey, "#belgium"); err != nil {
+		t.Fatalf("seed default_scope: %v", err)
 	}
 
 	// Empty regionKeys → matchScope() returns "" for any Code1 → ScopeName "".
@@ -1146,17 +1147,18 @@ func TestHandleMessageAdvert_MatchedScopeUpdatesDefaultScope(t *testing.T) {
 	// Per firmware (#1534 helper logic): Code1 is the first 2 bytes of the
 	// HMAC, sentinel-shifted so 0x0000 → 0x0001 and 0xFFFF → 0xFFFE.
 	code := uint16(mac[0]) | (uint16(mac[1]) << 8)
-	if code == 0x0000 {
+	switch code {
+	case 0x0000:
 		code = 0x0001
-	} else if code == 0xFFFF {
+	case 0xFFFF:
 		code = 0xFFFE
 	}
 	code1 := fmt.Sprintf("%02X%02X", byte(code&0xFF), byte(code>>8))
 	rawHex := "10" + code1 + "000000" + advertBytes
 
-	count := testExec(t, store, `INSERT INTO nodes (public_key, name, default_scope) VALUES ($1, 'Node1', '#old')`, pubkey)
-	if count != 1 {
-		t.Fatalf("expected 1 row affected, got %d", count)
+	dbtest.Node(t, store.db, pubkey, "Node1", "")
+	if err := store.db.UpdateNodeDefaultScope(ctx, pubkey, "#old"); err != nil {
+		t.Fatalf("seed default_scope: %v", err)
 	}
 
 	msg := &mockMessage{
@@ -1184,9 +1186,10 @@ func codeForRegion(name string, payloadType byte, payload []byte) string {
 	mac.Write(payload)
 	h := mac.Sum(nil)
 	code := uint16(h[0]) | uint16(h[1])<<8
-	if code == 0 {
+	switch code {
+	case 0:
 		code = 1
-	} else if code == 0xFFFF {
+	case 0xFFFF:
 		code = 0xFFFE
 	}
 	return strings.ToUpper(hex.EncodeToString([]byte{byte(code & 0xFF), byte(code >> 8)}))

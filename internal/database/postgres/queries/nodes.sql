@@ -2,7 +2,7 @@
 UPDATE nodes
 SET last_seen = sqlc.arg(last_seen)
 WHERE public_key = sqlc.arg(public_key)
-  AND (last_seen IS NULL OR last_seen < sqlc.arg(last_seen));
+  AND last_seen < sqlc.arg(last_seen);
 
 
 -- name: CreateOrUpdateNode :exec
@@ -22,7 +22,7 @@ ON CONFLICT (public_key) DO UPDATE SET
     lat       = COALESCE(sqlc.narg(lat), nodes.lat),
     lon       = COALESCE(sqlc.narg(lon), nodes.lon),
     last_seen = LEAST(
-                    GREATEST(COALESCE(nodes.last_seen, 'epoch'::timestamptz), sqlc.arg(rx_time)::timestamptz),
+                    GREATEST(nodes.last_seen, sqlc.arg(rx_time)::timestamptz),
                     sqlc.arg(ingest_now)::timestamptz
                 );
                 
@@ -140,7 +140,7 @@ WHERE (sqlc.narg(role)::text IS NULL OR n.role = sqlc.narg(role)::text)
             JOIN observers obs ON obs.id = o.observer_idx
             WHERE t.from_pubkey = n.public_key
               AND t.payload_type = 4
-              AND UPPER(TRIM(obs.iata)) = ANY(sqlc.narg(regions)::text[])
+              AND obs.iata = ANY(sqlc.narg(regions)::text[])
        ))
   AND n.public_key <> ALL(COALESCE(sqlc.narg(exclude_keys)::text[], '{}'))
   AND NOT EXISTS (
@@ -151,7 +151,7 @@ WHERE (sqlc.narg(role)::text IS NULL OR n.role = sqlc.narg(role)::text)
 ORDER BY
     CASE WHEN @sort::text = 'name' THEN n.name END ASC NULLS FIRST,
     CASE WHEN @sort::text = 'packetCount' THEN n.advert_count END DESC NULLS LAST,
-    CASE WHEN @sort::text NOT IN ('name', 'packetCount') THEN n.last_seen END DESC NULLS LAST,
+    CASE WHEN @sort::text NOT IN ('name', 'packetCount') THEN n.last_seen END DESC,
     n.public_key ASC
 LIMIT @row_limit OFFSET @row_offset;
 
@@ -178,7 +178,7 @@ WHERE (sqlc.narg(role)::text IS NULL OR n.role = sqlc.narg(role)::text)
             JOIN observers obs ON obs.id = o.observer_idx
             WHERE t.from_pubkey = n.public_key
               AND t.payload_type = 4
-              AND UPPER(TRIM(obs.iata)) = ANY(sqlc.narg(regions)::text[])
+              AND obs.iata = ANY(sqlc.narg(regions)::text[])
        ));
 
 -- name: ListNodeCoordinates :many
@@ -195,7 +195,7 @@ SELECT *
 FROM nodes
 WHERE strpos(lower(name), lower(@query::text)) > 0
    OR starts_with(public_key, lower(@query::text))
-ORDER BY last_seen DESC NULLS LAST, public_key ASC
+ORDER BY last_seen DESC, public_key ASC
 LIMIT @row_limit;
 
 -- name: FindNodesByKeyPrefix :many
