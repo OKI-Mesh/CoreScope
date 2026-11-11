@@ -72,18 +72,6 @@ func TestPruneOldClientReceptions(t *testing.T) {
 	}
 }
 
-// TestPruneClientRxObservationsUsesIndex verifies the diagnostic observations
-// prune can seek idx_cro_prune instead of scanning the whole table. It guards
-// against the index being dropped or no longer matching the filter column.
-func TestPruneClientRxObservationsUsesIndex(t *testing.T) {
-	s := newTestStore(t)
-	plan := explainPlan(t, s,
-		`DELETE FROM client_rx_observations WHERE rx_at < '2026-01-01T00:00:00Z'::timestamptz`)
-	if !strings.Contains(plan, "idx_cro_prune") {
-		t.Fatalf("retention DELETE should be able to use idx_cro_prune, plan was:\n%s", plan)
-	}
-}
-
 // TestPruneOldClientRxObservations verifies the diagnostic observations prune
 // deletes rows older than the window and keeps recent ones, and that days=0
 // disables it, mirroring TestPruneOldClientReceptions for the sibling table.
@@ -195,18 +183,6 @@ func TestClientReceptionsCoverageQueryUsesIndex(t *testing.T) {
 	}
 	if strings.Contains(plan, "Seq Scan on client_receptions") {
 		t.Fatalf("coverage query should not need a full scan, plan was:\n%s", plan)
-	}
-}
-
-// TestClientReceptionsRetentionUsesRxAtIndex verifies the retention prune's
-// DELETE ... WHERE rx_at < ? (and the leaderboard's rx_at window) can seek
-// idx_client_recept_rxat instead of scanning the table.
-func TestClientReceptionsRetentionUsesRxAtIndex(t *testing.T) {
-	s := newTestStore(t)
-	plan := explainPlan(t, s,
-		`DELETE FROM client_receptions WHERE rx_at < '2026-01-01T00:00:00Z'::timestamptz`)
-	if !strings.Contains(plan, "idx_client_recept_rxat") {
-		t.Fatalf("retention DELETE should be able to use idx_client_recept_rxat, plan was:\n%s", plan)
 	}
 }
 

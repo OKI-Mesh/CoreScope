@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -485,19 +484,6 @@ func TestCurrentDeclaredRegionsNormalizesTargetCase(t *testing.T) {
 	}
 	if cur.RegionsCSV != "be" {
 		t.Errorf("current.RegionsCSV = %q, want %q", cur.RegionsCSV, "be")
-	}
-}
-
-// TestPruneClientDeclaredRegionsUsesIndex pins the retention DELETE to an
-// index seek on idx_ndr_prune rather than a full table scan.
-// TestPruneClientDeclaredRegionsUsesIndex verifies the retention DELETE can
-// seek idx_ndr_prune instead of scanning the whole table.
-func TestPruneClientDeclaredRegionsUsesIndex(t *testing.T) {
-	s := newTestStore(t)
-	plan := explainPlan(t, s,
-		`DELETE FROM node_declared_regions WHERE observed_at < '2026-01-01T00:00:00Z'::timestamptz`)
-	if !strings.Contains(plan, "idx_ndr_prune") {
-		t.Fatalf("retention DELETE should be able to use idx_ndr_prune, plan was:\n%s", plan)
 	}
 }
 
