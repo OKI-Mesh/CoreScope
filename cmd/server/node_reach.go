@@ -158,32 +158,6 @@ func uniqueResolve(pm *prefixMap, token string) string {
 	return ""
 }
 
-// parsePathTokens extracts the quoted hex hop tokens from a path_json array
-// (e.g. `["AA","01FA","BB"]`) in a single pass, uppercased. Avoids the
-// json.Unmarshal reflection + per-row interface allocations on the hot scan
-// path. Tokens slice into pj (no copy) except where ToUpper must rewrite a
-// lowercase hop; path_json holds only hex strings, so there are no escapes to
-// worry about. Returns nil for an empty/degenerate array.
-func parsePathTokens(pj string) []string {
-	out := make([]string, 0, 8) // paths are short (a handful of hops)
-	i := 0
-	for {
-		q1 := strings.IndexByte(pj[i:], '"')
-		if q1 < 0 {
-			break
-		}
-		q1 += i
-		rel := strings.IndexByte(pj[q1+1:], '"')
-		if rel < 0 {
-			break
-		}
-		q2 := q1 + 1 + rel
-		out = append(out, strings.ToUpper(pj[q1+1:q2]))
-		i = q2 + 1
-	}
-	return out
-}
-
 // newResolver returns a memoized hop-token → pubkey resolver. Paths reuse the
 // same hop tokens across thousands of rows, so caching collapses the repeated
 // prefix-map lookups to once per distinct token.
