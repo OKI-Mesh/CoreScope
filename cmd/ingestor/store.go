@@ -277,6 +277,5 @@ type MQTTPacketMessage struct {
 	Score     *float64 `json:"score"`
 	Direction *string  `json:"direction"`
 	Origin    string   `json:"origin"`
-	Region    string   `json:"region,omitempty"`    // optional region override (#788)
-	Timestamp string   `json:"timestamp,omitempty"` // observer receive time, resolved by handler
+	Region    string   `json:"region,omitempty"` // optional region override (#788)
 }

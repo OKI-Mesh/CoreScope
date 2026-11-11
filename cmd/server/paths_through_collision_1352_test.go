@@ -78,7 +78,7 @@ func setupCollisionScenario(t *testing.T, withGPS bool) *collisionScenario {
 
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(40),
-		Name:      "Collision Observer",
+		Name:      ptr("Collision Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  recent,
@@ -284,7 +284,7 @@ func TestHandleNodePaths_FallbackUniquePrefix_1352(t *testing.T) {
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(41),
-		Name:      "Unique Observer",
+		Name:      ptr("Unique Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  recent,
@@ -373,7 +373,7 @@ func TestHandleNodePaths_FallbackPreconfirmed_1352(t *testing.T) {
 
 	secondObsIdx, err := sc.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(42),
-		Name:      "Second Collision Observer",
+		Name:      ptr("Second Collision Observer"),
 		IATA:      "OAK",
 		Meta:      nil,
 		LastSeen:  sc.recent,

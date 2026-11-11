@@ -26,9 +26,9 @@ import (
 // while genuine receive was 01:42) poisoned transmissions.first_seen /
 // observations.timestamp and dragged the /api/channels lastActivity 7h
 // into the past. Packet ordering is owned by the server clock; client
-// clocks are untrusted. msg.Timestamp still flows into observer.last_seen
-// via UpsertObserverAt — that's #1233's MAX/MIN guarded path and is fine.
-func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, observerID, region string, regionSet *regionKeySet) *PacketData {
+// clocks are untrusted. The envelope timestamp is only used to detect
+// observers whose clock is off (RecordNaiveSkew, #1478).
+func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, observerID string, regionSet *regionKeySet) *PacketData {
 	pathJSON := "[]"
 	// For TRACE packets, path_json must be the payload-decoded route hops
 	// (decoded.Path.Hops), NOT the raw_hex header bytes which are SNR values.
@@ -47,7 +47,6 @@ func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, obs
 		RawHex:           msg.Raw,
 		Timestamp:        time.Now().UTC(), // #1370 (counters #1233)
 		ObserverID:       observerID,
-		ObserverName:     msg.Origin,
 		SNR:              msg.SNR,
 		RSSI:             msg.RSSI,
 		Score:            msg.Score,
@@ -59,13 +58,6 @@ func BuildPacketData(msg *MQTTPacketMessage, decoded *decoder.DecodedPacket, obs
 		PathJSON:         pathJSON,
 		DecodedJSON:      decoder.PayloadJSON(&decoded.Payload),
 		ChannelEncrypted: false,
-	}
-
-	// Region priority: payload field > topic-derived parameter (#788)
-	if msg.Region != "" {
-		pd.Region = msg.Region
-	} else {
-		pd.Region = region
 	}
 
 	// Populate channel_hash for fast channel queries (#762)
@@ -124,7 +116,6 @@ type PacketData struct {
 	RawHex            string
 	Timestamp         time.Time
 	ObserverID        string
-	ObserverName      string
 	SNR               *float64
 	RSSI              *float64
 	Score             *float64
@@ -140,8 +131,6 @@ type PacketData struct {
 	IsTransportScoped bool   // true when route_type IN (0,3) AND Code1 ≠ "0000"
 	Code1             string // transport code 1 (scope), "" when the route carries none
 	Code2             string // transport code 2 (return-region hint), "" when absent
-	Region            string // observer region: payload > topic > source config (#788)
-	Foreign           bool   // true when ADVERT GPS lies outside configured geofilter (#730)
 	FromPubkey        string // pubkey of the originating node, for exact-match attribution (#1143)
 	Advert            *database.NodeInput
 	ChannelEncrypted  bool

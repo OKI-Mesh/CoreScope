@@ -1260,7 +1260,7 @@ func TestHourlyResolutionDeltasNotNull(t *testing.T) {
 	observerPubkey := strings.Repeat("d", 64)
 	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerPubkey,
-		Name:      "Hourly",
+		Name:      ptr("Hourly"),
 		IATA:      "SJC",
 		Meta:      nil,
 		LastSeen:  time.Now().UTC(),
@@ -1301,7 +1301,7 @@ func TestLastValuePreservesReboot(t *testing.T) {
 	observerPubkey := strings.Repeat("e", 64)
 	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerPubkey,
-		Name:      "Reboot",
+		Name:      ptr("Reboot"),
 		IATA:      "SJC",
 		Meta:      nil,
 		LastSeen:  time.Now().UTC(),

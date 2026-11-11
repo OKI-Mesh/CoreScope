@@ -32,7 +32,7 @@ func TestNodeHealth_CanRelayCaseInsensitive_Issue1290(t *testing.T) {
 	canRelay := false
 	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        obsIDLower,
-		Name:      "ListenerOnly",
+		Name:      ptr("ListenerOnly"),
 		IATA:      "SJC",
 		Meta:      &types.ObserverMeta{CanRelay: &canRelay},
 		LastSeen:  now,

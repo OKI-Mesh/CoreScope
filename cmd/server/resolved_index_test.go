@@ -168,7 +168,7 @@ func TestNodePaths_HashCollisionFilteredBySQL(t *testing.T) {
 	seedRepeater(t, db, realPK, seenAt)
 	seedRepeater(t, db, falsePK, seenAt)
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(90), Name: "Collision Observer", IATA: "SFO", Meta: nil, LastSeen: seenAt, IngestNow: seenAt,
+		ID: scopeKey(90), Name: ptr("Collision Observer"), IATA: "SFO", Meta: nil, LastSeen: seenAt, IngestNow: seenAt,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -362,7 +362,7 @@ func TestEviction_ByNodeCleanup_OnDemandSQL(t *testing.T) {
 	relayPK := strings.Repeat("e1", 32)
 	seedRepeater(t, db, relayPK, staleAt)
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(81), Name: "Evict Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(81), Name: ptr("Evict Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -404,7 +404,7 @@ func TestRunEviction_NoLockDuringSQLFetch(t *testing.T) {
 	now := time.Now().UTC()
 	staleAt := now.Add(-48 * time.Hour)
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(82), Name: "NoLock Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(82), Name: ptr("NoLock Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -822,7 +822,7 @@ func TestResolvedPubkeyIndex_BoundedByEviction(t *testing.T) {
 	now := time.Now().UTC()
 	staleAt := now.Add(-2 * time.Hour)
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(84), Name: "Bounded Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(84), Name: ptr("Bounded Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -925,7 +925,7 @@ func TestRunEviction_TriggersCompaction(t *testing.T) {
 	seedRepeater(t, db, pk, staleAt)
 	seedRepeater(t, db, pk2, staleAt)
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(85), Name: "Compaction Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(85), Name: ptr("Compaction Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -975,7 +975,7 @@ func TestResolvedPubkeyIndex_MemoryStableThroughEvictionCycles(t *testing.T) {
 	now := time.Now().UTC()
 	staleAt := now.Add(-2 * time.Hour)
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(86), Name: "Cycle Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(86), Name: ptr("Cycle Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)

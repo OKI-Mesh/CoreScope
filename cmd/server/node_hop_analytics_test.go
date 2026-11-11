@@ -467,7 +467,7 @@ func TestHandleNodeHopAnalytics(t *testing.T) {
 
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(0xd1),
-		Name:      "hop-observer",
+		Name:      ptr("hop-observer"),
 		IATA:      "CVG",
 		LastSeen:  recent,
 		IngestNow: time.Now().UTC(),

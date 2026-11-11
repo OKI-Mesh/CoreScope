@@ -34,7 +34,7 @@ func TestRepeaterRelayActivity_Active(t *testing.T) {
 
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerKey,
-		Name:      "Relay Observer",
+		Name:      ptr("Relay Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  now,
@@ -117,7 +117,7 @@ func seedUnscopedRelayFixture(t *testing.T) (*PacketStore, string) {
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(52),
-		Name:      "Unscoped Observer",
+		Name:      ptr("Unscoped Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  now,
@@ -254,7 +254,7 @@ func TestRepeaterRelayActivity_Stale(t *testing.T) {
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(53),
-		Name:      "Stale Observer",
+		Name:      ptr("Stale Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  now,
@@ -332,7 +332,7 @@ func TestRepeaterRelayActivity_IgnoresAdverts(t *testing.T) {
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(54),
-		Name:      "Advert Observer",
+		Name:      ptr("Advert Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  now,
@@ -419,7 +419,7 @@ func TestRepeaterRelayActivity_PrefixHop(t *testing.T) {
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(55),
-		Name:      "Prefix Observer",
+		Name:      ptr("Prefix Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  now,
@@ -500,7 +500,7 @@ func TestRepeaterRelayActivity_DedupAcrossPrefixAndFullKey(t *testing.T) {
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        scopeKey(56),
-		Name:      "Dedup Observer",
+		Name:      ptr("Dedup Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  now,

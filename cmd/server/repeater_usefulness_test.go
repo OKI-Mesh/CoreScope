@@ -42,7 +42,7 @@ func TestRepeaterUsefulness_BasicShare(t *testing.T) {
 		t.Fatalf("seed node: %v", err)
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(60), Name: "Useful Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(60), Name: ptr("Useful Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -99,7 +99,7 @@ func TestRepeaterUsefulness_AdvertsExcluded(t *testing.T) {
 		t.Fatalf("seed node: %v", err)
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(61), Name: "Advert Excluded Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(61), Name: ptr("Advert Excluded Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -150,7 +150,7 @@ func TestGetRepeaterNodeStatsBatch_Parity(t *testing.T) {
 		t.Fatalf("seed node: %v", err)
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(62), Name: "Parity Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(62), Name: ptr("Parity Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -202,7 +202,7 @@ func TestGetRepeaterNodeStatsBatch_MissingPubkey(t *testing.T) {
 	missingPK := "deadbeef" + strings.Repeat("c", 56)
 
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(63), Name: "Missing Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(63), Name: ptr("Missing Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)
@@ -244,7 +244,7 @@ func TestGetRepeaterNodeStatsBatch_Race(t *testing.T) {
 		t.Fatalf("seed node: %v", err)
 	}
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: scopeKey(64), Name: "Race Observer", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: scopeKey(64), Name: ptr("Race Observer"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer: %v", err)

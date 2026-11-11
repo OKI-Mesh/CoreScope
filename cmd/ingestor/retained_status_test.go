@@ -31,7 +31,7 @@ func seedObserver(t *testing.T, s *Store, id string, ageDays int) time.Time {
 	old := time.Now().UTC().AddDate(0, 0, -ageDays).Truncate(time.Second)
 	if _, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        id,
-		Name:      id,
+		Name:      ptr(id),
 		IATA:      "LAX",
 		Meta:      nil,
 		LastSeen:  old,

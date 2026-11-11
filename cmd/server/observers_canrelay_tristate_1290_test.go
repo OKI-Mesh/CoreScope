@@ -41,7 +41,7 @@ func TestObservers_CanRelayTriState_Issue1290(t *testing.T) {
 
 	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        legacyID,
-		Name:      "Legacy",
+		Name:      ptr("Legacy"),
 		IATA:      "SJC",
 		Meta:      nil,
 		LastSeen:  now,
@@ -51,7 +51,7 @@ func TestObservers_CanRelayTriState_Issue1290(t *testing.T) {
 	}
 	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        repeaterID,
-		Name:      "Repeater",
+		Name:      ptr("Repeater"),
 		IATA:      "SFO",
 		Meta:      &types.ObserverMeta{CanRelay: bptr(true)},
 		LastSeen:  now,
@@ -61,7 +61,7 @@ func TestObservers_CanRelayTriState_Issue1290(t *testing.T) {
 	}
 	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        listenerID,
-		Name:      "Listener",
+		Name:      ptr("Listener"),
 		IATA:      "OAK",
 		Meta:      &types.ObserverMeta{CanRelay: bptr(false)},
 		LastSeen:  now,

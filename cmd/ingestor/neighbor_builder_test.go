@@ -288,7 +288,7 @@ func seedNeighborNode(t *testing.T, s *Store, pk string) {
 // seedNeighborObserver creates the observer and returns its surrogate id.
 func seedNeighborObserver(t *testing.T, s *Store) int64 {
 	t.Helper()
-	if err := s.UpsertObserver(testCtx(t), nbObserver, "observer-1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(testCtx(t), nbObserver, ptr("observer-1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 	var id int64

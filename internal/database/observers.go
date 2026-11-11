@@ -14,18 +14,23 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ObserverInput is one observer write. Name is nil when the observer sent no
+// name, which keeps the stored name; a non-nil Name is written as given, so a
+// pointer to "" overwrites the stored name with a blank one.
 type ObserverInput struct {
 	ID        string
-	Name      string
+	Name      *string
 	IATA      string
 	Meta      *types.ObserverMeta
 	LastSeen  time.Time // envelope/receive time
 	IngestNow time.Time // wall clock at ingest; caps how far last_seen may advance
 }
 
+// ObserverMetadataInput carries a retained status message's metadata. Name has
+// the same nil-versus-blank meaning as ObserverInput.Name.
 type ObserverMetadataInput struct {
 	ID   string
-	Name string
+	Name *string
 	IATA string
 	Meta *types.ObserverMeta
 }
@@ -109,7 +114,7 @@ func (db *DB) CreateOrUpdateObserver(ctx context.Context, o ObserverInput) (int6
 
 	id, err := db.q.CreateOrUpdateObserver(ctx, pgdb.CreateOrUpdateObserverParams{
 		Pubkey:        o.ID,
-		Name:          toPgTextIfNotEmpty(o.Name),
+		Name:          toPgTextPtr(o.Name),
 		Iata:          toPgTextIfNotEmpty(types.NewIATA(o.IATA).String()),
 		LastSeen:      o.LastSeen,
 		IngestNow:     o.IngestNow,
@@ -150,7 +155,7 @@ func (db *DB) UpdateObserverMetadataIfRetained(ctx context.Context, in ObserverM
 
 	return db.q.UpdateObserverMetadataIfRetained(ctx, pgdb.UpdateObserverMetadataIfRetainedParams{
 		Pubkey:        normalizeKey(in.ID),
-		Name:          toPgTextIfNotEmpty(in.Name),
+		Name:          toPgTextPtr(in.Name),
 		Iata:          toPgTextIfNotEmpty(types.NewIATA(in.IATA).String()),
 		Model:         toPgTextPtr(meta.Model),
 		Firmware:      toPgTextPtr(meta.Firmware),

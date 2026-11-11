@@ -61,7 +61,7 @@ func TestHandleNodePaths_SortByRecency_1145(t *testing.T) {
 
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerKey,
-		Name:      "Recency Observer",
+		Name:      ptr("Recency Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  seenAt,
@@ -188,7 +188,7 @@ func TestHandleNodePaths_SortCountTiebreaker_1145(t *testing.T) {
 
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerKey,
-		Name:      "Tiebreaker Observer",
+		Name:      ptr("Tiebreaker Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  sameTS,

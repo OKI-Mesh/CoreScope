@@ -100,7 +100,7 @@ func newReachIntegrationDB(t *testing.T, obsHops []string) (*database.DB, string
 
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "obs1",
-		Name:      "OBS1",
+		Name:      ptr("OBS1"),
 		LastSeen:  now,
 		IngestNow: now,
 	})

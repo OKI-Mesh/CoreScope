@@ -104,9 +104,10 @@ func TestExportChannel(t *testing.T) {
 	seedTransmission(ctx, t, db, "aa00000000000003", types.PayloadGRP_TXT,
 		encryptGroupText(t, "#wardriving", sent+240, "Eve: third"), base.Add(4*time.Minute))
 
+	hilltop := "Hilltop"
 	observerID, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "0f0f0f0f",
-		Name:      "Hilltop",
+		Name:      &hilltop,
 		IATA:      "CVG",
 		LastSeen:  base,
 		IngestNow: base,

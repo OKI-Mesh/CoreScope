@@ -154,7 +154,7 @@ func seedAgedPackets(tb testing.TB, db *database.DB, numRecent, numOld int) {
 
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        strings.Repeat("e3", 32),
-		Name:      "Obs1",
+		Name:      ptr("Obs1"),
 		IATA:      "BRU",
 		Meta:      nil,
 		LastSeen:  now,

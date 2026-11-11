@@ -64,7 +64,7 @@ func seedNode(t *testing.T, db *database.DB, pk string, name string, role types.
 func seedObserver(t *testing.T, db *database.DB, id, iata string, at time.Time) int64 {
 	t.Helper()
 	idx, err := db.CreateOrUpdateObserver(t.Context(), database.ObserverInput{
-		ID: id, Name: "observer-" + iata, IATA: iata, Meta: nil, LastSeen: at, IngestNow: at,
+		ID: id, Name: ptr("observer-" + iata), IATA: iata, Meta: nil, LastSeen: at, IngestNow: at,
 	})
 	if err != nil {
 		t.Fatalf("seed observer %s: %v", iata, err)

@@ -10,7 +10,7 @@ import (
 func staleObserver(t *testing.T, s *Store, pubkey string) int64 {
 	t.Helper()
 	ctx := t.Context()
-	if err := s.UpsertObserver(ctx, pubkey, pubkey, "LAX", nil); err != nil {
+	if err := s.UpsertObserver(ctx, pubkey, ptr(pubkey), "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().UTC().AddDate(0, 0, -90)
@@ -133,7 +133,7 @@ func TestPurgeStaleObserversKeepsObserverWithDroppedPackets(t *testing.T) {
 func TestPurgeStaleObserversKeepsActiveObserver(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
-	if err := store.UpsertObserver(ctx, "obs-active", "Active", "LAX", nil); err != nil {
+	if err := store.UpsertObserver(ctx, "obs-active", ptr("Active"), "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().UTC().AddDate(0, 0, -90)
@@ -157,7 +157,7 @@ func TestPurgeStaleObserversKeepsActiveObserver(t *testing.T) {
 func TestPurgeStaleObserversKeepsObserverInsideWindow(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
-	if err := store.UpsertObserver(ctx, "obs-recent", "Recent", "LAX", nil); err != nil {
+	if err := store.UpsertObserver(ctx, "obs-recent", ptr("Recent"), "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
 	recent := time.Now().UTC().AddDate(0, 0, -20)

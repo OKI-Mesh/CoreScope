@@ -772,10 +772,10 @@ func TestRemoveStaleObservers(t *testing.T) {
 	now := time.Now().UTC()
 
 	// obs-old is first seen 30 days ago; obs-new is current.
-	if err := store.UpsertObserverAt(ctx, "obs-old", "OldObserver", "LAX", nil, now.AddDate(0, 0, -30)); err != nil {
+	if err := store.UpsertObserverAt(ctx, "obs-old", ptr("OldObserver"), "LAX", nil, now.AddDate(0, 0, -30)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertObserverAt(ctx, "obs-new", "NewObserver", "NYC", nil, now); err != nil {
+	if err := store.UpsertObserverAt(ctx, "obs-new", ptr("NewObserver"), "NYC", nil, now); err != nil {
 		t.Fatal(err)
 	}
 	// Metrics rows for both: the prune deletes metrics for observers it deactivates.
@@ -835,7 +835,7 @@ func TestRemoveStaleObserversKeepForever(t *testing.T) {
 	ctx := t.Context()
 
 	// An observer last seen a year ago, created that way through the real write path.
-	if err := store.UpsertObserverAt(ctx, "obs-ancient", "AncientObserver", "LAX", nil,
+	if err := store.UpsertObserverAt(ctx, "obs-ancient", ptr("AncientObserver"), "LAX", nil,
 		time.Now().UTC().AddDate(0, 0, -365)); err != nil {
 		t.Fatal(err)
 	}
@@ -868,7 +868,7 @@ func TestRemoveStaleObserversReactivation(t *testing.T) {
 	ctx := t.Context()
 
 	// Created already stale, through the real write path.
-	if err := store.UpsertObserverAt(ctx, "obs-test", "TestObserver", "LAX", nil,
+	if err := store.UpsertObserverAt(ctx, "obs-test", ptr("TestObserver"), "LAX", nil,
 		time.Now().UTC().AddDate(0, 0, -30)); err != nil {
 		t.Fatal(err)
 	}
@@ -885,7 +885,7 @@ func TestRemoveStaleObserversReactivation(t *testing.T) {
 	}
 
 	// A live message from the same observer reactivates it.
-	if err := store.UpsertObserver(ctx, "obs-test", "TestObserver", "LAX", nil); err != nil {
+	if err := store.UpsertObserver(ctx, "obs-test", ptr("TestObserver"), "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := countWhere(t, store, "observers", "pubkey = $1 AND NOT inactive", "obs-test"); n != 1 {

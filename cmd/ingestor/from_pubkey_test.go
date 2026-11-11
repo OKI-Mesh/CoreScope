@@ -83,7 +83,7 @@ func TestBuildPacketData_PopulatesFromPubkey(t *testing.T) {
 		Header:  decoder.Header{PayloadType: types.PayloadADVERT},
 		Payload: decoder.Payload{Type: "ADVERT", PubKey: pk},
 	}
-	pd := BuildPacketData(msg, decoded, "obs", "", nil)
+	pd := BuildPacketData(msg, decoded, "obs", nil)
 	if pd.FromPubkey != pk {
 		t.Fatalf("BuildPacketData FromPubkey = %q, want %q", pd.FromPubkey, pk)
 	}
@@ -93,7 +93,7 @@ func TestBuildPacketData_PopulatesFromPubkey(t *testing.T) {
 		Header:  decoder.Header{PayloadType: types.PayloadTXT_MSG},
 		Payload: decoder.Payload{Type: "TXT_MSG"},
 	}
-	pd2 := BuildPacketData(msg, decoded2, "obs", "", nil)
+	pd2 := BuildPacketData(msg, decoded2, "obs", nil)
 	if pd2.FromPubkey != "" {
 		t.Fatalf("BuildPacketData FromPubkey for non-ADVERT = %q, want empty", pd2.FromPubkey)
 	}

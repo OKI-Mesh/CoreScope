@@ -159,7 +159,7 @@ func TestListObserverReceptions_MissingSignalValues_DB(t *testing.T) {
 	}
 }
 
-func TestListObserverReceptions_NilObserverName_DB(t *testing.T) {
+func TestListObserverReceptions_ObserverNameStates_DB(t *testing.T) {
 	db := newDB(t)
 	ctx := t.Context()
 
@@ -169,9 +169,19 @@ func TestListObserverReceptions_NilObserverName_DB(t *testing.T) {
 	snr := 10.0
 	rssi := -90.0
 
-	unnamed, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID:        "obsnoname",
-		Name:      "",
+	neverNamed, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "obsnever",
+		Name:      nil,
+		IATA:      "SJC",
+		LastSeen:  seen,
+		IngestNow: epoch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blankNamed, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "obsblank",
+		Name:      ptr(""),
 		IATA:      "SJC",
 		LastSeen:  seen,
 		IngestNow: epoch,
@@ -180,59 +190,56 @@ func TestListObserverReceptions_NilObserverName_DB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	withObserver := dbtest.ChannelTx(t, db, "noname_hash_a", "#noname",
-		`{"type":"CHAN","channel":"#noname","text":"Alpha: hi","sender":"Alpha"}`, seen)
-	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
-		TransmissionID: withObserver,
-		ObserverIdx:    &unnamed,
-		Direction:      &direction,
-		SNR:            &snr,
-		RSSI:           &rssi,
-		PathHash:       "",
-		Timestamp:      seen,
-	}, []string{}, []*string{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !inserted {
-		t.Fatalf("expected observation to be inserted for tx %d", withObserver)
-	}
-
-	withoutObserver := dbtest.ChannelTx(t, db, "noname_hash_b", "#noname",
-		`{"type":"CHAN","channel":"#noname","text":"Bravo: hi","sender":"Bravo"}`, seen)
-	_, inserted, err = db.InsertObservationWithHops(ctx, database.ObservationInput{
-		TransmissionID: withoutObserver,
-		ObserverIdx:    nil,
-		Direction:      &direction,
-		SNR:            &snr,
-		RSSI:           &rssi,
-		PathHash:       "",
-		Timestamp:      seen,
-	}, []string{}, []*string{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !inserted {
-		t.Fatalf("expected observation to be inserted for tx %d", withoutObserver)
+	observe := func(hash, sender string, observerIdx *int64) int64 {
+		t.Helper()
+		txID := dbtest.ChannelTx(t, db, hash, "#noname",
+			`{"type":"CHAN","channel":"#noname","text":"`+sender+`: hi","sender":"`+sender+`"}`, seen)
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    observerIdx,
+			Direction:      &direction,
+			SNR:            &snr,
+			RSSI:           &rssi,
+			PathHash:       "",
+			Timestamp:      seen,
+		}, []string{}, []*string{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+		return txID
 	}
 
-	got, err := db.ListObserverReceptions(ctx, []int64{withObserver, withoutObserver})
+	noObserver := observe("noname_hash_a", "Alpha", nil)
+	neverNamedTx := observe("noname_hash_b", "Bravo", &neverNamed)
+	blankNamedTx := observe("noname_hash_c", "Charlie", &blankNamed)
+
+	got, err := db.ListObserverReceptions(ctx, []int64{noObserver, neverNamedTx, blankNamedTx})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(got[withoutObserver]) != 1 {
-		t.Fatalf("observation with no observer: want 1 reception, got %+v", got[withoutObserver])
+	if len(got[noObserver]) != 1 {
+		t.Fatalf("observation with no observer: want 1 reception, got %+v", got[noObserver])
 	}
-	if got[withoutObserver][0].ObserverName != nil {
-		t.Errorf("observation with no observer: want nil ObserverName, got %q", *got[withoutObserver][0].ObserverName)
+	if name := got[noObserver][0].ObserverName; name != nil {
+		t.Errorf("observation with no observer: want nil ObserverName, got %q", *name)
 	}
 
-	if len(got[withObserver]) != 1 {
-		t.Fatalf("observer with empty name: want 1 reception, got %+v", got[withObserver])
+	if len(got[neverNamedTx]) != 1 {
+		t.Fatalf("observer that never sent a name: want 1 reception, got %+v", got[neverNamedTx])
 	}
-	if got[withObserver][0].ObserverName != nil {
-		t.Errorf("observer with empty name: want nil ObserverName, got %q", *got[withObserver][0].ObserverName)
+	if name := got[neverNamedTx][0].ObserverName; name != nil {
+		t.Errorf("observer that never sent a name: want nil ObserverName, got %q", *name)
+	}
+
+	if len(got[blankNamedTx]) != 1 {
+		t.Fatalf("observer with a blank name: want 1 reception, got %+v", got[blankNamedTx])
+	}
+	if name := got[blankNamedTx][0].ObserverName; name == nil || *name != "" {
+		t.Errorf("observer with a blank name: want a pointer to a blank name, got %v", name)
 	}
 }
 

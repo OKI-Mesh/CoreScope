@@ -115,7 +115,7 @@ func TestInsertTransmissionWritesResolvedPath(t *testing.T) {
 		t.Fatalf("seed first-hop: %v", err)
 	}
 
-	if err := store.UpsertObserver(ctx, observerID, "observer-1", "", nil); err != nil {
+	if err := store.UpsertObserver(ctx, observerID, ptr("observer-1"), "", nil); err != nil {
 		t.Fatalf("UpsertObserver: %v", err)
 	}
 
@@ -404,7 +404,7 @@ func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed first-hop: %v", err)
 	}
-	if err := store.UpsertObserver(ctx, observerID, "observer-1", "", nil); err != nil {
+	if err := store.UpsertObserver(ctx, observerID, ptr("observer-1"), "", nil); err != nil {
 		t.Fatalf("UpsertObserver: %v", err)
 	}
 	if err := store.RefreshPrefixIndex(ctx); err != nil {

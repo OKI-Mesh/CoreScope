@@ -41,9 +41,13 @@ func New(tb testing.TB) *database.DB {
 // firstSeen is passed as IngestNow, so it becomes observers.first_seen on creation.
 func Observer(tb testing.TB, db *database.DB, pubkey, name, iata string, firstSeen, lastSeen time.Time) int64 {
 	tb.Helper()
+	var storedName *string
+	if name != "" {
+		storedName = &name
+	}
 	id, err := db.CreateOrUpdateObserver(tb.Context(), database.ObserverInput{
 		ID:        pubkey,
-		Name:      name,
+		Name:      storedName,
 		IATA:      iata,
 		LastSeen:  lastSeen,
 		IngestNow: firstSeen,

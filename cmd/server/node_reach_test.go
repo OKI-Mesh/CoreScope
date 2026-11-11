@@ -255,7 +255,7 @@ func TestScanReachRows_DecodesRows(t *testing.T) {
 	}
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "obs1",
-		Name:      "obs1",
+		Name:      ptr("obs1"),
 		LastSeen:  now,
 		IngestNow: now,
 	})

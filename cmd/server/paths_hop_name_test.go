@@ -58,7 +58,7 @@ func TestHandleNodePaths_HopName_CanonicalPathShowsTarget_1144(t *testing.T) {
 
 	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerKey,
-		Name:      "Paths Observer",
+		Name:      ptr("Paths Observer"),
 		IATA:      "SFO",
 		Meta:      nil,
 		LastSeen:  recent,

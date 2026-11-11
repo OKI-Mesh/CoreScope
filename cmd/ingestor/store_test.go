@@ -115,7 +115,7 @@ func TestUpsertObserver(t *testing.T) {
 	defer s.Close()
 	ctx := t.Context()
 	observerID := strings.Repeat("2c", 32)
-	if err := s.UpsertObserver(ctx, observerID, "Observer1", " sjc ", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Observer1"), " sjc ", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,7 +152,7 @@ func TestUpsertObserverWithMeta(t *testing.T) {
 		NoiseFloor:    &noise,
 	}
 
-	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", meta); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Observer1"), "SJC", meta); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,11 +203,11 @@ func TestUpsertObserverMetaPreservesExisting(t *testing.T) {
 		BatteryMv:     &battery,
 		NoiseFloor:    &noise,
 	}
-	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", meta); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Observer1"), "SJC", meta); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -326,7 +326,7 @@ func TestInsertTransmissionWithObserver(t *testing.T) {
 	defer s.Close()
 
 	// Insert observer first
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, "obs1", ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -369,7 +369,7 @@ func TestInsertTransmissionUpdatesObserverLastSeen(t *testing.T) {
 	oldTime := time.Date(2026, 3, 24, 22, 0, 0, 0, time.UTC)
 	if _, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        observerID,
-		Name:      "Observer1",
+		Name:      ptr("Observer1"),
 		IATA:      "SJC",
 		Meta:      nil,
 		LastSeen:  oldTime,
@@ -421,7 +421,7 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 	ctx := t.Context()
 	observerID := strings.Repeat("3a", 32)
 
-	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -457,7 +457,7 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 			before, after, lastPacketAt, lp.Unix())
 	}
 
-	if err := s.UpsertObserver(ctx, observerID, "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -483,7 +483,7 @@ func TestEndToEndIngest(t *testing.T) {
 	msg := &MQTTPacketMessage{
 		Raw: rawHex,
 	}
-	pktData := BuildPacketData(msg, decoded, "obs1", "SJC", nil)
+	pktData := BuildPacketData(msg, decoded, "obs1", nil)
 	pktData.Advert = advertNode(&decoded.Payload, pktData.Timestamp)
 	if pktData.Advert == nil {
 		t.Fatalf("advert from %s has no valid role", decoded.Payload.PubKey)
@@ -520,7 +520,7 @@ func TestIngestUnknownAdvertTypeStoresPacketWithoutNode(t *testing.T) {
 		t.Fatalf("fixture must decode to advert type 7, got %+v", decoded.Payload.Flags)
 	}
 
-	pktData := BuildPacketData(&MQTTPacketMessage{Raw: rawHex}, decoded, "obs1", "SJC", nil)
+	pktData := BuildPacketData(&MQTTPacketMessage{Raw: rawHex}, decoded, "obs1", nil)
 	pktData.Advert = advertNode(&decoded.Payload, pktData.Timestamp)
 	if pktData.Advert != nil {
 		t.Fatalf("type 7 must not produce a node, got %+v", pktData.Advert)
@@ -696,23 +696,19 @@ func TestBuildPacketData(t *testing.T) {
 	snr := 5.0
 	rssi := -100.0
 	msg := &MQTTPacketMessage{
-		Raw:       rawHex,
-		SNR:       &snr,
-		RSSI:      &rssi,
-		Origin:    "test-observer",
-		Timestamp: "2026-05-16T10:00:00Z",
+		Raw:    rawHex,
+		SNR:    &snr,
+		RSSI:   &rssi,
+		Origin: "test-observer",
 	}
 
-	pkt := BuildPacketData(msg, decoded, "obs123", "SJC", nil)
+	pkt := BuildPacketData(msg, decoded, "obs123", nil)
 
 	if pkt.RawHex != rawHex {
 		t.Errorf("rawHex mismatch")
 	}
 	if pkt.ObserverID != "obs123" {
 		t.Errorf("observerID=%s, want obs123", pkt.ObserverID)
-	}
-	if pkt.ObserverName != "test-observer" {
-		t.Errorf("observerName=%s", pkt.ObserverName)
 	}
 	if pkt.SNR == nil || *pkt.SNR != 5.0 {
 		t.Errorf("SNR=%v", pkt.SNR)
@@ -752,7 +748,7 @@ func TestBuildPacketDataWithHops(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := &MQTTPacketMessage{Raw: raw}
-	pkt := BuildPacketData(msg, decoded, "", "", nil)
+	pkt := BuildPacketData(msg, decoded, "", nil)
 
 	if pkt.PathJSON == "[]" {
 		t.Error("pathJSON should contain hops")
@@ -765,7 +761,7 @@ func TestBuildPacketDataWithHops(t *testing.T) {
 func TestBuildPacketDataNilSNRRSSI(t *testing.T) {
 	decoded, _ := decoder.DecodePacket("0A00"+strings.Repeat("00", 10), nil, false)
 	msg := &MQTTPacketMessage{Raw: "0A00" + strings.Repeat("00", 10)}
-	pkt := BuildPacketData(msg, decoded, "", "", nil)
+	pkt := BuildPacketData(msg, decoded, "", nil)
 
 	if pkt.SNR != nil {
 		t.Errorf("SNR should be nil")
@@ -863,7 +859,7 @@ func TestConcurrentWrites(t *testing.T) {
 	defer cancel()
 
 	// Pre-create an observer for observer_idx resolution.
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, "obs1", ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -900,7 +896,7 @@ func TestConcurrentWrites(t *testing.T) {
 					errCh <- fmt.Errorf("goroutine %d node upsert %d: %w", gIdx, i, err)
 					return
 				}
-				if err := s.UpsertObserver(ctx, fmt.Sprintf("obs_%02d_%03d", gIdx, i), "Obs", "SJC", nil); err != nil {
+				if err := s.UpsertObserver(ctx, fmt.Sprintf("obs_%02d_%03d", gIdx, i), ptr("Obs"), "SJC", nil); err != nil {
 					errCh <- fmt.Errorf("goroutine %d observer upsert %d: %w", gIdx, i, err)
 					return
 				}
@@ -1001,7 +997,7 @@ func TestDBStats(t *testing.T) {
 		t.Errorf("NodeUpserts=%d, want 1", s.Stats.NodeUpserts.Load())
 	}
 
-	if err := s.UpsertObserver(ctx, observerID, "Obs1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, observerID, ptr("Obs1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 	if s.Stats.ObserverUpserts.Load() != 1 {
@@ -1024,7 +1020,7 @@ func TestLoadTestThroughput(t *testing.T) {
 	defer cancel()
 
 	// Pre-create observer
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, "obs1", ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1085,7 +1081,7 @@ func TestLoadTestThroughput(t *testing.T) {
 				if err := s.IncrementAdvertCount(ctx, pubKey); err != nil {
 					fail("increment advert count", err)
 				}
-				if err := s.UpsertObserver(ctx, "obs_"+id, "Obs", "SJC", nil); err != nil {
+				if err := s.UpsertObserver(ctx, "obs_"+id, ptr("Obs"), "SJC", nil); err != nil {
 					fail("upsert observer", err)
 				}
 				latencies[gIdx*perGoroutine+i] = time.Since(msgStart)
@@ -1372,7 +1368,7 @@ func TestBuildPacketDataScoreAndDirection(t *testing.T) {
 		Direction: &dir,
 	}
 
-	pkt := BuildPacketData(msg, decoded, "obs1", "SJC", nil)
+	pkt := BuildPacketData(msg, decoded, "obs1", nil)
 	if pkt.Score == nil || *pkt.Score != 42.0 {
 		t.Errorf("Score=%v, want 42.0", pkt.Score)
 	}
@@ -1384,7 +1380,7 @@ func TestBuildPacketDataScoreAndDirection(t *testing.T) {
 func TestBuildPacketDataNilScoreDirection(t *testing.T) {
 	decoded, _ := decoder.DecodePacket("0A00"+strings.Repeat("00", 10), nil, false)
 	msg := &MQTTPacketMessage{Raw: "0A00" + strings.Repeat("00", 10)}
-	pkt := BuildPacketData(msg, decoded, "", "", nil)
+	pkt := BuildPacketData(msg, decoded, "", nil)
 
 	if pkt.Score != nil {
 		t.Errorf("Score should be nil, got %v", *pkt.Score)
@@ -1625,7 +1621,7 @@ func TestInsertObservationSNRFillIn(t *testing.T) {
 	ctx := t.Context()
 
 	// Register the observer so observer_idx is non-NULL (required for dedup).
-	if err := s.UpsertObserver(ctx, "pymc-obs1", "PyMC Observer", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, "pymc-obs1", ptr("PyMC Observer"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1705,8 +1701,8 @@ func TestPerObservationRawHex(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()
 
-	s.UpsertObserver(ctx, "obs-A", "Observer A", "", nil)
-	s.UpsertObserver(ctx, "obs-B", "Observer B", "", nil)
+	s.UpsertObserver(ctx, "obs-A", ptr("Observer A"), "", nil)
+	s.UpsertObserver(ctx, "obs-B", ptr("Observer B"), "", nil)
 
 	hash := "abc123def456"
 	rawA := "C0FFEE01"
@@ -1780,7 +1776,7 @@ func TestBuildPacketData_TraceUsesPayloadHops(t *testing.T) {
 	}
 
 	msg := &MQTTPacketMessage{Raw: rawHex}
-	pd := BuildPacketData(msg, decoded, "test-obs", "TST", nil)
+	pd := BuildPacketData(msg, decoded, "test-obs", nil)
 
 	// For TRACE: path_json MUST be the payload-decoded route hops, NOT the SNR bytes
 	expectedPathJSON := `["67","33","D6","33","67"]`
@@ -1812,7 +1808,7 @@ func TestBuildPacketData_NonTracePathJSON(t *testing.T) {
 	}
 
 	msg := &MQTTPacketMessage{Raw: rawHex}
-	pd := BuildPacketData(msg, decoded, "obs1", "TST", nil)
+	pd := BuildPacketData(msg, decoded, "obs1", nil)
 
 	expectedPathJSON := `["AA","BB"]`
 	if pd.PathJSON != expectedPathJSON {
@@ -2001,29 +1997,6 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
 	if gotInactive != "#eu" {
 		t.Errorf("after update inactive node default_scope = %q, want #eu", gotInactive)
-	}
-}
-
-func TestBuildPacketDataRegionFromPayload(t *testing.T) {
-	msg := &MQTTPacketMessage{Raw: "0102030405060708", Region: "PDX"}
-	decoded := &decoder.DecodedPacket{
-		Header: decoder.Header{RouteType: 1, PayloadType: 3},
-	}
-	pkt := BuildPacketData(msg, decoded, "obs1", "SJC", nil)
-	// When payload has region, it should override the topic-derived region
-	if pkt.Region != "PDX" {
-		t.Fatalf("expected region PDX from payload, got %q", pkt.Region)
-	}
-}
-
-func TestBuildPacketDataRegionFallsBackToTopic(t *testing.T) {
-	msg := &MQTTPacketMessage{Raw: "0102030405060708"}
-	decoded := &decoder.DecodedPacket{
-		Header: decoder.Header{RouteType: 1, PayloadType: 3},
-	}
-	pkt := BuildPacketData(msg, decoded, "obs1", "SJC", nil)
-	if pkt.Region != "SJC" {
-		t.Fatalf("expected region SJC from topic, got %q", pkt.Region)
 	}
 }
 
@@ -2394,7 +2367,7 @@ func TestIngestEncryptedChannelStoresEncryptedFlagAndBareHash(t *testing.T) {
 			decoded.Payload.Type, decoded.Payload.ChannelHashHex)
 	}
 
-	pktData := BuildPacketData(&MQTTPacketMessage{Raw: rawHex}, decoded, "obs1", "SJC", nil)
+	pktData := BuildPacketData(&MQTTPacketMessage{Raw: rawHex}, decoded, "obs1", nil)
 	if !pktData.ChannelEncrypted {
 		t.Fatal("BuildPacketData must flag an undecryptable GRP_TXT as encrypted")
 	}

@@ -119,7 +119,7 @@ func TestUpdateObserverMetadataIfRetained_NormalizesIATA_DB(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	dbtest.Observer(t, db, "aa01", "Alpha", "", now, now)
 
-	if err := db.UpdateObserverMetadataIfRetained(ctx, database.ObserverMetadataInput{ID: "aa01", Name: "Alpha", IATA: " luk "}); err != nil {
+	if err := db.UpdateObserverMetadataIfRetained(ctx, database.ObserverMetadataInput{ID: "aa01", Name: ptr("Alpha"), IATA: " luk "}); err != nil {
 		t.Fatalf("UpdateObserverMetadataIfRetained: %v", err)
 	}
 	var got *string
@@ -136,7 +136,7 @@ func TestCreateOrUpdateObserver_ZeroLastSeenUsesIngestNow_DB(t *testing.T) {
 	ctx := t.Context()
 	ingest := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
-	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{ID: "aa01", Name: "Alpha", IngestNow: ingest}); err != nil {
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{ID: "aa01", Name: ptr("Alpha"), IngestNow: ingest}); err != nil {
 		t.Fatalf("CreateOrUpdateObserver: %v", err)
 	}
 	var first, last time.Time
@@ -151,7 +151,7 @@ func TestCreateOrUpdateObserver_ZeroLastSeenUsesIngestNow_DB(t *testing.T) {
 func TestCreateOrUpdateObserver_NoTimeAtAllIsAnError_DB(t *testing.T) {
 	db := dbtest.New(t)
 
-	_, err := db.CreateOrUpdateObserver(t.Context(), database.ObserverInput{ID: "aa01", Name: "Alpha"})
+	_, err := db.CreateOrUpdateObserver(t.Context(), database.ObserverInput{ID: "aa01", Name: ptr("Alpha")})
 	if err == nil || !strings.Contains(err.Error(), "neither LastSeen nor IngestNow") {
 		t.Fatalf("err = %v, want one saying the observer has neither LastSeen nor IngestNow", err)
 	}

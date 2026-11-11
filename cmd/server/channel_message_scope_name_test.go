@@ -43,7 +43,7 @@ func setupChannelScopeDB(t *testing.T) *database.DB {
 
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "obs1",
-		Name:      "Observer One",
+		Name:      ptr("Observer One"),
 		IATA:      "BRU",
 		LastSeen:  now,
 		IngestNow: now,
@@ -272,7 +272,7 @@ func TestBroadcastMapsCarryScopeName(t *testing.T) {
 
 		freshID, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 			ID:        strings.Repeat("e", 64),
-			Name:      "scope-fresh",
+			Name:      ptr("scope-fresh"),
 			IATA:      "LAX",
 			Meta:      nil,
 			LastSeen:  time.Now().UTC(),

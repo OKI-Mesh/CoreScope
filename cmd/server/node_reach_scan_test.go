@@ -115,7 +115,7 @@ func seedReachObservations(t *testing.T, db *database.DB, count int) {
 	now := time.Now().UTC()
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "obs-extra",
-		Name:      "obs-extra",
+		Name:      ptr("obs-extra"),
 		LastSeen:  now,
 		IngestNow: now,
 	})

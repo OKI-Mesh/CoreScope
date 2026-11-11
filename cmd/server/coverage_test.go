@@ -3733,7 +3733,7 @@ func TestIngestNewObservations(t *testing.T) {
 	// the poller has already advanced past its transmission ID
 	observer3, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        strings.Repeat("c", 64),
-		Name:      "Observer Three",
+		Name:      ptr("Observer Three"),
 		IATA:      "LAX",
 		Meta:      nil,
 		LastSeen:  time.Now().UTC(),
@@ -4469,7 +4469,7 @@ func TestIngestTraceBroadcastIncludesPath(t *testing.T) {
 	), now)
 	observerID, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        strings.Repeat("a", 64),
-		Name:      "Observer One",
+		Name:      ptr("Observer One"),
 		IATA:      "SJC",
 		Meta:      nil,
 		LastSeen:  now,

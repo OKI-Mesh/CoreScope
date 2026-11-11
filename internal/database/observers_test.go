@@ -97,7 +97,7 @@ func TestCreateOrUpdateObserver_RejectsBatteryThatDoesNotFitInt4_DB(t *testing.T
 	seen := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 	_, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "obsbat", Name: "Battery", IATA: "CVG", LastSeen: seen, IngestNow: seen,
+		ID: "obsbat", Name: ptr("Battery"), IATA: "CVG", LastSeen: seen, IngestNow: seen,
 		Meta: &types.ObserverMeta{BatteryMv: ptr(3_000_000_000)},
 	})
 	if err == nil {

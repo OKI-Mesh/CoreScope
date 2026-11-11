@@ -57,7 +57,7 @@ func TestStatusMessageMetadataPersisted_Issue1044(t *testing.T) {
 	defer s.Close()
 	ctx := t.Context()
 
-	if err := s.UpsertObserver(ctx, "AABBCCDD", "TestObserver", "SJC", meta); err != nil {
+	if err := s.UpsertObserver(ctx, "AABBCCDD", ptr("TestObserver"), "SJC", meta); err != nil {
 		t.Fatalf("UpsertObserver: %v", err)
 	}
 

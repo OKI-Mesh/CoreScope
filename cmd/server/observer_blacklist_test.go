@@ -56,8 +56,8 @@ func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
 	now := time.Now().UTC()
 
 	for _, o := range []database.ObserverInput{
-		{ID: "goodobs", Name: "GoodObs", IATA: "SFO", LastSeen: now, IngestNow: now},
-		{ID: "badobs", Name: "BadObs", IATA: "LAX", LastSeen: now, IngestNow: now},
+		{ID: "goodobs", Name: ptr("GoodObs"), IATA: "SFO", LastSeen: now, IngestNow: now},
+		{ID: "badobs", Name: ptr("BadObs"), IATA: "LAX", LastSeen: now, IngestNow: now},
 	} {
 		if _, err := db.CreateOrUpdateObserver(ctx, o); err != nil {
 			t.Fatalf("seed observer %s: %v", o.ID, err)
@@ -106,7 +106,7 @@ func TestObserverBlacklistFiltersObserverDetail(t *testing.T) {
 	now := time.Now().UTC()
 
 	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "badobs", Name: "BadObs", IATA: "LAX", LastSeen: now, IngestNow: now,
+		ID: "badobs", Name: ptr("BadObs"), IATA: "LAX", LastSeen: now, IngestNow: now,
 	}); err != nil {
 		t.Fatalf("seed observer: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestNoObserverBlacklistPassesAll(t *testing.T) {
 	now := time.Now().UTC()
 
 	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "someobs", Name: "SomeObs", IATA: "SFO", LastSeen: now, IngestNow: now,
+		ID: "someobs", Name: ptr("SomeObs"), IATA: "SFO", LastSeen: now, IngestNow: now,
 	}); err != nil {
 		t.Fatalf("seed observer: %v", err)
 	}

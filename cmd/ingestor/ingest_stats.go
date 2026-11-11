@@ -22,8 +22,7 @@ type IngestStats struct {
 	WALCommits atomic.Int64
 	// BackfillUpdates tracks per-named-backfill row write counts so an
 	// infinite-loop backfill (cf #1119) is obvious from the perf page.
-	BackfillUpdates        sync.Map // name (string) -> *atomic.Int64
-	UnrecognizedTimestamps atomic.Int64
+	BackfillUpdates sync.Map // name (string) -> *atomic.Int64
 }
 
 // IncBackfill increments the backfill counter for the given name, allocating

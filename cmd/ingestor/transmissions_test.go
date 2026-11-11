@@ -16,7 +16,7 @@ func TestInsertTransmission(t *testing.T) {
 	// upserts it first). Without it observer_idx is NULL, and NULLs never
 	// conflict in a unique index, so re-inserting the same packet would add a
 	// second observation instead of updating the first.
-	if err := s.UpsertObserver(ctx, "obs1", "Observer1", "SJC", nil); err != nil {
+	if err := s.UpsertObserver(ctx, "obs1", ptr("Observer1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 

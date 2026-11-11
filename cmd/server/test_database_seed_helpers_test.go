@@ -30,7 +30,7 @@ func mustCreateTestObserver(tb testing.TB, ctx context.Context, db *database.DB,
 	tb.Helper()
 	_, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        id,
-		Name:      name,
+		Name:      ptr(name),
 		IATA:      iata,
 		LastSeen:  seen,
 		IngestNow: seen,

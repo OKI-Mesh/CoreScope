@@ -39,14 +39,14 @@ func TestChannelMessages_TimestampUsesLatestSeen(t *testing.T) {
 	laterEpoch := laterAt.Unix()
 
 	obsA, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "obsa", Name: "ObsA", IATA: "SJC",
+		ID: "obsa", Name: ptr("ObsA"), IATA: "SJC",
 		LastSeen: firstSeenAt, IngestNow: firstSeenAt,
 	})
 	if err != nil {
 		t.Fatalf("create observer obsa: %v", err)
 	}
 	obsB, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "obsb", Name: "ObsB", IATA: "LAX",
+		ID: "obsb", Name: ptr("ObsB"), IATA: "LAX",
 		LastSeen: firstSeenAt, IngestNow: firstSeenAt,
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func TestChannelMessages_TimestampNotSenderTimestamp(t *testing.T) {
 	badSenderTs := int64(946684800)
 
 	obsX, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "obsx", Name: "ObsX", IATA: "SJC",
+		ID: "obsx", Name: ptr("ObsX"), IATA: "SJC",
 		LastSeen: firstSeenAt, IngestNow: firstSeenAt,
 	})
 	if err != nil {
@@ -202,7 +202,7 @@ func TestChannelMessages_TimestampIsUTCZ(t *testing.T) {
 
 	obsZ, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "obsz",
-		Name:      "ObsZ",
+		Name:      ptr("ObsZ"),
 		IATA:      "SJC",
 		LastSeen:  fs,
 		IngestNow: now,
@@ -291,14 +291,14 @@ func TestChannelMessages_OrderedByLatestSeen_InMemory(t *testing.T) {
 	tNewest := now.Add(-30 * time.Minute)
 	tFresh := now.Add(-1 * time.Minute)
 	obsO, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "obso", Name: "ObsO", IATA: "SJC",
+		ID: "obso", Name: ptr("ObsO"), IATA: "SJC",
 		LastSeen: tOld, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("create observer obso: %v", err)
 	}
 	obsP, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: "obsp", Name: "ObsP", IATA: "SJC",
+		ID: "obsp", Name: ptr("ObsP"), IATA: "SJC",
 		LastSeen: tOld, IngestNow: now,
 	})
 	if err != nil {

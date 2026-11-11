@@ -147,7 +147,7 @@ func TestOpenDBIsReadOnly(t *testing.T) {
 	now := time.Now().UTC()
 	_, err = db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "0f0f0f0f",
-		Name:      "should not be written",
+		Name:      ptr("should not be written"),
 		IATA:      "CVG",
 		LastSeen:  now,
 		IngestNow: now,

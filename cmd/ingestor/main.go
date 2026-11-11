@@ -826,7 +826,11 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 	// which IATA regions are configured for packet ingestion.
 	if len(parts) >= 4 && parts[3] == "status" {
 		observerID := parts[2]
-		name, _ := msg["origin"].(string)
+		origin, hasOrigin := msg["origin"].(string)
+		var name *string
+		if hasOrigin {
+			name = &origin
+		}
 		iata := parts[1]
 		meta := extractObserverMeta(msg)
 		// A replayed status message is the broker handing us the observer's
@@ -842,7 +846,7 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 			if err := store.UpsertObserverRetained(ctx, observerID, name, iata, meta); err != nil {
 				log.Printf("MQTT [%s] retained observer status error: %v", tag, err)
 			}
-			log.Print(formatStatusLog(tag, firstNonEmpty(name, observerID), iata))
+			log.Print(formatStatusLog(tag, firstNonEmpty(origin, observerID), iata))
 			return
 		}
 		// observer.last_seen is "when did the analyzer last hear from this
@@ -868,7 +872,7 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 				log.Printf("MQTT [%s] metrics insert error: %v", tag, err)
 			}
 		}
-		log.Print(formatStatusLog(tag, firstNonEmpty(name, observerID), iata))
+		log.Print(formatStatusLog(tag, firstNonEmpty(origin, observerID), iata))
 		return
 	}
 
@@ -933,8 +937,7 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 		}
 
 		mqttMsg := &MQTTPacketMessage{Raw: rawHex}
-		var naiveSkewSec int64
-		mqttMsg.Timestamp, naiveSkewSec = resolveRxTime(msg, tag)
+		_, naiveSkewSec := resolveRxTimeCore(msg, tag)
 		if naiveSkewSec != 0 && observerID != "" {
 			// Issue #1478: record so /api/observers can surface ⚠️ chip.
 			if err := store.RecordNaiveSkew(ctx, observerID, naiveSkewSec, time.Now()); err != nil {
@@ -1029,8 +1032,7 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 				log.Printf("MQTT [%s] foreign advert: node=%s name=%s lat=%.4f lon=%.4f observer=%s",
 					tag, truncPK, sanitizeLogString(decoded.Payload.Name), lat, lon, sanitizeLogString(firstNonEmpty(mqttMsg.Origin, observerID)))
 			}
-			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
-			pktData.Foreign = foreign
+			pktData := BuildPacketData(mqttMsg, decoded, observerID, regionSet)
 			pktData.Advert = advertNode(&decoded.Payload, pktData.Timestamp)
 			if pktData.Advert == nil {
 				log.Printf("MQTT [%s] advert from %s has no valid role (flags %+v), node not recorded", tag, decoded.Payload.PubKey, decoded.Payload.Flags)
@@ -1064,7 +1066,7 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 		} else {
 			// Non-ADVERT packets: store normally (routing/channel messages from
 			// in-area observers are relevant regardless of relay hop origin).
-			pktData := BuildPacketData(mqttMsg, decoded, observerID, region, regionSet)
+			pktData := BuildPacketData(mqttMsg, decoded, observerID, regionSet)
 			if _, err := store.InsertTransmission(ctx, pktData); err != nil {
 				log.Printf("MQTT [%s] db insert error: %v", tag, err)
 			}
@@ -1072,7 +1074,10 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 
 		// Upsert observer
 		if observerID != "" {
-			origin, _ := msg["origin"].(string)
+			var origin *string
+			if v, ok := msg["origin"].(string); ok {
+				origin = &v
+			}
 			// Use effective region: payload > topic > source config (#788)
 			effectiveRegion := region
 			if mqttMsg.Region != "" {
@@ -1166,19 +1171,18 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 		}
 
 		pktData := &PacketData{
-			Timestamp:    ingestNow, // #1370 (counters #1233): server ingest time, not envelope rxTime
-			ObserverID:   "companion",
-			ObserverName: "L1 Pro (BLE)",
-			SNR:          snr,
-			RSSI:         rssi,
-			Score:        score,
-			Direction:    direction,
-			Hash:         hash,
-			RouteType:    1, // FLOOD
-			PayloadType:  5, // GRP_TXT
-			PathJSON:     "[]",
-			DecodedJSON:  string(decodedJSON),
-			ChannelHash:  channelName, // fast channel queries (#762)
+			Timestamp:   ingestNow, // #1370 (counters #1233): server ingest time, not envelope rxTime
+			ObserverID:  "companion",
+			SNR:         snr,
+			RSSI:        rssi,
+			Score:       score,
+			Direction:   direction,
+			Hash:        hash,
+			RouteType:   1, // FLOOD
+			PayloadType: 5, // GRP_TXT
+			PathJSON:    "[]",
+			DecodedJSON: string(decodedJSON),
+			ChannelHash: channelName, // fast channel queries (#762)
 		}
 
 		if _, err := store.InsertTransmission(ctx, pktData); err != nil {
@@ -1259,18 +1263,17 @@ func handleMessage(ctx context.Context, store *Store, tag string, source MQTTSou
 		}
 
 		pktData := &PacketData{
-			Timestamp:    ingestNow, // #1370 (counters #1233): server ingest time, not envelope rxTime
-			ObserverID:   "companion",
-			ObserverName: "L1 Pro (BLE)",
-			SNR:          snr,
-			RSSI:         rssi,
-			Score:        score,
-			Direction:    direction,
-			Hash:         hash,
-			RouteType:    1, // FLOOD
-			PayloadType:  2, // TXT_MSG
-			PathJSON:     "[]",
-			DecodedJSON:  string(decodedJSON),
+			Timestamp:   ingestNow, // #1370 (counters #1233): server ingest time, not envelope rxTime
+			ObserverID:  "companion",
+			SNR:         snr,
+			RSSI:        rssi,
+			Score:       score,
+			Direction:   direction,
+			Hash:        hash,
+			RouteType:   1, // FLOOD
+			PayloadType: 2, // TXT_MSG
+			PathJSON:    "[]",
+			DecodedJSON: string(decodedJSON),
 		}
 
 		if _, err := store.InsertTransmission(ctx, pktData); err != nil {
@@ -1474,26 +1477,6 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// resolveRxTime returns the observer receive-time for a packet, taken from
-// the MQTT envelope's "timestamp" field. Falls back to ingest time only when
-// the field is missing, unparseable, or implausibly in the future (a
-// clock-skewed observer). Result is always RFC3339 UTC.
-//
-// The envelope timestamp is stamped by the uploader when the radio receives
-// the frame, not when the MQTT message is published — so a buffered packet
-// uploaded hours late still carries its true receive time. Using ingest time
-// (time.Now()) here mis-dated such packets by the upload delay.
-//
-// The returned naiveSkewSec is 0 unless a naive (zone-less) timestamp had to
-// be clamped because it was off from server-now by >15min — in which case it
-// is the signed offset in seconds (negative = observer behind UTC, positive =
-// ahead). Caller records this via Store.RecordNaiveSkew so the UI can flag
-// the observer (#1478).
-func resolveRxTime(msg map[string]interface{}, tag string) (string, int64) {
-	t, skew := resolveRxTimeCore(msg, tag)
-	return t.Format(time.RFC3339), skew
-}
-
 // rxTimeMillisLayout is the fixed three-decimal millisecond layout for
 // client_rx_observations.rx_at. UNIQUE(rx_pubkey, pkt_hash, rx_at) on that
 // table relies on sub-second resolution to keep distinct forwarder copies of
@@ -1677,10 +1660,9 @@ func matchingRegions(regionKeys map[string][]byte, payloadType types.PayloadType
 		mac.Write(payloadRaw)
 		hmacBytes := mac.Sum(nil)
 		code := uint16(hmacBytes[0]) | uint16(hmacBytes[1])<<8
-		switch code {
-		case 0:
+		if code == 0 {
 			code = 1
-		case 0xFFFF:
+		} else if code == 0xFFFF {
 			code = 0xFFFE
 		}
 		codeBytes := [2]byte{byte(code & 0xFF), byte(code >> 8)}

@@ -875,7 +875,7 @@ func TestBuildPacketDataScopeMatching(t *testing.T) {
 	}
 
 	msg := &MQTTPacketMessage{Raw: rawHex}
-	pktData := BuildPacketData(msg, decoded, "obs1", "region1", regionKeySetFromKeys(regionKeys))
+	pktData := BuildPacketData(msg, decoded, "obs1", regionKeySetFromKeys(regionKeys))
 	if pktData.ScopeName != "#test" {
 		t.Errorf("ScopeName = %q, want #test", pktData.ScopeName)
 	}
@@ -1054,7 +1054,7 @@ func TestBuildPacketDataScopeMatchingNoMatch(t *testing.T) {
 		t.Fatalf("DecodePacket: %v", err)
 	}
 	msg := &MQTTPacketMessage{Raw: rawHex}
-	pktData := BuildPacketData(msg, decoded, "obs1", "region1", regionKeySetFromKeys(regionKeys))
+	pktData := BuildPacketData(msg, decoded, "obs1", regionKeySetFromKeys(regionKeys))
 
 	if !pktData.IsTransportScoped {
 		t.Fatalf("precondition: IsTransportScoped should be true (Code1 != 0000)")

@@ -88,13 +88,13 @@ func TestParityWSMultiObserverGolden(t *testing.T) {
 	}
 
 	obs1Idx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: obs1Key, Name: "Golden Obs 1", IATA: "SJC", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: obs1Key, Name: ptr("Golden Obs 1"), IATA: "SJC", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer 1: %v", err)
 	}
 	obs2Idx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
-		ID: obs2Key, Name: "Golden Obs 2", IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
+		ID: obs2Key, Name: ptr("Golden Obs 2"), IATA: "SFO", Meta: nil, LastSeen: now, IngestNow: now,
 	})
 	if err != nil {
 		t.Fatalf("seed observer 2: %v", err)

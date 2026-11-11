@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
@@ -12,9 +11,10 @@ import (
 )
 
 // UpsertObserver inserts or updates an observer using the current wall-clock
-// time as last_seen. Use UpsertObserverAt when the message envelope provides
+// time as last_seen. A nil name means the observer sent none and keeps the
+// stored name; a pointer to "" is a blank name and overwrites it. Use UpsertObserverAt when the message envelope provides
 // an observer receive-time (e.g. MQTT status and data packet handlers).
-func (s *Store) UpsertObserver(ctx context.Context, id, name, iata string, meta *types.ObserverMeta) error {
+func (s *Store) UpsertObserver(ctx context.Context, id string, name *string, iata string, meta *types.ObserverMeta) error {
 	return s.UpsertObserverAt(ctx, id, name, iata, meta, time.Now().UTC())
 }
 
@@ -24,7 +24,7 @@ func (s *Store) UpsertObserver(ctx context.Context, id, name, iata string, meta 
 // replayed message whose rxTime pre-dates the existing last_seen is a no-op
 // for that field, preventing offline observers from flashing as Online on
 // reconnect.
-func (s *Store) UpsertObserverAt(ctx context.Context, id, name, iata string, meta *types.ObserverMeta, lastSeen time.Time) error {
+func (s *Store) UpsertObserverAt(ctx context.Context, id string, name *string, iata string, meta *types.ObserverMeta, lastSeen time.Time) error {
 	ingestNow := time.Now().UTC()
 	if lastSeen.IsZero() {
 		lastSeen = ingestNow
@@ -33,7 +33,7 @@ func (s *Store) UpsertObserverAt(ctx context.Context, id, name, iata string, met
 	_, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        id,
 		Name:      name,
-		IATA:      strings.TrimSpace(strings.ToUpper(iata)),
+		IATA:      iata,
 		Meta:      meta,
 		LastSeen:  lastSeen,
 		IngestNow: ingestNow,
@@ -60,11 +60,11 @@ func (s *Store) UpsertObserverAt(ctx context.Context, id, name, iata string, met
 // observer the analyzer has never heard from live describes a past that may be
 // months old and does not belong in the list. A live message from the same
 // observer arrives moments later and creates the row through the normal path.
-func (s *Store) UpsertObserverRetained(ctx context.Context, id, name, iata string, meta *types.ObserverMeta) error {
+func (s *Store) UpsertObserverRetained(ctx context.Context, id string, name *string, iata string, meta *types.ObserverMeta) error {
 	err := s.db.UpdateObserverMetadataIfRetained(ctx, database.ObserverMetadataInput{
 		ID:   id,
 		Name: name,
-		IATA: strings.TrimSpace(strings.ToUpper(iata)),
+		IATA: iata,
 		Meta: meta,
 	})
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *Store) PurgeStaleObservers(ctx context.Context, purgeDays int) (int64, 
 	return purged, nil
 }
 
-// RecordNaiveSkew is called when resolveRxTime() clamps a packet's envelope
+// RecordNaiveSkew is called when resolveRxTimeCore() clamps a packet's envelope
 // timestamp because the observer is emitting a zone-less local-time string
 // off from UTC by more than 15 min (issue #1478). Stamps the observer's
 // clock_skew_seconds / clock_skew_count_24h / clock_last_naive_at so the

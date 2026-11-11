@@ -27,7 +27,7 @@ func reachFixtureDB(tb testing.TB, nObs, matchEvery int) *database.DB {
 
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "obs",
-		Name:      "o",
+		Name:      ptr("o"),
 		LastSeen:  seen,
 		IngestNow: seen,
 	})

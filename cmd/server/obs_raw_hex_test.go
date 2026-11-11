@@ -38,7 +38,7 @@ func seedDistinctFrames(t *testing.T, db *database.DB, hash string) (string, []i
 
 	observerIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "frames-observer",
-		Name:      "frames-observer",
+		Name:      ptr("frames-observer"),
 		LastSeen:  now,
 		IngestNow: now,
 	})

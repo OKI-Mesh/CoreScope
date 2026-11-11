@@ -30,7 +30,7 @@ func seedAgedTransmissions(t *testing.T, s *Store, n, obsPerTx, ageDays int) {
 	for j := 0; j < obsPerTx; j++ {
 		idx, err := s.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 			ID:        fmt.Sprintf("%064x", 0x0b00+j),
-			Name:      fmt.Sprintf("prune-obs-%d", j),
+			Name:      ptr(fmt.Sprintf("prune-obs-%d", j)),
 			IATA:      "BRU",
 			Meta:      nil,
 			LastSeen:  at,

@@ -28,7 +28,7 @@ func seedObserversForCount(t *testing.T, db *database.DB) {
 	for _, id := range []string{"live1", "live2", "live3", "nullflag"} {
 		if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 			ID:        id,
-			Name:      "Observer " + id,
+			Name:      ptr("Observer " + id),
 			LastSeen:  now,
 			IngestNow: now,
 		}); err != nil {
@@ -38,7 +38,7 @@ func seedObserversForCount(t *testing.T, db *database.DB) {
 
 	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
 		ID:        "gone1",
-		Name:      "Gone One",
+		Name:      ptr("Gone One"),
 		LastSeen:  now,
 		IngestNow: now,
 	}); err != nil {
