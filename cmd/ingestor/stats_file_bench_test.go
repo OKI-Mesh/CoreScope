@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 const benchProcSelfIOSample = `rchar: 12345678
@@ -59,8 +62,8 @@ func BenchmarkStatsFileWriter_Tick(b *testing.B) {
 	// fresh map each call in production; we use a stable one here so
 	// the bench measures the encode path, not map allocation).
 	backfills := map[string]int64{"path_a": 100, "path_b": 200}
-	stamp := time.Now().UTC().Format(time.RFC3339)
-	io := &PerfIOSample{
+	stamp := &types.WireTimeSeconds{Time: time.Now().UTC()}
+	io := &ingeststats.IOSample{
 		ReadBytesPerSec:           100,
 		WriteBytesPerSec:          200,
 		CancelledWriteBytesPerSec: 0,
@@ -77,7 +80,7 @@ func BenchmarkStatsFileWriter_Tick(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		snap := IngestorStatsSnapshot{
+		snap := ingeststats.Stats{
 			SampledAt:          stamp,
 			TxInserted:         n.Load(),
 			ObsInserted:        n.Load(),

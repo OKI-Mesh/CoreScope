@@ -1,13 +1,12 @@
-// Package perfio holds the canonical PerfIOSample type shared between the
+// Package perfio holds the /proc/self/io key:value parser shared by the
 // ingestor (which publishes /proc/self/io rate samples to its on-disk stats
-// file) and the server (which reads that file and surfaces the sample under
-// /api/perf/io's `ingestor` block). Sharing the type prevents silent JSON
-// contract drift if a field is added on one side only.
+// file) and the server (which samples its own I/O for /api/perf/io).
 //
-// The /proc/self/io key:value parser also lives here (Carmack #1167
-// must-fix #7) so the two binaries don't carry divergent copies of the
-// same parser — past divergence already produced a real bug (see must-fix
-// #6: the parsedAny empty-key gate was added on one side only).
+// The parser lives here (Carmack #1167 must-fix #7) so the two binaries do not
+// carry divergent copies of it; past divergence already produced a real bug
+// (see must-fix #6: the parsedAny empty-key gate was added on one side only).
+// The rate sample the ingestor writes to its stats file is
+// ingeststats.IOSample, with the rest of that file's contract.
 package perfio
 
 import (
@@ -15,18 +14,6 @@ import (
 	"strconv"
 	"strings"
 )
-
-// Sample is the per-process I/O rate sample written by the ingestor and
-// consumed by the server. Field names + json tags MUST be considered the
-// stable on-disk contract — adding/renaming a field is a breaking change.
-type Sample struct {
-	ReadBytesPerSec           float64 `json:"readBytesPerSec"`
-	WriteBytesPerSec          float64 `json:"writeBytesPerSec"`
-	CancelledWriteBytesPerSec float64 `json:"cancelledWriteBytesPerSec"`
-	SyscallsRead              float64 `json:"syscallsRead"`
-	SyscallsWrite             float64 `json:"syscallsWrite"`
-	SampledAt                 string  `json:"sampledAt,omitempty"`
-}
 
 // Counters is the raw /proc/self/io counter snapshot. Both the ingestor's
 // procIOSnapshot and the server's procIOSample are thin wrappers around

@@ -4,27 +4,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-)
 
-// SourceStatusSnapshot is the per-MQTT-source connection state and counter
-// view written to the ingestor stats file (under "source_statuses") and
-// consumed by cmd/server's /api/mqtt/status handler (#1043).
-//
-// All fields are unix seconds (0 = "never"). PacketsLast5m is a sliding
-// 5-minute count derived from a per-second ring buffer.
-type SourceStatusSnapshot struct {
-	Name               string `json:"name"`
-	Broker             string `json:"broker"`
-	Connected          bool   `json:"connected"`
-	LastConnectUnix    int64  `json:"lastConnectUnix"`
-	LastDisconnectUnix int64  `json:"lastDisconnectUnix"`
-	LastPacketUnix     int64  `json:"lastPacketUnix"`
-	ConnectCount       int64  `json:"connectCount"`
-	DisconnectCount    int64  `json:"disconnectCount"`
-	PacketsTotal       int64  `json:"packetsTotal"`
-	PacketsLast5m      int64  `json:"packetsLast5m"`
-	LastError          string `json:"lastError,omitempty"`
-}
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
+)
 
 // sourceStatusState is the in-memory per-source counter set. All scalar
 // fields are accessed via sync/atomic so the hot-path MarkPacket /
@@ -117,11 +99,11 @@ func (s *sourceStatusState) sumLast5m(now time.Time) int64 {
 }
 
 // snapshot copies the state into a serializable view.
-func (s *sourceStatusState) snapshot(now time.Time) SourceStatusSnapshot {
+func (s *sourceStatusState) snapshot(now time.Time) ingeststats.SourceStatus {
 	s.errMu.RLock()
 	errStr := s.lastError
 	s.errMu.RUnlock()
-	return SourceStatusSnapshot{
+	return ingeststats.SourceStatus{
 		Name:               s.name,
 		Broker:             s.broker,
 		Connected:          s.connected.Load(),
@@ -162,10 +144,10 @@ func RegisterSourceStatus(tag, broker string) *sourceStatusState {
 // SnapshotSourceStatuses returns a slice of every registered source's
 // current snapshot. Surfaced via the ingestor stats file under
 // "source_statuses" so /api/mqtt/status can serve it (#1043).
-func SnapshotSourceStatuses(now time.Time) []SourceStatusSnapshot {
+func SnapshotSourceStatuses(now time.Time) []ingeststats.SourceStatus {
 	sourceStatusRegistryMu.RLock()
 	defer sourceStatusRegistryMu.RUnlock()
-	out := make([]SourceStatusSnapshot, 0, len(sourceStatusRegistry))
+	out := make([]ingeststats.SourceStatus, 0, len(sourceStatusRegistry))
 	for _, s := range sourceStatusRegistry {
 		out = append(out, s.snapshot(now))
 	}

@@ -9,105 +9,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
 	"github.com/OKI-Mesh/CoreScope/internal/perfio"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-// PerfIOSample is the canonical per-process I/O rate sample, sourced from the
-// shared internal/perfio package. The server consumes the same type when it
-// reads this binary's stats file — sharing the type prevents silent JSON
-// contract drift (#1167 follow-up).
-type PerfIOSample = perfio.Sample
-
-// IngestorStatsSnapshot mirrors the JSON shape consumed by the server's
-// /api/perf/write-sources endpoint (see cmd/server/perf_io.go IngestorStats).
-//
-// NOTE: each field below is sampled with an independent atomic.Load(), so the
-// snapshot is EVENTUALLY-CONSISTENT — invariants like
-// `walCommits >= tx_inserted` may be momentarily violated
-// in a single sample. Consumers MUST NOT derive ratios on the assumption these
-// counters were captured at the same instant; treat each field as an
-// independent monotonically-increasing counter and look at deltas across
-// multiple samples instead.
-type IngestorStatsSnapshot struct {
-	SampledAt          string           `json:"sampledAt"`
-	TxInserted         int64            `json:"tx_inserted"`
-	ObsInserted        int64            `json:"obs_inserted"`
-	DuplicateTx        int64            `json:"tx_dupes"`
-	NodeUpserts        int64            `json:"node_upserts"`
-	ObserverUpserts    int64            `json:"observer_upserts"`
-	WriteErrors        int64            `json:"write_errors"`
-	SignatureDrops     int64            `json:"sig_drops"`
-	WALCommits         int64            `json:"walCommits"`
-	GroupCommitFlushes int64            `json:"groupCommitFlushes"` // always 0 — group commit reverted (refs #1129)
-	BackfillUpdates    map[string]int64 `json:"backfillUpdates"`
-	// ProcIO is the ingestor's own /proc/self/io rate snapshot. Surfaced via
-	// the server's /api/perf/io endpoint under .ingestor (#1120 — "Both
-	// ingestor and server"). Optional; absent on non-Linux hosts.
-	ProcIO *PerfIOSample `json:"procIO,omitempty"`
-	// SourceLiveness (PR #1609 M1) is the per-MQTT-source receipt vs
-	// write-path liveness snapshot. Keyed by source Tag. Surfaced by
-	// the server via /api/healthz under .ingest_liveness so operators
-	// can see "broker alive, write path stuck" (lastReceiptUnix recent,
-	// lastMessageUnix stale) distinct from "everything stalled" (both
-	// stale). Additive: omitempty so older server builds ignore it
-	// gracefully.
-	SourceLiveness map[string]SourceLivenessSnapshot `json:"source_liveness,omitempty"`
-	// SourceStatuses (#1043) is the per-MQTT-source connection state and
-	// counter view consumed by cmd/server's /api/mqtt/status handler.
-	// Additive; omitempty so older server builds ignore it.
-	SourceStatuses []SourceStatusSnapshot `json:"source_statuses,omitempty"`
-	// WatchdogLastTickUnix (#1749) is the unix-seconds timestamp of the
-	// most recent runLivenessWatchdogLoop tick. Surfaced via
-	// /api/mqtt/status so external monitoring can assert the watchdog
-	// goroutine is still alive — a value older than ~2× the watchdog
-	// scan interval (typically 60s) indicates the watchdog itself has
-	// wedged or panicked. 0 means the watchdog has never ticked
-	// (e.g. cold start before the first scan). Additive — omitempty
-	// so older server builds ignore it.
-	WatchdogLastTickUnix int64 `json:"watchdogLastTickUnix,omitempty"`
-	// WatchdogPanicCount (#1810 round-1) is the running total of
-	// recovered panics inside the watchdog per-source work IIFE.
-	// Exposed alongside WatchdogLastTickUnix because the tick clock is
-	// stamped BEFORE the per-source work — a loop that panics on every
-	// source still advances WatchdogLastTickUnix and looks healthy by
-	// that signal alone. A rapidly-growing WatchdogPanicCount means
-	// the loop is alive but per-source processing is broken (typically
-	// a panic in emit / log sink). Monotonic; 0 means no recovered
-	// panics yet. Additive — omitempty so older server builds ignore.
-	WatchdogPanicCount int64 `json:"watchdogPanicCount,omitempty"`
-	// WatchdogLogDropCount (#1749 root-cause fix) is the running total
-	// of watchdog log lines dropped by the async emit queue because
-	// the background writer goroutine could not keep up — almost
-	// always because its underlying write() is itself stuck (Docker
-	// JSON-file log driver backpressure, full stderr pipe, etc.).
-	// Surfaced alongside WatchdogLastTickUnix / WatchdogPanicCount so
-	// external monitoring can distinguish "watchdog dead" (stale tick)
-	// from "watchdog alive, but its log sink is stuck" (ticking
-	// normally, drop count climbing). Monotonic; 0 means the writer
-	// has never fallen behind. Additive — omitempty so older server
-	// builds ignore it.
-	WatchdogLogDropCount int64 `json:"watchdogLogDropCount,omitempty"`
-}
-
-// SourceLivenessSnapshot is the per-source two-clock view exposed for
-// /api/healthz consumers. unixSeconds for both fields; 0 means "never".
-type SourceLivenessSnapshot struct {
-	LastReceiptUnix int64 `json:"lastReceiptUnix"`
-	LastMessageUnix int64 `json:"lastMessageUnix"`
-}
-
-// statsFilePath returns the writable path the ingestor will publish stats to.
-// Override via env CORESCOPE_INGESTOR_STATS for tests / non-default deploys.
-//
-// SECURITY: the default lives in /tmp which is world-writable. The writer uses
-// O_NOFOLLOW + 0o600 so a pre-planted symlink cannot be used to clobber an
-// arbitrary file via this path. Operators who want stronger guarantees should
-// point CORESCOPE_INGESTOR_STATS at a private directory (e.g. /var/lib/corescope/).
+// statsFilePath returns the writable path the ingestor will publish stats to:
+// ingeststats.Path(), so the server reads the same file. See ingeststats for the
+// CORESCOPE_INGESTOR_STATS override and the /tmp security note; the writer below
+// uses O_NOFOLLOW and 0o600 for that reason.
 func statsFilePath() string {
-	if p := os.Getenv("CORESCOPE_INGESTOR_STATS"); p != "" {
-		return p
-	}
-	return "/tmp/corescope-ingestor-stats.json"
+	return ingeststats.Path()
 }
 
 // writeStatsAtomic writes b to path via a tmp-then-rename, refusing to follow
@@ -203,13 +115,12 @@ func parseProcSelfIOInto(sc *bufio.Scanner, out *procIOSnapshot) {
 	out.syscW = c.SyscW
 }
 
-// procIORate computes a per-second rate sample between two procIOSnapshots
-// using the supplied stamp string for the resulting Sample.SampledAt
-// (Carmack must-fix #5 — the writer captures time.Now() once per tick and
-// passes the same RFC3339 string down so the snapshot top-level SampledAt
-// and the inner procIO SampledAt cannot drift).
+// procIORate computes a per-second rate sample between two procIOSnapshots,
+// stamped with sampledAt (Carmack must-fix #5: the writer captures time.Now()
+// once per tick and passes the same stamp down, so the snapshot's SampledAt and
+// the inner procIO SampledAt cannot drift).
 // Returns nil if either snapshot is invalid or the interval is zero.
-func procIORate(prev, cur procIOSnapshot, stamp string) *PerfIOSample {
+func procIORate(prev, cur procIOSnapshot, sampledAt *types.WireTimeSeconds) *ingeststats.IOSample {
 	if !prev.ok || !cur.ok {
 		return nil
 	}
@@ -217,13 +128,13 @@ func procIORate(prev, cur procIOSnapshot, stamp string) *PerfIOSample {
 	if dt < 0.001 {
 		return nil
 	}
-	return &PerfIOSample{
+	return &ingeststats.IOSample{
 		ReadBytesPerSec:           float64(cur.readBytes-prev.readBytes) / dt,
 		WriteBytesPerSec:          float64(cur.writeBytes-prev.writeBytes) / dt,
 		CancelledWriteBytesPerSec: float64(cur.cancelledWrite-prev.cancelledWrite) / dt,
 		SyscallsRead:              float64(cur.syscR-prev.syscR) / dt,
 		SyscallsWrite:             float64(cur.syscW-prev.syscW) / dt,
-		SampledAt:                 stamp,
+		SampledAt:                 sampledAt,
 	}
 }
 
@@ -268,14 +179,14 @@ func StartStatsFileWriter(s *Store, interval time.Duration) (stop func()) {
 			}
 			// Capture time.Now() ONCE per tick (Carmack must-fix #5).
 			// Both snapshot.SampledAt and procIO.SampledAt MUST share the
-			// same string so the freshness guard isn't validating one
+			// same stamp so the freshness guard isn't validating one
 			// timestamp while the consumer renders another.
 			tickAt := time.Now().UTC()
-			stamp := tickAt.Format(time.RFC3339)
+			stamp := &types.WireTimeSeconds{Time: tickAt}
 			curIO := readProcSelfIOFn()
 			ioRate := procIORate(prevIO, curIO, stamp)
 			prevIO = curIO
-			snap := IngestorStatsSnapshot{
+			snap := ingeststats.Stats{
 				SampledAt:            stamp,
 				TxInserted:           s.Stats.TransmissionsInserted.Load(),
 				ObsInserted:          s.Stats.ObservationsInserted.Load(),

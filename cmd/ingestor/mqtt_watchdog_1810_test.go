@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // PR #1810 round-1 follow-ups. Tests for the must-fix findings from
@@ -245,12 +248,12 @@ func TestWatchdog_EscalationWarnThrottled_1810(t *testing.T) {
 	}
 }
 
-// C2: round-trip — IngestorStatsSnapshot.WatchdogLastTickUnix and
-// WatchdogPanicCount must serialize through JSON and deserialize via
-// the server's envelope shape.
+// C2: round-trip — Stats.WatchdogLastTickUnix and WatchdogPanicCount must
+// serialize through JSON and deserialize through the shared Decode the
+// server uses.
 func TestIngestorStatsSnapshot_WatchdogFieldsRoundTrip_1810(t *testing.T) {
-	snap := IngestorStatsSnapshot{
-		SampledAt:            time.Now().UTC().Format(time.RFC3339),
+	snap := ingeststats.Stats{
+		SampledAt:            &types.WireTimeSeconds{Time: time.Now().UTC()},
 		WatchdogLastTickUnix: 1700000000,
 		WatchdogPanicCount:   42,
 	}
@@ -264,8 +267,8 @@ func TestIngestorStatsSnapshot_WatchdogFieldsRoundTrip_1810(t *testing.T) {
 	if !bytes.Contains(b, []byte(`"watchdogPanicCount":42`)) {
 		t.Fatalf("watchdogPanicCount missing from JSON: %s", string(b))
 	}
-	var back IngestorStatsSnapshot
-	if err := json.Unmarshal(b, &back); err != nil {
+	back, err := ingeststats.Decode(b)
+	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if back.WatchdogLastTickUnix != 1700000000 || back.WatchdogPanicCount != 42 {

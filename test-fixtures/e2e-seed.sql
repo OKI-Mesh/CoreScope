@@ -20,10 +20,11 @@ UPDATE observers
 -- also keeps it out of the default 15-minute window, so the
 -- test-e2e-playwright first-10-rows hex-pane test is unaffected; the #1486 test
 -- reaches it by hash with ?timeWindow=0.
-INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version,
+INSERT INTO transmissions (id, raw_hex, hash, first_seen, last_seen, route_type, payload_type, payload_version,
                            decoded_json, channel_hash, from_pubkey)
 OVERRIDING SYSTEM VALUE
 VALUES (0, decode('15000102030405060708090a0b0c0d0e0f', 'hex'), 'fae0c9e6d357a814',
+        (SELECT min(timestamp) FROM observations) - interval '2 days',
         (SELECT min(timestamp) FROM observations) - interval '2 days', 1, 5, 0,
         '{"type":"CHAN","channel":"#test","text":"#1486 fixture"}', NULL, NULL);
 
@@ -45,10 +46,10 @@ SELECT 0, hop.observer, 'rx', hop.snr, hop.rssi, 0,
 --
 -- id -1000000 is a deliberate out-of-band sentinel: it cannot collide with a real
 -- ingested transmission, whose ids come from the identity sequence and are positive.
-INSERT INTO transmissions (id, raw_hex, hash, first_seen, route_type, payload_type, payload_version,
+INSERT INTO transmissions (id, raw_hex, hash, first_seen, last_seen, route_type, payload_type, payload_version,
                            decoded_json, channel_hash, from_pubkey)
 OVERRIDING SYSTEM VALUE
-VALUES (-1000000, decode('19000102030405060708090a0b0c0d0e0f', 'hex'), '17910000deadbeef', now(), 1, 6, 0,
+VALUES (-1000000, decode('19000102030405060708090a0b0c0d0e0f', 'hex'), '17910000deadbeef', now(), now(), 1, 6, 0,
         '{"type":"GRP_DATA","channel":"#test","raw":"deadbeef"}', NULL, NULL);
 
 INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score,

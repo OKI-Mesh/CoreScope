@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
 )
 
 // mqttBrokerSchemes is the set of broker URL schemes whose embedded
@@ -86,56 +86,27 @@ func redactBrokerURL(s string) (string, bool) {
 	return s[:schemeEnd] + "://" + u.User.Username() + ":****@" + hostAndAfter, true
 }
 
-// ingestorMqttSource is the per-MQTT-source status row as the ingestor writes
-// it to its stats file (cmd/ingestor SourceStatusSnapshot). handleMqttStatus
-// copies it into api.MqttSourceStatus with the broker URL credentials
-// redacted — operators must not see the broker password in the API response
-// (#1043 acceptance criterion).
-type ingestorMqttSource struct {
-	Name               string `json:"name"`
-	Broker             string `json:"broker"`
-	Connected          bool   `json:"connected"`
-	LastConnectUnix    int64  `json:"lastConnectUnix"`
-	LastDisconnectUnix int64  `json:"lastDisconnectUnix"`
-	LastPacketUnix     int64  `json:"lastPacketUnix"`
-	ConnectCount       int64  `json:"connectCount"`
-	DisconnectCount    int64  `json:"disconnectCount"`
-	PacketsTotal       int64  `json:"packetsTotal"`
-	PacketsLast5m      int64  `json:"packetsLast5m"`
-	LastError          string `json:"lastError,omitempty"`
-}
-
-// ingestorMqttStatusEnvelope is the partial shape the server decodes from
-// the ingestor stats file (additive — older ingestors omit the field).
-type ingestorMqttStatusEnvelope struct {
-	SampledAt            string               `json:"sampledAt"`
-	SourceStatuses       []ingestorMqttSource `json:"source_statuses"`
-	WatchdogLastTickUnix int64                `json:"watchdogLastTickUnix"`
-	WatchdogPanicCount   int64                `json:"watchdogPanicCount"`
-	WatchdogLogDropCount int64                `json:"watchdogLogDropCount"`
-}
-
 // handleMqttStatus serves GET /api/mqtt/status. Reads the ingestor stats
 // file, masks broker-URL passwords, and returns the per-source status
 // list. Returns an empty list (200 OK) when the stats file is missing
 // or unparseable — the UI panel renders a "no data yet" state.
 func (s *Server) handleMqttStatus(w http.ResponseWriter, r *http.Request) {
 	resp := api.MqttStatusResponse{Sources: []api.MqttSourceStatus{}}
-	data, err := os.ReadFile(IngestorStatsPath())
+	data, err := os.ReadFile(ingeststats.Path())
 	if err != nil {
 		writeJSON(w, resp)
 		return
 	}
-	var env ingestorMqttStatusEnvelope
-	if err := json.Unmarshal(data, &env); err != nil {
+	st, err := ingeststats.Decode(data)
+	if err != nil {
 		writeJSON(w, resp)
 		return
 	}
-	resp.SampleAt = statsTime(env.SampledAt)
-	resp.WatchdogLastTickUnix = nonZero(env.WatchdogLastTickUnix)
-	resp.WatchdogPanicCount = nonZero(env.WatchdogPanicCount)
-	resp.WatchdogLogDropCount = nonZero(env.WatchdogLogDropCount)
-	for _, src := range env.SourceStatuses {
+	resp.SampleAt = st.SampledAt
+	resp.WatchdogLastTickUnix = nonZero(st.WatchdogLastTickUnix)
+	resp.WatchdogPanicCount = nonZero(st.WatchdogPanicCount)
+	resp.WatchdogLogDropCount = nonZero(st.WatchdogLogDropCount)
+	for _, src := range st.SourceStatuses {
 		status := api.MqttSourceStatus{
 			Name:               src.Name,
 			Broker:             maskBrokerURL(src.Broker),

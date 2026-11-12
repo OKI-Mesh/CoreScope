@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestProcIORate_ZeroValuePrevSuppressesRate guards against the phantom-delta
@@ -20,7 +22,7 @@ func TestProcIORate_ZeroValuePrevSuppressesRate(t *testing.T) {
 		readBytes: 1024 * 1024 * 100,
 		ok:        true,
 	}
-	if got := procIORate(prev, cur, "2026-01-01T00:00:00Z"); got != nil {
+	if got := procIORate(prev, cur, &types.WireTimeSeconds{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}); got != nil {
 		t.Fatalf("expected nil rate when prev is zero-value (os.Open failed), got %+v", got)
 	}
 }
@@ -30,7 +32,7 @@ func TestProcIORate_NormalPath(t *testing.T) {
 	base := time.Now()
 	prev := procIOSnapshot{at: base, readBytes: 0, ok: true}
 	cur := procIOSnapshot{at: base.Add(time.Second), readBytes: 1024, ok: true}
-	got := procIORate(prev, cur, "2026-01-01T00:00:01Z")
+	got := procIORate(prev, cur, &types.WireTimeSeconds{Time: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)})
 	if got == nil {
 		t.Fatal("expected non-nil rate for valid prev/cur pair")
 	}
