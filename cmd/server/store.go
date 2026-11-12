@@ -5451,15 +5451,8 @@ func hourBucket(t time.Time) string {
 }
 
 func (s *PacketStore) computeAnalyticsRF(ctx context.Context, region, area string, window TimeWindow) api.RFAnalyticsResponse {
-	var areaNodes map[string]bool
-	if area != "" {
-		areaNodes = s.resolveAreaNodes(ctx, area)
-	}
-
-	var regionObs map[string]bool
-	if region != "" {
-		regionObs = s.resolveRegionObservers(ctx, region)
-	}
+	areaNodes := s.strictAreaNodes(ctx, area)
+	regionObs := s.strictRegionObservers(ctx, region)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -7017,16 +7010,11 @@ func (s *PacketStore) computeAnalyticsDistance(ctx context.Context, region, area
 	// captured. The distHopRecord / distPathRecord values themselves
 	// are value types (not pointers to live records) so we cannot read
 	// torn writes from them post-release.
-	var regionObs map[string]bool
-	if region != "" {
-		// resolveRegionObservers uses its own mutex (regionObsMu)
-		// and is safe to call without s.mu held.
-		regionObs = s.resolveRegionObservers(ctx, region)
-	}
-	var areaNodes map[string]bool
-	if area != "" {
-		areaNodes = s.resolveAreaNodes(ctx, area)
-	}
+	// strictRegionObservers uses its own mutex (regionObsMu) and is safe to
+	// call without s.mu held. An unknown region or area gives an empty set,
+	// so the result is empty rather than unfiltered.
+	regionObs := s.strictRegionObservers(ctx, region)
+	areaNodes := s.strictAreaNodes(ctx, area)
 
 	s.mu.RLock()
 	hopsSnap := s.distHops
@@ -7414,13 +7402,8 @@ func (s *PacketStore) loadObserverIATA(ctx context.Context) map[string]string {
 
 func (s *PacketStore) computeAnalyticsHashSizes(ctx context.Context, region, area string) api.HashSizeAnalyticsResponse {
 
-	var regionObs, areaNodes map[string]bool
-	if region != "" {
-		regionObs = s.resolveRegionObservers(ctx, region)
-	}
-	if area != "" {
-		areaNodes = s.resolveAreaNodes(ctx, area)
-	}
+	regionObs := s.strictRegionObservers(ctx, region)
+	areaNodes := s.strictAreaNodes(ctx, area)
 	obsIATA := s.loadObserverIATA(ctx)
 
 	s.mu.RLock()
@@ -7773,7 +7756,7 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 
 	// If region is specified, filter to only nodes seen by regional observers
 	if region != "" {
-		regionObs := s.resolveRegionObservers(ctx, region)
+		regionObs := s.strictRegionObservers(ctx, region)
 		if regionObs != nil {
 			s.mu.RLock()
 			regionNodePKs := make(map[string]bool)
@@ -7821,7 +7804,7 @@ func (s *PacketStore) computeHashCollisions(ctx context.Context, region, area st
 
 	// If area is specified, filter to only nodes in the area
 	if area != "" {
-		areaNodes := s.resolveAreaNodes(ctx, area)
+		areaNodes := s.strictAreaNodes(ctx, area)
 		if areaNodes != nil {
 			filtered := make([]nodeInfo, 0, len(nodes))
 			for _, n := range nodes {

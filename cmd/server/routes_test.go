@@ -2810,28 +2810,20 @@ func TestAnalyticsHashCollisionsEndpoint(t *testing.T) {
 
 func TestHashCollisionsRegionParam(t *testing.T) {
 	// Issue #438: region param should be accepted and used for filtering.
-	// With no region observers configured, results should be identical to global.
+	// A region with no observers has no nodes, so the result is empty and
+	// not the global one.
 	_, router := setupTestServer(t)
 
-	// Request without region
-	req1 := httptest.NewRequest("GET", "/api/analytics/hash-collisions", nil)
-	w1 := httptest.NewRecorder()
-	router.ServeHTTP(w1, req1)
-	if w1.Code != 200 {
-		t.Fatalf("expected 200, got %d", w1.Code)
+	var global api.HashCollisionResponse
+	getAnalytics(t, router, "/api/analytics/hash-collisions", &global)
+	if collisionNodes(global) == 0 {
+		t.Fatal("fixture has no nodes in the global result, so the test proves nothing")
 	}
 
-	// Request with region param (no observers for this region, so falls back to global)
-	req2 := httptest.NewRequest("GET", "/api/analytics/hash-collisions?region=us-west", nil)
-	w2 := httptest.NewRecorder()
-	router.ServeHTTP(w2, req2)
-	if w2.Code != 200 {
-		t.Fatalf("expected 200, got %d", w2.Code)
-	}
-
-	// With no region observers configured, both should return identical results
-	if w1.Body.String() != w2.Body.String() {
-		t.Error("responses differ with/without region param when no region observers configured")
+	var scoped api.HashCollisionResponse
+	getAnalytics(t, router, "/api/analytics/hash-collisions?region=us-west", &scoped)
+	if n := collisionNodes(scoped); n != 0 {
+		t.Errorf("region with no observers: total_nodes = %d, want 0 (not the global result)", n)
 	}
 }
 

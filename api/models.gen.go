@@ -868,12 +868,12 @@ type DebugStats struct {
 	// ColdStartCoverage Percent of 1-byte prefixes with at least 3 observations.
 	ColdStartCoverage float64 `json:"coldStartCoverage"`
 
-	// LastRebuild When the graph was built, as a whole-second UTC time. Empty before the first build.
-	LastRebuild     string `json:"lastRebuild"`
-	ResolvedCount   int    `json:"resolvedCount"`
-	TotalEdges      int    `json:"totalEdges"`
-	TotalNodes      int    `json:"totalNodes"`
-	UnresolvedCount int    `json:"unresolvedCount"`
+	// LastRebuild When the graph was built. Null before the first build.
+	LastRebuild     *TimestampSeconds `json:"lastRebuild"`
+	ResolvedCount   int               `json:"resolvedCount"`
+	TotalEdges      int               `json:"totalEdges"`
+	TotalNodes      int               `json:"totalNodes"`
+	UnresolvedCount int               `json:"unresolvedCount"`
 }
 
 // DecodeRequest defines model for DecodeRequest.
@@ -2798,9 +2798,6 @@ type PerfWriteSourcesResponse struct {
 
 	// Sources Cumulative counters by name. Backfill counters are named backfill_ followed by the backfill.
 	Sources map[string]int64 `json:"sources"`
-
-	// WriterPerf Lock timings by writer kind. Sent by newer ingestor builds only.
-	WriterPerf *map[string]WriterLockStats `json:"writer_perf,omitempty"`
 }
 
 // PruneGeoFilterAccepted defines model for PruneGeoFilterAccepted.
@@ -3714,20 +3711,6 @@ type WebSocketStats struct {
 
 	// RejectedRate Upgrades refused for connecting too fast. Absent when zero.
 	RejectedRate *int64 `json:"rejectedRate,omitempty"`
-}
-
-// WriterLockStats How long one kind of writer waited for, and then held, the database write lock.
-type WriterLockStats struct {
-	ContentionTotal int64   `json:"contention_total"`
-	Count           int64   `json:"count"`
-	HoldMsMax       float64 `json:"hold_ms_max"`
-	HoldMsP50       float64 `json:"hold_ms_p50"`
-	HoldMsP95       float64 `json:"hold_ms_p95"`
-	HoldMsP99       float64 `json:"hold_ms_p99"`
-	WaitMsMax       float64 `json:"wait_ms_max"`
-	WaitMsP50       float64 `json:"wait_ms_p50"`
-	WaitMsP95       float64 `json:"wait_ms_p95"`
-	WaitMsP99       float64 `json:"wait_ms_p99"`
 }
 
 // Area defines model for Area.

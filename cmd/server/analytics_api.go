@@ -391,7 +391,7 @@ func (s *Server) handleAnalyticsSubpathDetail(w http.ResponseWriter, r *http.Req
 	// Reject if any hop is a blacklisted or hidden-prefix node (#1181).
 	if s.cfg != nil && (len(s.cfg.NodeBlacklist) > 0 || len(s.cfg.HiddenNamePrefixes) > 0) {
 		for _, hop := range rawHops {
-			if s.cfg.IsBlacklisted(hop) || s.isPubkeyHidden(ctx, hop) {
+			if s.hopIsHidden(ctx, hop) {
 				writeError(w, http.StatusNotFound, "Not found")
 				return
 			}

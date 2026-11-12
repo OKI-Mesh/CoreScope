@@ -3517,22 +3517,6 @@ components:
         ingestor:
           description: The ingestor's own rates. Absent when the ingestor publishes none.
           $ref: '#/components/schemas/PerfIOSample'
-    WriterLockStats:
-      type: object
-      additionalProperties: false
-      required: [count, contention_total, wait_ms_p50, wait_ms_p95, wait_ms_p99, wait_ms_max, hold_ms_p50, hold_ms_p95, hold_ms_p99, hold_ms_max]
-      description: How long one kind of writer waited for, and then held, the database write lock.
-      properties:
-        count: { type: integer, format: int64 }
-        contention_total: { type: integer, format: int64 }
-        wait_ms_p50: { type: number, format: double }
-        wait_ms_p95: { type: number, format: double }
-        wait_ms_p99: { type: number, format: double }
-        wait_ms_max: { type: number, format: double }
-        hold_ms_p50: { type: number, format: double }
-        hold_ms_p95: { type: number, format: double }
-        hold_ms_p99: { type: number, format: double }
-        hold_ms_max: { type: number, format: double }
     PerfWriteSourcesResponse:
       type: object
       additionalProperties: false
@@ -3547,10 +3531,6 @@ components:
           oneOf:
             - $ref: '#/components/schemas/TimestampSeconds'
             - { type: "null" }
-        writer_perf:
-          type: object
-          description: Lock timings by writer kind. Sent by newer ingestor builds only.
-          additionalProperties: { $ref: '#/components/schemas/WriterLockStats' }
     MqttSourceStatus:
       type: object
       additionalProperties: false
@@ -5835,8 +5815,10 @@ components:
           type: string
           description: Seconds since the graph was built, like 71.1s. Empty before the first build.
         lastRebuild:
-          type: string
-          description: When the graph was built, as a whole-second UTC time. Empty before the first build.
+          description: When the graph was built. Null before the first build.
+          oneOf:
+            - $ref: '#/components/schemas/TimestampSeconds'
+            - { type: "null" }
     DebugAffinityResponse:
       type: object
       additionalProperties: false

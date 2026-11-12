@@ -1345,7 +1345,7 @@ func (s *Server) handleObserverDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleObserverAnalytics(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
+	id := strings.ToLower(mux.Vars(r)["id"]) // pubkeys are stored lowercase
 	days := queryInt(r, "days", 7)
 	if days < 1 {
 		days = 1

@@ -136,10 +136,10 @@ func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
 	graph.mu.RUnlock()
 
 	cacheAge := ""
-	lastRebuild := ""
+	var lastRebuild *types.WireTimeSeconds // nil (null on the wire) before the first build
 	if !builtAt.IsZero() {
 		cacheAge = fmt.Sprintf("%.1fs", time.Since(builtAt).Seconds())
-		lastRebuild = builtAt.UTC().Format(time.RFC3339)
+		lastRebuild = &types.WireTimeSeconds{Time: builtAt}
 	}
 
 	resp := api.DebugAffinityResponse{

@@ -45,7 +45,7 @@ func TestDebugAffinityEndpoint(t *testing.T) {
 	if resp.Stats.TotalEdges != 2 {
 		t.Errorf("expected 2 total edges in stats, got %d", resp.Stats.TotalEdges)
 	}
-	if resp.Stats.LastRebuild == "" {
+	if resp.Stats.LastRebuild == nil {
 		t.Error("expected lastRebuild to be set")
 	}
 	if resp.Stats.CacheAge == "" {
