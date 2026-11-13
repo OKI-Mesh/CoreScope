@@ -3,6 +3,10 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestIssue804_AnalyticsAttributesByRepeaterRegion verifies that analytics
@@ -25,28 +29,24 @@ import (
 // filter is observer-based. This test fails on the pre-fix code at the
 // "want PDX-Repeater EXCLUDED" assertion.
 func TestIssue804_AnalyticsAttributesByRepeaterRegion(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
+	recent := now.Add(-1 * time.Hour)
 
 	// Observers: one in PDX, one in SJC
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs-pdx', 'Obs PDX', 'PDX', ?, '2026-01-01T00:00:00Z', 100)`, recent)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs-sjc', 'Obs SJC', 'SJC', ?, '2026-01-01T00:00:00Z', 100)`, recent)
+	observerPDX := mustCreateTestObserver(t, ctx, db, "obs-pdx", "Obs PDX", "PDX", recent)
+	observerSJC := mustCreateTestObserver(t, ctx, db, "obs-sjc", "Obs SJC", "SJC", recent)
 
 	// PDX-Repeater node (lives in Portland)
 	pdxPK := "pdx0000000000001"
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role)
-		VALUES (?, 'PDX-Repeater', 'repeater')`, pdxPK)
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: pdxPK, Name: "PDX-Repeater", Role: "repeater"})
 
 	// SJC-Repeater node (lives in San Jose) — sanity baseline
 	sjcPK := "sjc0000000000001"
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role)
-		VALUES (?, 'SJC-Repeater', 'repeater')`, sjcPK)
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: sjcPK, Name: "SJC-Repeater", Role: "repeater"})
 
 	pdxDecoded := `{"pubKey":"` + pdxPK + `","name":"PDX-Repeater","type":"ADVERT","flags":{"isRepeater":true}}`
 	sjcDecoded := `{"pubKey":"` + sjcPK + `","name":"SJC-Repeater","type":"ADVERT","flags":{"isRepeater":true}}`
@@ -55,47 +55,45 @@ func TestIssue804_AnalyticsAttributesByRepeaterRegion(t *testing.T) {
 	//    Establishes PDX as the repeater's home region.
 	//    raw_hex header 0x12 = route_type 2 (direct), payload_type 4
 	//    pathByte 0x40 (hashSize bits=01 → 2, hop_count=0)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('1240aabbccdd', 'pdx_zh_direct', ?, 2, 4, ?)`, recent, pdxDecoded)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 12.0, -85, '[]', ?)`, recentEpoch)
+	pdxDirectID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"1240aabbccdd", "pdx_zh_direct", pdxDecoded, types.RouteDirect, types.PayloadADVERT, "",
+	), recent)
+	dbtest.Observation(t, db, pdxDirectID, observerPDX, recent, 12, -85, nil...)
 
 	// 2) PDX-Repeater FLOOD advert with hashSize=2 (reliable).
 	//    Heard ONLY by obs-SJC via a relay path (this is the polluting case).
 	//    raw_hex header 0x11 = route_type 1 (flood), payload_type 4
 	//    pathByte 0x41 (hashSize bits=01 → 2, hop_count=1)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('1141aabbccdd', 'pdx_flood', ?, 1, 4, ?)`, recent, pdxDecoded)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 2, 8.0, -95, '["aa11"]', ?)`, recentEpoch)
+	pdxFloodID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"1141aabbccdd", "pdx_flood", pdxDecoded, types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
+	dbtest.Observation(t, db, pdxFloodID, observerSJC, recent, 8, -95, []string{"aa11"}...)
 
 	// 3) SJC-Repeater zero-hop DIRECT advert heard only by obs-SJC.
 	//    Establishes SJC as the repeater's home region.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('1240ccddeeff', 'sjc_zh_direct', ?, 2, 4, ?)`, recent, sjcDecoded)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (3, 2, 14.0, -82, '[]', ?)`, recentEpoch)
+	sjcDirectID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"1240ccddeeff", "sjc_zh_direct", sjcDecoded, types.RouteDirect, types.PayloadADVERT, "",
+	), recent)
+	dbtest.Observation(t, db, sjcDirectID, observerSJC, recent, 14, -82, nil...)
 
 	// 4) SJC-Repeater FLOOD advert with hashSize=2, heard by obs-SJC.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('1141ccddeeff', 'sjc_flood', ?, 1, 4, ?)`, recent, sjcDecoded)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (4, 2, 11.0, -88, '["cc22"]', ?)`, recentEpoch)
+	sjcFloodID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"1141ccddeeff", "sjc_flood", sjcDecoded, types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
+	dbtest.Observation(t, db, sjcFloodID, observerSJC, recent, 11, -88, []string{"cc22"}...)
 
-	store := NewPacketStore(db, nil)
-	store.Load()
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
 
 	t.Run("region=SJC excludes PDX-Repeater (heard but not home)", func(t *testing.T) {
-		result := store.GetAnalyticsHashSizes("SJC", "")
-
-		mb, ok := result["multiByteNodes"].([]map[string]interface{})
-		if !ok {
-			t.Fatal("expected multiByteNodes slice")
-		}
+		ctx := t.Context()
+		result := store.GetAnalyticsHashSizes(ctx, "SJC", "")
 
 		var foundPDX, foundSJC bool
-		for _, n := range mb {
-			pk, _ := n["pubkey"].(string)
+		for _, n := range result.MultiByteNodes {
+			pk := n.Pubkey
 			if pk == pdxPK {
 				foundPDX = true
 			}
@@ -113,23 +111,21 @@ func TestIssue804_AnalyticsAttributesByRepeaterRegion(t *testing.T) {
 	})
 
 	t.Run("API exposes attributionMethod", func(t *testing.T) {
-		result := store.GetAnalyticsHashSizes("SJC", "")
-		method, ok := result["attributionMethod"].(string)
-		if !ok {
-			t.Fatal("expected attributionMethod string field on result")
-		}
+		ctx := t.Context()
+		result := store.GetAnalyticsHashSizes(ctx, "SJC", "")
+		method := result.AttributionMethod
 		if method != "repeater" {
 			t.Errorf("attributionMethod = %q, want %q", method, "repeater")
 		}
 	})
 
 	t.Run("region=PDX excludes SJC-Repeater", func(t *testing.T) {
-		result := store.GetAnalyticsHashSizes("PDX", "")
-		mb, _ := result["multiByteNodes"].([]map[string]interface{})
+		ctx := t.Context()
+		result := store.GetAnalyticsHashSizes(ctx, "PDX", "")
 
 		var foundPDX, foundSJC bool
-		for _, n := range mb {
-			pk, _ := n["pubkey"].(string)
+		for _, n := range result.MultiByteNodes {
+			pk := n.Pubkey
 			if pk == pdxPK {
 				foundPDX = true
 			}

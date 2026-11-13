@@ -1,0 +1,15 @@
+{
+  "accepted": true,
+  "count": 1,
+  "dryRun": false,
+  "nodes": [
+    {
+      "lat": 43.3453,
+      "lon": -1.33558,
+      "name": "Node-002",
+      "pubkey": "a74b883fb40628e504c56d25d907d025380254ea7448a4bd50fe8d0c657b0455"
+    }
+  ],
+  "requestId": "7b5ca089045d7b09",
+  "statusUrl": "/api/admin/prune-geo-filter/status?id=7b5ca089045d7b09"
+}

@@ -1,0 +1,68 @@
+[
+    {
+        "pubkey": "b8270e6b98b64b5c5edeb288ec55bcd31842d2b8de747124d8680ecbae1f613d",
+        "meanSkewSec": 0,
+        "medianSkewSec": 0,
+        "lastSkewSec": 1,
+        "recentMedianSkewSec": -0.8,
+        "driftPerDaySec": 0,
+        "severity": "ok",
+        "sampleCount": 411,
+        "calibrated": true,
+        "lastAdvertTS": 1794186062,
+        "lastObservedTS": 1794186064,
+        "goodFraction": 1,
+        "recentBadSampleCount": 0,
+        "recentSampleCount": 3,
+        "nodeName": "Node One",
+        "nodeRole": "companion"
+    },
+    {
+        "pubkey": "0e80c3cf715cf9480f049657911527d4ad1b2b08ab8957e25f08c6a202d79eb7",
+        "meanSkewSec": -74014918.7,
+        "medianSkewSec": -74014925.8,
+        "lastSkewSec": -73964598.8,
+        "recentMedianSkewSec": -73964591.8,
+        "driftPerDaySec": 0,
+        "severity": "no_clock",
+        "sampleCount": 1624,
+        "calibrated": true,
+        "lastAdvertTS": 1720205718,
+        "lastObservedTS": 1794170316,
+        "goodFraction": 0,
+        "recentBadSampleCount": 0,
+        "recentSampleCount": 0,
+        "nodeName": "Node Two",
+        "nodeRole": "repeater"
+    },
+    {
+        "pubkey": "371f1cdbc032ad96eae6e235e2190ad924b7c6e0db3f6e4ec356159c4adecc44",
+        "meanSkewSec": -968097.1,
+        "medianSkewSec": -31420.6,
+        "lastSkewSec": -31423.8,
+        "recentMedianSkewSec": -31419.7,
+        "driftPerDaySec": 0,
+        "severity": "no_clock",
+        "sampleCount": 297,
+        "calibrated": true,
+        "lastAdvertTS": 1794082136,
+        "lastObservedTS": 1794113561,
+        "goodFraction": 0,
+        "recentBadSampleCount": 2,
+        "recentBadSamples": [
+            {
+                "hash": "344dff63e1f1566a",
+                "advertTS": 1794081212,
+                "skewSec": -31420.6
+            },
+            {
+                "hash": "e616f78dd7251686",
+                "advertTS": 1794082136,
+                "skewSec": -31418.8
+            }
+        ],
+        "recentSampleCount": 2,
+        "nodeName": "Node Three",
+        "nodeRole": "companion"
+    }
+]

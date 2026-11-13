@@ -1,12 +1,15 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -28,45 +31,6 @@ const coverageFeatureCap = 5000
 // (the client only renders the top ~10). NodesTruncated flags that more were
 // heard than returned (#11).
 const coverageCellNodeCap = 25
-
-// GeoJSON output (named structs, no map[string]interface{} — AGENTS.md).
-// Truncated is a non-standard foreign member (ignored by GeoJSON consumers like
-// Leaflet) that signals the cell list was capped at coverageFeatureCap.
-type CoverageFeatureCollection struct {
-	Type      string            `json:"type"` // "FeatureCollection"
-	Features  []CoverageFeature `json:"features"`
-	Truncated bool              `json:"truncated,omitempty"`
-	// Per-node summary (set only by the per-node endpoint): total mobile-client
-	// receptions of this node and how many distinct companions heard it. Foreign
-	// members, omitempty so the global endpoint's payload is unchanged (#3).
-	MobileReceptions int `json:"mobile_receptions,omitempty"`
-	MobileClients    int `json:"mobile_clients,omitempty"`
-}
-type CoverageFeature struct {
-	Type       string             `json:"type"` // "Feature"
-	Geometry   CoveragePolygon    `json:"geometry"`
-	Properties CoverageProperties `json:"properties"`
-}
-type CoveragePolygon struct {
-	Type        string         `json:"type"`        // "Polygon"
-	Coordinates [][][2]float64 `json:"coordinates"` // one ring: [ [ [lon,lat], ... ] ]
-}
-type CoverageProperties struct {
-	Cell           string         `json:"cell"`
-	Count          int            `json:"count"`
-	BestSNR        *float64       `json:"best_snr"`
-	HasSig         bool           `json:"has_sig"`                   // false → render grey (no signal metric)
-	Nodes          []CoverageNode `json:"nodes"`                     // per-node breakdown, strongest latest-SNR first
-	NodesTruncated bool           `json:"nodes_truncated,omitempty"` // true → more nodes heard than returned (#11)
-}
-
-// CoverageNode is one directly-heard node within a cell, with its latest SNR.
-type CoverageNode struct {
-	Prefix string   `json:"prefix"`         // heard_key (resolved to Name when unique)
-	Name   string   `json:"name,omitempty"` // node name, empty if unknown/ambiguous prefix
-	SNR    *float64 `json:"snr"`            // latest SNR (by rx_at); nil → heard without signal
-	Count  int      `json:"count"`
-}
 
 type covAgg struct {
 	count   int
@@ -98,7 +62,7 @@ type nodeResolver func(heardKey string) (key, name string)
 // aggregateCoverage bins raw rows into display-resolution hex cells, keeping the
 // best (max) SNR per cell, and emits GeoJSON polygons. resolve (may be nil) collapses
 // per-node receptions by resolved node identity.
-func aggregateCoverage(rows []coverageRow, res int, resolve nodeResolver) CoverageFeatureCollection {
+func aggregateCoverage(rows []coverageRow, res int, resolve nodeResolver) api.CoverageFeatureCollection {
 	byCell := map[string]*covAgg{}
 	for _, row := range rows {
 		cell := hexCellAt(row.Lat, row.Lon, res)
@@ -155,20 +119,27 @@ func aggregateCoverage(rows []coverageRow, res int, resolve nodeResolver) Covera
 			}
 		}
 	}
-	fc := CoverageFeatureCollection{Type: "FeatureCollection", Features: []CoverageFeature{}}
+	fc := api.CoverageFeatureCollection{Type: "FeatureCollection", Features: []api.CoverageFeature{}}
 	for cell, a := range byCell {
 		ring := hexBoundary(cell)
 		if ring == nil {
 			continue
 		}
 		nodes, nodesTrunc := sortedCoverageNodes(a.nodes)
-		fc.Features = append(fc.Features, CoverageFeature{
-			Type:     "Feature",
-			Geometry: CoveragePolygon{Type: "Polygon", Coordinates: [][][2]float64{ring}},
-			Properties: CoverageProperties{
-				Cell: cell, Count: a.count, BestSNR: a.bestSNR, HasSig: a.hasSig,
-				Nodes: nodes, NodesTruncated: nodesTrunc,
-			},
+		positions := make(api.CoverageRing, len(ring))
+		for i, pt := range ring {
+			positions[i] = api.GeoPosition{pt[0], pt[1]}
+		}
+		props := api.CoverageProperties{
+			Cell: cell, Count: a.count, BestSnr: a.bestSNR, HasSig: a.hasSig, Nodes: nodes,
+		}
+		if nodesTrunc {
+			props.NodesTruncated = &nodesTrunc
+		}
+		fc.Features = append(fc.Features, api.CoverageFeature{
+			Type:       "Feature",
+			Geometry:   api.CoveragePolygon{Type: "Polygon", Coordinates: []api.CoverageRing{positions}},
+			Properties: props,
 		})
 	}
 	// Bound the response: when more cells exist than coverageFeatureCap, keep the
@@ -183,7 +154,8 @@ func aggregateCoverage(rows []coverageRow, res int, resolve nodeResolver) Covera
 			return fc.Features[i].Properties.Cell < fc.Features[j].Properties.Cell // deterministic tie-break
 		})
 		fc.Features = fc.Features[:coverageFeatureCap]
-		fc.Truncated = true
+		truncated := true
+		fc.Truncated = &truncated
 	}
 	// Map iteration is randomized, so sort features by cell for a deterministic
 	// payload — stable ETag/caching and a non-flaky "first feature" in e2e (#8).
@@ -197,13 +169,13 @@ func aggregateCoverage(rows []coverageRow, res int, resolve nodeResolver) Covera
 // SNR descending (nodes heard without a signal sort last), tie-broken by count then
 // prefix for a stable order. The slice is capped at coverageCellNodeCap; truncated
 // reports whether more nodes were heard in the cell than returned (#11).
-func sortedCoverageNodes(m map[string]*covNodeAgg) (nodes []CoverageNode, truncated bool) {
-	out := make([]CoverageNode, 0, len(m))
+func sortedCoverageNodes(m map[string]*covNodeAgg) (nodes []api.CoverageNode, truncated bool) {
+	out := make([]api.CoverageNode, 0, len(m))
 	for _, na := range m {
-		out = append(out, CoverageNode{Prefix: na.prefix, Name: na.name, SNR: na.latestSNR, Count: na.count})
+		out = append(out, api.CoverageNode{Prefix: na.prefix, Name: optString(na.name), Snr: na.latestSNR, Count: na.count})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		si, sj := out[i].SNR, out[j].SNR
+		si, sj := out[i].Snr, out[j].Snr
 		if (si == nil) != (sj == nil) {
 			return si != nil // signal before no-signal
 		}
@@ -249,51 +221,25 @@ func prefixOrEmpty(s string, n int) string {
 	return ""
 }
 
-// sqlPlaceholders returns "?,?,…" with n placeholders (n >= 1).
-func sqlPlaceholders(n int) string {
-	if n <= 1 {
-		return "?"
-	}
-	return strings.Repeat("?,", n-1) + "?"
-}
-
-// queryCoverageRows returns raw coverage rows where the directly-heard node
-// matches the target pubkey by its 2-3 byte prefix (or full pubkey), within the
-// bbox. Read-only (server RO connection).
-func (s *Server) queryCoverageRows(pubkey string, b bbox) ([]coverageRow, error) {
-	cands := coverageHeardKeyCandidates(pubkey)
-	args := make([]interface{}, 0, len(cands)+4)
-	for _, c := range cands {
-		args = append(args, c)
-	}
-	args = append(args, b.MinLat, b.MaxLat, b.MinLon, b.MaxLon)
-	rows, err := s.db.conn.Query(`
-		SELECT lat, lon, snr, rssi, heard_key, rx_at
-		FROM client_receptions
-		WHERE heard_key IN (`+sqlPlaceholders(len(cands))+`)
-		  AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?`, args...)
+func (s *Server) queryCoverageRows(ctx context.Context, pubkey string, b bbox) ([]coverageRow, error) {
+	rows, err := s.db.ListCoverageRows(ctx, database.CoverageQuery{
+		HeardKeys: coverageHeardKeyCandidates(pubkey),
+		MinLat:    b.MinLat, MaxLat: b.MaxLat, MinLon: b.MinLon, MaxLon: b.MaxLon,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanCoverageRows(rows)
+	out := make([]coverageRow, 0, len(rows))
+	for _, r := range rows {
+		// formatTS keeps the fixed-width UTC string the aggregation compares.
+		out = append(out, coverageRow{Lat: r.Lat, Lon: r.Lon, SNR: r.SNR, RSSI: r.RSSI, HeardKey: r.HeardKey, RxAt: formatTS(r.RxAt)})
+	}
+	return out, nil
 }
 
-// mobileRxStats returns the total mobile-client receptions of a node (by its
-// 2-3 byte prefix or full pubkey) and the number of distinct contributing clients.
-func (s *Server) mobileRxStats(pubkey string) (count, clients int) {
-	if s.db == nil || s.db.conn == nil {
-		return 0, 0
-	}
-	cands := coverageHeardKeyCandidates(pubkey)
-	args := make([]interface{}, len(cands))
-	for i, c := range cands {
-		args[i] = c
-	}
-	s.db.conn.QueryRow(`
-		SELECT COUNT(*), COUNT(DISTINCT rx_pubkey) FROM client_receptions
-		WHERE heard_key IN (`+sqlPlaceholders(len(cands))+`)`, args...).Scan(&count, &clients)
-	return count, clients
+// mobileRxStats returns the node-wide reception and distinct-client totals.
+func (s *Server) mobileRxStats(ctx context.Context, pubkey string) (count, clients int, err error) {
+	return s.db.CountMobileReceptions(ctx, coverageHeardKeyCandidates(pubkey))
 }
 
 // zoomToHexRes maps a Leaflet zoom level to the display resolution used for hex
@@ -329,6 +275,7 @@ func parseBBox(s string) (bbox, bool) {
 
 // handleNodeRxCoverage serves per-node mobile RX coverage as a GeoJSON hex grid.
 func (s *Server) handleNodeRxCoverage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if !s.requireClientRxCoverage(w, r) {
 		return
 	}
@@ -338,33 +285,42 @@ func (s *Server) handleNodeRxCoverage(w http.ResponseWriter, r *http.Request) {
 	// heardKeyResolver) still leaked the GPS hex bins and mobile_receptions /
 	// mobile_clients counts for a node the rest of the API hides (#1727 r2).
 	if !isHexPubkey(pubkey) {
-		http.Error(w, "invalid pubkey: expected 64 hex chars", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid pubkey: expected 64 hex chars")
 		return
 	}
-	if (s.cfg != nil && s.cfg.IsBlacklisted(pubkey)) || s.isPubkeyHidden(pubkey) {
-		http.NotFound(w, r)
+	if (s.cfg != nil && s.cfg.IsBlacklisted(pubkey)) || s.isPubkeyHidden(ctx, pubkey) {
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	b, ok := parseBBox(r.URL.Query().Get("bbox"))
 	if !ok {
-		http.Error(w, "bbox required as minLat,minLon,maxLat,maxLon", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "bbox required as minLat,minLon,maxLat,maxLon")
 		return
 	}
-	if s.db == nil || s.db.conn == nil {
-		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	if s.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
 	z, _ := strconv.Atoi(r.URL.Query().Get("z"))
-	rows, err := s.queryCoverageRows(pubkey, b)
+	rows, err := s.queryCoverageRows(ctx, pubkey, b)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(rows))
+	fc := aggregateCoverage(rows, zoomToHexRes(z), s.heardKeyResolverFor(ctx, rows))
 	// Attach the node-wide reception/contributor totals (#3): the bbox limits the
 	// hex features to the current view, but these summarise all of this node's
 	// mobile coverage so the UI can show "heard by N clients" regardless of pan.
-	fc.MobileReceptions, fc.MobileClients = s.mobileRxStats(pubkey)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(fc)
+	count, clients, err := s.mobileRxStats(r.Context(), pubkey)
+	if err != nil {
+		log.Printf("[coverage] mobile stats for %s: %v", pubkey, err)
+	}
+	// Absent when zero (the wire format has always omitted them).
+	if count != 0 {
+		fc.MobileReceptions = &count
+	}
+	if clients != 0 {
+		fc.MobileClients = &clients
+	}
+	writeJSON(w, fc)
 }

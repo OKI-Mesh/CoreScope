@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // TestHandleNodes_ExposesForeignAdvertField asserts the /api/nodes response
@@ -12,15 +15,30 @@ import (
 // node, so operators can see bridged/leaked nodes (#730).
 func TestHandleNodes_ExposesForeignAdvertField(t *testing.T) {
 	srv, router := setupTestServer(t)
-	conn := srv.db.conn
-
-	if _, err := conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, foreign_advert)
-		VALUES
-		('PK_LOCAL', 'local-node', 'companion', 37.0, -122.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0),
-		('PK_FOREIGN', 'foreign-node', 'companion', 50.0, 10.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 1)`,
-	); err != nil {
-		t.Fatal(err)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	for _, node := range []struct {
+		pubkey  string
+		name    string
+		foreign bool
+	}{
+		{"pk_local", "local-node", false},
+		{"pk_foreign", "foreign-node", true},
+	} {
+		if err := srv.db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: node.pubkey,
+			Name:      node.name,
+			Role:      "companion",
+			Lat:       ptr(37.0),
+			Lon:       ptr(-122.0),
+			RxTime:    now,
+			IngestNow: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.db.SQL().ExecContext(ctx, `UPDATE nodes SET foreign_advert = $1 WHERE public_key = $2`, node.foreign, node.pubkey); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	req := httptest.NewRequest("GET", "/api/nodes?limit=100", nil)
@@ -47,10 +65,10 @@ func TestHandleNodes_ExposesForeignAdvertField(t *testing.T) {
 		}
 		got[pk] = f
 	}
-	if !got["PK_LOCAL"] == false || got["PK_LOCAL"] != false {
+	if got["pk_local"] {
 		t.Errorf("PK_LOCAL foreign=%v, want false", got["PK_LOCAL"])
 	}
-	if got["PK_FOREIGN"] != true {
+	if !got["pk_foreign"] {
 		t.Errorf("PK_FOREIGN foreign=%v, want true", got["PK_FOREIGN"])
 	}
 }

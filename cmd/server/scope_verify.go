@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 )
 
 // scopeVerifyMaxPacketsPerTarget bounds the per-target evidence list. AGENTS.md
@@ -59,57 +64,26 @@ func capVerifyRegions(regions []string) []string {
 // against one packet: the payload type and raw payload bytes the sender HMACed,
 // and the resulting two-byte code it put on the wire.
 //
-// It deliberately does NOT call DecodePacket. That runs decodePayload, which
-// attempts channel decryption and signature validation — work this has no use
-// for, repeated over every unmatched packet on every audit refresh. Walking the
-// offsets is all that is needed, and it reuses decodeHeader/isTransportRoute/
-// decodePath so the offset arithmetic is not duplicated from DecodePacket.
+// It deliberately does NOT call DecodePacket. That decodes the payload's own
+// fields, which this has no use for, repeated over every unmatched packet on
+// every audit refresh. decoder.ParseEnvelope walks the same offsets and bounds
+// as DecodePacket without touching the payload, so the two cannot disagree on
+// what a valid frame is.
 //
 // ok is false for anything that cannot carry a region scope: malformed hex, a
-// truncated header, an invalid path byte, or a non-transport route. A plain
-// FLOOD packet has no transport codes at all, so there is no code1 to compare
-// against and HMACing it could only waste time.
+// truncated header, an invalid path byte, an oversized payload, or a
+// non-transport route. A plain FLOOD packet has no transport codes at all, so
+// there is no code1 to compare against and HMACing it could only waste time.
 func scopeHMACInputs(rawHex string) (payloadType byte, payload []byte, code1 string, ok bool) {
 	buf, err := hex.DecodeString(strings.TrimSpace(rawHex))
-	if err != nil || len(buf) < 2 {
+	if err != nil {
 		return 0, nil, "", false
 	}
-	header := decodeHeader(buf[0])
-	if !isTransportRoute(header.RouteType) {
+	env, err := decoder.ParseEnvelope(buf)
+	if err != nil || env.TransportCodes == nil || len(env.Payload) == 0 {
 		return 0, nil, "", false
 	}
-	offset := 1
-	if len(buf) < offset+4 {
-		return 0, nil, "", false
-	}
-	code1 = strings.ToUpper(hex.EncodeToString(buf[offset : offset+2]))
-	offset += 4 // code1 and code2
-
-	if offset >= len(buf) {
-		return 0, nil, "", false
-	}
-	pathByte := buf[offset]
-	offset++
-	_, consumed, decodeErr := decodePath(pathByte, buf, offset)
-	if decodeErr != nil {
-		return 0, nil, "", false
-	}
-	offset += consumed
-	if offset > len(buf) {
-		return 0, nil, "", false
-	}
-	rest := buf[offset:]
-	if len(rest) == 0 || len(rest) > maxPacketPayload {
-		// The upper bound mirrors DecodePacket, which rejects a payload past
-		// the firmware's MAX_PACKET_PAYLOAD. Unreachable in practice, because
-		// such a packet never reaches the database with an empty scope_name in
-		// the first place, but the comment above claims this walks the same
-		// offsets as the decoder and that should be true rather than nearly
-		// true. A verifier that accepts what the decoder rejects is a small
-		// divergence today and a confusing one to debug later.
-		return 0, nil, "", false
-	}
-	return byte(header.PayloadType), rest, code1, true
+	return byte(env.Header.PayloadType), env.Payload, env.TransportCodes.Code1, true
 }
 
 // regionCode derives the on-wire code1 a sender in region name would emit for
@@ -134,20 +108,13 @@ func regionCode(name string, payloadType byte, payload []byte) string {
 	mac.Write(payload)
 	h := mac.Sum(nil)
 	code := uint16(h[0]) | uint16(h[1])<<8
-	if code == 0 {
+	switch code {
+	case 0:
 		code = 1
-	} else if code == 0xFFFF {
+	case 0xFFFF:
 		code = 0xFFFE
 	}
 	return strings.ToUpper(hex.EncodeToString([]byte{byte(code & 0xFF), byte(code >> 8)}))
-}
-
-// unmatchedTransmissionRow is one transmission that carried a transport scope
-// no configured region key matched, with the raw bytes needed to test a region
-// hypothesis against it.
-type unmatchedTransmissionRow struct {
-	txID   int64
-	rawHex string
 }
 
 // unmatchedTransmissionsInWindow is the SECOND, narrow query behind the audit -
@@ -180,30 +147,10 @@ type unmatchedTransmissionRow struct {
 // traffic is the one that matches what the window claims to describe: a
 // repeater still forwarding a region is likelier to have done so recently, and
 // verification only ever needs two corroborating packets.
-func (s *PacketStore) unmatchedTransmissionsInWindow(sinceISO string) ([]unmatchedTransmissionRow, bool, error) {
-	rows, err := s.db.conn.Query(`
-		SELECT t.id, t.raw_hex
-		FROM transmissions t
-		WHERE t.first_seen >= ?
-		  AND t.scope_name = ''
-		  AND `+scopeConformanceForwarderRouteTypesSQL+`
-		ORDER BY t.first_seen DESC
-		LIMIT ?`, sinceISO, scopeVerifyMaxWindowPackets)
+func (s *PacketStore) unmatchedTransmissionsInWindow(ctx context.Context, since time.Time) ([]database.UnmatchedTransmission, bool, error) {
+	out, err := s.db.ListUnmatchedTransmissions(ctx, since, scopeForwarderRouteTypes, scopeVerifyMaxWindowPackets)
 	if err != nil {
 		return nil, false, fmt.Errorf("unmatched transmissions scan: %w", err)
-	}
-	defer rows.Close()
-
-	var out []unmatchedTransmissionRow
-	for rows.Next() {
-		var r unmatchedTransmissionRow
-		if err := rows.Scan(&r.txID, &r.rawHex); err != nil {
-			return nil, false, fmt.Errorf("unmatched transmissions scan row: %w", err)
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("unmatched transmissions rows: %w", err)
 	}
 	return out, len(out) == scopeVerifyMaxWindowPackets, nil
 }
@@ -258,14 +205,14 @@ type scopeVerifyInputs struct {
 // newScopeVerifier parses each row once. A row whose raw_hex cannot be walked
 // is kept with ok=false rather than dropped, so its id still resolves and a
 // caller asking about it gets "no evidence" instead of a miss.
-func newScopeVerifier(rows []unmatchedTransmissionRow) *scopeVerifier {
+func newScopeVerifier(rows []database.UnmatchedTransmission) *scopeVerifier {
 	v := &scopeVerifier{
 		packets:         make(map[int64]scopeVerifyInputs, len(rows)),
 		matchesByRegion: map[string]map[int64]bool{},
 	}
 	for _, r := range rows {
-		pt, payload, code1, ok := scopeHMACInputs(r.rawHex)
-		v.packets[r.txID] = scopeVerifyInputs{payloadType: pt, payload: payload, code1: code1, ok: ok}
+		pt, payload, code1, ok := scopeHMACInputs(r.RawHex)
+		v.packets[r.ID] = scopeVerifyInputs{payloadType: pt, payload: payload, code1: code1, ok: ok}
 	}
 	return v
 }

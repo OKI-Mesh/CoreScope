@@ -11,26 +11,52 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
-// setupScopeConfigStateServer is setupTestServer plus the declared-regions
-// column. The stock test schema predates configured_scope, so without this
-// the DB reports hasConfiguredScope == false and every node would classify as
-// "never asked" — the fixture would agree with a broken implementation.
 func setupScopeConfigStateServer(t *testing.T) (*Server, *mux.Router) {
 	t.Helper()
-	srv, router := setupTestServer(t)
-	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
-		t.Fatal(err)
-	}
-	if !srv.db.hasConfiguredScope {
-		t.Fatal("hasConfiguredScope is false after adding the column: the fixture would test nothing")
-	}
-	return srv, router
+	return setupTestServer(t)
 }
 
-func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]map[string]interface{} {
+func seedScopeConfigNode(t *testing.T, ctx context.Context, db *database.DB, pubkey string, name string, role types.NodeRole, lat, lon float64, scope *string) {
+	t.Helper()
+	now := time.Now().UTC()
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      name,
+		Role:      role,
+		Lat:       &lat,
+		Lon:       &lon,
+		RxTime:    now,
+		IngestNow: now,
+	})
+	if scope != nil {
+		if err := db.UpdateNodeConfiguredScope(ctx, strings.ToLower(pubkey), *scope, &now); err != nil {
+			t.Fatalf("UpdateNodeConfiguredScope(%q): %v", pubkey, err)
+		}
+	}
+}
+
+func insertDeclaredRegionsForTest(t *testing.T, ctx context.Context, db *database.DB, target, csv string, observedAt time.Time) {
+	t.Helper()
+	_, err := db.InsertClientDeclaredRegions(ctx, &types.ClientDeclaredRegions{
+		Target:     target,
+		RxPubkey:   "test-client",
+		ObservedAt: observedAt,
+		IngestedAt: observedAt,
+		RegionsCSV: csv,
+	})
+	if err != nil {
+		t.Fatalf("InsertClientDeclaredRegions(%q): %v", target, err)
+	}
+}
+
+func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]api.Node {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/nodes"+query, nil)
 	w := httptest.NewRecorder()
@@ -38,16 +64,13 @@ func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]ma
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	var resp struct {
-		Nodes []map[string]interface{} `json:"nodes"`
-	}
+	var resp api.NodeListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	out := map[string]map[string]interface{}{}
+	out := make(map[string]api.Node, len(resp.Nodes))
 	for _, n := range resp.Nodes {
-		pk, _ := n["public_key"].(string)
-		out[pk] = n
+		out[n.PublicKey] = n
 	}
 	return out
 }
@@ -57,24 +80,22 @@ func nodesByPubkey(t *testing.T, router *mux.Router, query string) map[string]ma
 // that answer's state, and one that never answered carries "none" rather
 // than being silently indistinguishable from a fully configured node.
 func TestHandleNodesExposesScopeConfigState(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupScopeConfigStateServer(t)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES
-		('PK_DECLARED', 'declared-rp', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'be,*', '2026-01-01T00:00:00Z'),
-		('PK_SILENT',   'silent-rp',   'repeater', 51.1, 4.1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL, NULL)`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	scope := "be,*"
+	seedScopeConfigNode(t, ctx, srv.db, "pk_declared", "declared-rp", "repeater", 51.0, 4.0, &scope)
+	seedScopeConfigNode(t, ctx, srv.db, "pk_silent", "silent-rp", "repeater", 51.1, 4.1, nil)
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	if got := nodes["PK_DECLARED"]["scope_config_state"]; got != ScopeConfigFull {
-		t.Errorf("declared repeater scope_config_state = %v, want %q", got, ScopeConfigFull)
+	declared := nodes["pk_declared"]
+	if declared.ScopeConfigState == nil || string(*declared.ScopeConfigState) != string(ScopeConfigFull) {
+		t.Errorf("declared repeater scope_config_state = %v, want %q", declared.ScopeConfigState, ScopeConfigFull)
 	}
-	if got := nodes["PK_SILENT"]["scope_config_state"]; got != ScopeConfigNone {
-		t.Errorf("never-asked repeater scope_config_state = %v, want %q", got, ScopeConfigNone)
+	silent := nodes["pk_silent"]
+	if silent.ScopeConfigState == nil || string(*silent.ScopeConfigState) != string(ScopeConfigNone) {
+		t.Errorf("never-asked repeater scope_config_state = %v, want %q", silent.ScopeConfigState, ScopeConfigNone)
 	}
 }
 
@@ -83,20 +104,17 @@ func TestHandleNodesExposesScopeConfigState(t *testing.T) {
 // declared-regions request, so classifying it would state something we have
 // no basis for.
 func TestHandleNodesOmitsScopeConfigStateForNonForwarders(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupScopeConfigStateServer(t)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('PK_COMPANION', 'phone', 'companion', 51.2, 4.2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	seedScopeConfigNode(t, ctx, srv.db, "pk_companion", "phone", "companion", 51.2, 4.2, nil)
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	if _, present := nodes["PK_COMPANION"]["scope_config_state"]; present {
+	companion := nodes["pk_companion"]
+	if companion.ScopeConfigState != nil {
 		t.Errorf("companion carries scope_config_state = %v, want the field absent",
-			nodes["PK_COMPANION"]["scope_config_state"])
+			*companion.ScopeConfigState)
 	}
 }
 
@@ -104,16 +122,13 @@ func TestHandleNodesOmitsScopeConfigStateForNonForwarders(t *testing.T) {
 // from drifting away from the list endpoint: the node page and the map must
 // not disagree about a repeater's scope state.
 func TestHandleNodeDetailExposesScopeConfigState(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupScopeConfigStateServer(t)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES ('PK_DETAIL', 'detail-rp', 'repeater', 51.3, 4.3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'be', '2026-01-01T00:00:00Z')`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	scope := "be"
+	seedScopeConfigNode(t, ctx, srv.db, "pk_detail", "detail-rp", "repeater", 51.3, 4.3, &scope)
 
-	req := httptest.NewRequest("GET", "/api/nodes/PK_DETAIL", nil)
+	req := httptest.NewRequest("GET", "/api/nodes/pk_detail", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -121,12 +136,13 @@ func TestHandleNodeDetailExposesScopeConfigState(t *testing.T) {
 	}
 	// The detail endpoint wraps the node: {"node": {...}, "recentAdverts": [...]}.
 	var resp struct {
-		Node map[string]interface{} `json:"node"`
+		Node api.Node `json:"node"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got := resp.Node["scope_config_state"]; got != ScopeConfigNoUnscoped {
+	got := resp.Node.ScopeConfigState
+	if got == nil || string(*got) != string(ScopeConfigNoUnscoped) {
 		t.Errorf("scope_config_state = %v, want %q", got, ScopeConfigNoUnscoped)
 	}
 }
@@ -137,26 +153,18 @@ func TestHandleNodeDetailExposesScopeConfigState(t *testing.T) {
 // external collector whose casing this repo does not control, and a case-only
 // mismatch would put the audit and the map in disagreement about the same node.
 func TestHandleNodesMatchesDeclaredTargetCaseInsensitively(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupScopeConfigStateServer(t)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES ('pk_mixedcase', 'rp', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, NULL, NULL)`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	seedScopeConfigNode(t, ctx, srv.db, "pk_mixedcase", "rp", "repeater", 51.0, 4.0, nil)
 	// The declared answer names the same node in a different case.
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, configured_scope, configured_scope_at)
-		VALUES ('PK_MIXEDCASE', 'be,*', '2026-01-01T00:00:00Z')`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	insertDeclaredRegionsForTest(t, ctx, srv.db, "PK_MIXEDCASE", "be,*", time.Now().UTC())
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
-	if got := nodes["pk_mixedcase"]["scope_config_state"]; got != ScopeConfigFull {
-		t.Errorf("scope_config_state = %v for a declared answer in the other case, want %q", got, ScopeConfigFull)
+	mixedcase := nodes["pk_mixedcase"]
+	if mixedcase.ScopeConfigState == nil || string(*mixedcase.ScopeConfigState) != string(ScopeConfigFull) {
+		t.Errorf("scope_config_state = %v for a declared answer in the other case, want %q", mixedcase.ScopeConfigState, ScopeConfigFull)
 	}
 }
 
@@ -172,14 +180,11 @@ func TestHandleNodesMatchesDeclaredTargetCaseInsensitively(t *testing.T) {
 // code, not from this test — see the singleflight comment in
 // scope_config_state.go.
 func TestDeclaredRegionsLookupRunsOncePerWindow(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupScopeConfigStateServer(t)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-		VALUES ('PK_PERF', 'rp', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'be,*', '2026-01-01T00:00:00Z')`,
-	); err != nil {
-		t.Fatal(err)
-	}
+	scope := "be,*"
+	seedScopeConfigNode(t, ctx, srv.db, "pk_perf", "rp", "repeater", 51.0, 4.0, &scope)
 
 	atomic.StoreInt64(&srv.declaredRegionsQueries, 0)
 
@@ -203,8 +208,9 @@ func TestDeclaredRegionsLookupRunsOncePerWindow(t *testing.T) {
 	}
 	// And the field is still correct, so the cache is not just cheap.
 	nodes := nodesByPubkey(t, router, "?limit=200")
-	if got := nodes["PK_PERF"]["scope_config_state"]; got != ScopeConfigFull {
-		t.Errorf("scope_config_state = %v, want %q", got, ScopeConfigFull)
+	perf := nodes["pk_perf"]
+	if perf.ScopeConfigState == nil || string(*perf.ScopeConfigState) != string(ScopeConfigFull) {
+		t.Errorf("scope_config_state = %v, want %q", perf.ScopeConfigState, ScopeConfigFull)
 	}
 }
 
@@ -219,30 +225,21 @@ func TestDeclaredRegionsLookupRunsOncePerWindow(t *testing.T) {
 // accumulated at load time from transmissions.scope_name joined to the path
 // hops, not read per request.
 func TestHandleNodesReportsObservedForUndeclaredForwarder(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
 	// 64-hex pubkey: the path-hop join matches a truncated hop against the
 	// node's own pubkey prefix, so a short fixture key would match nothing.
 	const pk = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
-	if _, err := db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'silent-forwarder', 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1)`, pk,
-	); err != nil {
-		t.Fatal(err)
-	}
-	res, err := db.conn.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, scope_name)
-		 VALUES ('AA', 'observed-scope-hash', ?, 0, 1, 1, '{}', '#be')`,
-		time.Now().UTC().Format(time.RFC3339),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	txID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
+	seen := time.Now().UTC()
+	seedScopeConfigNode(t, ctx, db, pk, "silent-forwarder", "repeater", 51.0, 4.0, nil)
+	scope := "#be"
+	txInput := testTransmission("AA", "observed-scope-hash", "{}", types.RouteTransportFlood, types.PayloadRESPONSE, "")
+	txInput.ScopeName = &scope
+	txID := mustCreateTestTransmission(t, ctx, db, txInput, seen)
+	observerID := mustCreateTestObserver(t, ctx, db, "scope-test-observer", "Scope test observer", "", seen)
 	// The hop is the full pubkey, not a truncated wire hop. TransportedScopes
 	// is gated on full-pubkey attribution (#1902 — a 1-byte hop cannot prove
 	// which of the nodes sharing that byte carried the packet), and in
@@ -250,22 +247,13 @@ func TestHandleNodesReportsObservedForUndeclaredForwarder(t *testing.T) {
 	// off the wire. Seeding the resolved form exercises the same index entry
 	// that resolution writes. The decoder uppercases hops, so the fixture does
 	// too, which also pins the lower-casing in addTxToPathHopIndex.
-	if _, err := db.conn.Exec(
-		`INSERT INTO observations (transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-		 VALUES (?, 0, 'rx', 1.0, -100, 0, ?, ?)`,
-		txID, `["`+strings.ToUpper(pk)+`"]`, time.Now().Unix(),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := db.detectSchema(context.Background(), db.conn); err != nil {
-		t.Fatal(err)
-	}
+	resolvedPK := pk
+	dbtest.Observation(t, db, txID, observerID, seen, 1, -100, pk+":"+resolvedPK)
 	cfg := &Config{Port: 3000}
 	srv := NewServer(db, cfg, NewHub())
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatal("background indexes never became ready")
@@ -275,14 +263,14 @@ func TestHandleNodesReportsObservedForUndeclaredForwarder(t *testing.T) {
 	srv.RegisterRoutes(router)
 
 	nodes := nodesByPubkey(t, router, "?limit=200")
-	node := nodes[pk]
-	if node == nil {
+	node, ok := nodes[pk]
+	if !ok {
 		t.Fatalf("seeded repeater missing from the response")
 	}
-	if node["transported_scopes"] == nil {
+	if node.TransportedScopes == nil {
 		t.Fatalf("fixture did not produce transported_scopes; the test would prove nothing (got %v)", node)
 	}
-	if got := node["scope_config_state"]; got != ScopeConfigObserved {
+	if got := node.ScopeConfigState; got == nil || string(*got) != string(ScopeConfigObserved) {
 		t.Errorf("scope_config_state = %v for a never-asked repeater carrying scoped traffic, want %q", got, ScopeConfigObserved)
 	}
 }
@@ -294,12 +282,8 @@ func TestHandleNodesReportsObservedForUndeclaredForwarder(t *testing.T) {
 // production fix in scope_audit.go leaves it green — which is the exact
 // regression this round was opened for.
 func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupScopeConfigStateServer(t)
-	// /api/scope-audit reads transmissions.scope_name; the stock test schema
-	// predates it and the handler fails without it.
-	if err := srv.db.detectSchema(context.Background(), srv.db.conn); err != nil {
-		t.Fatal(err)
-	}
 
 	cases := map[string]string{
 		"PK_AGREE_HASHSTAR":  "#be,#*",
@@ -309,13 +293,8 @@ func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
 		"PK_AGREE_EMPTY":     "",
 	}
 	for pk, csv := range cases {
-		if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-			(public_key, name, role, lat, lon, last_seen, first_seen, advert_count, configured_scope, configured_scope_at)
-			VALUES (?, ?, 'repeater', 51.0, 4.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, ?, '2026-01-01T00:00:00Z')`,
-			pk, "rp-"+pk, csv,
-		); err != nil {
-			t.Fatal(err)
-		}
+		scope := csv
+		seedScopeConfigNode(t, ctx, srv.db, pk, "rp-"+pk, "repeater", 51.0, 4.0, &scope)
 	}
 
 	audit := getScopeAudit(t, router, "?window=24h")
@@ -323,7 +302,7 @@ func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
 	// so its PublicKey comes back lowercased whatever the collector stored.
 	auditState := map[string]string{}
 	for _, row := range audit.Repeaters {
-		auditState[strings.ToLower(row.PublicKey)] = row.ConfigState
+		auditState[strings.ToLower(row.PublicKey)] = string(row.ConfigState)
 	}
 	nodes := nodesByPubkey(t, router, "?limit=200")
 
@@ -333,9 +312,17 @@ func TestScopeAuditAndNodesAgreeEndToEnd(t *testing.T) {
 			t.Errorf("%s (%q): the scope audit does not list the repeater at all", pk, csv)
 			continue
 		}
-		want := nodes[pk]["scope_config_state"]
-		if got != want {
-			t.Errorf("regions_csv %q: the scope audit page shows %q, the map shows %v", csv, got, want)
+		node, ok := nodes[strings.ToLower(pk)]
+		if !ok {
+			t.Errorf("%s (%q): the node list does not contain the repeater", pk, csv)
+			continue
+		}
+		if node.ScopeConfigState == nil {
+			t.Errorf("regions_csv %q: the scope audit page shows %q, the node has no scope_config_state", csv, got)
+			continue
+		}
+		if want := string(*node.ScopeConfigState); got != want {
+			t.Errorf("regions_csv %q: the scope audit page shows %q, the map shows %q", csv, got, want)
 		}
 	}
 }

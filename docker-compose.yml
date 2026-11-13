@@ -1,9 +1,31 @@
-# All container config lives here. manage.sh is just a wrapper around docker compose.
-# Override defaults via .env or environment variables.
-# CRITICAL: All data mounts use bind mounts (~/path), NOT named volumes.
-# This ensures the DB and theme are visible on the host filesystem for backup.
+# All container config lives here. Override defaults via .env or environment variables.
+#
+# Caddy and Mosquitto are optional and live in override files. Select them in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml:docker-compose.mosquitto.yml
+# With neither, the app is published on ${PROD_APP_BIND}:${PROD_APP_PORT} only, which
+# suits an external MQTT broker and a tunnel or reverse proxy in front of it.
+#
+# Postgres data lives in the pgdata named volume. Back it up with pg_dump, not by
+# copying files.
 
 services:
+  postgres:
+    image: imresamu/postgis:18-3.6
+    container_name: corescope-postgres
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      POSTGRES_USER: corescope
+      POSTGRES_DB: corescope
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corescope -d corescope"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   prod:
     build:
       context: .
@@ -16,20 +38,20 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     stop_signal: SIGTERM
+    depends_on:
+      postgres:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${PROD_HTTP_PORT:-80}:80"
-      - "${PROD_HTTPS_PORT:-443}:443"
-      - "${PROD_MQTT_PORT:-1883}:1883"
+      - "${PROD_APP_BIND:-127.0.0.1}:${PROD_APP_PORT:-3000}:3000"
     volumes:
-      - ./caddy-config/Caddyfile:/etc/caddy/Caddyfile:ro
       - ${PROD_DATA_DIR:-~/meshcore-data}:/app/data
-      - caddy-data:/data/caddy
     environment:
-      - NODE_ENV=production
-      - DISABLE_MOSQUITTO=${DISABLE_MOSQUITTO:-false}
-      - DISABLE_CADDY=${DISABLE_CADDY:-false}
+      NODE_ENV: production
+      DISABLE_MOSQUITTO: "true"
+      DISABLE_CADDY: "true"
+      DATABASE_URL: postgres://corescope:${POSTGRES_PASSWORD}@postgres:5432/corescope
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/stats"]
       interval: 30s
@@ -37,5 +59,4 @@ services:
       retries: 3
 
 volumes:
-  # Named volumes for Caddy TLS certificates (not user data — managed by Caddy internally)
-  caddy-data:
+  pgdata:

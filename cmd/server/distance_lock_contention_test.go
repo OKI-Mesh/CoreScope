@@ -34,13 +34,13 @@ import (
 // scale of the gap is the point: a #1239 regression is not marginal, it
 // serializes a millisecond-scale compute behind every writer.
 func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
+	ctx := t.Context()
 	if testing.Short() {
 		t.Skip("skipping concurrency timing test in -short mode")
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 
 	// Populate distHops/distPaths with enough records that compute takes
 	// a measurable amount of time (~ms). With region="", compute never
@@ -56,7 +56,7 @@ func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
 			Dist:       float64(i%500) + 0.5,
 			Type:       []string{"R↔R", "C↔R", "C↔C"}[i%3],
 			Hash:       "h",
-			Timestamp:  "2024-01-01T00:00:00Z",
+			Timestamp:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 			HourBucket: "2024-01-01-00",
 		}
 	}
@@ -66,7 +66,7 @@ func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
 			Hash:      "p",
 			TotalDist: float64(i),
 			HopCount:  3,
-			Timestamp: "2024-01-01T00:00:00Z",
+			Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 			Hops: []distHopDetail{
 				{FromName: "A", FromPk: "aa", ToName: "B", ToPk: "bb", Dist: 1},
 			},
@@ -78,11 +78,8 @@ func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
 	store.mu.Unlock()
 
 	// Sanity: result is non-empty.
-	r := store.computeAnalyticsDistance("", "")
-	if r == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if _, ok := r["topHops"]; !ok {
+	r := store.computeAnalyticsDistance(ctx, "", "")
+	if len(r.TopHops) == 0 {
 		t.Fatal("expected topHops in result")
 	}
 
@@ -96,11 +93,8 @@ func TestComputeAnalyticsDistanceLockHoldDuration(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for !stop.Load() {
-				rr := store.computeAnalyticsDistance("", "")
-				if rr == nil {
-					readerErrs.Add(1)
-				}
-				if _, ok := rr["topHops"]; !ok {
+				rr := store.computeAnalyticsDistance(ctx, "", "")
+				if len(rr.TopHops) == 0 {
 					readerErrs.Add(1)
 				}
 			}

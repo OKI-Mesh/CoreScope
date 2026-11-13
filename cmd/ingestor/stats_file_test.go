@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestProcIORate_ZeroValuePrevSuppressesRate guards against the phantom-delta
@@ -20,7 +22,7 @@ func TestProcIORate_ZeroValuePrevSuppressesRate(t *testing.T) {
 		readBytes: 1024 * 1024 * 100,
 		ok:        true,
 	}
-	if got := procIORate(prev, cur, "2026-01-01T00:00:00Z"); got != nil {
+	if got := procIORate(prev, cur, &types.WireTimeSeconds{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}); got != nil {
 		t.Fatalf("expected nil rate when prev is zero-value (os.Open failed), got %+v", got)
 	}
 }
@@ -30,7 +32,7 @@ func TestProcIORate_NormalPath(t *testing.T) {
 	base := time.Now()
 	prev := procIOSnapshot{at: base, readBytes: 0, ok: true}
 	cur := procIOSnapshot{at: base.Add(time.Second), readBytes: 1024, ok: true}
-	got := procIORate(prev, cur, "2026-01-01T00:00:01Z")
+	got := procIORate(prev, cur, &types.WireTimeSeconds{Time: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)})
 	if got == nil {
 		t.Fatal("expected non-nil rate for valid prev/cur pair")
 	}
@@ -43,6 +45,7 @@ func TestProcIORate_NormalPath(t *testing.T) {
 // stats snapshot includes a `procIO` block with the per-process I/O rate
 // fields required by issue #1120 ("Both ingestor and server").
 func TestStatsFileWriter_PublishesProcIO(t *testing.T) {
+
 	if _, err := os.Stat("/proc/self/io"); err != nil {
 		t.Skip("skip: /proc/self/io unavailable on this host")
 	}
@@ -50,10 +53,7 @@ func TestStatsFileWriter_PublishesProcIO(t *testing.T) {
 	statsPath := filepath.Join(dir, "ingestor-stats.json")
 	t.Setenv("CORESCOPE_INGESTOR_STATS", statsPath)
 
-	store, err := OpenStore(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+	store := newTestStore(t)
 	defer store.Close()
 
 	t.Cleanup(StartStatsFileWriter(store, 50*time.Millisecond))

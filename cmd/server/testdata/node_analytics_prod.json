@@ -1,0 +1,355 @@
+{
+ "node": {
+  "advert_count": 220,
+  "battery_mv": null,
+  "configured_scope": "*,#region-a,#region-b",
+  "configured_scope_at": "2026-11-09T13:25:58Z",
+  "default_scope": null,
+  "first_seen": "2026-06-04T03:03:33Z",
+  "foreign": false,
+  "hash_size": null,
+  "hash_size_inconsistent": false,
+  "last_heard": "2026-11-09T19:39:22Z",
+  "last_seen": "2026-11-09T19:39:22Z",
+  "lat": 40.24626,
+  "lon": -84.15359,
+  "name": "Node 1",
+  "public_key": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+  "role": "repeater",
+  "temperature_c": null
+ },
+ "timeRange": {
+  "from": "2026-11-02T19:44:50Z",
+  "to": "2026-11-09T19:44:50Z",
+  "days": 7
+ },
+ "activityTimeline": [
+  {
+   "count": 38,
+   "bucket": "2026-11-06T06:00:00Z"
+  },
+  {
+   "count": 31,
+   "bucket": "2026-11-06T07:00:00Z"
+  },
+  {
+   "count": 32,
+   "bucket": "2026-11-06T08:00:00Z"
+  },
+  {
+   "count": 45,
+   "bucket": "2026-11-06T09:00:00Z"
+  },
+  {
+   "count": 39,
+   "bucket": "2026-11-06T10:00:00Z"
+  },
+  {
+   "count": 93,
+   "bucket": "2026-11-06T11:00:00Z"
+  },
+  {
+   "count": 71,
+   "bucket": "2026-11-06T12:00:00Z"
+  },
+  {
+   "count": 106,
+   "bucket": "2026-11-06T13:00:00Z"
+  },
+  {
+   "count": 102,
+   "bucket": "2026-11-06T14:00:00Z"
+  },
+  {
+   "count": 74,
+   "bucket": "2026-11-06T15:00:00Z"
+  },
+  {
+   "count": 105,
+   "bucket": "2026-11-06T16:00:00Z"
+  },
+  {
+   "count": 112,
+   "bucket": "2026-11-06T17:00:00Z"
+  }
+ ],
+ "snrTrend": [
+  {
+   "timestamp": "2026-11-06T06:07:33Z",
+   "snr": 11.8,
+   "rssi": -73,
+   "observer_id": "6B47A5526EBB2BC09C81A7C66CA0D6016C4FC665FD918D1A32B3613AF4F124A4",
+   "observer_name": "Observer 6"
+  },
+  {
+   "timestamp": "2026-11-06T06:09:01Z",
+   "snr": 12.2,
+   "rssi": -74,
+   "observer_id": "6B47A5526EBB2BC09C81A7C66CA0D6016C4FC665FD918D1A32B3613AF4F124A4",
+   "observer_name": "Observer 6"
+  },
+  {
+   "timestamp": "2026-11-06T06:09:46Z",
+   "snr": 3.25,
+   "rssi": -112,
+   "observer_id": "2150F2F5DD3A60A2ABEF2C148B13D579B6D3BC19E9857633682238FEA8CDCE2F",
+   "observer_name": "Observer 9"
+  },
+  {
+   "timestamp": "2026-11-06T06:10:36Z",
+   "snr": 12,
+   "rssi": -68,
+   "observer_id": "58579D29BFA233BFA1AC862E3EE7F20A5166BA1D46852F0A5C97F2D76C21DA19",
+   "observer_name": "Observer 5"
+  },
+  {
+   "timestamp": "2026-11-06T06:11:33Z",
+   "snr": 11.8,
+   "rssi": -73,
+   "observer_id": "6B47A5526EBB2BC09C81A7C66CA0D6016C4FC665FD918D1A32B3613AF4F124A4",
+   "observer_name": "Observer 6"
+  },
+  {
+   "timestamp": "2026-11-06T06:11:49Z",
+   "snr": 11.8,
+   "rssi": -72,
+   "observer_id": "6B47A5526EBB2BC09C81A7C66CA0D6016C4FC665FD918D1A32B3613AF4F124A4",
+   "observer_name": "Observer 6"
+  }
+ ],
+ "packetTypeBreakdown": [
+  {
+   "payload_type": 1,
+   "count": 340
+  },
+  {
+   "payload_type": 2,
+   "count": 505
+  },
+  {
+   "payload_type": 3,
+   "count": 15
+  },
+  {
+   "payload_type": 6,
+   "count": 15
+  },
+  {
+   "payload_type": 4,
+   "count": 2101
+  },
+  {
+   "payload_type": 8,
+   "count": 296
+  },
+  {
+   "payload_type": 9,
+   "count": 51
+  },
+  {
+   "payload_type": 5,
+   "count": 2882
+  },
+  {
+   "payload_type": 0,
+   "count": 1512
+  },
+  {
+   "payload_type": 7,
+   "count": 1104
+  }
+ ],
+ "observerCoverage": [
+  {
+   "observer_id": "58579D29BFA233BFA1AC862E3EE7F20A5166BA1D46852F0A5C97F2D76C21DA19",
+   "observer_name": "Observer 5",
+   "packetCount": 1836,
+   "avgSnr": 11.921241830065341,
+   "avgRssi": -58.34803921568628,
+   "firstSeen": "2026-11-06T06:10:36Z",
+   "lastSeen": "2026-11-09T19:42:58Z"
+  },
+  {
+   "observer_id": "6B47A5526EBB2BC09C81A7C66CA0D6016C4FC665FD918D1A32B3613AF4F124A4",
+   "observer_name": "Observer 6",
+   "packetCount": 1170,
+   "avgSnr": 11.895982905982915,
+   "avgRssi": -65.23846153846154,
+   "firstSeen": "2026-11-06T06:07:33Z",
+   "lastSeen": "2026-11-09T19:42:56Z"
+  },
+  {
+   "observer_id": "2150F2F5DD3A60A2ABEF2C148B13D579B6D3BC19E9857633682238FEA8CDCE2F",
+   "observer_name": "Observer 9",
+   "packetCount": 1112,
+   "avgSnr": 5.890512589928058,
+   "avgRssi": -108.07913669064749,
+   "firstSeen": "2026-11-06T06:09:46Z",
+   "lastSeen": "2026-11-09T19:42:17Z"
+  },
+  {
+   "observer_id": "F32C980AA792EBF3FFFA51CE7E5912E6768FE19C18BE2005A5E7C5D453AAAC5D",
+   "observer_name": "Observer 10",
+   "packetCount": 1029,
+   "avgSnr": 11.079135135135123,
+   "avgRssi": -33.608648648648646,
+   "firstSeen": "2026-11-06T06:45:54Z",
+   "lastSeen": "2026-11-09T19:39:56Z"
+  },
+  {
+   "observer_id": "B28DFFE273A9CEA8DA2AB4D2733E454B726672F3FDA803F7F5142EE42AB96D83",
+   "observer_name": "Observer 11",
+   "packetCount": 407,
+   "avgSnr": 10.6504914004914,
+   "avgRssi": -30.646191646191646,
+   "firstSeen": "2026-11-06T06:11:51Z",
+   "lastSeen": "2026-11-09T19:41:35Z"
+  }
+ ],
+ "hopDistribution": [
+  {
+   "hops": "1",
+   "count": 4
+  },
+  {
+   "hops": "2",
+   "count": 11
+  },
+  {
+   "hops": "3",
+   "count": 2
+  },
+  {
+   "hops": "4+",
+   "count": 8804
+  }
+ ],
+ "peerInteractions": [],
+ "uptimeHeatmap": [
+  {
+   "dayOfWeek": 0,
+   "hour": 21,
+   "count": 190
+  },
+  {
+   "dayOfWeek": 1,
+   "hour": 9,
+   "count": 138
+  },
+  {
+   "dayOfWeek": 5,
+   "hour": 12,
+   "count": 71
+  },
+  {
+   "dayOfWeek": 6,
+   "hour": 1,
+   "count": 51
+  },
+  {
+   "dayOfWeek": 0,
+   "hour": 9,
+   "count": 51
+  },
+  {
+   "dayOfWeek": 1,
+   "hour": 2,
+   "count": 156
+  },
+  {
+   "dayOfWeek": 1,
+   "hour": 17,
+   "count": 208
+  },
+  {
+   "dayOfWeek": 1,
+   "hour": 18,
+   "count": 158
+  },
+  {
+   "dayOfWeek": 5,
+   "hour": 9,
+   "count": 45
+  },
+  {
+   "dayOfWeek": 5,
+   "hour": 19,
+   "count": 92
+  },
+  {
+   "dayOfWeek": 6,
+   "hour": 12,
+   "count": 65
+  },
+  {
+   "dayOfWeek": 6,
+   "hour": 13,
+   "count": 78
+  }
+ ],
+ "computedStats": {
+  "availabilityPct": 51.2,
+  "longestSilenceMs": 3600000,
+  "longestSilenceStart": "2026-11-06T06:00:00Z",
+  "signalGrade": "B",
+  "snrMean": 9.5,
+  "snrStdDev": 4.9,
+  "relayPct": 100,
+  "totalPackets": 8821,
+  "uniqueObservers": 80,
+  "uniquePeers": 0,
+  "avgPacketsPerDay": 1260.1
+ },
+ "clockSkew": {
+  "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+  "meanSkewSec": 274,
+  "medianSkewSec": 274,
+  "lastSkewSec": 271,
+  "recentMedianSkewSec": 274,
+  "driftPerDaySec": 0,
+  "severity": "ok",
+  "sampleCount": 98,
+  "calibrated": true,
+  "lastAdvertTS": 1794100799,
+  "lastObservedTS": 1794100532,
+  "samples": [
+   {
+    "ts": 1794100532,
+    "skew": 274
+   }
+  ],
+  "goodFraction": 1,
+  "recentBadSampleCount": 0,
+  "recentSampleCount": 1,
+  "recentHashEvidence": [
+   {
+    "hash": "aa86312a83218d39",
+    "observers": [
+     {
+      "observerID": "A99EE38714C56DCDB9108A8E3238E792B1FCEA0630E2AFE4E1223C5E3D106531",
+      "observerName": "Observer 1",
+      "rawSkewSec": 279,
+      "correctedSkewSec": 277,
+      "observerOffsetSec": -1.9,
+      "calibrated": true
+     },
+     {
+      "observerID": "8692D4E6181077423137D93521207471D9A3D997E0BF8F036C587879EFC91D9E",
+      "observerName": "Observer 12",
+      "rawSkewSec": 278,
+      "correctedSkewSec": 276,
+      "observerOffsetSec": -1.9,
+      "calibrated": true
+     }
+    ],
+    "medianCorrectedSkewSec": 274,
+    "timestamp": 1794100520
+   }
+  ],
+  "calibrationSummary": {
+   "totalSamples": 98,
+   "calibratedSamples": 98,
+   "uncalibratedSamples": 0
+  }
+ }
+}

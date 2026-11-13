@@ -186,13 +186,3 @@ func (s *PacketStore) GetBridgeScoreMap() map[string]float64 {
 	}
 	return *snap
 }
-
-// resetBridgeRecomputerForTest is a test-only helper to allow the
-// integration test to re-Start the recomputer in a fresh process
-// (which would otherwise be blocked by the package-level
-// bridgeRecompStarted flag). Production code must not call this.
-func resetBridgeRecomputerForTest() {
-	bridgeRecompStartedMu.Lock()
-	bridgeRecompStarted = false
-	bridgeRecompStartedMu.Unlock()
-}

@@ -49,3 +49,6 @@ deploy-staging.sh
 #geojson files. Only allow the example ones.
 public/region-layers/*
 !public/region-layers/*.example
+
+# Built ETL binary
+/cmd/etl/etl

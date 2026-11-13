@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Per-node hop count statistics (issue #1812).
@@ -172,7 +178,7 @@ func (a *hopAttributor) onPath(pk string) bool {
 }
 
 // computeNodeHopPackets returns one entry per flood packet in txs, first seen
-// after fromISO, that the node forwarded, and how many packets carry the node's
+// after from, that the node forwarded, and how many packets carry the node's
 // prefix at one index without being attributable to it.
 //
 // A packet counts when the node's prefix sits at exactly one index across all
@@ -195,7 +201,7 @@ func (a *hopAttributor) onPath(pk string) bool {
 // packets in the window: a substring test per observation, the hop scan only
 // for observations that contain the node's first prefix byte, and the strict
 // walk only for colliding prefixes.
-func computeNodeHopPackets(pubkey string, txs []*StoreTx, fromISO string, pm *prefixMap, graph *NeighborGraph) ([]NodeHopPacket, int) {
+func computeNodeHopPackets(pubkey string, txs []*StoreTx, from time.Time, pm *prefixMap, graph *NeighborGraph) ([]api.NodeHopPacket, int) {
 	lowerPK := strings.ToLower(pubkey)
 	// Every hop hash of the node, whatever its size, starts with its first
 	// pubkey byte, and path hops are written in upper case
@@ -203,13 +209,13 @@ func computeNodeHopPackets(pubkey string, txs []*StoreTx, fromISO string, pm *pr
 	// 7 days had a lower-case hex digit), so an observation without that byte
 	// after an opening quote holds no hop of the node.
 	quotedFirstByte := `"` + strings.ToUpper(lowerPK[:2])
-	packets := make([]NodeHopPacket, 0)
+	packets := make([]api.NodeHopPacket, 0)
 	ambiguous := 0
 	attr := newHopAttributor(pm, graph)
 	onlyCandidate := map[string]bool{}
 
 	for _, tx := range txs {
-		if tx.RouteType == nil || (*tx.RouteType != RouteFlood && *tx.RouteType != RouteTransportFlood) || tx.FirstSeen <= fromISO {
+		if tx.RouteType == nil || !tx.RouteType.IsFlood() || (!from.IsZero() && !tx.FirstSeen.After(from)) {
 			continue
 		}
 
@@ -250,7 +256,7 @@ func computeNodeHopPackets(pubkey string, txs []*StoreTx, fromISO string, pm *pr
 			continue
 		}
 
-		advert := tx.PayloadType != nil && *tx.PayloadType == PayloadADVERT
+		advert := tx.PayloadType != nil && *tx.PayloadType == types.PayloadADVERT
 		only, known := onlyCandidate[prefix]
 		if !known {
 			cands := attr.candidates(prefix)
@@ -264,14 +270,14 @@ func computeNodeHopPackets(pubkey string, txs []*StoreTx, fromISO string, pm *pr
 
 		tags := hopTagsUnscoped
 		switch {
-		case *tx.RouteType == RouteTransportFlood && advert:
+		case *tx.RouteType == types.RouteTransportFlood && advert:
 			tags = hopTagsScopedAdvert
-		case *tx.RouteType == RouteTransportFlood:
+		case *tx.RouteType == types.RouteTransportFlood:
 			tags = hopTagsScoped
 		case advert:
 			tags = hopTagsUnscopedAdvert
 		}
-		packets = append(packets, NodeHopPacket{Hash: tx.Hash, Timestamp: tx.FirstSeen, Hops: idx, Tags: tags})
+		packets = append(packets, api.NodeHopPacket{Hash: tx.Hash, Timestamp: types.WireTimeSeconds{Time: tx.FirstSeen}, Hops: idx, Tags: tags})
 	}
 	return packets, ambiguous
 }
@@ -309,22 +315,29 @@ func attributeByNeighbor(attr *hopAttributor, tx *StoreTx, idx int, prefix strin
 
 // GetNodeHopAnalytics returns the hop count at this node for every flood packet
 // it forwarded in the last days. Returns nil for an unknown node.
-func (s *PacketStore) GetNodeHopAnalytics(pubkey string, days int) (*NodeHopAnalyticsResponse, error) {
-	node, err := s.db.GetNodeByPubkey(pubkey)
+func (s *PacketStore) GetNodeHopAnalytics(ctx context.Context, pubkey string, days int) (*api.NodeHopAnalyticsResponse, error) {
+	node, err := s.db.GetNodeByPubkey(ctx, pubkey)
+	if errors.Is(err, database.ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil || node == nil {
 		return nil, err
 	}
 
 	now := time.Now()
-	fromISO := now.Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+	from := now.Add(-time.Duration(days) * 24 * time.Hour).UTC()
 
 	s.mu.RLock()
 	_, pm := s.getCachedNodesAndPM()
-	packets, ambiguous := computeNodeHopPackets(pubkey, s.packets, fromISO, pm, s.graph.Load())
+	packets, ambiguous := computeNodeHopPackets(pubkey, s.packets, from, pm, s.graph.Load())
 	s.mu.RUnlock()
 
-	return &NodeHopAnalyticsResponse{
-		TimeRange: TimeRangeResp{From: fromISO, To: now.Format(time.RFC3339), Days: days},
+	return &api.NodeHopAnalyticsResponse{
+		TimeRange: api.NodeTimeRange{
+			From: types.WireTimeSeconds{Time: from},
+			To:   types.WireTimeSeconds{Time: now.UTC()},
+			Days: days,
+		},
 		Packets:   packets,
 		Ambiguous: ambiguous,
 	}, nil

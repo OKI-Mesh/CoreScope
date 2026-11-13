@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // End-to-end guard for the reported bug: a 433 MHz repeater listed 13
@@ -19,10 +21,10 @@ import (
 func TestNodeHealth_RelayedObserverIsNotHeardBy(t *testing.T) {
 	srv, router := setupTestServer(t)
 	const nodePubkey = "aabbccdd11223344" // seeded by seedTestData
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 
-	routeFlood := RouteFlood
-	payload := PayloadTXT_MSG
+	routeFlood := types.RouteFlood
+	payload := types.PayloadTXT_MSG
 	snr := 3.0
 	rssi := -110.0
 
@@ -104,8 +106,8 @@ func BenchmarkBuildDirectHeardIndex(b *testing.B) {
 	}
 	pm := buildPrefixMap(nodes)
 
-	routeFlood := RouteFlood
-	payload := PayloadTXT_MSG
+	routeFlood := types.RouteFlood
+	payload := types.PayloadTXT_MSG
 	path := `["AABB","1234","5678","9ABC","DEF0","0011","2233","4455"]`
 	packets := make([]*StoreTx, 0, txCount)
 	for i := 0; i < txCount; i++ {
@@ -119,8 +121,8 @@ func BenchmarkBuildDirectHeardIndex(b *testing.B) {
 			Observations: obsList,
 		})
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		_ = buildDirectHeardIndex(packets, pm)
 	}
 	_ = hopCount

@@ -29,9 +29,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
-	"strconv"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // observerAnalyticsBucketDur returns the timeline bucket size for a given day
@@ -62,32 +66,28 @@ func observerAnalyticsFormatLabel(days int) func(time.Time) string {
 
 // buildTimelineBuckets is the shared kernel used by both buildTimeline and
 // buildNodesTimeline. Sorts the count map by bucket-key and returns
-// TimeBucket entries with labels formatted per days.
-func buildTimelineBuckets(counts map[int64]int, days int) []TimeBucket {
+// TimelineBucket entries with labels formatted per days.
+func buildTimelineBuckets(counts map[int64]int, days int) []api.TimelineBucket {
 	formatLabel := observerAnalyticsFormatLabel(days)
 	keys := make([]int64, 0, len(counts))
 	for k := range counts {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	out := make([]TimeBucket, 0, len(keys))
+	out := make([]api.TimelineBucket, 0, len(keys))
 	for _, k := range keys {
-		lbl := formatLabel(time.Unix(k, 0))
-		out = append(out, TimeBucket{Label: &lbl, Count: counts[k]})
+		out = append(out, api.TimelineBucket{Label: formatLabel(time.Unix(k, 0)), Count: counts[k]})
 	}
 	return out
 }
 
 // buildTimeline builds the packet-timeline aggregate for /analytics.
-func buildTimeline(filtered []*StoreObs, days int) []TimeBucket {
+func buildTimeline(filtered []*StoreObs, days int) []api.TimelineBucket {
 	bucketDur := observerAnalyticsBucketDur(days)
 	counts := map[int64]int{}
+
 	for _, obs := range filtered {
-		ts, ok := obs.ParsedTime()
-		if !ok {
-			continue
-		}
-		bucketStart := ts.UTC().Truncate(bucketDur).Unix()
+		bucketStart := obs.Timestamp.UTC().Truncate(bucketDur).Unix()
 		counts[bucketStart]++
 	}
 	return buildTimelineBuckets(counts, days)
@@ -98,29 +98,25 @@ func buildTimeline(filtered []*StoreObs, days int) []TimeBucket {
 // needs payload_type, which is a single indirection off the transmission.
 // This avoids one map allocation + several interface-boxing conversions per
 // observation (routes.go:2886 hot path pre-#1828).
-func buildPacketTypes(filtered []*StoreObs, txByID map[int]*StoreTx) map[string]int {
-	out := map[string]int{}
+func buildPacketTypes(filtered []*StoreObs, txByID map[int]*StoreTx) map[types.PayloadType]int {
+	out := map[types.PayloadType]int{}
 	for _, obs := range filtered {
 		tx := txByID[obs.TransmissionID]
 		if tx == nil || tx.PayloadType == nil {
 			continue
 		}
-		out[strconv.Itoa(*tx.PayloadType)]++
+		out[*tx.PayloadType]++
 	}
 	return out
 }
 
 // buildNodesTimeline builds the distinct-node-per-bucket timeline aggregate.
 // Nodes = path-json hops ∪ decoded_json pubKey/srcHash/destHash.
-func buildNodesTimeline(filtered []*StoreObs, days int, txByID map[int]*StoreTx) []TimeBucket {
+func buildNodesTimeline(filtered []*StoreObs, days int, txByID map[int]*StoreTx) []api.TimelineBucket {
 	bucketDur := observerAnalyticsBucketDur(days)
 	nodeBucketSets := map[int64]map[string]struct{}{}
 	for _, obs := range filtered {
-		ts, ok := obs.ParsedTime()
-		if !ok {
-			continue
-		}
-		bucketStart := ts.UTC().Truncate(bucketDur).Unix()
+		bucketStart := obs.Timestamp.UTC().Truncate(bucketDur).Unix()
 		if nodeBucketSets[bucketStart] == nil {
 			nodeBucketSets[bucketStart] = map[string]struct{}{}
 		}
@@ -150,8 +146,8 @@ func buildNodesTimeline(filtered []*StoreObs, days int, txByID map[int]*StoreTx)
 }
 
 // buildSnrDistribution builds the SNR histogram (2-unit buckets, floor).
-func buildSnrDistribution(filtered []*StoreObs) []SnrDistributionEntry {
-	snrBuckets := map[int]*SnrDistributionEntry{}
+func buildSnrDistribution(filtered []*StoreObs) []api.SnrBucket {
+	snrBuckets := map[int]*api.SnrBucket{}
 	for _, obs := range filtered {
 		if obs.SNR == nil {
 			continue
@@ -161,7 +157,7 @@ func buildSnrDistribution(filtered []*StoreObs) []SnrDistributionEntry {
 			bucket -= 2
 		}
 		if snrBuckets[bucket] == nil {
-			snrBuckets[bucket] = &SnrDistributionEntry{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
+			snrBuckets[bucket] = &api.SnrBucket{Range: fmt.Sprintf("%d to %d", bucket, bucket+2)}
 		}
 		snrBuckets[bucket].Count++
 	}
@@ -170,43 +166,29 @@ func buildSnrDistribution(filtered []*StoreObs) []SnrDistributionEntry {
 		keys = append(keys, k)
 	}
 	sort.Ints(keys)
-	out := make([]SnrDistributionEntry, 0, len(keys))
+	out := make([]api.SnrBucket, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, *snrBuckets[k])
 	}
 	return out
 }
 
-// buildRecentPackets builds the "first N enriched observations" list. This is
-// the only aggregate that needs the full enrichObs map — recentPackets is a
-// UI-facing payload and the extra fields matter here.
-//
-// Legacy parity (#1839): the pre-#1828 routes.go loop was
-//
-//	for i, obs := range filtered {
-//	    if _, ok := obs.ParsedTime(); !ok { continue }
-//	    ...
-//	    if i < limit { recentPackets = append(..., enriched) }
-//	}
-//
-// The `i` in the gate is the RAW slice index — a bad-ts obs at position k<limit
-// consumed its slot (via `continue`) and could not be replaced by a later
-// good-ts obs. Result can be <limit when bad-ts obs sit in the head of
-// `filtered`. We reproduce that exact semantic here to keep output byte-
-// identical.
-func buildRecentPackets(store *PacketStore, filtered []*StoreObs, limit int, txByID map[int]*StoreTx) []map[string]interface{} {
+// recentPacketObs picks the observations buildRecentPackets will render:
+// the first limit of filtered.
+func recentPacketObs(filtered []*StoreObs, limit int) []*StoreObs {
 	if limit <= 0 {
-		return []map[string]interface{}{}
+		return nil
 	}
-	out := make([]map[string]interface{}, 0, limit)
-	for i, obs := range filtered {
-		if i >= limit {
-			break
-		}
-		if _, ok := obs.ParsedTime(); !ok {
+	return slices.Clone(filtered[:min(limit, len(filtered))])
+}
+
+func buildRecentPackets(store *PacketStore, selected []*StoreObs, txByID map[int]*StoreTx, paths database.ResolvedPaths) []api.ObserverPacket {
+	out := make([]api.ObserverPacket, 0, len(selected))
+	for _, obs := range selected {
+		if obs.Timestamp.IsZero() {
 			continue
 		}
-		out = append(out, store.enrichObsWithTx(obs, txByID[obs.TransmissionID]))
+		out = append(out, store.enrichObsWithTx(obs, txByID[obs.TransmissionID], paths.ByObs[obs.ID]))
 	}
 	return out
 }

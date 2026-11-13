@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // TestMqttStatus_MasksBrokerPassword (#1043) asserts the /api/mqtt/status
@@ -92,7 +94,7 @@ func TestMqttStatus_EmptyWhenNoStatsFile(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var resp MqttStatusResponse
+	var resp api.MqttStatusResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, rec.Body.String())
 	}

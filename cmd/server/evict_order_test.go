@@ -23,7 +23,7 @@ import (
 
 // mergeChunkIntoPackets is what keeps that invariant true, so pin it directly.
 func TestMergeChunkIntoPackets_KeepsFirstSeenOrder(t *testing.T) {
-	at := func(h int) string { return time.Now().UTC().Add(-time.Duration(h) * time.Hour).Format(time.RFC3339) }
+	at := func(h int) time.Time { return time.Now().UTC().Add(-time.Duration(h) * time.Hour) }
 
 	existing := []*StoreTx{
 		{ID: 2, Hash: "b", FirstSeen: at(30)},
@@ -50,7 +50,7 @@ func TestMergeChunkIntoPackets_KeepsFirstSeenOrder(t *testing.T) {
 		t.Fatalf("merge order = %q, want %q", got, "abcde")
 	}
 	for i := 1; i < len(merged); i++ {
-		if merged[i-1].FirstSeen > merged[i].FirstSeen {
+		if merged[i-1].FirstSeen.After(merged[i].FirstSeen) {
 			t.Fatalf("merge left the slice out of order at index %d", i)
 		}
 	}
@@ -68,15 +68,15 @@ func BenchmarkMergeChunkIntoPackets(b *testing.B) {
 			out[i] = &StoreTx{
 				ID:        i,
 				Hash:      fmt.Sprintf("h%06d", i),
-				FirstSeen: base.Add(time.Duration(i*stride+off) * time.Second).Format(time.RFC3339),
+				FirstSeen: base.Add(time.Duration(i*stride+off) * time.Second),
 			}
 		}
 		return out
 	}
 	existing := mk(200000, 6, 0)
 	chunk := mk(20000, 60, 3)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		mergeChunkIntoPackets(chunk, existing)
 	}
 }

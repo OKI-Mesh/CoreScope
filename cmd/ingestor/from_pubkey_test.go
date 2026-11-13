@@ -7,21 +7,22 @@ package main
 import (
 	"database/sql"
 	"testing"
+	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 func TestInsertTransmission_FromPubkeyPopulatedForAdvert(t *testing.T) {
-	s, err := OpenStore(testfixtures.TempDBPath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	store := newTestStore(t)
+	ctx := t.Context()
 
 	const pk = "f7181c468dfe7c55aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	data := &PacketData{
 		RawHex:         "AABBCC",
-		Timestamp:      "2026-03-25T00:00:00Z",
+		Timestamp:      ts,
 		ObserverID:     "obs1",
 		Hash:           "advert_hash_1143",
 		RouteType:      1,
@@ -29,29 +30,32 @@ func TestInsertTransmission_FromPubkeyPopulatedForAdvert(t *testing.T) {
 		PayloadVersion: 0,
 		PathJSON:       "[]",
 		DecodedJSON:    `{"type":"ADVERT","pubKey":"` + pk + `","name":"X"}`,
-		FromPubkey:     pk,
+		FromPubkey:     pk, // still used as the hop-resolution anchor
+		Advert: &database.NodeInput{ // use whatever type TransmissionInput.Advert has now
+			PublicKey: pk, Name: "X", Role: "repeater", RxTime: ts,
+		},
 	}
-	if _, err := s.InsertTransmission(data); err != nil {
+	if _, err := store.InsertTransmission(ctx, data); err != nil {
 		t.Fatal(err)
 	}
 
-	var got sql.NullString
-	s.db.QueryRow("SELECT from_pubkey FROM transmissions WHERE hash = ?", data.Hash).Scan(&got)
-	if !got.Valid || got.String != pk {
-		t.Fatalf("from_pubkey = %v (valid=%v), want %q", got.String, got.Valid, pk)
+	var got *string
+	mustScan(t, testRow(t, store, "SELECT from_pubkey FROM transmissions WHERE hash = $1", data.Hash), &got)
+	if got == nil || *got != pk {
+		t.Fatalf("from_pubkey = %v, want %q", got, pk)
+	}
+	if n := countWhere(t, store, "nodes", "public_key = $1", pk); n != 1 {
+		t.Errorf("nodes with key = %d, want 1 (written in the same transaction)", n)
 	}
 }
 
 func TestInsertTransmission_FromPubkeyNullForNonAdvert(t *testing.T) {
-	s, err := OpenStore(testfixtures.TempDBPath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+	store := newTestStore(t)
+	ctx := t.Context()
 
 	data := &PacketData{
 		RawHex:         "AA",
-		Timestamp:      "2026-03-25T00:00:00Z",
+		Timestamp:      time.Date(2026, 3, 25, 0, 0, 0, 0, time.UTC),
 		ObserverID:     "obs1",
 		Hash:           "txt_hash_1143",
 		RouteType:      1,
@@ -61,12 +65,12 @@ func TestInsertTransmission_FromPubkeyNullForNonAdvert(t *testing.T) {
 		DecodedJSON:    `{"type":"TXT_MSG"}`,
 		// FromPubkey deliberately empty — non-ADVERTs don't carry one.
 	}
-	if _, err := s.InsertTransmission(data); err != nil {
+	if _, err := store.InsertTransmission(ctx, data); err != nil {
 		t.Fatal(err)
 	}
 
 	var got sql.NullString
-	s.db.QueryRow("SELECT from_pubkey FROM transmissions WHERE hash = ?", data.Hash).Scan(&got)
+	mustScan(t, testRow(t, store, "SELECT from_pubkey FROM transmissions WHERE hash = $1", data.Hash), &got)
 	if got.Valid {
 		t.Fatalf("from_pubkey for non-ADVERT must be NULL, got %q", got.String)
 	}
@@ -75,21 +79,21 @@ func TestInsertTransmission_FromPubkeyNullForNonAdvert(t *testing.T) {
 func TestBuildPacketData_PopulatesFromPubkey(t *testing.T) {
 	const pk = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	msg := &MQTTPacketMessage{Raw: "AA", Origin: "obs"}
-	decoded := &DecodedPacket{
-		Header:  Header{PayloadType: PayloadADVERT},
-		Payload: Payload{Type: "ADVERT", PubKey: pk},
+	decoded := &decoder.DecodedPacket{
+		Header:  decoder.Header{PayloadType: types.PayloadADVERT},
+		Payload: decoder.Payload{Type: "ADVERT", PubKey: pk},
 	}
-	pd := BuildPacketData(msg, decoded, "obs", "", nil)
+	pd := BuildPacketData(msg, decoded, "obs", nil)
 	if pd.FromPubkey != pk {
 		t.Fatalf("BuildPacketData FromPubkey = %q, want %q", pd.FromPubkey, pk)
 	}
 
 	// Non-ADVERT: must not carry a pubkey.
-	decoded2 := &DecodedPacket{
-		Header:  Header{PayloadType: 2},
-		Payload: Payload{Type: "TXT_MSG"},
+	decoded2 := &decoder.DecodedPacket{
+		Header:  decoder.Header{PayloadType: types.PayloadTXT_MSG},
+		Payload: decoder.Payload{Type: "TXT_MSG"},
 	}
-	pd2 := BuildPacketData(msg, decoded2, "obs", "", nil)
+	pd2 := BuildPacketData(msg, decoded2, "obs", nil)
 	if pd2.FromPubkey != "" {
 		t.Fatalf("BuildPacketData FromPubkey for non-ADVERT = %q, want empty", pd2.FromPubkey)
 	}

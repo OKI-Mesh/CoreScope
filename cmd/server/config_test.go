@@ -5,13 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 func TestLoadConfigValidJSON(t *testing.T) {
 	dir := t.TempDir()
 	cfgData := map[string]interface{}{
-		"port":   8080,
-		"dbPath": "/custom/path.db",
+		"port": 8080,
+		"db":   map[string]interface{}{"connectionString": "postgres://custom/db"},
 		"branding": map[string]interface{}{
 			"siteName": "TestSite",
 		},
@@ -49,8 +51,8 @@ func TestLoadConfigValidJSON(t *testing.T) {
 	if cfg.Port != 8080 {
 		t.Errorf("expected port 8080, got %d", cfg.Port)
 	}
-	if cfg.DBPath != "/custom/path.db" {
-		t.Errorf("expected /custom/path.db, got %s", cfg.DBPath)
+	if cfg.DB.DSN() != "postgres://custom/db" {
+		t.Errorf("expected custom database URL, got %s", cfg.DB.DSN())
 	}
 	if cfg.MapDefaults.Zoom != 12 {
 		t.Errorf("expected zoom 12, got %d", cfg.MapDefaults.Zoom)
@@ -296,19 +298,20 @@ func TestGetHealthMs(t *testing.T) {
 	}
 
 	tests := []struct {
-		role       string
+		role       types.NodeRole
 		wantDeg    int
 		wantSilent int
 	}{
-		{"repeater", 86400000, 259200000},
-		{"room", 86400000, 259200000},
-		{"companion", 3600000, 86400000},
-		{"sensor", 3600000, 86400000},
-		{"unknown", 3600000, 86400000},
+		{types.RoleRepeater, 86400000, 259200000},
+		{types.RoleRoom, 86400000, 259200000},
+		{types.RoleCompanion, 3600000, 86400000},
+		{types.RoleSensor, 3600000, 86400000},
+		{types.RoleUnknown, 3600000, 86400000},
+		{"", 3600000, 86400000},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.role, func(t *testing.T) {
+		t.Run(string(tc.role), func(t *testing.T) {
 			deg, sil := ht.GetHealthMs(tc.role)
 			if deg != tc.wantDeg {
 				t.Errorf("degraded: expected %d, got %d", tc.wantDeg, deg)
@@ -318,35 +321,6 @@ func TestGetHealthMs(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestResolveDBPath(t *testing.T) {
-	t.Run("DBPath set", func(t *testing.T) {
-		cfg := &Config{DBPath: "/explicit/path.db"}
-		got := cfg.ResolveDBPath("/base")
-		if got != "/explicit/path.db" {
-			t.Errorf("expected /explicit/path.db, got %s", got)
-		}
-	})
-
-	t.Run("env var", func(t *testing.T) {
-		cfg := &Config{}
-		t.Setenv("DB_PATH", "/env/path.db")
-		got := cfg.ResolveDBPath("/base")
-		if got != "/env/path.db" {
-			t.Errorf("expected /env/path.db, got %s", got)
-		}
-	})
-
-	t.Run("default", func(t *testing.T) {
-		cfg := &Config{}
-		t.Setenv("DB_PATH", "")
-		got := cfg.ResolveDBPath("/base")
-		expected := filepath.Join("/base", "data", "meshcore.db")
-		if got != expected {
-			t.Errorf("expected %s, got %s", expected, got)
-		}
-	})
 }
 
 func TestPropagationBufferMs(t *testing.T) {
@@ -412,11 +386,11 @@ func TestObserverThresholdsOverride(t *testing.T) {
 		t.Errorf("ObserverStaleMinutes = %d, want 120", h.ObserverStaleMinutes)
 	}
 	m := h.ToClientMs()
-	if m["observerOnlineMs"] != 30*60*1000 {
-		t.Errorf("observerOnlineMs = %d, want %d", m["observerOnlineMs"], 30*60*1000)
+	if m.ObserverOnlineMs != 30*60*1000 {
+		t.Errorf("observerOnlineMs = %d, want %d", m.ObserverOnlineMs, 30*60*1000)
 	}
-	if m["observerStaleMs"] != 120*60*1000 {
-		t.Errorf("observerStaleMs = %d, want %d", m["observerStaleMs"], 120*60*1000)
+	if m.ObserverStaleMs != 120*60*1000 {
+		t.Errorf("observerStaleMs = %d, want %d", m.ObserverStaleMs, 120*60*1000)
 	}
 }
 
@@ -430,11 +404,11 @@ func TestObserverThresholdsDefaults(t *testing.T) {
 		t.Errorf("default ObserverStaleMinutes = %d, want 1440", h.ObserverStaleMinutes)
 	}
 	m := h.ToClientMs()
-	if m["observerOnlineMs"] != 3600000 {
-		t.Errorf("default observerOnlineMs = %d, want 3600000", m["observerOnlineMs"])
+	if m.ObserverOnlineMs != 3600000 {
+		t.Errorf("default observerOnlineMs = %d, want 3600000", m.ObserverOnlineMs)
 	}
-	if m["observerStaleMs"] != 86400000 {
-		t.Errorf("default observerStaleMs = %d, want 86400000", m["observerStaleMs"])
+	if m.ObserverStaleMs != 86400000 {
+		t.Errorf("default observerStaleMs = %d, want 86400000", m.ObserverStaleMs)
 	}
 }
 

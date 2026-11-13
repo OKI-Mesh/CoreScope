@@ -1,0 +1,17 @@
+[
+    {
+        "observerID": "6C22C5989DBA1F94DC7C2BB709FCE6C0E74B87990E2214182F5AB22B71E05CFE",
+        "offsetSec": 8719,
+        "samples": 1
+    },
+    {
+        "observerID": "6EC3B27CF68A07BC5D368B1C21F8E3A0743CEC233A68ADD2063A305D2DCA50BD",
+        "offsetSec": 164,
+        "samples": 449
+    },
+    {
+        "observerID": "187CF3F7A5BA8EF2FD5C6F8348E80C06D7B93A0561724AB9FDA04C19A6DAAC2A",
+        "offsetSec": 14,
+        "samples": 456
+    }
+]

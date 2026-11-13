@@ -13,18 +13,13 @@ import (
 func TestStoreObsParsedTimeCaches(t *testing.T) {
 	cases := []struct {
 		name string
-		ts   string
+		ts   time.Time
 		want time.Time
 		ok   bool
 	}{
-		{"rfc3339nano", "2026-05-29T07:00:00.123456789Z",
+		{"timestamp", time.Date(2026, 5, 29, 7, 0, 0, 123456789, time.UTC),
 			time.Date(2026, 5, 29, 7, 0, 0, 123456789, time.UTC), true},
-		{"rfc3339", "2026-05-29T07:00:00Z",
-			time.Date(2026, 5, 29, 7, 0, 0, 0, time.UTC), true},
-		{"sql-shape", "2026-05-29 07:00:00",
-			time.Date(2026, 5, 29, 7, 0, 0, 0, time.UTC), true},
-		{"empty", "", time.Time{}, false},
-		{"garbage", "not-a-time", time.Time{}, false},
+		{"zero", time.Time{}, time.Time{}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -48,7 +43,7 @@ func TestStoreObsParsedTimeCaches(t *testing.T) {
 // TestStoreObsParsedTimeConcurrent asserts no race under concurrent
 // readers — sync.Once guards the parse.
 func TestStoreObsParsedTimeConcurrent(t *testing.T) {
-	o := &StoreObs{Timestamp: "2026-05-29T07:00:00Z"}
+	o := &StoreObs{Timestamp: time.Date(2026, 5, 29, 7, 0, 0, 0, time.UTC)}
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)

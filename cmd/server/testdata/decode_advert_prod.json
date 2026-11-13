@@ -1,0 +1,39 @@
+{
+  "decoded": {
+    "header": {
+      "payloadType": 4,
+      "payloadTypeName": "ADVERT",
+      "payloadVersion": 0,
+      "routeType": 1,
+      "routeTypeName": "FLOOD"
+    },
+    "path": {
+      "hashCount": 0,
+      "hashSize": 2,
+      "hops": []
+    },
+    "payload": {
+      "flags": {
+        "chat": false,
+        "hasFeat1": false,
+        "hasFeat2": false,
+        "hasLocation": true,
+        "hasName": true,
+        "raw": 146,
+        "repeater": true,
+        "room": false,
+        "sensor": false,
+        "type": 2
+      },
+      "lat": 39.17136,
+      "lon": -84.539712,
+      "name": "Node-012",
+      "pubKey": "237da645ce6ba926b8b97408c57de47a72ed78c96a24ea90c5a81785df724236",
+      "signature": "ac465ae23c998a84d05e2221a26d552c99b878722f593eee4f2c91a5d1eda8764f08fa71cd8236bb23a9732e47d7b78db78e86e39aeb64d8a811c13c19771604",
+      "signatureValid": true,
+      "timestamp": 1794575972,
+      "timestampISO": "2026-11-13T13:19:32.000Z",
+      "type": "ADVERT"
+    }
+  }
+}

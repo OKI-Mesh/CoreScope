@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -39,7 +40,7 @@ const observersCacheFlightKey = "observers:default"
 // of when it was built. atomic.Pointer guarantees the read is a single
 // load; the entry is immutable once stored.
 type observersCacheEntry struct {
-	resp ObserverListResponse
+	resp api.ObserverListResponse
 	at   time.Time
 }
 

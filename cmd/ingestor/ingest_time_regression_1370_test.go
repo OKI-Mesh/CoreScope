@@ -30,6 +30,7 @@ import (
 // SERVER wall clock, not the bogus envelope value.
 func TestHandleMessage_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 
 	stale := time.Now().UTC().Add(-7 * time.Hour).Format(time.RFC3339)
@@ -39,32 +40,24 @@ func TestHandleMessage_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 	payload := []byte(`{"raw":"` + rawHex + `","SNR":5.5,"RSSI":-100.0,"origin":"voodoo3","timestamp":"` + stale + `"}`)
 	msg := &mockMessage{topic: "meshcore/SJC/voodoo3/packets", payload: payload}
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 	after := time.Now().Unix()
 
 	// ─── transmissions.first_seen ───────────────────────────────────────
-	var firstSeen string
-	if err := store.db.QueryRow(`SELECT first_seen FROM transmissions LIMIT 1`).Scan(&firstSeen); err != nil {
-		t.Fatalf("scan first_seen: %v", err)
-	}
-	fsParsed, err := time.Parse(time.RFC3339, firstSeen)
-	if err != nil {
-		t.Fatalf("first_seen %q not RFC3339: %v", firstSeen, err)
-	}
-	if fsParsed.Unix() < before-5 || fsParsed.Unix() > after+5 {
+	var firstSeen time.Time
+	mustScan(t, testRow(t, store, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
+	if firstSeen.Unix() < before-5 || firstSeen.Unix() > after+5 {
 		t.Errorf("transmissions.first_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope reported stale %q (7h ago) — PR #1233's premise that envelope timestamp is trustworthy is FALSE for buggy-clock observers. Issue #1370.",
-			firstSeen, fsParsed.Unix(), before, after, stale)
+			firstSeen.Format(time.RFC3339), firstSeen.Unix(), before, after, stale)
 	}
 
 	// ─── observations.timestamp (epoch) ─────────────────────────────────
-	var obsTs int64
-	if err := store.db.QueryRow(`SELECT timestamp FROM observations LIMIT 1`).Scan(&obsTs); err != nil {
-		t.Fatalf("scan observations.timestamp: %v", err)
-	}
-	if obsTs < before-5 || obsTs > after+5 {
-		t.Errorf("observations.timestamp = %d; want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
-			obsTs, before, after, stale)
+	var obsTs time.Time
+	mustScan(t, testRow(t, store, `SELECT timestamp FROM observations LIMIT 1`), &obsTs)
+	if obsTs.Unix() < before-5 || obsTs.Unix() > after+5 {
+		t.Errorf("observations.timestamp = %q (epoch %d); want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
+			obsTs.Format(time.RFC3339), obsTs.Unix(), before, after, stale)
 	}
 }
 
@@ -73,6 +66,7 @@ func TestHandleMessage_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 func TestHandleMessage_ChannelPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
+	ctx := t.Context()
 
 	stale := time.Now().UTC().Add(-7 * time.Hour).Format(time.RFC3339)
 	before := time.Now().Unix()
@@ -80,20 +74,14 @@ func TestHandleMessage_ChannelPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *
 	payload := []byte(`{"text":"Voodoo3: tst hmdpt","channel_idx":3,"SNR":5.0,"RSSI":-95,"timestamp":"` + stale + `","sender_timestamp":` + strconv.FormatInt(time.Now().Unix(), 10) + `}`)
 	msg := &mockMessage{topic: "meshcore/message/channel/3", payload: payload}
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 	after := time.Now().Unix()
 
-	var firstSeen string
-	if err := store.db.QueryRow(`SELECT first_seen FROM transmissions LIMIT 1`).Scan(&firstSeen); err != nil {
-		t.Fatalf("scan first_seen: %v", err)
-	}
-	fsParsed, err := time.Parse(time.RFC3339, firstSeen)
-	if err != nil {
-		t.Fatalf("first_seen %q not RFC3339: %v", firstSeen, err)
-	}
-	if fsParsed.Unix() < before-5 || fsParsed.Unix() > after+5 {
+	var firstSeen time.Time
+	mustScan(t, testRow(t, store, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
+	if firstSeen.Unix() < before-5 || firstSeen.Unix() > after+5 {
 		t.Errorf("channel-path transmissions.first_seen = %q (epoch %d); want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
-			firstSeen, fsParsed.Unix(), before, after, stale)
+			firstSeen.Format(time.RFC3339), firstSeen.Unix(), before, after, stale)
 	}
 }
 
@@ -101,6 +89,7 @@ func TestHandleMessage_ChannelPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *
 func TestHandleMessage_DMPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 	store := newTestStore(t)
 	source := MQTTSource{Name: "test"}
+	ctx := t.Context()
 
 	stale := time.Now().UTC().Add(-7 * time.Hour).Format(time.RFC3339)
 	before := time.Now().Unix()
@@ -108,19 +97,13 @@ func TestHandleMessage_DMPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testi
 	payload := []byte(`{"text":"Voodoo3: hello","SNR":5.0,"RSSI":-95,"timestamp":"` + stale + `"}`)
 	msg := &mockMessage{topic: "meshcore/message/direct/voodoo3", payload: payload}
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 	after := time.Now().Unix()
 
-	var firstSeen string
-	if err := store.db.QueryRow(`SELECT first_seen FROM transmissions LIMIT 1`).Scan(&firstSeen); err != nil {
-		t.Fatalf("scan first_seen: %v", err)
-	}
-	fsParsed, err := time.Parse(time.RFC3339, firstSeen)
-	if err != nil {
-		t.Fatalf("first_seen %q not RFC3339: %v", firstSeen, err)
-	}
-	if fsParsed.Unix() < before-5 || fsParsed.Unix() > after+5 {
+	var firstSeen time.Time
+	mustScan(t, testRow(t, store, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
+	if firstSeen.Unix() < before-5 || firstSeen.Unix() > after+5 {
 		t.Errorf("DM-path transmissions.first_seen = %q (epoch %d); want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
-			firstSeen, fsParsed.Unix(), before, after, stale)
+			firstSeen.Format(time.RFC3339), firstSeen.Unix(), before, after, stale)
 	}
 }

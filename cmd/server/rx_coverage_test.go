@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 )
 
 // TestAggregateCoverageCapsNodesPerCell verifies #11: a cell that heard more than
@@ -22,8 +23,8 @@ func TestAggregateCoverageCapsNodesPerCell(t *testing.T) {
 		t.Fatalf("expected 1 cell, got %d", len(fc.Features))
 	}
 	p := fc.Features[0].Properties
-	if len(p.Nodes) != coverageCellNodeCap || !p.NodesTruncated {
-		t.Fatalf("want %d nodes + truncated, got %d nodes truncated=%v", coverageCellNodeCap, len(p.Nodes), p.NodesTruncated)
+	if len(p.Nodes) != coverageCellNodeCap || p.NodesTruncated == nil || !*p.NodesTruncated {
+		t.Fatalf("want %d nodes + truncated, got %d nodes truncated=%v", coverageCellNodeCap, len(p.Nodes), p.NodesTruncated != nil)
 	}
 }
 
@@ -40,8 +41,8 @@ func TestAggregateCoverageCapsFeatures(t *testing.T) {
 		rows = append(rows, coverageRow{Lat: lat, Lon: lon, SNR: covF(-5)})
 	}
 	fc := aggregateCoverage(rows, 9, nil)
-	if len(fc.Features) != coverageFeatureCap || !fc.Truncated {
-		t.Fatalf("want %d features + truncated, got %d truncated=%v", coverageFeatureCap, len(fc.Features), fc.Truncated)
+	if len(fc.Features) != coverageFeatureCap || fc.Truncated == nil || !*fc.Truncated {
+		t.Fatalf("want %d features + truncated, got %d truncated=%v", coverageFeatureCap, len(fc.Features), fc.Truncated != nil)
 	}
 	// Still sorted by cell after truncation.
 	for i := 1; i < len(fc.Features); i++ {
@@ -51,7 +52,7 @@ func TestAggregateCoverageCapsFeatures(t *testing.T) {
 	}
 	// A small query is not truncated.
 	small := aggregateCoverage(rows[:10], 9, nil)
-	if small.Truncated {
+	if small.Truncated != nil {
 		t.Fatalf("small query should not be truncated")
 	}
 }
@@ -67,7 +68,7 @@ func TestAggregateCoverageBucketsBestSNR(t *testing.T) {
 	if len(fc.Features) != 1 {
 		t.Fatalf("expected 1 cell, got %d", len(fc.Features))
 	}
-	if p := fc.Features[0].Properties; p.BestSNR == nil || *p.BestSNR != -6 || p.Count != 2 || !p.HasSig {
+	if p := fc.Features[0].Properties; p.BestSnr == nil || *p.BestSnr != -6 || p.Count != 2 || !p.HasSig {
 		t.Fatalf("bad props: %+v", fc.Features[0].Properties)
 	}
 	if g := fc.Features[0].Geometry; g.Type != "Polygon" || len(g.Coordinates) != 1 {
@@ -106,13 +107,13 @@ func TestAggregateCoverageNodeBreakdown(t *testing.T) {
 	if len(nodes) != 3 {
 		t.Fatalf("expected 3 nodes, got %d (%+v)", len(nodes), nodes)
 	}
-	if nodes[0].Prefix != "ccdd" || nodes[0].SNR == nil || *nodes[0].SNR != -6 {
+	if nodes[0].Prefix != "ccdd" || nodes[0].Snr == nil || *nodes[0].Snr != -6 {
 		t.Errorf("node[0] want ccdd@-6 (strongest), got %+v", nodes[0])
 	}
-	if nodes[1].Prefix != "aabb" || nodes[1].SNR == nil || *nodes[1].SNR != -10 || nodes[1].Count != 2 {
+	if nodes[1].Prefix != "aabb" || nodes[1].Snr == nil || *nodes[1].Snr != -10 || nodes[1].Count != 2 {
 		t.Errorf("node[1] want aabb latest -10 count 2, got %+v", nodes[1])
 	}
-	if nodes[2].Prefix != "eeff" || nodes[2].SNR != nil {
+	if nodes[2].Prefix != "eeff" || nodes[2].Snr != nil {
 		t.Errorf("node[2] want eeff no-signal (last), got %+v", nodes[2])
 	}
 }
@@ -121,20 +122,26 @@ func TestAggregateCoverageNodeBreakdown(t *testing.T) {
 // returns the canonical pubkey + name; an ambiguous prefix (>1 node) and an
 // unknown/empty key return the key itself with an empty name.
 func TestResolveHeardKey(t *testing.T) {
-	db := seedCoverageDB(t)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key,name,role) VALUES ('aabbccdd11223344','Alice','repeater')`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key,name,role) VALUES ('aabbcc99887766aa','Bob','repeater')`)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+
+	alicePK := padKey("aabbccdd11223344")
+	bobPK := padKey("aabbcc99887766aa")
+	seedNode(t, db, alicePK, "Alice", "repeater", nil, nil, now)
+	seedNode(t, db, bobPK, "Bob", "repeater", nil, nil, now)
+
 	srv := &Server{db: db}
-	if k, n := srv.resolveHeardKey("aabbccdd"); k != "aabbccdd11223344" || n != "Alice" {
+	if k, n := srv.resolveHeardKey(ctx, "aabbccdd"); k != alicePK || n != "Alice" {
 		t.Errorf("unique prefix → (pubkey,Alice), got (%q,%q)", k, n)
 	}
-	if k, n := srv.resolveHeardKey("aabbcc"); k != "aabbcc" || n != "" {
+	if k, n := srv.resolveHeardKey(ctx, "aabbcc"); k != "aabbcc" || n != "" {
 		t.Errorf("ambiguous prefix → (key,\"\"), got (%q,%q)", k, n)
 	}
-	if k, n := srv.resolveHeardKey("ffff"); k != "ffff" || n != "" {
+	if k, n := srv.resolveHeardKey(ctx, "ffff"); k != "ffff" || n != "" {
 		t.Errorf("unknown prefix → (key,\"\"), got (%q,%q)", k, n)
 	}
-	if k, n := srv.resolveHeardKey(""); k != "" || n != "" {
+	if k, n := srv.resolveHeardKey(ctx, ""); k != "" || n != "" {
 		t.Errorf("empty prefix → (\"\",\"\"), got (%q,%q)", k, n)
 	}
 }
@@ -158,8 +165,8 @@ func TestAggregateCoverageMergesResolvedNodes(t *testing.T) {
 		t.Fatalf("expected 1 merged node, got %d (%+v)", len(nodes), nodes)
 	}
 	n := nodes[0]
-	if n.Name != "Alice" || n.Count != 3 || n.SNR == nil || *n.SNR != -9 {
-		t.Errorf("merged node want Alice count 3 latest -9, got %+v (snr=%v)", n, n.SNR)
+	if n.Name == nil || *n.Name != "Alice" || n.Count != 3 || n.Snr == nil || *n.Snr != -9 {
+		t.Errorf("merged node want Alice count 3 latest -9, got %+v (snr=%v)", n, n.Snr)
 	}
 }
 
@@ -205,8 +212,8 @@ func TestAggregateCoverageNamePrecedenceOrderIndependent(t *testing.T) {
 		if len(nodes) != 1 {
 			t.Fatalf("expected 1 merged node, got %d (%+v)", len(nodes), nodes)
 		}
-		if nodes[0].Name != "Alice" {
-			t.Fatalf("name precedence flapped with row order: got %q, want Alice", nodes[0].Name)
+		if nodes[0].Name == nil || *nodes[0].Name != "Alice" {
+			t.Fatalf("name precedence flapped with row order: got %v, want Alice", nodes[0].Name)
 		}
 	}
 }

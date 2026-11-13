@@ -38,8 +38,8 @@ func BenchmarkBuildHopContextPubkeys(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		_ = buildHopContextPubkeys(tx, pm)
 	}
 }
@@ -90,8 +90,8 @@ func BenchmarkBuildAggregateHopContextPubkeys(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		_ = buildAggregateHopContextPubkeys(txs, pm)
 	}
 }

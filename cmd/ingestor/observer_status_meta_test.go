@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"testing"
-
-	"github.com/OKI-Mesh/CoreScope/internal/testfixtures"
 )
 
 // Regression test for #1044: observer metadata (model, firmware, battery_mv,
@@ -55,13 +53,11 @@ func TestStatusMessageMetadataPersisted_Issue1044(t *testing.T) {
 	}
 
 	// Now drive the meta through UpsertObserver and verify the row.
-	s, err := OpenStore(testfixtures.TempDBPath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := newTestStore(t)
 	defer s.Close()
+	ctx := t.Context()
 
-	if err := s.UpsertObserver("AABBCCDD", "TestObserver", "SJC", meta); err != nil {
+	if err := s.UpsertObserver(ctx, "AABBCCDD", ptr("TestObserver"), "SJC", meta); err != nil {
 		t.Fatalf("UpsertObserver: %v", err)
 	}
 
@@ -71,15 +67,9 @@ func TestStatusMessageMetadataPersisted_Issue1044(t *testing.T) {
 		gotUptime                                         int64
 		gotNoise                                          float64
 	)
-	err = s.db.QueryRow(`SELECT model, firmware, client_version, radio,
+	mustScan(t, testRow(t, s, `SELECT model, firmware, client_version, radio,
 	                            battery_mv, uptime_secs, noise_floor
-	                     FROM observers WHERE id = 'AABBCCDD'`).Scan(
-		&gotModel, &gotFirmware, &gotClientVersion, &gotRadio,
-		&gotBattery, &gotUptime, &gotNoise,
-	)
-	if err != nil {
-		t.Fatalf("scan observer row: %v", err)
-	}
+	                     FROM observers WHERE pubkey = 'aabbccdd'`), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &gotBattery, &gotUptime, &gotNoise)
 	if gotModel != "Heltec V3" {
 		t.Errorf("DB model = %q, want \"Heltec V3\"", gotModel)
 	}

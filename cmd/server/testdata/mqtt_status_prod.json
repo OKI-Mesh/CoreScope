@@ -1,0 +1,30 @@
+{
+  "sources": [
+    {
+      "name": "Broker 1",
+      "broker": "tcp://broker1.example.org:1883",
+      "connected": true,
+      "lastConnectUnix": 1794213400,
+      "lastDisconnectUnix": 1793978280,
+      "lastPacketUnix": 1794229479,
+      "connectCount": 7,
+      "disconnectCount": 1,
+      "packetsTotal": 1783109,
+      "packetsLast5m": 3195
+    },
+    {
+      "name": "Broker 2",
+      "broker": "wss://broker2.example.org:9002",
+      "connected": true,
+      "lastConnectUnix": 1794213460,
+      "lastDisconnectUnix": 0,
+      "lastPacketUnix": 1794229478,
+      "connectCount": 6,
+      "disconnectCount": 0,
+      "packetsTotal": 682604,
+      "packetsLast5m": 1158
+    }
+  ],
+  "sampleAt": "2026-11-09T13:04:40Z",
+  "watchdogLastTickUnix": 1794229420
+}

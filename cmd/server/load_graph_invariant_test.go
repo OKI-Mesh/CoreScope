@@ -1,13 +1,11 @@
 package main
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 )
 
 // TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist pins the startup-ordering
@@ -20,43 +18,29 @@ import (
 // Load() must panic when neighbor_edges has rows but s.graph.Load() returns
 // nil. Fast-fail at startup beats silently-wrong attribution.
 func TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
 
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	migrateConn, err := sql.Open("sqlite", dbPath)
+	dsn := pgtest.NewDatabase(t)
+	rw, err := database.OpenReadWrite(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rw.Close()
-
-	exec := func(s string, args ...interface{}) {
-		if _, err := rw.Exec(s, args...); err != nil {
-			t.Fatalf("setup exec failed: %v\nSQL: %s", err, s)
-		}
 	}
 
 	// neighbor_edges already exists via migration 26 — just seed a row so
 	// the panic condition (rows exist, graph not loaded) is triggered.
-	now := time.Now().UTC().Format(time.RFC3339)
-	exec(`INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, ?, ?)`,
-		"aaa", "bbb", 5, now)
+	if _, err := rw.UpsertNeighborEdges(ctx, []database.NeighborEdgeInput{{
+		NodeA: "aaa", NodeB: "bbb", Hits: 5, LastSeen: time.Now().UTC(),
+	}}); err != nil {
+		rw.Close()
+		t.Fatalf("insert neighbor edge: %v", err)
+	}
+	rw.Close()
 
-	d, err := OpenDB(dbPath)
+	d, err := OpenDB(ctx, dsn)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer d.conn.Close()
+	defer d.Close()
 
 	// Deliberately DO NOT call store.graph.Store(...). s.graph.Load() returns
 	// nil → the bug condition the invariant guard must catch.
@@ -68,5 +52,7 @@ func TestLoad_PanicsWhenGraphNotLoadedAndEdgesExist(t *testing.T) {
 			t.Fatalf("Load() must panic when neighbor_edges has rows but graph is nil; got no panic")
 		}
 	}()
-	_ = store.Load()
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
 }

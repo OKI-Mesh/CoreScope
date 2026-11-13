@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // ─── Unit tests for path inspector (issue #944) ────────────────────────────────
@@ -204,18 +207,27 @@ func TestHandlePathInspect_TooManyPrefixes(t *testing.T) {
 }
 
 func TestHandlePathInspect_ValidRequest(t *testing.T) {
+	ctx := t.Context()
 	srv := newTestServerForInspect(t)
 
-	// Seed nodes in the store — multiple candidates per prefix to lower selectivity.
-	srv.store.nodeCache = []nodeInfo{
-		{PublicKey: "aabb1234", Name: "NodeA", Role: "repeater", Lat: 37.0, Lon: -122.0, HasGPS: true},
-		{PublicKey: "aabb5678", Name: "NodeA2", Role: "repeater"},
-		{PublicKey: "ccdd5678", Name: "NodeB", Role: "repeater", Lat: 37.01, Lon: -122.01, HasGPS: true},
-		{PublicKey: "ccdd9999", Name: "NodeB2", Role: "repeater"},
-		{PublicKey: "ccdd1111", Name: "NodeB3", Role: "repeater"},
+	now := time.Now().UTC()
+	pad := strings.Repeat("0", 56)
+	lat1, lon1 := 37.0, -122.0
+	lat2, lon2 := 37.01, -122.01
+	seeded := []database.NodeInput{
+		{PublicKey: "aabb1234" + pad, Name: "NodeA", Role: "repeater", Lat: &lat1, Lon: &lon1, RxTime: now, IngestNow: now},
+		{PublicKey: "aabb5678" + pad, Name: "NodeA2", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: "ccdd5678" + pad, Name: "NodeB", Role: "repeater", Lat: &lat2, Lon: &lon2, RxTime: now, IngestNow: now},
+		{PublicKey: "ccdd9999" + pad, Name: "NodeB2", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: "ccdd1111" + pad, Name: "NodeB3", Role: "repeater", RxTime: now, IngestNow: now},
 	}
-	srv.store.nodePM = buildPrefixMap(srv.store.nodeCache)
-	srv.store.nodeCacheTime = time.Now()
+	for _, n := range seeded {
+		if err := srv.db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed node %s: %v", n.Name, err)
+		}
+	}
+	srv.store.RefreshNodeCache(ctx)
+
 	g := NewNeighborGraph()
 	g.builtAt = time.Now()
 	srv.store.graph.Store(g)
@@ -226,15 +238,14 @@ func TestHandlePathInspect_ValidRequest(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	var resp pathInspectResponse
+	var resp api.PathInspectResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
 	if len(resp.Candidates) == 0 {
-		t.Error("expected at least one candidate")
+		t.Fatal("expected at least one candidate")
 	}
-	if resp.Candidates[0].Speculative != true {
-		// No edge between nodes, so score should be < 0.7.
+	if !resp.Candidates[0].Speculative {
 		t.Error("expected speculative=true for no-edge path")
 	}
 }
@@ -242,9 +253,12 @@ func TestHandlePathInspect_ValidRequest(t *testing.T) {
 func TestHandlePathInspect_PathTrustMarksShortPrefixSpeculative(t *testing.T) {
 	srv := newTestServerForInspect(t)
 	srv.cfg = &Config{PathTrust: &PathTrustConfig{MinHashBytesForMapping: 2}}
-	srv.store.nodeCache = []nodeInfo{{PublicKey: "aabb1234", Name: "NodeA", Role: "repeater"}}
-	srv.store.nodePM = buildPrefixMap(srv.store.nodeCache)
-	srv.store.nodeCacheTime = time.Now()
+
+	now := time.Now().UTC()
+	insertInspectNodes(t, srv, []database.NodeInput{
+		{PublicKey: inspectKey("aabb1234"), Name: "NodeA", Role: "repeater", RxTime: now, IngestNow: now},
+	})
+
 	g := NewNeighborGraph()
 	g.builtAt = time.Now()
 	srv.store.graph.Store(g)
@@ -254,7 +268,7 @@ func TestHandlePathInspect_PathTrustMarksShortPrefixSpeculative(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	var resp pathInspectResponse
+	var resp api.PathInspectResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
@@ -274,15 +288,30 @@ func TestHandlePathInspect_PathTrustMarksShortPrefixSpeculative(t *testing.T) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+func inspectKey(prefix string) string {
+	return prefix + strings.Repeat("0", 64-len(prefix))
+}
+
+func insertInspectNodes(t *testing.T, srv *Server, nodes []database.NodeInput) {
+	t.Helper()
+	ctx := t.Context()
+	for _, n := range nodes {
+		if err := srv.db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed node %s: %v", n.Name, err)
+		}
+	}
+	srv.store.RefreshNodeCache(ctx)
+}
+
 func newTestServerForInspect(t *testing.T) *Server {
 	t.Helper()
-	store := &PacketStore{
-		inspectCache: make(map[string]*inspectCachedResult),
-	}
+	db := setupTestDB(t)
+	store := newPacketStoreForTest(t, db)
+	store.inspectCache = make(map[string]*inspectCachedResult)
 	g := NewNeighborGraph()
 	g.builtAt = time.Now()
 	store.graph.Store(g)
-	return &Server{store: store}
+	return &Server{db: db, store: store}
 }
 
 func doInspectRequest(srv *Server, body string) *httptest.ResponseRecorder {
@@ -336,8 +365,8 @@ func BenchmarkBeamSearch(b *testing.B) {
 		nodeByPK[nodes[idx].PublicKey] = &nodes[idx]
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		store.beamSearch(prefixes, pm, graph, nodeByPK, now)
 	}
 }

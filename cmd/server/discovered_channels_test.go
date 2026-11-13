@@ -58,11 +58,12 @@ func TestExtractHashtagsFromText(t *testing.T) {
 // CHAN message body mentions a previously-unknown hashtag channel, that
 // channel is auto-registered in the GetChannels output (#688).
 func TestGetChannels_DiscoversHashtagsFromMessages(t *testing.T) {
+	ctx := t.Context()
 	// One known channel (#general) where someone announces a new channel #mesh.
 	pkt := makeGrpTx(198, "general", "Alice: Hey, I created new channel called #mesh, please join", "Alice")
 	ps := newChannelTestStore([]*StoreTx{pkt})
 
-	channels := ps.GetChannels("")
+	channels := ps.GetChannels(ctx, "")
 
 	var sawGeneral, sawMesh bool
 	for _, ch := range channels {

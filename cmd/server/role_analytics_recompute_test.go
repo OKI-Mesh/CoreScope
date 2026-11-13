@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // TestRolesAnalyticsRecomputerRegistered asserts that the
@@ -21,11 +23,11 @@ import (
 // PacketStore.GetAnalyticsRoles() accessor returns from the
 // snapshot in sub-millisecond time.
 func TestRolesAnalyticsRecomputerRegistered(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 
-	stop := store.StartAnalyticsRecomputers(50 * time.Millisecond)
+	stop := store.StartAnalyticsRecomputers(ctx, 50*time.Millisecond)
 	defer stop()
 
 	// Give the initial synchronous compute a beat to populate.
@@ -41,13 +43,13 @@ func TestRolesAnalyticsRecomputerRegistered(t *testing.T) {
 	if v == nil {
 		t.Fatalf("recompRoles snapshot is nil after initial compute")
 	}
-	if _, ok := v.(RoleAnalyticsResponse); !ok {
+	if _, ok := v.(api.RoleAnalyticsResponse); !ok {
 		t.Fatalf("recompRoles snapshot type = %T, want RoleAnalyticsResponse", v)
 	}
 
 	// Accessor must hit the snapshot path.
 	t0 := time.Now()
-	resp := store.GetAnalyticsRoles()
+	resp := store.GetAnalyticsRoles(ctx)
 	dt := time.Since(t0)
 	if dt > 5*time.Millisecond {
 		t.Errorf("GetAnalyticsRoles latency = %v, want <5ms (snapshot path)", dt)
@@ -63,10 +65,10 @@ func TestRolesAnalyticsRecomputerRegistered(t *testing.T) {
 // on 78k adverts). With recomputer wired, the handler is an atomic
 // pointer load + JSON encode.
 func TestRolesHandlerSnapshotLatency(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
-	stop := store.StartAnalyticsRecomputers(50 * time.Millisecond)
+	store := newPacketStoreForTest(t, db)
+	stop := store.StartAnalyticsRecomputers(ctx, 50*time.Millisecond)
 	defer stop()
 	time.Sleep(100 * time.Millisecond)
 
@@ -86,7 +88,7 @@ func TestRolesHandlerSnapshotLatency(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rr.Code)
 		}
-		var out RoleAnalyticsResponse
+		var out api.RoleAnalyticsResponse
 		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 			t.Fatalf("invalid json: %v", err)
 		}

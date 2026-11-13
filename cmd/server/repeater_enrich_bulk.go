@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // GetRepeaterRelayInfoMap returns a cached pubkey → RepeaterRelayInfo
@@ -87,7 +89,7 @@ func (s *PacketStore) computeRepeaterRelayInfoMap(windowHours float64) map[strin
 	type parsedTx struct {
 		t  time.Time
 		ok bool
-		pt int
+		pt types.PayloadType
 	}
 	parseCache := make(map[int]parsedTx, 1<<14)
 	for _, list := range snap {
@@ -98,11 +100,11 @@ func (s *PacketStore) computeRepeaterRelayInfoMap(windowHours float64) map[strin
 			if _, ok := parseCache[tx.ID]; ok {
 				continue
 			}
-			pt := -1
+			pt := types.PayloadType(1)
 			if tx.PayloadType != nil {
 				pt = *tx.PayloadType
 			}
-			t, ok := parseRelayTS(tx.FirstSeen)
+			t, ok := tx.FirstSeen, true
 			parseCache[tx.ID] = parsedTx{t: t, ok: ok, pt: pt}
 		}
 	}
@@ -185,7 +187,7 @@ func (s *PacketStore) computeRepeaterRelayInfoMap(windowHours float64) map[strin
 						info.RelayCount1h++
 					}
 				}
-				if info.LastRelayed == "" || tx.FirstSeen > info.LastRelayed {
+				if info.LastRelayed.IsZero() || tx.FirstSeen.After(info.LastRelayed) {
 					info.LastRelayed = tx.FirstSeen
 					if windowHours > 0 && p.t.After(windowCutoff) {
 						info.RelayActive = true

@@ -1,0 +1,14 @@
+{
+  "sampleAt": "2026-11-09T13:04:40Z",
+  "sources": {
+    "groupCommitFlushes": 0,
+    "node_upserts": 369568,
+    "obs_inserted": 1697027,
+    "observer_upserts": 2115760,
+    "sig_drops": 187,
+    "tx_dupes": 1570678,
+    "tx_inserted": 126349,
+    "walCommits": 1697027,
+    "write_errors": 0
+  }
+}

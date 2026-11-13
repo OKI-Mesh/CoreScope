@@ -4,7 +4,22 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
+
+func ensureStoreDB(t *testing.T, store *PacketStore) {
+	t.Helper()
+	if store.db == nil {
+		store.db = setupTestDB(t)
+	}
+}
+
+func runEviction(t *testing.T, store *PacketStore) int {
+	t.Helper()
+	ensureStoreDB(t, store)
+	return store.RunEviction(t.Context())
+}
 
 // Synthetic traffic: eight resolved relays and their raw prefixes per tx.
 func relaySnapshotStore1908(count, nodes, expired int) *PacketStore {
@@ -13,15 +28,15 @@ func relaySnapshotStore1908(count, nodes, expired int) *PacketStore {
 		pubkeys[i] = fmt.Sprintf("%02x%062x", i%256, i)
 	}
 	now := time.Now().UTC()
-	old := now.Add(-2 * time.Hour).Format(time.RFC3339)
-	recent := now.Add(-30 * time.Minute).Format(time.RFC3339)
+	old := now.Add(-2 * time.Hour)
+	recent := now.Add(-30 * time.Minute)
 	store := &PacketStore{
 		packets:        make([]*StoreTx, count),
 		byPathHop:      make(map[string][]*StoreTx, nodes+256),
 		spIndex:        make(map[string]int),
 		retentionHours: 1,
 	}
-	pt := 5
+	pt := types.PayloadType(5)
 	hopsSeen := make(map[string]bool, 16)
 	for i := range store.packets {
 		tx := &StoreTx{ID: i + 1, FirstSeen: recent, PayloadType: &pt, parsedPath: make([]string, 8), pathParsed: true}
@@ -42,13 +57,14 @@ func relaySnapshotStore1908(count, nodes, expired int) *PacketStore {
 
 func TestRelaySnapshotSurvivesEviction1908(t *testing.T) {
 	store := relaySnapshotStore1908(4, 8, 2)
+	store.db = setupTestDB(t)
 	store.mu.RLock()
 	snapshot := store.snapshotPathHopIndexLocked()
 	store.mu.RUnlock()
 	if len(snapshot) != 16 {
 		t.Fatalf("snapshot has %d buckets, want eight raw and eight resolved", len(snapshot))
 	}
-	if got := store.RunEviction(); got != 2 {
+	if got := runEviction(t, store); got != 2 {
 		t.Fatalf("evicted %d transmissions, want 2", got)
 	}
 	for key, list := range snapshot {
@@ -65,7 +81,9 @@ func TestRelaySnapshotSurvivesEviction1908(t *testing.T) {
 }
 
 func TestRelayComputeConcurrentEviction1908(t *testing.T) {
+	ctx := t.Context()
 	store := relaySnapshotStore1908(30000, 256, 1)
+	ensureStoreDB(t, store)
 	key := fmt.Sprintf("%064x", 0)
 	want := len(store.byPathHop[key])
 	const readers = 2
@@ -80,7 +98,7 @@ func TestRelayComputeConcurrentEviction1908(t *testing.T) {
 	evicted := make(chan int, 1)
 	go func() {
 		<-start
-		evicted <- store.RunEviction()
+		evicted <- store.RunEviction(ctx)
 	}()
 	close(start)
 

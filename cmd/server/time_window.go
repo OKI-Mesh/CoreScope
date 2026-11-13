@@ -5,22 +5,20 @@ import (
 	"time"
 )
 
-// TimeWindow is a half-open time range used to bound analytics queries.
-// Empty Since/Until means unbounded on that end (backwards compatible).
+// Label is a stable identifier for the user-requested window
+// (e.g. "24h"). For relative windows it is the original alias; for
+// absolute ranges it is empty (Since/Until are already stable).
+// Used only for cache keying so that "?window=24h" produces a single
+// cache entry instead of one per second.
 type TimeWindow struct {
-	Since string // RFC3339, empty = unbounded
-	Until string // RFC3339, empty = unbounded
-	// Label is a stable identifier for the user-requested window
-	// (e.g. "24h"). For relative windows it is the original alias; for
-	// absolute ranges it is empty (Since/Until are already stable).
-	// Used only for cache keying so that "?window=24h" produces a single
-	// cache entry instead of one per second.
+	Since time.Time // zero = unbounded
+	Until time.Time // zero = unbounded
 	Label string
 }
 
-// IsZero reports whether the window imposes no bounds at all.
+// IsZero reports whether the window has no bounds at all.
 func (w TimeWindow) IsZero() bool {
-	return w.Since == "" && w.Until == ""
+	return w.Since.IsZero() && w.Until.IsZero()
 }
 
 // CacheKey returns a deterministic key suitable for analytics caches.
@@ -33,48 +31,32 @@ func (w TimeWindow) CacheKey() string {
 	if w.Label != "" {
 		return "rel:" + w.Label
 	}
-	return w.Since + "|" + w.Until
+	return cacheKeyBound(w.Since) + "|" + cacheKeyBound(w.Until)
 }
 
-// Includes reports whether ts (an RFC3339-style string) falls within the
-// window. Empty ts is treated as included (for callers that don't have a
-// timestamp on every observation).
-//
-// Comparison is done by parsing both sides into time.Time. Lex compare is
-// unsafe here because stored timestamps carry millisecond precision
-// ("...HH:MM:SS.000Z") while bounds emitted by ParseTimeWindow do not
-// ("...HH:MM:SSZ"), and '.' (0x2e) sorts before 'Z' (0x5a). If a timestamp
-// fails to parse we fall back to lex compare to preserve old behavior.
-func (w TimeWindow) Includes(ts string) bool {
-	if ts == "" {
+// cacheKeyBound renders one window bound for a cache key: empty when
+// unbounded, otherwise UTC with full precision so two windows that differ
+// by a millisecond never share a key.
+func cacheKeyBound(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// Includes reports whether t falls inside the window: Since is inclusive,
+// Until is exclusive, zero bounds are unbounded, and a zero timestamp is included.
+func (w TimeWindow) Includes(t time.Time) bool {
+	if t.IsZero() {
 		return true
 	}
-	tt, terr := parseAnyRFC3339(ts)
-	if w.Since != "" {
-		if s, err := parseAnyRFC3339(w.Since); err == nil && terr == nil {
-			if tt.Before(s) {
-				return false
-			}
-		} else if ts < w.Since {
-			return false
-		}
+	if !w.Since.IsZero() && t.Before(w.Since) {
+		return false
 	}
-	if w.Until != "" {
-		if u, err := parseAnyRFC3339(w.Until); err == nil && terr == nil {
-			if tt.After(u) {
-				return false
-			}
-		} else if ts > w.Until {
-			return false
-		}
+	if !w.Until.IsZero() && !t.Before(w.Until) {
+		return false
 	}
 	return true
-}
-
-// parseAnyRFC3339 accepts both fractional-second ("...000Z") and second-
-// precision ("...Z") RFC3339 timestamps. time.RFC3339Nano handles both.
-func parseAnyRFC3339(s string) (time.Time, error) {
-	return time.Parse(time.RFC3339Nano, s)
 }
 
 // ParseTimeWindow extracts a TimeWindow from query params.
@@ -96,12 +78,12 @@ func ParseTimeWindow(r *http.Request) TimeWindow {
 		w := TimeWindow{}
 		if from != "" {
 			if t, err := time.Parse(time.RFC3339, from); err == nil {
-				w.Since = t.UTC().Format(time.RFC3339)
+				w.Since = t.UTC().Truncate(time.Second)
 			}
 		}
 		if to != "" {
 			if t, err := time.Parse(time.RFC3339, to); err == nil {
-				w.Until = t.UTC().Format(time.RFC3339)
+				w.Until = t.UTC().Truncate(time.Second)
 			}
 		}
 		return w
@@ -125,7 +107,7 @@ func ParseTimeWindow(r *http.Request) TimeWindow {
 			// Unknown values are silently ignored — backwards compatible.
 			return TimeWindow{}
 		}
-		since := time.Now().UTC().Add(-d).Format(time.RFC3339)
+		since := time.Now().UTC().Add(-d).Truncate(time.Second)
 		return TimeWindow{Since: since, Label: win}
 	}
 

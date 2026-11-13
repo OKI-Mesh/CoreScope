@@ -1,123 +1,93 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
+
+var (
+	topoAquaPK  = padKey("0735bc6dda4d1122aabbccdd")
+	topoBetaPK  = padKey("99aabb001122334455667788")
+	topoNodeAPK = padKey("ab11223344556677aabbccdd")
+	topoNodeBPK = padKey("ab99887766554433aabbccdd")
+)
+
+func insertPathPackets(t *testing.T, db *database.DB, observerIdx int64, n *int, hops []string, resolved []*string, count int, base time.Time) {
+	t.Helper()
+	ctx := t.Context()
+	for i := 0; i < count; i++ {
+		*n++
+		at := base.Add(time.Duration(*n) * time.Minute)
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        fmt.Sprintf("%016x", *n),
+			RawHex:      "aabb",
+			RouteType:   types.RouteType(0),
+			PayloadType: types.PayloadType(4),
+			DecodedJSON: fmt.Sprintf(`{"pubKey":"pk%04d"}`, *n),
+		}, at)
+		if err != nil {
+			t.Fatalf("insert tx %d: %v", *n, err)
+		}
+		idx := observerIdx
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    &idx,
+			SNR:            fptr(-10.0),
+			RSSI:           fptr(-80.0),
+			Timestamp:      at,
+		}, hops, resolved)
+		if err != nil {
+			t.Fatalf("insert observation %d: %v", *n, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+	}
+}
 
 // TestTopologyDedup_RepeatersMergeByPubkey verifies that topRepeaters
 // merges entries whose hop prefixes resolve unambiguously to the same node.
 func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
+	db := setupTestDB(t)
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
+	obsIdx := seedObserver(t, db, padKey("0b51"), "BRU", base)
+	seedNode(t, db, topoAquaPK, "AQUA", "repeater", nil, nil, base)
+	seedNode(t, db, topoBetaPK, "BETA", "repeater", nil, nil, base)
 
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
+	n := 0
+	insertPathPackets(t, db, obsIdx, &n, []string{"07", "99aa"}, []*string{sptr(topoAquaPK), sptr(topoBetaPK)}, 10, base)
+	insertPathPackets(t, db, obsIdx, &n, []string{"0735bc", "99"}, []*string{sptr(topoAquaPK), sptr(topoBetaPK)}, 5, base)
+	insertPathPackets(t, db, obsIdx, &n, []string{"0735bc6d", "99aabb"}, []*string{sptr(topoAquaPK), sptr(topoBetaPK)}, 3, base)
 
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
-	if err != nil {
-		t.Fatalf("insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("observer rowid: %v", err)
-	}
+	store := loadedStore(t, db)
 
-	// Insert two repeater nodes with distinct pubkeys.
-	// AQUA: pubkey starts with 0735bc...
-	// BETA: pubkey starts with 99aabb...
-	exec := func(s string) {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatalf("SQL exec failed: %v\nSQL: %s", err, s)
-		}
-	}
-	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('0735bc6dda4d1122aabbccdd', 'AQUA', 'Repeater')`)
-	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('99aabb001122334455667788', 'BETA', 'Repeater')`)
-
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	// Create packets:
-	// - 10 packets with path ["07", "99aa"] (short prefix for AQUA, medium for BETA)
-	// - 5 packets with path ["0735bc", "99"] (medium prefix for AQUA, short for BETA)
-	// - 3 packets with path ["0735bc6dda4d", "99aabb"] (long prefix for both)
-	txID := 1
-	obsID := 1
-	insertTx := func(path string, count int) {
-		for i := 0; i < count; i++ {
-			txTime := base.Add(time.Duration(txID) * time.Minute)
-			ts := txTime.Format(time.RFC3339)
-			tsUnix := txTime.Unix()
-			hash := fmt.Sprintf("h%04d", txID)
-			conn.Exec(`INSERT INTO transmissions
-				(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-				VALUES (?, ?, ?, ?, 0, 4, 1, ?, ?)`,
-				txID, "aabb", hash, ts, fmt.Sprintf(`{"pubKey":"pk%04d"}`, txID), tsUnix)
-			conn.Exec(`INSERT INTO observations
-				(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				obsID, txID, observerRowID, "RX", -10.0, -80.0, 5, path, tsUnix)
-			txID++
-			obsID++
-		}
-	}
-
-	insertTx(`["07","99aa"]`, 10)
-	insertTx(`["0735bc","99"]`, 5)
-	insertTx(`["0735bc6d","99aabb"]`, 3)
-
-	// Total: AQUA appears as "07" (10×), "0735bc" (5×), "0735bc6d" (3×) = 18 total
-	// Total: BETA appears as "99aa" (10×), "99" (5×), "99aabb" (3×) = 18 total
-	// After dedup, each should appear ONCE with count=18.
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.conn.Close()
-
-	store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 100})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	result := store.computeAnalyticsTopology("", "", TimeWindow{})
-	topRepeaters := result["topRepeaters"].([]map[string]interface{})
+	result := store.computeAnalyticsTopology(ctx, "", "", TimeWindow{})
+	topRepeaters := result.TopRepeaters
 
 	pubkeyCounts := map[string]int{}
 	for _, entry := range topRepeaters {
-		pk, _ := entry["pubkey"].(string)
+		pk := deref(entry.Pubkey)
 		if pk == "" {
 			continue
 		}
-		pubkeyCounts[pk] += entry["count"].(int)
+		pubkeyCounts[pk] += entry.Count
 	}
 
 	aquaEntries := 0
 	betaEntries := 0
 	for _, entry := range topRepeaters {
-		pk, _ := entry["pubkey"].(string)
-		if pk == "0735bc6dda4d1122aabbccdd" {
+		pk := deref(entry.Pubkey)
+		if pk == topoAquaPK {
 			aquaEntries++
 		}
-		if pk == "99aabb001122334455667788" {
+		if pk == topoBetaPK {
 			betaEntries++
 		}
 	}
@@ -125,17 +95,17 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 	if aquaEntries != 1 {
 		t.Errorf("AQUA should appear exactly once in topRepeaters after dedup, got %d entries", aquaEntries)
 		for _, e := range topRepeaters {
-			t.Logf("  entry: hop=%v name=%v pubkey=%v count=%v", e["hop"], e["name"], e["pubkey"], e["count"])
+			t.Logf("  entry: hop=%v name=%q pubkey=%q count=%v", e.Hop, deref(e.Name), deref(e.Pubkey), e.Count)
 		}
 	}
 	if betaEntries != 1 {
 		t.Errorf("BETA should appear exactly once in topRepeaters after dedup, got %d entries", betaEntries)
 	}
 
-	if c := pubkeyCounts["0735bc6dda4d1122aabbccdd"]; c != 18 {
+	if c := pubkeyCounts[topoAquaPK]; c != 18 {
 		t.Errorf("AQUA total count should be 18, got %d", c)
 	}
-	if c := pubkeyCounts["99aabb001122334455667788"]; c != 18 {
+	if c := pubkeyCounts[topoBetaPK]; c != 18 {
 		t.Errorf("BETA total count should be 18, got %d", c)
 	}
 }
@@ -143,218 +113,90 @@ func TestTopologyDedup_RepeatersMergeByPubkey(t *testing.T) {
 // TestTopologyDedup_AmbiguousPrefixNotMerged verifies that ambiguous short
 // prefixes (matching multiple nodes) are NOT merged — they stay separate.
 func TestTopologyDedup_AmbiguousPrefixNotMerged(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
+	db := setupTestDB(t)
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
+	obsIdx := seedObserver(t, db, padKey("0b51"), "BRU", base)
+	seedNode(t, db, topoNodeAPK, "NODE_A", "repeater", nil, nil, base)
+	seedNode(t, db, topoNodeBPK, "NODE_B", "repeater", nil, nil, base)
 
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
+	n := 0
+	insertPathPackets(t, db, obsIdx, &n, []string{"ab"}, []*string{nil}, 10, base)
+	insertPathPackets(t, db, obsIdx, &n, []string{"ab1122"}, []*string{sptr(topoNodeAPK)}, 5, base)
 
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
-	if err != nil {
-		t.Fatalf("insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("observer rowid: %v", err)
-	}
+	store := loadedStore(t, db)
 
-	exec := func(s string) {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatalf("SQL exec failed: %v\nSQL: %s", err, s)
-		}
+	result := store.computeAnalyticsTopology(ctx, "", "", TimeWindow{})
+
+	topRepeaters := result.TopRepeaters
+
+	for _, e := range topRepeaters {
+		t.Logf("entry: %#v", e)
 	}
-
-	// Two nodes whose pubkeys share the prefix "ab" — collision!
-	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('ab11223344556677aabbccdd', 'NODE_A', 'Repeater')`)
-	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('ab99887766554433aabbccdd', 'NODE_B', 'Repeater')`)
-
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	txID := 1
-	obsID := 1
-
-	// 10 packets with hop "ab" — ambiguous (matches both NODE_A and NODE_B)
-	for i := 0; i < 10; i++ {
-		txTime := base.Add(time.Duration(txID) * time.Minute)
-		ts := txTime.Format(time.RFC3339)
-		tsUnix := txTime.Unix()
-		hash := fmt.Sprintf("h%04d", txID)
-		conn.Exec(`INSERT INTO transmissions
-			(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-			VALUES (?, ?, ?, ?, 0, 4, 1, ?, ?)`,
-			txID, "aabb", hash, ts, fmt.Sprintf(`{"pubKey":"pk%04d"}`, txID), tsUnix)
-		conn.Exec(`INSERT INTO observations
-			(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			obsID, txID, observerRowID, "RX", -10.0, -80.0, 5, `["ab"]`, tsUnix)
-		txID++
-		obsID++
-	}
-	// 5 packets with hop "ab1122" — unambiguous (only NODE_A)
-	for i := 0; i < 5; i++ {
-		txTime := base.Add(time.Duration(txID) * time.Minute)
-		ts := txTime.Format(time.RFC3339)
-		tsUnix := txTime.Unix()
-		hash := fmt.Sprintf("h%04d", txID)
-		conn.Exec(`INSERT INTO transmissions
-			(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-			VALUES (?, ?, ?, ?, 0, 4, 1, ?, ?)`,
-			txID, "aabb", hash, ts, fmt.Sprintf(`{"pubKey":"pk%04d"}`, txID), tsUnix)
-		conn.Exec(`INSERT INTO observations
-			(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			obsID, txID, observerRowID, "RX", -10.0, -80.0, 5, `["ab1122"]`, tsUnix)
-		txID++
-		obsID++
-	}
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.conn.Close()
-
-	store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 100})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	result := store.computeAnalyticsTopology("", "", TimeWindow{})
-	topRepeaters := result["topRepeaters"].([]map[string]interface{})
+	t.Logf("topoNodeAPK = %q, topoNodeBPK = %q", topoNodeAPK, topoNodeBPK)
 
 	foundAb := false
 	foundAb1122 := false
 	for _, entry := range topRepeaters {
-		hop := entry["hop"].(string)
-		count := entry["count"].(int)
-		if hop == "ab" {
+		hop := entry.Hop
+		count := entry.Count
+		if hop == strings.ToUpper("ab") {
 			foundAb = true
 			if count != 10 {
-				t.Errorf("ambiguous hop 'ab' should have count=10, got %d", count)
+				t.Errorf("ambiguous hop 'AB' should have count=10, got %d", count)
 			}
 		}
-		if hop == "ab1122" {
+		if hop == strings.ToUpper("ab1122") {
 			foundAb1122 = true
 			if count != 5 {
-				t.Errorf("unambiguous hop 'ab1122' should have count=5, got %d", count)
+				t.Errorf("unambiguous hop 'AB1122' should have count=5, got %d", count)
 			}
 		}
 	}
 	if !foundAb {
-		t.Error("ambiguous hop 'ab' should remain as separate entry")
+		t.Error("ambiguous hop 'AB' should remain as separate entry")
 	}
 	if !foundAb1122 {
-		t.Error("unambiguous hop 'ab1122' should remain as separate entry (not merged with ambiguous 'ab')")
+		t.Error("unambiguous hop 'AB1122' should remain as separate entry (not merged with ambiguous 'AB')")
 	}
 }
 
 // TestTopologyDedup_PairsMergeByPubkey verifies that topPairs merges
 // pair entries whose hops resolve unambiguously to the same node pair.
 func TestTopologyDedup_PairsMergeByPubkey(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
+	ctx := t.Context()
+	db := setupTestDB(t)
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
+	obsIdx := seedObserver(t, db, padKey("0b51"), "BRU", base)
+	seedNode(t, db, topoAquaPK, "AQUA", "repeater", nil, nil, base)
+	seedNode(t, db, topoBetaPK, "BETA", "repeater", nil, nil, base)
 
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
+	n := 0
+	insertPathPackets(t, db, obsIdx, &n, []string{"07", "99aa"}, []*string{sptr(topoAquaPK), sptr(topoBetaPK)}, 10, base)
+	insertPathPackets(t, db, obsIdx, &n, []string{"0735bc", "99"}, []*string{sptr(topoAquaPK), sptr(topoBetaPK)}, 5, base)
 
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
-	if err != nil {
-		t.Fatalf("insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("observer rowid: %v", err)
-	}
+	store := loadedStore(t, db)
 
-	exec := func(s string) {
-		if _, err := conn.Exec(s); err != nil {
-			t.Fatalf("SQL exec failed: %v\nSQL: %s", err, s)
-		}
-	}
-	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('0735bc6dda4d1122aabbccdd', 'AQUA', 'Repeater')`)
-	exec(`INSERT INTO nodes (public_key, name, role) VALUES ('99aabb001122334455667788', 'BETA', 'Repeater')`)
-
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	txID := 1
-	obsID := 1
-	insertTx := func(path string, count int) {
-		for i := 0; i < count; i++ {
-			txTime := base.Add(time.Duration(txID) * time.Minute)
-			ts := txTime.Format(time.RFC3339)
-			tsUnix := txTime.Unix()
-			hash := fmt.Sprintf("h%04d", txID)
-			conn.Exec(`INSERT INTO transmissions
-				(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-				VALUES (?, ?, ?, ?, 0, 4, 1, ?, ?)`,
-				txID, "aabb", hash, ts, fmt.Sprintf(`{"pubKey":"pk%04d"}`, txID), tsUnix)
-			conn.Exec(`INSERT INTO observations
-				(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				obsID, txID, observerRowID, "RX", -10.0, -80.0, 5, path, tsUnix)
-			txID++
-			obsID++
-		}
-	}
-
-	// Path ["07","99aa"] → pair "07|99aa", 10 times
-	// Path ["0735bc","99"] → pair "0735bc|99" but sorted = "0735bc|99", 5 times
-	// After dedup both should merge to AQUA|BETA pair with count=15
-	insertTx(`["07","99aa"]`, 10)
-	insertTx(`["0735bc","99"]`, 5)
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.conn.Close()
-
-	store := NewPacketStore(db, &PacketStoreConfig{MaxMemoryMB: 100})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
-	}
-
-	result := store.computeAnalyticsTopology("", "", TimeWindow{})
-	topPairs := result["topPairs"].([]map[string]interface{})
+	result := store.computeAnalyticsTopology(ctx, "", "", TimeWindow{})
+	topPairs := result.TopPairs
 
 	aquaBetaPairs := 0
 	totalCount := 0
 	for _, entry := range topPairs {
-		pkA, _ := entry["pubkeyA"].(string)
-		pkB, _ := entry["pubkeyB"].(string)
-		if (pkA == "0735bc6dda4d1122aabbccdd" && pkB == "99aabb001122334455667788") ||
-			(pkA == "99aabb001122334455667788" && pkB == "0735bc6dda4d1122aabbccdd") {
+		pkA := deref(entry.PubkeyA)
+		pkB := deref(entry.PubkeyB)
+		if (pkA == topoAquaPK && pkB == topoBetaPK) || (pkA == topoBetaPK && pkB == topoAquaPK) {
 			aquaBetaPairs++
-			totalCount += entry["count"].(int)
+			totalCount += entry.Count
 		}
 	}
 
 	if aquaBetaPairs != 1 {
 		t.Errorf("AQUA-BETA pair should appear exactly once after dedup, got %d entries", aquaBetaPairs)
 		for _, e := range topPairs {
-			t.Logf("  pair: hopA=%v hopB=%v count=%v pkA=%v pkB=%v", e["hopA"], e["hopB"], e["count"], e["pubkeyA"], e["pubkeyB"])
+			t.Logf("  pair: hopA=%v hopB=%v count=%v pkA=%q pkB=%q", e.HopA, e.HopB, e.Count, deref(e.PubkeyA), deref(e.PubkeyB))
 		}
 	}
 	if totalCount != 15 {

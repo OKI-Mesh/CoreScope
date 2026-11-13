@@ -2,8 +2,8 @@
 # Keep the versions in step with .github/workflows/deploy.yml (node-version, GO_VERSION).
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
-# sqlite3 CLI + fuser (psmisc): used when seeding the E2E fixture DB and freeing the test port.
-RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 psmisc \
+# psql: used when building the E2E database and by the E2E scripts. fuser (psmisc) frees the test port.
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client psmisc \
     && rm -rf /var/lib/apt/lists/*
  
 ARG NODE_MAJOR=22

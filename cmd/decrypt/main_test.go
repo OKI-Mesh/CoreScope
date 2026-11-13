@@ -1,55 +1,69 @@
 package main
 
 import (
-	"encoding/hex"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/OKI-Mesh/CoreScope/internal/channel"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-func TestExtractGRPPayload(t *testing.T) {
-	// Build a minimal GRP_TXT packet: header(1) + path(1) + payload
+func TestSplitGroupText(t *testing.T) {
 	// header: route=FLOOD(1), payload=GRP_TXT(5), version=0 → (5<<2)|1 = 0x15
-	// path: 0 hops, hash_size=1 → 0x00
-	payload := []byte{0x81, 0x12, 0x34} // channel_hash + mac + data
-	pkt := append([]byte{0x15, 0x00}, payload...)
-	rawHex := hex.EncodeToString(pkt)
-
-	result, err := extractGRPPayload(rawHex)
+	// path byte 0x00: 0 hops, 1-byte hashes
+	frame := types.RawFrame{0x15, 0x00, 0x81, 0x12, 0x34} // channel_hash + mac + data
+	path, payload, err := splitGroupText(frame)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result) != 3 || result[0] != 0x81 {
-		t.Fatalf("payload mismatch: %x", result)
+	if len(path) != 0 {
+		t.Fatalf("path = %v, want none", path)
+	}
+	if len(payload) != 3 || payload[0] != 0x81 {
+		t.Fatalf("payload mismatch: %x", payload)
 	}
 }
 
-func TestExtractGRPPayloadTransport(t *testing.T) {
+func TestSplitGroupTextWithPath(t *testing.T) {
+	// path byte 0x42: 2-byte hashes (0x42>>6 = 1), 2 hops (0x42&0x3F = 2)
+	frame := types.RawFrame{0x15, 0x42, 0xAA, 0xBB, 0xCC, 0xDD, 0x81, 0x12, 0x34}
+	path, payload, err := splitGroupText(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(path) != 2 || path[0] != "AABB" || path[1] != "CCDD" {
+		t.Fatalf("path = %v, want [AABB CCDD]", path)
+	}
+	if len(payload) != 3 || payload[0] != 0x81 {
+		t.Fatalf("payload mismatch: %x", payload)
+	}
+}
+
+func TestSplitGroupTextTransport(t *testing.T) {
 	// Transport flood: route=0, 4 bytes transport codes BEFORE path byte
 	// header: (5<<2)|0 = 0x14
-	payload := []byte{0xAA, 0xBB, 0xCC}
-	// header + 4 transport bytes + path(0 hops) + payload
-	pkt := append([]byte{0x14, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, payload...)
-	rawHex := hex.EncodeToString(pkt)
-
-	result, err := extractGRPPayload(rawHex)
+	frame := types.RawFrame{0x14, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xAA, 0xBB, 0xCC}
+	_, payload, err := splitGroupText(frame)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result[0] != 0xAA {
-		t.Fatalf("expected AA, got %02X", result[0])
+	if payload[0] != 0xAA {
+		t.Fatalf("expected AA, got %02X", payload[0])
 	}
 }
 
-func TestExtractGRPPayloadNotGRP(t *testing.T) {
+func TestSplitGroupTextNotGRP(t *testing.T) {
 	// payload type = ADVERT (4): (4<<2)|1 = 0x11
-	rawHex := hex.EncodeToString([]byte{0x11, 0x00, 0x01, 0x02})
-	_, err := extractGRPPayload(rawHex)
-	if err == nil {
+	if _, _, err := splitGroupText(types.RawFrame{0x11, 0x00, 0x01, 0x02}); err == nil {
 		t.Fatal("expected error for non-GRP_TXT")
+	}
+}
+
+func TestSplitGroupTextRejectsTruncatedPath(t *testing.T) {
+	// path byte 0x42 promises 4 hop bytes, but only 2 follow and there is no payload
+	if _, _, err := splitGroupText(types.RawFrame{0x15, 0x42, 0xAA, 0xBB}); err == nil {
+		t.Fatal("expected error for a frame shorter than its path")
 	}
 }
 
@@ -110,20 +124,5 @@ func TestJSONOutputParseable(t *testing.T) {
 	}
 	if len(parsed) != 1 || parsed[0].Sender != "X" {
 		t.Fatalf("parsed mismatch: %+v", parsed)
-	}
-}
-
-// Integration test against fixture DB (skipped if DB not found)
-func TestFixtureDecrypt(t *testing.T) {
-	dbPath := "../../test-fixtures/e2e-fixture.db"
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		t.Skip("fixture DB not found")
-	}
-
-	// We know the fixture has #wardriving messages with channelHash 0x81
-	key := channel.DeriveKey("#wardriving")
-	ch := channel.ChannelHash(key)
-	if ch != 0x81 {
-		t.Fatalf("unexpected channel hash: %02X", ch)
 	}
 }

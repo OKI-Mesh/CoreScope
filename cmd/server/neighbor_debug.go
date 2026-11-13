@@ -1,91 +1,32 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
-
-// ─── Debug API response types ──────────────────────────────────────────────────
-
-type DebugAffinityResponse struct {
-	Edges       []DebugEdge       `json:"edges"`
-	Resolutions []DebugResolution `json:"resolutions"`
-	Stats       DebugStats        `json:"stats"`
-}
-
-type DebugEdge struct {
-	NodeA            string   `json:"nodeA"`
-	NodeAName        string   `json:"nodeAName,omitempty"`
-	NodeB            string   `json:"nodeB"`
-	NodeBName        string   `json:"nodeBName,omitempty"`
-	Prefix           string   `json:"prefix"`
-	Weight           int      `json:"weight"`
-	ObservationCount int      `json:"observationCount"`
-	LastSeen         string   `json:"lastSeen"`
-	FirstSeen        string   `json:"firstSeen"`
-	Score            float64  `json:"score"`
-	Jaccard          float64  `json:"jaccard,omitempty"`
-	AvgSNR           *float64 `json:"avgSnr,omitempty"`
-	Observers        []string `json:"observers"`
-	Ambiguous        bool     `json:"ambiguous"`
-	Unresolved       bool     `json:"unresolved,omitempty"`
-	Resolved         bool     `json:"resolved,omitempty"`
-}
-
-type DebugResolution struct {
-	Prefix           string           `json:"prefix"`
-	Chosen           string           `json:"chosen,omitempty"`
-	ChosenName       string           `json:"chosenName,omitempty"`
-	ChosenScore      int              `json:"chosenScore"`
-	ChosenJaccard    float64          `json:"chosenJaccard"`
-	Confidence       string           `json:"confidence"`
-	Candidates       []DebugCandidate `json:"candidates"`
-	Ratio            float64          `json:"ratio"`
-	ThresholdApplied float64          `json:"thresholdApplied"`
-	Method           string           `json:"method"`
-	Tier             string           `json:"tier"`
-	KnownNode        string           `json:"knownNode"`
-	KnownNodeName    string           `json:"knownNodeName,omitempty"`
-}
-
-type DebugCandidate struct {
-	Pubkey  string  `json:"pubkey"`
-	Name    string  `json:"name,omitempty"`
-	Score   int     `json:"score"`
-	Jaccard float64 `json:"jaccard"`
-}
-
-type DebugStats struct {
-	TotalEdges        int     `json:"totalEdges"`
-	TotalNodes        int     `json:"totalNodes"`
-	ResolvedCount     int     `json:"resolvedCount"`
-	AmbiguousCount    int     `json:"ambiguousCount"`
-	UnresolvedCount   int     `json:"unresolvedCount"`
-	AvgConfidence     float64 `json:"avgConfidence"`
-	ColdStartCoverage float64 `json:"coldStartCoverage"`
-	CacheAge          string  `json:"cacheAge"`
-	LastRebuild       string  `json:"lastRebuild"`
-}
 
 // ─── Debug API Handler ─────────────────────────────────────────────────────────
 
 func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	prefixFilter := strings.ToLower(r.URL.Query().Get("prefix"))
 	nodeFilter := strings.ToLower(r.URL.Query().Get("node"))
 
 	graph := s.getNeighborGraph()
 	now := time.Now()
-	nodeMap := s.buildNodeInfoMap()
+	nodeMap := s.buildNodeInfoMap(ctx)
 
 	allEdges := graph.AllEdges()
 
 	// Build edges response
-	var debugEdges []DebugEdge
+	var debugEdges []api.DebugEdge
 	nodeSet := make(map[string]bool)
 	resolvedCount := 0
 	ambiguousCount := 0
@@ -115,14 +56,14 @@ func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
 		}
 
 		score := e.Score(now)
-		de := DebugEdge{
+		de := api.DebugEdge{
 			NodeA:            e.NodeA,
 			NodeB:            e.NodeB,
 			Prefix:           e.Prefix,
 			Weight:           e.Count,
 			ObservationCount: e.Count,
-			LastSeen:         e.LastSeen.UTC().Format(time.RFC3339),
-			FirstSeen:        e.FirstSeen.UTC().Format(time.RFC3339),
+			LastSeen:         types.WireTimeSeconds{Time: e.LastSeen},
+			FirstSeen:        types.WireTimeSeconds{Time: e.FirstSeen},
 			Score:            math.Round(score*1000) / 1000,
 			Observers:        observerList(e.Observers),
 			Ambiguous:        e.Ambiguous,
@@ -131,7 +72,7 @@ func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
 
 		if e.SNRCount > 0 {
 			avg := e.AvgSNR()
-			de.AvgSNR = &avg
+			de.AvgSnr = &avg
 		}
 
 		// Add names
@@ -179,10 +120,10 @@ func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if debugEdges == nil {
-		debugEdges = []DebugEdge{}
+		debugEdges = []api.DebugEdge{}
 	}
 	if resolutions == nil {
-		resolutions = []DebugResolution{}
+		resolutions = []api.DebugResolution{}
 	}
 
 	// Sort edges by weight descending
@@ -195,16 +136,16 @@ func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
 	graph.mu.RUnlock()
 
 	cacheAge := ""
-	lastRebuild := ""
+	var lastRebuild *types.WireTimeSeconds // nil (null on the wire) before the first build
 	if !builtAt.IsZero() {
 		cacheAge = fmt.Sprintf("%.1fs", time.Since(builtAt).Seconds())
-		lastRebuild = builtAt.UTC().Format(time.RFC3339)
+		lastRebuild = &types.WireTimeSeconds{Time: builtAt}
 	}
 
-	resp := DebugAffinityResponse{
+	resp := api.DebugAffinityResponse{
 		Edges:       debugEdges,
 		Resolutions: resolutions,
-		Stats: DebugStats{
+		Stats: api.DebugStats{
 			TotalEdges:        len(debugEdges),
 			TotalNodes:        len(nodeSet),
 			ResolvedCount:     resolvedCount,
@@ -217,14 +158,13 @@ func (s *Server) handleDebugAffinity(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, resp)
 }
 
 // buildResolutions generates per-prefix resolution decision logs.
 // It uses resolveWithContext (M4) to show the actual 4-tier fallback path
 // (affinity → geo → GPS → observation_count_fallback) for each prefix resolution.
-func (s *Server) buildResolutions(graph *NeighborGraph, nodeMap map[string]nodeInfo, prefixFilter, nodeFilter string) []DebugResolution {
+func (s *Server) buildResolutions(graph *NeighborGraph, nodeMap map[string]nodeInfo, prefixFilter, nodeFilter string) []api.DebugResolution {
 	graph.mu.RLock()
 	defer graph.mu.RUnlock()
 
@@ -250,7 +190,7 @@ func (s *Server) buildResolutions(graph *NeighborGraph, nodeMap map[string]nodeI
 		resolvedNeighbors[e.NodeB][e.NodeA] = true
 	}
 
-	var resolutions []DebugResolution
+	var resolutions []api.DebugResolution
 
 	for _, e := range graph.edges {
 		// Show resolution info for both resolved (auto-resolved) and ambiguous edges
@@ -279,7 +219,7 @@ func (s *Server) buildResolutions(graph *NeighborGraph, nodeMap map[string]nodeI
 
 		knownNeighbors := resolvedNeighbors[knownNode]
 
-		var candidates []DebugCandidate
+		var candidates []api.DebugCandidate
 		candList := e.Candidates
 		// For resolved edges, add the resolved node as a candidate too
 		if e.Resolved {
@@ -303,7 +243,7 @@ func (s *Server) buildResolutions(graph *NeighborGraph, nodeMap map[string]nodeI
 		for _, cpk := range candList {
 			candNeighbors := resolvedNeighbors[cpk]
 			j := jaccardSimilarity(knownNeighbors, candNeighbors)
-			dc := DebugCandidate{
+			dc := api.DebugCandidate{
 				Pubkey:  cpk,
 				Score:   e.Count,
 				Jaccard: math.Round(j*1000) / 1000,
@@ -321,7 +261,7 @@ func (s *Server) buildResolutions(graph *NeighborGraph, nodeMap map[string]nodeI
 			return candidates[i].Jaccard > candidates[j].Jaccard
 		})
 
-		dr := DebugResolution{
+		dr := api.DebugResolution{
 			Prefix:           e.Prefix,
 			ThresholdApplied: affinityConfidenceRatio,
 			KnownNode:        knownNode,

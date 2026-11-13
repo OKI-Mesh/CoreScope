@@ -65,19 +65,19 @@ func QueueDir(dbPath string) string {
 }
 
 // EnsureDir creates the snapshot directory if missing.
-func EnsureDir(dbPath string) error {
-	return os.MkdirAll(QueueDir(dbPath), 0o755)
+func EnsureDir(snapshotDir string) error {
+	return os.MkdirAll(snapshotDir, 0o755)
 }
 
-// SnapshotPath returns the absolute path of snapshot.json under dbPath.
-func SnapshotPath(dbPath string) string {
-	return filepath.Join(QueueDir(dbPath), SnapshotFileName)
+// SnapshotPath returns the absolute path of snapshot.json under snapshotDir.
+func SnapshotPath(snapshotDir string) string {
+	return filepath.Join(snapshotDir, SnapshotFileName)
 }
 
 // WriteSnapshot atomically replaces snapshot.json with the given payload.
 // Uses tmp-then-rename so a reader never sees a torn file.
-func WriteSnapshot(dbPath string, snap Snapshot) error {
-	if err := EnsureDir(dbPath); err != nil {
+func WriteSnapshot(snapshotDir string, snap Snapshot) error {
+	if err := EnsureDir(snapshotDir); err != nil {
 		return fmt.Errorf("ensure dir: %w", err)
 	}
 	if snap.WrittenAt.IsZero() {
@@ -87,7 +87,7 @@ func WriteSnapshot(dbPath string, snap Snapshot) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	final := SnapshotPath(dbPath)
+	final := SnapshotPath(snapshotDir)
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
@@ -102,9 +102,9 @@ func WriteSnapshot(dbPath string, snap Snapshot) error {
 // ReadSnapshot loads the current snapshot.json. Returns os.ErrNotExist
 // when no snapshot has been written yet — callers should treat that as
 // "nothing to persist" rather than an error.
-func ReadSnapshot(dbPath string) (Snapshot, error) {
+func ReadSnapshot(snapshotDir string) (Snapshot, error) {
 	var snap Snapshot
-	b, err := os.ReadFile(SnapshotPath(dbPath))
+	b, err := os.ReadFile(SnapshotPath(snapshotDir))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return snap, os.ErrNotExist

@@ -15,13 +15,10 @@ import (
 // pipeline: insert nodes, populate the neighbor graph, force a
 // recompute, hit the handler, parse the response. Issue #672 axis 2.
 func TestBridgeScore_HandleNodesSurface(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	db := setupTestDB(t)
+	t.Cleanup(func() { db.Close() })
 	// handleNodes/db.GetNodes selects a foreign_advert column not in
 	// the minimal capability-test schema.
-	if _, err := db.conn.Exec(`ALTER TABLE nodes ADD COLUMN foreign_advert INTEGER DEFAULT 0`); err != nil {
-		t.Fatal(err)
-	}
 
 	// Four repeater nodes in a line.
 	pks := []string{
@@ -32,15 +29,13 @@ func TestBridgeScore_HandleNodesSurface(t *testing.T) {
 	}
 	recent := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	for _, pk := range pks {
-		if _, err := db.conn.Exec(`INSERT INTO nodes
+		mustExecDB(t, db, `INSERT INTO nodes
 			(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-			VALUES (?, ?, 'repeater', 37.5, -122.0, ?, ?, 10)`,
-			pk, "node-"+pk[:4], recent, recent); err != nil {
-			t.Fatal(err)
-		}
+			VALUES ($1, $2, 'repeater', 37.5, -122.0, $3, $3, 10)`,
+			pk, "node-"+pk[:4], recent)
 	}
 
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	// Build neighbor graph with the line A-B-C-D. Add each edge
 	// `count` times so its time-decayed Score saturates.
 	g := NewNeighborGraph()

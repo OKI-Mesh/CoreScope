@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"runtime/debug"
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // #1481 P0-1: cached default-filter neighbor-graph response.
@@ -25,7 +28,7 @@ const neighborGraphCacheInterval = 5 * time.Minute
 // tests / structured access) and the pre-marshaled bytes that the
 // handler writes verbatim.
 type neighborGraphCacheEntry struct {
-	resp NeighborGraphResponse
+	resp api.NeighborGraphResponse
 	json []byte
 	at   time.Time
 }
@@ -42,18 +45,18 @@ type neighborGraphCacheField struct {
 // startNeighborGraphRecomputer launches a background goroutine that
 // rebuilds the default-shape response every interval. Returns when
 // the stop channel is closed.
-func (s *Server) startNeighborGraphRecomputer(interval time.Duration, stop <-chan struct{}) {
+func (s *Server) startNeighborGraphRecomputer(ctx context.Context, interval time.Duration, stop <-chan struct{}) {
 	if interval <= 0 {
 		interval = neighborGraphCacheInterval
 	}
 	go func() {
-		s.recomputeNeighborGraphCache()
+		s.recomputeNeighborGraphCache(ctx)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
 			case <-t.C:
-				s.recomputeNeighborGraphCache()
+				s.recomputeNeighborGraphCache(ctx)
 			case <-stop:
 				return
 			}
@@ -65,7 +68,7 @@ func (s *Server) startNeighborGraphRecomputer(interval time.Duration, stop <-cha
 // response and atomically swaps it in. Panic-defensive so a single bad
 // rebuild doesn't kill the background goroutine — but logs the panic
 // and increments a counter so operators see the failure (#1483 follow-up).
-func (s *Server) recomputeNeighborGraphCache() {
+func (s *Server) recomputeNeighborGraphCache(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[neighbor-graph-cache] rebuild panic: %v\n%s", r, debug.Stack())
@@ -73,7 +76,7 @@ func (s *Server) recomputeNeighborGraphCache() {
 		}
 	}()
 	start := time.Now()
-	resp := s.buildDefaultNeighborGraphResponse()
+	resp := s.buildDefaultNeighborGraphResponse(ctx)
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(resp); err != nil {
 		log.Printf("[neighbor-graph-cache] marshal error: %v", err)
@@ -91,7 +94,7 @@ func (s *Server) recomputeNeighborGraphCache() {
 	// This is what the UI actually fetches so it can slider client-side.
 	// Cached separately so its TTL stays aligned with the default cache.
 	uStart := time.Now()
-	uResp := s.computeNeighborGraphResponseDispatch(1, 0, "", "")
+	uResp := s.computeNeighborGraphResponseDispatch(ctx, 1, 0, "", "")
 	var uBuf bytes.Buffer
 	if err := json.NewEncoder(&uBuf).Encode(uResp); err != nil {
 		log.Printf("[neighbor-graph-cache] unfiltered marshal error: %v", err)
@@ -104,15 +107,6 @@ func (s *Server) recomputeNeighborGraphCache() {
 		at:   time.Now(),
 	})
 	log.Printf("[neighbor-graph-cache] unfiltered rebuild ok in %v, nodes=%d", time.Since(uStart), len(uResp.Nodes))
-}
-
-// loadNeighborGraphCache returns the cached default response if present.
-func (s *Server) loadNeighborGraphCache() (NeighborGraphResponse, bool) {
-	e := s.neighborGraphCache.ptr.Load()
-	if e == nil {
-		return NeighborGraphResponse{}, false
-	}
-	return e.resp, true
 }
 
 // loadNeighborGraphCacheBytes returns the pre-marshaled JSON for the

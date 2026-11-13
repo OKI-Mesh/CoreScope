@@ -1,0 +1,418 @@
+{
+ "node": {
+  "lat": 40.24626,
+  "lon": -84.15359,
+  "name": "Node 1",
+  "public_key": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f"
+ },
+ "paths": [
+  {
+   "hops": [
+    {
+     "prefix": "1BFE",
+     "name": "Node 1",
+     "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+     "lat": 40.24626,
+     "lon": -84.15359
+    },
+    {
+     "prefix": "5403",
+     "name": "Node 2",
+     "pubkey": "fcc2925b433b4dea1eee3c806fa7cd7d380403e46401142e8a613e09cbba2020",
+     "lat": 39.45879,
+     "lon": -83.81523
+    },
+    {
+     "prefix": "1DE6",
+     "name": "Node 3",
+     "pubkey": "2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599f02411",
+     "lat": 39.33826,
+     "lon": -84.15131
+    },
+    {
+     "prefix": "804F",
+     "name": "Node 4",
+     "pubkey": "fbba7828196817e71ca47de2fd00697d3a5a1e90c6d729b68cd21f451420d882",
+     "lat": 40.83131,
+     "lon": -83.64403
+    },
+    {
+     "prefix": "6BA5",
+     "name": "Node 5",
+     "pubkey": "e6f9121fcecd6c54d00a629cb2387abda18971f0414130d49c28713903eeaabf",
+     "lat": 39.27109,
+     "lon": -84.35955
+    },
+    {
+     "prefix": "0FAF",
+     "name": "Node 6",
+     "pubkey": "c0498df8287d79fd528e29ac417fda41205d432589527f1aa8087730b840fea5",
+     "lat": 40.51981,
+     "lon": -85.2183
+    }
+   ],
+   "count": 1,
+   "lastSeen": "2026-11-09T19:41:35Z",
+   "sampleHash": "96f0490d5bdda92b"
+  },
+  {
+   "hops": [
+    {
+     "prefix": "1BFE",
+     "name": "Node 1",
+     "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+     "lat": 40.24626,
+     "lon": -84.15359
+    },
+    {
+     "prefix": "1DE6",
+     "name": "Node 3",
+     "pubkey": "2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599f02411",
+     "lat": 39.33826,
+     "lon": -84.15131
+    },
+    {
+     "prefix": "7B8E",
+     "name": "Node 7",
+     "pubkey": "0ded497575a2b240029f58beaab73107909e2ae795c3721e765af5c1ba61dec9",
+     "lat": 40.73288,
+     "lon": -84.02419
+    },
+    {
+     "prefix": "6BA5",
+     "name": "Node 5",
+     "pubkey": "e6f9121fcecd6c54d00a629cb2387abda18971f0414130d49c28713903eeaabf",
+     "lat": 39.27109,
+     "lon": -84.35955
+    },
+    {
+     "prefix": "0FAF",
+     "name": "Node 6",
+     "pubkey": "c0498df8287d79fd528e29ac417fda41205d432589527f1aa8087730b840fea5",
+     "lat": 40.51981,
+     "lon": -85.2183
+    },
+    {
+     "prefix": "F0DF",
+     "name": "Node 8",
+     "pubkey": "bbd8afa03e0a3d3ba74da819887ba7501d5f01c68bc99f4985e4b467a38c9056",
+     "lat": 40.3137,
+     "lon": -84.53972
+    },
+    {
+     "prefix": "3565",
+     "name": "Node 9",
+     "pubkey": "d1a79a8d0439268c9bf9e75263f5ebc483d4db81de51b718d1f57a43adeb6d87",
+     "lat": 39.85874,
+     "lon": -84.63151
+    },
+    {
+     "prefix": "89DF",
+     "name": "Node 10",
+     "pubkey": "1c9842a9c6bb16d2754875112f67115b3ca2c1b093a0cb61a1ea7e956bbeb14e",
+     "lat": 40.97416,
+     "lon": -83.15117
+    }
+   ],
+   "count": 1,
+   "lastSeen": "2026-11-09T19:41:23Z",
+   "sampleHash": "f15d9ba7d5944627"
+  },
+  {
+   "hops": [
+    {
+     "prefix": "7CA9",
+     "name": "Node 11",
+     "pubkey": "da445341f36b6f02f8ad1dbaa5bf929ad67629f3b1b4ac3b717f5424c14e51bc",
+     "lat": 38.28726,
+     "lon": -85.27864
+    },
+    {
+     "prefix": "2547",
+     "name": "Node 12",
+     "pubkey": "5145830dec98c672885f595756e88cffebd33c705caed5da315ce7752eea7af5",
+     "lat": 38.61997,
+     "lon": -85.18733
+    },
+    {
+     "prefix": "2BC4",
+     "name": "Node 13",
+     "pubkey": "51af9ed5990c0789f25efd8f4aa20e52220471becc5e602123aea6e28d3775c6",
+     "lat": 39.2358,
+     "lon": -84.98034
+    },
+    {
+     "prefix": "1BFE",
+     "name": "Node 1",
+     "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+     "lat": 40.24626,
+     "lon": -84.15359
+    },
+    {
+     "prefix": "1DE6",
+     "name": "Node 3",
+     "pubkey": "2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599f02411",
+     "lat": 39.33826,
+     "lon": -84.15131
+    },
+    {
+     "prefix": "97A8",
+     "name": "Node 14",
+     "pubkey": "b7c637981ea8b5f4e66c6121f16542107237b239d546930b205b6ea6c8d2bd9b",
+     "lat": 40.70867,
+     "lon": -83.19674
+    },
+    {
+     "prefix": "F0DF",
+     "name": "Node 8",
+     "pubkey": "bbd8afa03e0a3d3ba74da819887ba7501d5f01c68bc99f4985e4b467a38c9056",
+     "lat": 40.3137,
+     "lon": -84.53972
+    },
+    {
+     "prefix": "3565",
+     "name": "Node 9",
+     "pubkey": "d1a79a8d0439268c9bf9e75263f5ebc483d4db81de51b718d1f57a43adeb6d87",
+     "lat": 39.85874,
+     "lon": -84.63151
+    },
+    {
+     "prefix": "89DF",
+     "name": "Node 10",
+     "pubkey": "1c9842a9c6bb16d2754875112f67115b3ca2c1b093a0cb61a1ea7e956bbeb14e",
+     "lat": 40.97416,
+     "lon": -83.15117
+    }
+   ],
+   "count": 1,
+   "lastSeen": "2026-11-09T19:36:49Z",
+   "sampleHash": "a19dc076234abf00"
+  },
+  {
+   "hops": [
+    {
+     "prefix": "1BFE",
+     "name": "Node 1",
+     "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+     "lat": 40.24626,
+     "lon": -84.15359
+    },
+    {
+     "prefix": "1DE6",
+     "name": "Node 3",
+     "pubkey": "2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599f02411",
+     "lat": 39.33826,
+     "lon": -84.15131
+    },
+    {
+     "prefix": "C38B",
+     "name": "Node 15",
+     "pubkey": "eecdb528a725a63bcd886ca5d52add4b192151f3f1b0205173f1a3f7d46b0fa2",
+     "lat": 39.00964,
+     "lon": -83.38572
+    },
+    {
+     "prefix": "6A28",
+     "name": "Node 16",
+     "pubkey": "eed9ab8f432dd7d77de1da3c7d2adfa574ab7e8b89842b079210e5fa8ba447d6",
+     "lat": 39.24472,
+     "lon": -84.48645
+    },
+    {
+     "prefix": "8F8F",
+     "name": "Node 17",
+     "pubkey": "cd35804c87326352ccfcc6f60bd93c02104fd39779321026f9dd0d886406e0a7",
+     "lat": 40.2823,
+     "lon": -84.37117
+    }
+   ],
+   "count": 1,
+   "lastSeen": "2026-11-09T19:20:02Z",
+   "sampleHash": "5ca5c543fe7e1d83"
+  },
+  {
+   "hops": [
+    {
+     "prefix": "0FAF",
+     "name": "Node 6",
+     "pubkey": "c0498df8287d79fd528e29ac417fda41205d432589527f1aa8087730b840fea5",
+     "lat": 40.51981,
+     "lon": -85.2183
+    },
+    {
+     "prefix": "A1AD",
+     "name": "Node 18",
+     "pubkey": "3933ff942ab4c635a69b91752e5e0a8d15e3cb977fc7eaa2dda713239030cd1d",
+     "lat": 40.47875,
+     "lon": -84.6817
+    },
+    {
+     "prefix": "97A8",
+     "name": "Node 14",
+     "pubkey": "b7c637981ea8b5f4e66c6121f16542107237b239d546930b205b6ea6c8d2bd9b",
+     "lat": 40.70867,
+     "lon": -83.19674
+    },
+    {
+     "prefix": "7686",
+     "name": "Node 19",
+     "pubkey": "23acf0a1a0d0c0399f6e6173efaf2690dc6064d908202bcc33161add58bbb0a3",
+     "lat": 39.68621,
+     "lon": -84.4449
+    },
+    {
+     "prefix": "AE98",
+     "name": "Node 20",
+     "pubkey": "c892d95cce139569f941871f0eca30404bb9780e1d5a79b88c91f23bc5da2c10",
+     "lat": 38.86496,
+     "lon": -83.46382
+    },
+    {
+     "prefix": "5F41",
+     "name": "Node 21",
+     "pubkey": "fc3b3d91f147b4efa0ecfe57017418917c8520b80554dd80409e6a88f91f4af4",
+     "lat": 39.40282,
+     "lon": -83.53329
+    },
+    {
+     "prefix": "1823",
+     "name": "Node 22",
+     "pubkey": "af60de45599bbf8f1ef5f8b746ac598fce92a57c10d864ffae862867f452d703",
+     "lat": 39.24783,
+     "lon": -84.60709
+    },
+    {
+     "prefix": "1BFE",
+     "name": "Node 1",
+     "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+     "lat": 40.24626,
+     "lon": -84.15359
+    },
+    {
+     "prefix": "AAE8",
+     "name": "Node 23",
+     "pubkey": "2ca13726b9526ec69e5e161c31663a9b09ef64a600a4d4ba957e74c95f88c53f",
+     "lat": 39.6652,
+     "lon": -84.03106
+    },
+    {
+     "prefix": "16E1",
+     "name": "Node 24",
+     "pubkey": "8c9a64f6ee3fd6c0c62b8fee502ffbbd35dd383ff90a9b3e09ec6bf706609072",
+     "lat": 39.11256,
+     "lon": -84.90899
+    },
+    {
+     "prefix": "399B",
+     "name": "Node 25",
+     "pubkey": "818d4adc3df00eeffe11690cb27e67bdb36bff56ae2a6c393afebbb7a84db79a",
+     "lat": 39.79634,
+     "lon": -84.77142
+    },
+    {
+     "prefix": "E502",
+     "name": "Node 26",
+     "pubkey": "c007116bbfa5797fec44d2091d97534282be32aafbcc39cbd3f2375747308de1",
+     "lat": 39.32354,
+     "lon": -85.20211
+    },
+    {
+     "prefix": "0E4E",
+     "name": "Node 27",
+     "pubkey": "023204d0823de30a6db99e78f4d19632d32420da40a6502ed44002afc6c5b568",
+     "lat": 39.9349,
+     "lon": -85.43105
+    },
+    {
+     "prefix": "A65C",
+     "name": "Node 28",
+     "pubkey": "6103fedfeb9ab3d1046bc77723288e859769979ac30ca27b889b7dc8b822bae6",
+     "lat": 39.71718,
+     "lon": -84.96768
+    }
+   ],
+   "count": 1,
+   "lastSeen": "2026-11-09T19:02:20Z",
+   "sampleHash": "14162c27f1ba9456"
+  },
+  {
+   "hops": [
+    {
+     "prefix": "AAE8",
+     "name": "Node 23",
+     "pubkey": "2ca13726b9526ec69e5e161c31663a9b09ef64a600a4d4ba957e74c95f88c53f",
+     "lat": 39.6652,
+     "lon": -84.03106
+    },
+    {
+     "prefix": "1BFE",
+     "name": "Node 1",
+     "pubkey": "db483c7a11db79c197603437ee209e2d1debf7ea696e709fc0c7fb1e2e34ed8f",
+     "lat": 40.24626,
+     "lon": -84.15359
+    },
+    {
+     "prefix": "1DE6",
+     "name": "Node 3",
+     "pubkey": "2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599f02411",
+     "lat": 39.33826,
+     "lon": -84.15131
+    },
+    {
+     "prefix": "A6E0",
+     "name": "A6E0",
+     "pubkey": null,
+     "lat": null,
+     "lon": null
+    },
+    {
+     "prefix": "09D6",
+     "name": "Node 29",
+     "pubkey": "6ae3f10e20e2d0636038981bdc96175f8dc94ae7ad554adf05dfcf1d742ee8b6",
+     "lat": 38.49468,
+     "lon": -84.00547
+    },
+    {
+     "prefix": "D078",
+     "name": "Node 30",
+     "pubkey": "9eb123e85479c6140414e8bdf82aa27443760038bd4e206708a9be33d491950a",
+     "lat": 39.04504,
+     "lon": -85.42076
+    },
+    {
+     "prefix": "6B86",
+     "name": "Node 31",
+     "pubkey": "1483548803317feb05f670ecabbc14a8b80b8e801d6d894fbf45f0e230633eb7",
+     "lat": 40.00921,
+     "lon": -84.92321
+    },
+    {
+     "prefix": "3353",
+     "name": "Node 32",
+     "pubkey": "5b6a918b8e881670d5c6441e9fdeb1238905635779829ff56187b66518c1578e",
+     "lat": 38.93478,
+     "lon": -85.31105
+    },
+    {
+     "prefix": "C450",
+     "name": "Node 33",
+     "pubkey": "a88b822ec705d26b51dba6075ce8469734c583023fa90b4ba452e7aaf34f0dd1",
+     "lat": 38.85938,
+     "lon": -85.17964
+    },
+    {
+     "prefix": "758F",
+     "name": "Node 34",
+     "pubkey": "ee7f0a07fd152d98e236de1488e01528447f9dd05d9b5a0b802bdec6a255845d",
+     "lat": 39.37869,
+     "lon": -84.6183
+    }
+   ],
+   "count": 1,
+   "lastSeen": "2026-11-09T17:54:53Z",
+   "sampleHash": "01bc97b7fe1f323d"
+  }
+ ],
+ "totalPaths": 248,
+ "totalTransmissions": 309
+}

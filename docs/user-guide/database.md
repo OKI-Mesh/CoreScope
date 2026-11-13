@@ -1,82 +1,47 @@
 # Database
 
-CoreScope uses SQLite in WAL (Write-Ahead Log) mode for both the server
-(read-only) and ingestor (read-write).
+CoreScope stores everything in PostgreSQL 18 with the PostGIS extension available. The ingestor writes; the server reads.
 
-## WAL mode
+## Connection
 
-WAL mode allows concurrent reads while writes happen. It is set automatically
-at connection time via `PRAGMA journal_mode=WAL`. No operator action needed.
+Both processes read the same setting. In `config.json`:
 
-The WAL file (`meshcore.db-wal`) grows during writes and is checkpointed
-(merged back into the main DB) periodically and at clean shutdown.
-
-## Auto-vacuum
-
-By default, SQLite does not shrink the database file after `DELETE` operations.
-Deleted pages are marked free and reused by future writes, but the file size
-on disk stays the same. This is surprising when lowering retention settings.
-
-### New databases
-
-Databases created after this feature was added automatically have
-`PRAGMA auto_vacuum = INCREMENTAL`. After each retention reaper cycle,
-CoreScope runs `PRAGMA incremental_vacuum(N)` to return free pages to the OS.
-
-### Existing databases
-
-The `auto_vacuum` mode is stored in the database header and can only be changed
-by rewriting the entire file with `VACUUM`. CoreScope will **not** do this
-automatically — on large databases (5+ GB seen in the wild) it takes minutes
-and holds an exclusive lock.
-
-**To migrate an existing database:**
-
-1. At startup, CoreScope logs a warning:
-   ```
-   [db] auto_vacuum=NONE — DB needs one-time VACUUM to enable incremental auto-vacuum.
-   ```
-2. **Ensure at least 2× the database file size in free disk space.** Full VACUUM
-   creates a temporary copy of the entire file — on a near-full disk it will fail.
-3. Set `db.vacuumOnStartup: true` in your `config.json`:
-   ```json
-   {
-     "db": {
-       "vacuumOnStartup": true
-     }
-   }
-   ```
-4. Restart CoreScope. The one-time `VACUUM` will run and block startup.
-5. After migration, remove or set `vacuumOnStartup: false` — it's not needed again.
-
-### Configuration
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `db.vacuumOnStartup` | `false` | One-time full VACUUM to enable incremental auto-vacuum |
-| `db.incrementalVacuumPages` | `1024` | Pages returned to OS per reaper cycle |
-
-## Manual VACUUM
-
-You can also run a manual vacuum from the SQLite CLI:
-
-```bash
-sqlite3 data/meshcore.db "PRAGMA auto_vacuum = INCREMENTAL; VACUUM;"
+```json
+{
+  "db": {
+    "connectionString": "postgres://corescope:change-me@localhost:5432/corescope"
+  }
+}
 ```
 
-This is equivalent to `vacuumOnStartup: true` but can be done offline.
+If `db.connectionString` is empty, the `DATABASE_URL` environment variable is used. The server also accepts a `-dsn` flag, which overrides both. The connection string carries the password, so CoreScope never logs it.
 
-> ⚠️ Full VACUUM requires **2× the database file size** in free disk space (it
-> creates a temporary copy). Check with `ls -lh data/meshcore.db` before running.
+## Migrations
 
-## Checking current mode
+The ingestor applies pending schema migrations when it starts. The server does not migrate: it checks that the database is up to date and refuses to start otherwise, so start the ingestor first after an upgrade.
+
+You can also run migrations by hand, for example from a deploy step:
 
 ```bash
-sqlite3 data/meshcore.db "PRAGMA auto_vacuum;"
+corescope-migrate -dsn "$DATABASE_URL"            # apply pending migrations
+corescope-migrate -dsn "$DATABASE_URL" -status    # show the applied and pending versions
 ```
 
-- `0` = NONE (default for old databases)
-- `1` = FULL (automatic, but slower writes)
-- `2` = INCREMENTAL (recommended — CoreScope triggers vacuum after deletes)
+The PostGIS extension must be available on the Postgres server.
 
-See [#919](https://github.com/Kpa-clawbot/CoreScope/issues/919) for background on this feature.
+## Maintenance
+
+Postgres reclaims space with autovacuum, so there are no vacuum settings in CoreScope and no one-time maintenance step. Retention (`retention.*` in `config.json`) deletes old rows from the ingestor; autovacuum then makes that space reusable.
+
+## Backups
+
+Use Postgres tooling:
+
+```bash
+pg_dump --format=custom --file=corescope.dump "$DATABASE_URL"
+pg_restore --dbname="$TARGET_DATABASE_URL" corescope.dump
+```
+
+## Moving from SQLite
+
+An existing SQLite database is converted with `cmd/etl`. It loads into an empty, migrated Postgres database in a single transaction and rolls back by default (a dry run); pass `-commit` to keep the result. Run `go run ./cmd/etl -h` for the flags.

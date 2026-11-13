@@ -209,32 +209,25 @@ message PacketStoreIndexes {
 }
 
 // WAL page counts.
-message WalPages {
-  int32 total = 1;
-  int32 checkpointed = 2;
-  int32 busy = 3;
+message CheckpointStats {
+  int64 timed = 1;
+  int64 requested = 2;
+  int64 buffers_written = 3 [json_name = "buffersWritten"];
 }
 
-// SQLite database stats.
-message SqliteStats {
-  // Database file size (MB).
+message TableRowCounts {
+  int64 transmissions = 1;
+  int64 observations = 2;
+  int64 nodes = 3;
+  int64 observers = 4;
+}
+
+message DbStats {
   double db_size_mb = 1 [json_name = "dbSizeMB"];
-  // WAL file size (MB).
   double wal_size_mb = 2 [json_name = "walSizeMB"];
-  // Freelist size (MB).
-  double freelist_mb = 3 [json_name = "freelistMB"];
-  // WAL page counts (null if unavailable).
-  optional WalPages wal_pages = 4 [json_name = "walPages"];
-  // Row counts per table.
-  SqliteRowCounts rows = 5;
-}
-
-// Row counts by table.
-message SqliteRowCounts {
-  int32 transmissions = 1;
-  int32 observations = 2;
-  int32 nodes = 3;
-  int32 observers = 4;
+  int64 dead_tuples = 3 [json_name = "deadTuples"];
+  optional CheckpointStats checkpoints = 4;
+  TableRowCounts rows = 5;
 }
 
 // GET /api/perf — response.
@@ -254,5 +247,5 @@ message PerfResponse {
   // Packet store detailed stats.
   PerfPacketStoreStats packet_store = 7 [json_name = "packetStore"];
   // SQLite database stats.
-  SqliteStats sqlite = 8;
+  DbStats db_stats = 8 [json_name = "dbStats"];
 }

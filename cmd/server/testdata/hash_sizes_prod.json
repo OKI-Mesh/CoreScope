@@ -1,0 +1,170 @@
+{
+  "attributionMethod": "observer",
+  "distribution": {
+    "1": 19267,
+    "2": 44141,
+    "3": 1134
+  },
+  "distributionByRepeaters": {
+    "0": 26,
+    "1": 138,
+    "2": 551,
+    "3": 54
+  },
+  "hourly": [
+    {
+      "1": 188,
+      "2": 400,
+      "3": 0,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "1": 257,
+      "2": 582,
+      "3": 13,
+      "hour": "2026-11-05T16"
+    },
+    {
+      "1": 363,
+      "2": 479,
+      "3": 14,
+      "hour": "2026-11-05T17"
+    }
+  ],
+  "multiByteCapability": [
+    {
+      "pubkey": "f260181a2e53a48b7c4645a077efd0a5d15459502196a0faaf1badab843d151e",
+      "name": "Repeater 08",
+      "role": "repeater",
+      "status": "confirmed",
+      "evidence": "advert",
+      "maxHashSize": 2,
+      "lastSeen": "2026-11-09T03:32:02Z"
+    },
+    {
+      "pubkey": "052399778344e6aa2e489d3bc862aa8878273719e3ff909fa01f4343e4009be6",
+      "name": "Repeater 09",
+      "role": "repeater",
+      "status": "confirmed",
+      "evidence": "advert",
+      "maxHashSize": 2,
+      "lastSeen": "2026-11-09T01:39:40Z"
+    },
+    {
+      "pubkey": "cf2ce056e9311760257aa8752720e5b07404baf59507c6a0d1ff9d4248bd084d",
+      "name": "Repeater 10",
+      "role": "repeater",
+      "status": "suspected",
+      "evidence": "path",
+      "maxHashSize": 2,
+      "lastSeen": "2026-11-06T01:09:47Z"
+    },
+    {
+      "pubkey": "d97a579b1375529e878c8c83c9c69117e35a326bdc5d0ed80d44008d41da328e",
+      "name": "Repeater 11",
+      "role": "repeater",
+      "status": "suspected",
+      "evidence": "path",
+      "maxHashSize": 2,
+      "lastSeen": "2026-11-06T06:24:50Z"
+    },
+    {
+      "pubkey": "3bba4a31619f10f2f461d40f62e58f6d328a5fbdfe0c0556ef8f21e8110888d4",
+      "name": "Repeater 12",
+      "role": "repeater",
+      "status": "unknown",
+      "evidence": "",
+      "maxHashSize": 1,
+      "lastSeen": "2026-11-03T03:02:29Z"
+    },
+    {
+      "pubkey": "e57eb85826f70a8bb82097101f5b7426666026c182cda7b349d8d41d17d80458",
+      "name": "Repeater 13",
+      "role": "repeater",
+      "status": "unknown",
+      "evidence": "",
+      "maxHashSize": 1,
+      "lastSeen": "2026-11-03T11:00:25Z"
+    }
+  ],
+  "multiByteNodes": [
+    {
+      "hashSize": 2,
+      "lastSeen": "2026-11-09T03:01:04Z",
+      "name": "Companion 04",
+      "packets": 88,
+      "pubkey": "b8270e1eb35012b46e19b9689e8ddff8f3d19abd9bc23f17c4ebd4a755080ebd",
+      "role": "companion"
+    },
+    {
+      "hashSize": 2,
+      "lastSeen": "2026-11-09T03:44:32Z",
+      "name": "Repeater 05",
+      "packets": 86,
+      "pubkey": "4c46c3c3478d75113d9683d606a2964019740f3ccea1d5c6e9d615d939b679ba",
+      "role": "repeater"
+    },
+    {
+      "hashSize": 2,
+      "lastSeen": "2026-11-09T03:37:18Z",
+      "name": "Repeater 06",
+      "packets": 86,
+      "pubkey": "706c6cd4d39fcab97fc154f4614359f0a4a34718edc0fdb418d74ff6061ab033",
+      "role": "repeater"
+    },
+    {
+      "hashSize": 2,
+      "lastSeen": "2026-11-09T03:30:01Z",
+      "name": "Room 07",
+      "packets": 85,
+      "pubkey": "0e3afb32c56823f90e5eb8843c54391a965536f078a4d0ece13ac552bb3d14b9",
+      "role": "room"
+    },
+    {
+      "hashSize": 3,
+      "lastSeen": "2026-11-09T02:58:00Z",
+      "name": "Repeater 01",
+      "packets": 84,
+      "pubkey": "ac010f2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599",
+      "role": "repeater"
+    }
+  ],
+  "topHops": [
+    {
+      "count": 13117,
+      "hex": "7777",
+      "name": null,
+      "pubkey": null,
+      "size": 2
+    },
+    {
+      "count": 9727,
+      "hex": "AC01",
+      "name": "Repeater 01",
+      "pubkey": "ac010f2c5b37f1caaf9bd2545d8aea89863121574d0656054f9fd11c6853b599",
+      "size": 2
+    },
+    {
+      "count": 8696,
+      "hex": "82C3",
+      "name": "Repeater 02",
+      "pubkey": "82c3413933ff942ab4c635a69b91752e5e0a8d15e3cb977fc7eaa2dda7132390",
+      "size": 2
+    },
+    {
+      "count": 8262,
+      "hex": "F3C3",
+      "name": "Repeater 03",
+      "pubkey": "f3c3068c9a64f6ee3fd6c0c62b8fee502ffbbd35dd383ff90a9b3e09ec6bf706",
+      "size": 2
+    },
+    {
+      "count": 6325,
+      "hex": "F1AB",
+      "name": null,
+      "pubkey": null,
+      "size": 2
+    }
+  ],
+  "total": 64542
+}

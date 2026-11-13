@@ -7,7 +7,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
+
+func bptr(b bool) *bool { return &b }
 
 // Issue #1290 (MAJOR-2, adversarial review of PR #1624) — tri-state badge.
 //
@@ -20,26 +25,48 @@ import (
 // was the legacy DEFAULT 1, conflating "confirmed repeater" with
 // "unknown". This pins the API surface to *bool + JSON omitempty so the
 // frontend tri-state render works.
+type observerTriStateResponse struct {
+	ID       string `json:"id"`
+	CanRelay *bool  `json:"can_relay"`
+}
+
 func TestObservers_CanRelayTriState_Issue1290(t *testing.T) {
 	srv, router := setupTestServer(t)
+	ctx := t.Context()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	// Legacy: never received repeat field. can_relay=DEFAULT 1, seen=0.
-	if _, err := srv.store.db.conn.Exec(
-		`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		 VALUES ('legacy-obs', 'Legacy', 'SJC', ?, '2026-01-01T00:00:00Z', 1)`, now); err != nil {
+	now := time.Now().UTC()
+	legacyID := scopeKey(1)
+	repeaterID := scopeKey(2)
+	listenerID := scopeKey(3)
+
+	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        legacyID,
+		Name:      ptr("Legacy"),
+		IATA:      "SJC",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	}); err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
-	// Repeater: ingestor wrote can_relay=1, seen=1.
-	if _, err := srv.store.db.conn.Exec(
-		`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count, can_relay, can_relay_seen)
-		 VALUES ('rep-obs', 'Repeater', 'SFO', ?, '2026-01-01T00:00:00Z', 1, 1, 1)`, now); err != nil {
+	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        repeaterID,
+		Name:      ptr("Repeater"),
+		IATA:      "SFO",
+		Meta:      &types.ObserverMeta{CanRelay: bptr(true)},
+		LastSeen:  now,
+		IngestNow: now,
+	}); err != nil {
 		t.Fatalf("seed repeater: %v", err)
 	}
-	// Listener: ingestor wrote can_relay=0, seen=1.
-	if _, err := srv.store.db.conn.Exec(
-		`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count, can_relay, can_relay_seen)
-		 VALUES ('lst-obs', 'Listener', 'OAK', ?, '2026-01-01T00:00:00Z', 1, 0, 1)`, now); err != nil {
+	if _, err := srv.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        listenerID,
+		Name:      ptr("Listener"),
+		IATA:      "OAK",
+		Meta:      &types.ObserverMeta{CanRelay: bptr(false)},
+		LastSeen:  now,
+		IngestNow: now,
+	}); err != nil {
 		t.Fatalf("seed listener: %v", err)
 	}
 
@@ -51,52 +78,56 @@ func TestObservers_CanRelayTriState_Issue1290(t *testing.T) {
 	}
 
 	var body struct {
-		Observers []map[string]interface{} `json:"observers"`
+		Observers []observerTriStateResponse `json:"observers"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("json: %v", err)
 	}
 
-	rows := map[string]map[string]interface{}{}
+	byID := make(map[string]observerTriStateResponse, len(body.Observers))
 	for _, o := range body.Observers {
-		if id, _ := o["id"].(string); id != "" {
-			rows[id] = o
-		}
+		byID[o.ID] = o
 	}
 
-	// Legacy: can_relay key must be absent (JSON omitempty for nil *bool).
-	legacy, ok := rows["legacy-obs"]
+	legacy, ok := byID[legacyID]
 	if !ok {
-		ids := make([]string, 0, len(rows))
-		for k := range rows {
-			ids = append(ids, k)
+		ids := make([]string, 0, len(byID))
+		for id := range byID {
+			ids = append(ids, id)
 		}
-		t.Fatalf("legacy-obs missing from response; got ids: %v", ids)
+		t.Fatalf("legacy observer missing from response; got ids: %v", ids)
 	}
-	if _, has := legacy["can_relay"]; has {
-		t.Errorf("legacy observer (never sent repeat) should have can_relay omitted (unknown); got can_relay=%v", legacy["can_relay"])
-	}
-
-	// Repeater: can_relay must be true.
-	if v := rows["rep-obs"]["can_relay"]; v != true {
-		t.Errorf("repeater observer: expected can_relay=true, got %v", v)
-	}
-	// Listener: can_relay must be false.
-	if v, has := rows["lst-obs"]["can_relay"]; !has || v != false {
-		t.Errorf("listener observer: expected can_relay=false, got %v (present=%v)", v, has)
+	if legacy.CanRelay != nil {
+		t.Errorf("legacy observer (never sent repeat) should have can_relay omitted (unknown); got can_relay=%v", *legacy.CanRelay)
 	}
 
-	// And the raw JSON must not contain the legacy observer's can_relay key
-	// (defense against a future ObserverResp change that hardcodes false).
+	repeater, ok := byID[repeaterID]
+	if !ok {
+		t.Fatalf("repeater observer missing from response")
+	}
+	if repeater.CanRelay == nil || !*repeater.CanRelay {
+		t.Errorf("repeater observer: expected can_relay=true, got %v", repeater.CanRelay)
+	}
+
+	listener, ok := byID[listenerID]
+	if !ok {
+		t.Fatalf("listener observer missing from response")
+	}
+	if listener.CanRelay == nil || *listener.CanRelay {
+		t.Errorf("listener observer: expected can_relay=false, got %v", listener.CanRelay)
+	}
+
 	raw := w.Body.String()
-	if idx := strings.Index(raw, `"id":"legacy-obs"`); idx >= 0 {
-		// scan its row only — observers are JSON-array-ordered objects.
-		end := strings.Index(raw[idx:], "}")
-		if end > 0 {
-			rowStr := raw[idx : idx+end]
-			if strings.Contains(rowStr, `"can_relay"`) {
-				t.Errorf("legacy observer raw JSON unexpectedly contains can_relay key: %s", rowStr)
-			}
-		}
+	idx := strings.Index(raw, `"id":"`+legacyID+`"`)
+	if idx < 0 {
+		t.Fatalf("legacy observer id not found in raw JSON")
+	}
+	end := strings.Index(raw[idx:], "}")
+	if end <= 0 {
+		t.Fatalf("could not find end of legacy observer object in raw JSON")
+	}
+	rowStr := raw[idx : idx+end]
+	if strings.Contains(rowStr, `"can_relay"`) {
+		t.Errorf("legacy observer raw JSON unexpectedly contains can_relay key: %s", rowStr)
 	}
 }

@@ -1,0 +1,56 @@
+{
+  "bucket_seconds": 3600,
+  "window": "",
+  "region": "",
+  "summary": {
+    "packets": 41519,
+    "avg_repeaters": 21.452852910715578,
+    "observers": 120,
+    "one_byte_packets": 8997,
+    "no_repeater_packets": 640
+  },
+  "buckets": [
+    {
+      "start": "2026-11-05T15:00:00Z",
+      "packets": 321,
+      "repeater_sum": 6230,
+      "avg_repeaters": 19.40809968847352,
+      "observers": 80
+    },
+    {
+      "start": "2026-11-05T16:00:00Z",
+      "packets": 541,
+      "repeater_sum": 12141,
+      "avg_repeaters": 22.44177449168207,
+      "observers": 80
+    },
+    {
+      "start": "2026-11-05T17:00:00Z",
+      "packets": 517,
+      "repeater_sum": 10159,
+      "avg_repeaters": 19.64990328820116,
+      "observers": 86
+    },
+    {
+      "start": "2026-11-05T18:00:00Z",
+      "packets": 576,
+      "repeater_sum": 14175,
+      "avg_repeaters": 24.609375,
+      "observers": 85
+    },
+    {
+      "start": "2026-11-05T19:00:00Z",
+      "packets": 583,
+      "repeater_sum": 11616,
+      "avg_repeaters": 19.92452830188679,
+      "observers": 89
+    },
+    {
+      "start": "2026-11-05T20:00:00Z",
+      "packets": 560,
+      "repeater_sum": 11983,
+      "avg_repeaters": 21.398214285714285,
+      "observers": 82
+    }
+  ]
+}

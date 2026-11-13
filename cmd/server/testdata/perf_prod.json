@@ -1,0 +1,662 @@
+{
+  "uptime": 361924,
+  "totalRequests": 2358916,
+  "avgMs": 322.1,
+  "endpoints": {
+    "/": {
+      "count": 412,
+      "avgMs": 0.3,
+      "p50Ms": 0.3,
+      "p95Ms": 0.5,
+      "maxMs": 14.5
+    },
+    "/api/analytics/channels": {
+      "count": 34,
+      "avgMs": 62.1,
+      "p50Ms": 10.7,
+      "p95Ms": 423.7,
+      "maxMs": 486.7
+    },
+    "/api/analytics/distance": {
+      "count": 13,
+      "avgMs": 2616.8,
+      "p50Ms": 15,
+      "p95Ms": 16453.6,
+      "maxMs": 16453.6
+    },
+    "/api/analytics/hash-collisions": {
+      "count": 29,
+      "avgMs": 679.4,
+      "p50Ms": 9.6,
+      "p95Ms": 1005.4,
+      "maxMs": 15917
+    },
+    "/api/analytics/hash-sizes": {
+      "count": 31,
+      "avgMs": 5133.6,
+      "p50Ms": 17.1,
+      "p95Ms": 44004.7,
+      "maxMs": 108711.1
+    },
+    "/api/analytics/neighbor-graph": {
+      "count": 160862,
+      "avgMs": 1.2,
+      "p50Ms": 0.9,
+      "p95Ms": 2.9,
+      "maxMs": 61752.7
+    },
+    "/api/analytics/relay-airtime-share": {
+      "count": 26,
+      "avgMs": 1679.7,
+      "p50Ms": 289.7,
+      "p95Ms": 412.4,
+      "maxMs": 37601.2
+    },
+    "/api/analytics/retransmissions": {
+      "count": 7,
+      "avgMs": 326.7,
+      "p50Ms": 481.8,
+      "p95Ms": 612.2,
+      "maxMs": 612.2
+    },
+    "/api/analytics/rf": {
+      "count": 37,
+      "avgMs": 958.4,
+      "p50Ms": 2.9,
+      "p95Ms": 4683.1,
+      "maxMs": 10544.1
+    },
+    "/api/analytics/roles": {
+      "count": 9,
+      "avgMs": 0.1,
+      "p50Ms": 0.1,
+      "p95Ms": 0.3,
+      "maxMs": 0.3
+    },
+    "/api/analytics/subpath-detail": {
+      "count": 4,
+      "avgMs": 35.3,
+      "p50Ms": 0,
+      "p95Ms": 141.3,
+      "maxMs": 141.3
+    },
+    "/api/analytics/subpaths": {
+      "count": 8,
+      "avgMs": 2725.9,
+      "p50Ms": 3980.6,
+      "p95Ms": 5675.9,
+      "maxMs": 5675.9
+    },
+    "/api/analytics/subpaths-bulk": {
+      "count": 14,
+      "avgMs": 13082.1,
+      "p50Ms": 8225,
+      "p95Ms": 88911.7,
+      "maxMs": 88911.7
+    },
+    "/api/analytics/topology": {
+      "count": 35,
+      "avgMs": 7509.2,
+      "p50Ms": 207.8,
+      "p95Ms": 42884.1,
+      "maxMs": 49284
+    },
+    "/api/audio-lab/buckets": {
+      "count": 8,
+      "avgMs": 5564.3,
+      "p50Ms": 418.9,
+      "p95Ms": 30877.1,
+      "maxMs": 30877.1
+    },
+    "/api/channels": {
+      "count": 1038,
+      "avgMs": 7172.3,
+      "p50Ms": 0.7,
+      "p95Ms": 65713.8,
+      "maxMs": 199005.3
+    },
+    "/api/channels/:hash/messages": {
+      "count": 317,
+      "avgMs": 5506.3,
+      "p50Ms": 1549.4,
+      "p95Ms": 16950.6,
+      "maxMs": 53317.1
+    },
+    "/api/config/areas": {
+      "count": 2547,
+      "avgMs": 0,
+      "p50Ms": 0,
+      "p95Ms": 0.1,
+      "maxMs": 0.3
+    },
+    "/api/config/cache": {
+      "count": 2844,
+      "avgMs": 0,
+      "p50Ms": 0,
+      "p95Ms": 0.1,
+      "maxMs": 21.5
+    },
+    "/api/config/client": {
+      "count": 2850,
+      "avgMs": 0.1,
+      "p50Ms": 0.1,
+      "p95Ms": 0.3,
+      "maxMs": 4
+    },
+    "/api/config/geo-filter": {
+      "count": 2794,
+      "avgMs": 0.1,
+      "p50Ms": 0,
+      "p95Ms": 0.1,
+      "maxMs": 3.6
+    },
+    "/api/config/map": {
+      "count": 2961,
+      "avgMs": 0,
+      "p50Ms": 0,
+      "p95Ms": 0.1,
+      "maxMs": 0.8
+    },
+    "/api/config/regions": {
+      "count": 19782,
+      "avgMs": 3.5,
+      "p50Ms": 1.2,
+      "p95Ms": 5.3,
+      "maxMs": 21220.8
+    },
+    "/api/config/theme": {
+      "count": 2896,
+      "avgMs": 0.7,
+      "p50Ms": 0.7,
+      "p95Ms": 1.7,
+      "maxMs": 14.6
+    },
+    "/api/debug/affinity": {
+      "count": 1,
+      "avgMs": 0,
+      "p50Ms": 0,
+      "p95Ms": 0,
+      "maxMs": 0
+    },
+    "/api/docs": {
+      "count": 1,
+      "avgMs": 0.6,
+      "p50Ms": 0.6,
+      "p95Ms": 0.6,
+      "maxMs": 0.6
+    },
+    "/api/health": {
+      "count": 174,
+      "avgMs": 2346.2,
+      "p50Ms": 0.8,
+      "p95Ms": 32096.3,
+      "maxMs": 46182.7
+    },
+    "/api/healthz": {
+      "count": 2838,
+      "avgMs": 1485.5,
+      "p50Ms": 11,
+      "p95Ms": 20224,
+      "maxMs": 52843.5
+    },
+    "/api/iata-coords": {
+      "count": 162,
+      "avgMs": 0.1,
+      "p50Ms": 0.1,
+      "p95Ms": 0.3,
+      "maxMs": 1.6
+    },
+    "/api/known-channels": {
+      "count": 25,
+      "avgMs": 0.1,
+      "p50Ms": 0.1,
+      "p95Ms": 0.2,
+      "maxMs": 0.3
+    },
+    "/api/mqtt/status": {
+      "count": 10302,
+      "avgMs": 0.4,
+      "p50Ms": 0.4,
+      "p95Ms": 0.9,
+      "maxMs": 21.8
+    },
+    "/api/nodes": {
+      "count": 78777,
+      "avgMs": 198,
+      "p50Ms": 66.2,
+      "p95Ms": 2945.5,
+      "maxMs": 52922
+    },
+    "/api/nodes/:pubkey": {
+      "count": 4811,
+      "avgMs": 571.5,
+      "p50Ms": 18.7,
+      "p95Ms": 1035,
+      "maxMs": 62327.8
+    },
+    "/api/nodes/:pubkey/analytics": {
+      "count": 237,
+      "avgMs": 1209.7,
+      "p50Ms": 608.2,
+      "p95Ms": 7932.1,
+      "maxMs": 40286.4
+    },
+    "/api/nodes/:pubkey/battery": {
+      "count": 150,
+      "avgMs": 2749.9,
+      "p50Ms": 2062.1,
+      "p95Ms": 12322.8,
+      "maxMs": 14286.8
+    },
+    "/api/nodes/:pubkey/clock-skew": {
+      "count": 340,
+      "avgMs": 669.9,
+      "p50Ms": 787.7,
+      "p95Ms": 2838,
+      "maxMs": 4549.6
+    },
+    "/api/nodes/:pubkey/health": {
+      "count": 3454,
+      "avgMs": 936.3,
+      "p50Ms": 23.4,
+      "p95Ms": 17352.1,
+      "maxMs": 48119
+    },
+    "/api/nodes/:pubkey/hop_analytics": {
+      "count": 148,
+      "avgMs": 650.6,
+      "p50Ms": 513.9,
+      "p95Ms": 1270.9,
+      "maxMs": 11135.2
+    },
+    "/api/nodes/:pubkey/neighbors": {
+      "count": 357,
+      "avgMs": 3534.4,
+      "p50Ms": 5.5,
+      "p95Ms": 12147.7,
+      "maxMs": 43871.1
+    },
+    "/api/nodes/:pubkey/paths": {
+      "count": 1345,
+      "avgMs": 2485.5,
+      "p50Ms": 283.6,
+      "p95Ms": 18122.6,
+      "maxMs": 61293.9
+    },
+    "/api/nodes/:pubkey/reach": {
+      "count": 162,
+      "avgMs": 59921.1,
+      "p50Ms": 60015.4,
+      "p95Ms": 125020,
+      "maxMs": 127711.2
+    },
+    "/api/nodes/:pubkey/rx-coverage": {
+      "count": 1,
+      "avgMs": 1.1,
+      "p50Ms": 1.1,
+      "p95Ms": 1.1,
+      "maxMs": 1.1
+    },
+    "/api/nodes/bulk-health": {
+      "count": 9,
+      "avgMs": 3929,
+      "p50Ms": 2596.2,
+      "p95Ms": 10316.9,
+      "maxMs": 10316.9
+    },
+    "/api/nodes/clock-skew": {
+      "count": 1803,
+      "avgMs": 8.1,
+      "p50Ms": 8.4,
+      "p95Ms": 13.2,
+      "maxMs": 32.9
+    },
+    "/api/nodes/network-status": {
+      "count": 2,
+      "avgMs": 9.9,
+      "p50Ms": 13.4,
+      "p95Ms": 13.4,
+      "maxMs": 13.4
+    },
+    "/api/nodes/resolve": {
+      "count": 2,
+      "avgMs": 1.4,
+      "p50Ms": 1.9,
+      "p95Ms": 1.9,
+      "maxMs": 1.9
+    },
+    "/api/nodes/search": {
+      "count": 605,
+      "avgMs": 7.5,
+      "p50Ms": 4.9,
+      "p95Ms": 18.6,
+      "maxMs": 127.4
+    },
+    "/api/observers": {
+      "count": 8785,
+      "avgMs": 22.2,
+      "p50Ms": 29.3,
+      "p95Ms": 85.2,
+      "maxMs": 14814.3
+    },
+    "/api/observers/:id": {
+      "count": 872,
+      "avgMs": 19.7,
+      "p50Ms": 18.7,
+      "p95Ms": 49.7,
+      "maxMs": 251.6
+    },
+    "/api/observers/:id/analytics": {
+      "count": 150,
+      "avgMs": 4365.4,
+      "p50Ms": 1020.8,
+      "p95Ms": 18579,
+      "maxMs": 42534.3
+    },
+    "/api/observers/:id/metrics": {
+      "count": 3,
+      "avgMs": 33.6,
+      "p50Ms": 16.4,
+      "p95Ms": 84.5,
+      "maxMs": 84.5
+    },
+    "/api/observers/clock-skew": {
+      "count": 7776,
+      "avgMs": 0.5,
+      "p50Ms": 0.5,
+      "p95Ms": 1.3,
+      "maxMs": 11.5
+    },
+    "/api/observers/metrics/summary": {
+      "count": 10,
+      "avgMs": 2907.2,
+      "p50Ms": 1006,
+      "p95Ms": 12520.8,
+      "maxMs": 12520.8
+    },
+    "/api/packets": {
+      "count": 5411,
+      "avgMs": 961.7,
+      "p50Ms": 326.6,
+      "p95Ms": 38886.2,
+      "maxMs": 392264.9
+    },
+    "/api/packets/:id": {
+      "count": 403,
+      "avgMs": 497.3,
+      "p50Ms": 3.5,
+      "p95Ms": 2127.4,
+      "maxMs": 46990.7
+    },
+    "/api/packets/observations": {
+      "count": 4,
+      "avgMs": 0.3,
+      "p50Ms": 0.3,
+      "p95Ms": 0.4,
+      "maxMs": 0.4
+    },
+    "/api/packets/timestamps": {
+      "count": 214733,
+      "avgMs": 1401.3,
+      "p50Ms": 2.4,
+      "p95Ms": 31309.2,
+      "maxMs": 57059.5
+    },
+    "/api/paths/inspect": {
+      "count": 2,
+      "avgMs": 1.4,
+      "p50Ms": 2.6,
+      "p95Ms": 2.6,
+      "maxMs": 2.6
+    },
+    "/api/perf": {
+      "count": 6,
+      "avgMs": 19424.9,
+      "p50Ms": 32247.3,
+      "p95Ms": 44583.7,
+      "maxMs": 44583.7
+    },
+    "/api/perf/io": {
+      "count": 4,
+      "avgMs": 0.4,
+      "p50Ms": 0.4,
+      "p95Ms": 0.7,
+      "maxMs": 0.7
+    },
+    "/api/perf/sqlite": {
+      "count": 4,
+      "avgMs": 2.1,
+      "p50Ms": 2.8,
+      "p95Ms": 4.5,
+      "maxMs": 4.5
+    },
+    "/api/perf/write-sources": {
+      "count": 4,
+      "avgMs": 0.6,
+      "p50Ms": 0.6,
+      "p95Ms": 1.1,
+      "maxMs": 1.1
+    },
+    "/api/resolve-hops": {
+      "count": 3866,
+      "avgMs": 17.2,
+      "p50Ms": 0.1,
+      "p95Ms": 0.7,
+      "maxMs": 8945.8
+    },
+    "/api/scope-audit": {
+      "count": 11,
+      "avgMs": 16970.1,
+      "p50Ms": 6190.9,
+      "p95Ms": 78338.8,
+      "maxMs": 78338.8
+    },
+    "/api/scope-stats": {
+      "count": 8,
+      "avgMs": 311.7,
+      "p50Ms": 176.7,
+      "p95Ms": 976,
+      "maxMs": 976
+    },
+    "/api/spec": {
+      "count": 6,
+      "avgMs": 4.7,
+      "p50Ms": 4.9,
+      "p95Ms": 6.6,
+      "maxMs": 6.6
+    },
+    "/api/stats": {
+      "count": 1811560,
+      "avgMs": 221,
+      "p50Ms": 0.1,
+      "p95Ms": 0.1,
+      "maxMs": 53411.7
+    },
+    "/api/traces/:hash": {
+      "count": 34,
+      "avgMs": 3,
+      "p50Ms": 2.5,
+      "p95Ms": 9.2,
+      "maxMs": 10.3
+    }
+  },
+  "slowQueries": [
+    {
+      "path": "/api/stats",
+      "ms": 12735.5,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 7658.7,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 6499.4,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 6429,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 5137,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 2664.6,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 1076.8,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/stats",
+      "ms": 685.7,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/nodes",
+      "ms": 22258.8,
+      "time": "2026-11-09T13:02:13Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 2261.4,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 6915.4,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 4471.9,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 6482.8,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 1774,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 4105.3,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 1916.7,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets/timestamps",
+      "ms": 7541.5,
+      "time": "2026-11-09T13:02:20Z",
+      "status": 200
+    },
+    {
+      "path": "/api/packets",
+      "ms": 636.6,
+      "time": "2026-11-09T13:02:44Z",
+      "status": 200
+    },
+    {
+      "path": "/api/nodes",
+      "ms": 300,
+      "time": "2026-11-09T13:02:56Z",
+      "status": 200
+    },
+    {
+      "path": "/api/nodes",
+      "ms": 373.1,
+      "time": "2026-11-09T13:03:58Z",
+      "status": 200
+    }
+  ],
+  "cache": {
+    "size": 0,
+    "hits": 144,
+    "misses": 108,
+    "staleHits": 0,
+    "recomputes": 108,
+    "hitRate": 57.1
+  },
+  "packetStore": {
+    "totalLoaded": 118929,
+    "totalObservations": 1170097,
+    "evicted": 147379,
+    "inserts": 0,
+    "queries": 5408,
+    "inMemory": 118929,
+    "sqliteOnly": false,
+    "maxPackets": 2386092,
+    "estimatedMB": 2990.3,
+    "trackedMB": 1015.8,
+    "avgBytesPerPacket": 8955,
+    "maxMB": 1024,
+    "indexes": {
+      "byHash": 118929,
+      "byObserver": 119,
+      "byNode": 2228,
+      "advertByObserver": 1045
+    },
+    "hotStartupHours": 0,
+    "backgroundLoadComplete": true,
+    "backgroundLoadFailed": false,
+    "backgroundLoadProgress": 100,
+    "retentionHours": 168,
+    "oldestLoaded": "2026-10-31T00:27:15Z",
+    "loadCoverageRatio": 0.03013357255389776
+  },
+  "goRuntime": {
+    "goroutines": 134,
+    "numGC": 4415,
+    "pauseTotalMs": 10930.854942,
+    "lastPauseMs": 0.624084,
+    "heapAllocMB": 2881.9974670410156,
+    "heapSysMB": 4381.09375,
+    "heapInuseMB": 3653.8203125,
+    "heapIdleMB": 727.2734375,
+    "numCPU": 7
+  },
+  "dbStats": {
+    "dbSizeMB": 26140.2,
+    "walSizeMB": 116.2,
+    "deadTuples": 0,
+    "rows": {
+      "transmissions": 2997833,
+      "observations": 35514742,
+      "nodes": 1642,
+      "observers": 281
+    }
+  }
+}

@@ -1,107 +1,106 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
-func setupTestDB(t *testing.T) *DB {
-	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
+func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
+
+// setupTestDB returns a read-write pool on a fresh, fully migrated clone.
+func setupTestDB(tb testing.TB) *database.DB {
+	tb.Helper()
+	db, err := database.OpenReadWrite(tb.Context(), pgtest.NewDatabase(tb))
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatalf("open test db: %v", err)
 	}
-	conn.SetMaxOpenConns(1)
-
-	// Same migration path the other fixtures use; produces the v3 schema.
-	if _, err := database.BaselineStampMigrate(conn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-
-	if _, err := conn.Exec(`
-		CREATE TRIGGER IF NOT EXISTS test_from_pubkey_advert
-		AFTER INSERT ON transmissions
-		FOR EACH ROW
-		WHEN NEW.from_pubkey IS NULL AND NEW.payload_type = 4 AND NEW.decoded_json IS NOT NULL
-			AND json_extract(NEW.decoded_json, '$.pubKey') IS NOT NULL
-			AND json_extract(NEW.decoded_json, '$.pubKey') <> ''
-		BEGIN
-			UPDATE transmissions
-			SET from_pubkey = json_extract(NEW.decoded_json, '$.pubKey')
-			WHERE id = NEW.id;
-		END;
-	`); err != nil {
-		t.Fatalf("create test-only from_pubkey trigger: %v", err)
-	}
-
-	db := &DB{conn: conn}
-	if err := db.detectSchema(context.Background(), conn); err != nil {
-		t.Fatalf("detectSchema: %v", err)
-	}
+	tb.Cleanup(func() { db.Close() }) // runs before the clone is dropped
 	return db
 }
 
-func seedTestData(t *testing.T, db *DB) {
+func seedTestData(t *testing.T, db *database.DB) {
 	t.Helper()
-	// Use recent timestamps so 7-day window filters don't exclude test data
+	ctx := t.Context()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.SQL().ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("seed: %v\nSQL: %s", err, query)
+		}
+	}
+
 	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	yesterday := now.Add(-24 * time.Hour).Format(time.RFC3339)
-	twoDaysAgo := now.Add(-48 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
-	yesterdayEpoch := now.Add(-24 * time.Hour).Unix()
+	recent := now.Add(-1 * time.Hour)
+	yesterday := now.Add(-24 * time.Hour)
+	twoDaysAgo := now.Add(-48 * time.Hour)
+	jan1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	// Seed observers
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs1', 'Observer One', 'SJC', ?, '2026-01-01T00:00:00Z', 100)`, recent)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs2', 'Observer Two', 'SFO', ?, '2026-01-01T00:00:00Z', 50)`, yesterday)
+	obs1 := dbtest.Observer(t, db, "obs1", "Observer One", "SJC", jan1, recent)
+	obs2 := dbtest.Observer(t, db, "obs2", "Observer Two", "SFO", jan1, yesterday)
 
-	// Seed nodes
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('aabbccdd11223344', 'TestRepeater', 'repeater', 37.5, -122.0, ?, '2026-01-01T00:00:00Z', 50)`, recent)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('eeff00112233aabb', 'TestCompanion', 'companion', 37.6, -122.1, ?, '2026-01-01T00:00:00Z', 10)`, yesterday)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('1122334455667788', 'TestRoom', 'room', 37.4, -121.9, ?, '2026-01-01T00:00:00Z', 5)`, twoDaysAgo)
+	dbtest.Node(t, db, "eeff00112233aabb", "TestCompanion", "companion")
+	dbtest.Node(t, db, "1122334455667788", "TestRoom", "room")
 
-	// Seed transmissions
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash, from_pubkey)
-		VALUES ('AABB', 'abc123def4567890', ?, 1, 4, '{"pubKey":"aabbccdd11223344","name":"TestRepeater","type":"ADVERT","timestamp":1700000000,"timestampISO":"2023-11-14T22:13:20.000Z","signature":"abcdef","flags":{"isRepeater":true},"lat":37.5,"lon":-122.0}', '#test', 'aabbccdd11223344')`, recent)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('CCDD', '1234567890abcdef', ?, 1, 5, '{"type":"CHAN","channel":"#test","text":"Hello: World","sender":"TestUser"}', '#test')`, yesterday)
-	// Second ADVERT for same node with different hash_size (raw_hex byte 0x1F → hs=1 vs 0xBB → hs=3)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, from_pubkey)
-		VALUES ('AA1F', 'def456abc1230099', ?, 1, 4, '{"pubKey":"aabbccdd11223344","name":"TestRepeater","type":"ADVERT","timestamp":1700000100,"timestampISO":"2023-11-14T22:14:40.000Z","signature":"fedcba","flags":{"isRepeater":true},"lat":37.5,"lon":-122.0}', 'aabbccdd11223344')`, yesterday)
+	const repeaterAdvert1 = `{"pubKey":"aabbccdd11223344","name":"TestRepeater","type":"ADVERT","timestamp":1700000000,"timestampISO":"2023-11-14T22:13:20.000Z","signature":"abcdef","flags":{"isRepeater":true},"lat":37.5,"lon":-122.0}`
+	const repeaterAdvert2 = `{"pubKey":"aabbccdd11223344","name":"TestRepeater","type":"ADVERT","timestamp":1700000100,"timestampISO":"2023-11-14T22:14:40.000Z","signature":"fedcba","flags":{"isRepeater":true},"lat":37.5,"lon":-122.0}`
 
-	// Seed observations (use unix timestamps)
-	// resolved_path contains full pubkeys parallel to path_json hops
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, resolved_path)
-		VALUES (1, 1, 12.5, -90, '["aa","bb"]', ?, '["aabbccdd11223344","eeff00112233aabb"]')`, recentEpoch)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, resolved_path)
-		VALUES (1, 2, 8.0, -95, '["aa"]', ?, '["aabbccdd11223344"]')`, recentEpoch-100)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 15.0, -85, '[]', ?)`, yesterdayEpoch)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, resolved_path)
-		VALUES (3, 1, 10.0, -92, '["cc"]', ?, '["1122334455667788"]')`, yesterdayEpoch)
+	tx1, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		RawHex:      "AABB",
+		Hash:        "abc123def4567890",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(4),
+		DecodedJSON: repeaterAdvert1,
+		ChannelHash: "#test",
+		Advert:      &database.NodeInput{PublicKey: "aabbccdd11223344", Name: "TestRepeater", Role: "repeater", RxTime: recent, IngestNow: now},
+	}, recent)
+	if err != nil {
+		t.Fatalf("seed tx1: %v", err)
+	}
+	dbtest.Observation(t, db, tx1, obs1, recent, 12.5, -90, "aa:aabbccdd11223344", "bb:eeff00112233aabb")
+	dbtest.Observation(t, db, tx1, obs2, recent.Add(-100*time.Second), 8.0, -95, "aa:aabbccdd11223344")
+
+	dbtest.TxWithObservation(t, db, obs1, database.TransmissionInput{
+		RawHex:      "CCDD",
+		Hash:        "1234567890abcdef",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: `{"type":"CHAN","channel":"#test","text":"Hello: World","sender":"TestUser"}`,
+		ChannelHash: "#test",
+	}, yesterday, 15.0, -85)
+
+	tx3, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		RawHex:      "AA1F",
+		Hash:        "def456abc1230099",
+		RouteType:   types.RouteType(1),
+		PayloadType: types.PayloadType(4),
+		DecodedJSON: repeaterAdvert2,
+		Advert:      &database.NodeInput{PublicKey: "aabbccdd11223344", Name: "TestRepeater", Role: "repeater", RxTime: yesterday, IngestNow: now},
+	}, yesterday)
+	if err != nil {
+		t.Fatalf("seed tx3: %v", err)
+	}
+	dbtest.Observation(t, db, tx3, obs1, yesterday, 10.0, -92, "cc:1122334455667788")
+
+	exec(`UPDATE observers SET packet_count = 100 WHERE pubkey = 'obs1'`)
+	exec(`UPDATE observers SET packet_count = 50 WHERE pubkey = 'obs2'`)
+	exec(`UPDATE nodes SET lat = 37.5, lon = -122.0, advert_count = 50, first_seen = $1, last_seen = $2 WHERE public_key = 'aabbccdd11223344'`, jan1, recent)
+	exec(`UPDATE nodes SET lat = 37.6, lon = -122.1, advert_count = 10, first_seen = $1, last_seen = $2 WHERE public_key = 'eeff00112233aabb'`, jan1, yesterday)
+	exec(`UPDATE nodes SET lat = 37.4, lon = -121.9, advert_count = 5, first_seen = $1, last_seen = $2 WHERE public_key = '1122334455667788'`, jan1, twoDaysAgo)
 }
 
 func TestGetStats(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	stats, err := db.GetStats()
+	stats, err := db.GetStats(ctx, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,167 +120,149 @@ func TestGetStats(t *testing.T) {
 }
 
 func TestGetRoleCounts(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	counts := db.GetRoleCounts()
-	if counts["repeaters"] != 1 {
-		t.Errorf("expected 1 repeater, got %d", counts["repeaters"])
+	counts, err := db.GetRoleCounts(ctx, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if counts["companions"] != 1 {
-		t.Errorf("expected 1 companion, got %d", counts["companions"])
+	if counts.Repeaters != 1 {
+		t.Errorf("expected 1 repeater, got %d", counts.Repeaters)
 	}
-	if counts["rooms"] != 1 {
-		t.Errorf("expected 1 room, got %d", counts["rooms"])
+	if counts.Companions != 1 {
+		t.Errorf("expected 1 companion, got %d", counts.Companions)
+	}
+	if counts.Rooms != 1 {
+		t.Errorf("expected 1 room, got %d", counts.Rooms)
 	}
 }
 
 func TestGetDBSizeStats(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	stats := db.GetDBSizeStats()
-	// In-memory DB has dbSizeMB=0 and walSizeMB=0
-	if stats["dbSizeMB"] != float64(0) {
-		t.Errorf("expected dbSizeMB=0 for in-memory DB, got %v", stats["dbSizeMB"])
+	stats, err := db.GetDBSizeStats(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	rows, ok := stats["rows"].(map[string]int)
-	if !ok {
-		t.Fatal("expected rows map in DB size stats")
+	if stats.DBSizeBytes <= 0 {
+		t.Errorf("expected positive database size, got %d", stats.DBSizeBytes)
 	}
-	if rows["transmissions"] != 3 {
-		t.Errorf("expected 3 transmissions rows, got %d", rows["transmissions"])
+	if stats.Rows.Transmissions != 3 {
+		t.Errorf("expected 3 transmissions rows, got %d", stats.Rows.Transmissions)
 	}
-	if rows["observations"] != 4 {
-		t.Errorf("expected 4 observations rows, got %d", rows["observations"])
+	if stats.Rows.Observations != 4 {
+		t.Errorf("expected 4 observations rows, got %d", stats.Rows.Observations)
 	}
-	if rows["nodes"] != 3 {
-		t.Errorf("expected 3 nodes rows, got %d", rows["nodes"])
+	if stats.Rows.Nodes != 3 {
+		t.Errorf("expected 3 nodes rows, got %d", stats.Rows.Nodes)
 	}
-	if rows["observers"] != 2 {
-		t.Errorf("expected 2 observers rows, got %d", rows["observers"])
+	if stats.Rows.Observers != 2 {
+		t.Errorf("expected 2 observers rows, got %d", stats.Rows.Observers)
 	}
-
-	// Verify new PRAGMA-based fields
-	if _, ok := stats["freelistMB"]; !ok {
-		t.Error("expected freelistMB in DB size stats")
-	}
-	walPages, ok := stats["walPages"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected walPages object in DB size stats")
-	}
-	for _, key := range []string{"total", "checkpointed", "busy"} {
-		if _, ok := walPages[key]; !ok {
-			t.Errorf("expected %s in walPages", key)
-		}
+	if stats.DeadTuples < 0 {
+		t.Errorf("expected non-negative dead tuple count, got %d", stats.DeadTuples)
 	}
 }
 
 func TestQueryPackets(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	result, err := db.QueryPackets(PacketQuery{Limit: 50, Order: "DESC"})
+	packets, count, err := db.QueryPackets(ctx, database.PacketQuery{Limit: 50, Order: "DESC"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Transmission-centric: 3 unique transmissions (not 4 observations)
-	if result.Total != 3 {
-		t.Errorf("expected 3 total transmissions, got %d", result.Total)
+	if count != 3 {
+		t.Errorf("expected 3 total transmissions, got %d", count)
 	}
-	if len(result.Packets) != 3 {
-		t.Errorf("expected 3 packets, got %d", len(result.Packets))
+	if len(packets) != 3 {
+		t.Errorf("expected 3 packets, got %d", len(packets))
 	}
 	// Verify transmission shape has required fields
-	if len(result.Packets) > 0 {
-		p := result.Packets[0]
-		if _, ok := p["first_seen"]; !ok {
-			t.Error("expected first_seen field in packet")
+	if len(packets) > 0 {
+		p := packets[0]
+		if p.FirstSeen.IsZero() {
+			t.Error("expected first_seen in packet")
 		}
-		if _, ok := p["observation_count"]; !ok {
-			t.Error("expected observation_count field in packet")
+		if p.ObservationCount < 1 {
+			t.Error("expected observation_count in packet")
 		}
-		if _, ok := p["timestamp"]; !ok {
-			t.Error("expected timestamp field in packet")
-		}
-		// Should NOT have observation-level fields at top
-		if _, ok := p["created_at"]; ok {
-			t.Error("did not expect created_at in transmission-level response")
-		}
-		if _, ok := p["score"]; ok {
-			t.Error("did not expect score in transmission-level response")
+		if p.ObsTimestamp == nil {
+			t.Error("expected representative observation timestamp in packet")
 		}
 	}
 }
 
 func TestQueryPacketsWithTypeFilter(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	pt := 4
-	result, err := db.QueryPackets(PacketQuery{Limit: 50, Type: &pt, Order: "DESC"})
+	_, count, err := db.QueryPackets(ctx, database.PacketQuery{Limit: 50, Type: &pt, Order: "DESC"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 2 transmissions with payload_type=4 (ADVERT)
-	if result.Total != 2 {
-		t.Errorf("expected 2 ADVERT transmissions, got %d", result.Total)
+	if count != 2 {
+		t.Errorf("expected 2 ADVERT transmissions, got %d", count)
 	}
 }
 
 func TestQueryGroupedPackets(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	result, err := db.QueryGroupedPackets(PacketQuery{Limit: 50})
+	_, count, err := db.QueryGroupedPackets(ctx, database.PacketQuery{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Total != 3 {
-		t.Errorf("expected 3 grouped packets (unique hashes), got %d", result.Total)
+	if count != 3 {
+		t.Errorf("expected 3 grouped packets (unique hashes), got %d", count)
 	}
 }
 
 func TestGetNodeByPubkey(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	node, err := db.GetNodeByPubkey("aabbccdd11223344")
+	node, err := db.GetNodeByPubkey(ctx, "aabbccdd11223344")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if node == nil {
 		t.Fatal("expected node, got nil")
 	}
-	if node["name"] != "TestRepeater" {
-		t.Errorf("expected TestRepeater, got %v", node["name"])
+	if node.Name == nil || *node.Name != "TestRepeater" {
+		t.Errorf("expected TestRepeater, got %v", node.Name)
 	}
 }
 
 func TestGetNodeByPubkeyNotFound(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	node, _ := db.GetNodeByPubkey("nonexistent")
+	node, _ := db.GetNodeByPubkey(ctx, "nonexistent")
 	if node != nil {
 		t.Error("expected nil for nonexistent node")
 	}
 }
 
 func TestSearchNodes(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	nodes, err := db.SearchNodes("Test", 10)
+	nodes, err := db.SearchNodes(ctx, "Test", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,19 +272,19 @@ func TestSearchNodes(t *testing.T) {
 }
 
 func TestGetObservers(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	observers, err := db.GetObservers()
+	observers, err := db.GetObservers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(observers) != 2 {
 		t.Errorf("expected 2 observers, got %d", len(observers))
 	}
-	if observers[0].ID != "obs1" {
-		t.Errorf("expected obs1 first (most recent), got %s", observers[0].ID)
+	if observers[0].Pubkey != "obs1" {
+		t.Errorf("expected obs1 first (most recent), got %s", observers[0].Pubkey)
 	}
 	// last_packet_at should be nil since seedTestData doesn't set it
 	if observers[0].LastPacketAt != nil {
@@ -315,14 +296,14 @@ func TestGetObservers(t *testing.T) {
 // Stale observers were appearing in /api/observers despite the auto-prune
 // marking them inactive, because the SELECT query had no WHERE filter.
 func TestGetObservers_ExcludesInactive(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 	// Mark obs2 inactive — soft delete simulating a stale-observer prune.
-	if _, err := db.conn.Exec(`UPDATE observers SET inactive = 1 WHERE id = ?`, "obs2"); err != nil {
+	if _, err := db.SQL().ExecContext(ctx, `UPDATE observers SET inactive = TRUE WHERE pubkey = $1`, "obs2"); err != nil {
 		t.Fatalf("update inactive: %v", err)
 	}
-	observers, err := db.GetObservers()
+	observers, err := db.GetObservers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,23 +311,23 @@ func TestGetObservers_ExcludesInactive(t *testing.T) {
 		t.Errorf("expected 1 observer (obs1) after marking obs2 inactive, got %d", len(observers))
 	}
 	for _, o := range observers {
-		if o.ID == "obs2" {
+		if o.Pubkey == "obs2" {
 			t.Errorf("inactive observer obs2 should be excluded")
 		}
 	}
 }
 
 func TestGetObserverByID(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	obs, err := db.GetObserverByID("obs1")
+	obs, err := db.GetObserverByID(ctx, "obs1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs.ID != "obs1" {
-		t.Errorf("expected obs1, got %s", obs.ID)
+	if obs.Pubkey != "obs1" {
+		t.Errorf("expected obs1, got %s", obs.Pubkey)
 	}
 	// Verify last_packet_at is nil by default
 	if obs.LastPacketAt != nil {
@@ -355,22 +336,24 @@ func TestGetObserverByID(t *testing.T) {
 }
 
 func TestGetObserverLastPacketAt(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	// Set last_packet_at for obs1
-	ts := "2026-04-24T12:00:00Z"
-	db.conn.Exec(`UPDATE observers SET last_packet_at = ? WHERE id = ?`, ts, "obs1")
+	ts := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	if _, err := db.SQL().ExecContext(ctx, `UPDATE observers SET last_packet_at = $1 WHERE pubkey = $2`, ts, "obs1"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify via GetObservers
-	observers, err := db.GetObservers()
+	observers, err := db.GetObservers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var obs1 *Observer
+	var obs1 *database.Observer
 	for i := range observers {
-		if observers[i].ID == "obs1" {
+		if observers[i].Pubkey == "obs1" {
 			obs1 = &observers[i]
 			break
 		}
@@ -378,40 +361,44 @@ func TestGetObserverLastPacketAt(t *testing.T) {
 	if obs1 == nil {
 		t.Fatal("obs1 not found")
 	}
-	if obs1.LastPacketAt == nil || *obs1.LastPacketAt != ts {
+	if obs1.LastPacketAt == nil || !obs1.LastPacketAt.Equal(ts) {
 		t.Errorf("expected LastPacketAt=%s via GetObservers, got %v", ts, obs1.LastPacketAt)
 	}
 
 	// Verify via GetObserverByID
-	obs, err := db.GetObserverByID("obs1")
+	obs, err := db.GetObserverByID(ctx, "obs1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs.LastPacketAt == nil || *obs.LastPacketAt != ts {
+	if obs.LastPacketAt == nil || !obs.LastPacketAt.Equal(ts) {
 		t.Errorf("expected LastPacketAt=%s via GetObserverByID, got %v", ts, obs.LastPacketAt)
 	}
 }
 
 func TestGetObserverByIDNotFound(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	_, err := db.GetObserverByID("nonexistent")
+	_, err := db.GetObserverByID(ctx, "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent observer")
 	}
 }
 
 func TestObserverTypeConsistency(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	// Insert observer with typed metadata matching ingestor writes
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count, battery_mv, uptime_secs, noise_floor)
-		VALUES ('obs_typed', 'TypedObs', 'SJC', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 10, 3500, 86400, -115.5)`)
+	_, err := db.SQL().ExecContext(ctx, `INSERT INTO observers (pubkey, name, iata, last_seen, first_seen, packet_count, battery_mv, uptime_secs, noise_floor)
+		VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8)`,
+		"obs_typed", "TypedObs", "SJC", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 10, 3500, 86400, -115.5)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	obs, err := db.GetObserverByID("obs_typed")
+	obs, err := db.GetObserverByID(ctx, "obs_typed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,10 +428,14 @@ func TestObserverTypeConsistency(t *testing.T) {
 	}
 
 	// Verify NULL handling: observer without metadata
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs_null', 'NullObs', 'SFO', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 5)`)
+	_, err = db.SQL().ExecContext(ctx, `INSERT INTO observers (pubkey, name, iata, last_seen, first_seen, packet_count)
+		VALUES ($1, $2, $3, $4, $4, $5)`,
+		"obs_null", "NullObs", "SFO", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 5)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	obsNull, err := db.GetObserverByID("obs_null")
+	obsNull, err := db.GetObserverByID(ctx, "obs_null")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,13 +451,18 @@ func TestObserverTypeConsistency(t *testing.T) {
 }
 
 func TestObserverTypesInGetObservers(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count, battery_mv, uptime_secs, noise_floor)
-		VALUES ('obs1', 'Obs1', 'SJC', '2026-06-01T00:00:00Z', '2026-01-01T00:00:00Z', 10, 4200, 172800, -110.3)`)
+	_, err := db.SQL().ExecContext(ctx, `INSERT INTO observers (pubkey, name, iata, last_seen, first_seen, packet_count, battery_mv, uptime_secs, noise_floor)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		"obs1", "Obs1", "SJC", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 10, 4200, 172800, -110.3)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	observers, err := db.GetObservers()
+	observers, err := db.GetObservers(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,11 +482,11 @@ func TestObserverTypesInGetObservers(t *testing.T) {
 }
 
 func TestGetDistinctIATAs(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	codes, err := db.GetDistinctIATAs()
+	codes, err := db.GetDistinctIATAs(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,28 +496,28 @@ func TestGetDistinctIATAs(t *testing.T) {
 }
 
 func TestGetPacketByHash(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	pkt, err := db.GetPacketByHash("abc123def4567890")
+	pkt, err := db.GetPacketByHash(ctx, "abc123def4567890")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pkt == nil {
 		t.Fatal("expected packet, got nil")
 	}
-	if pkt["hash"] != "abc123def4567890" {
-		t.Errorf("expected hash abc123def4567890, got %v", pkt["hash"])
+	if pkt.Hash != "abc123def4567890" {
+		t.Errorf("expected hash abc123def4567890, got %v", pkt.Hash)
 	}
 }
 
 func TestGetTraces(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	traces, err := db.GetTraces("abc123def4567890")
+	traces, err := db.GetObservationsForHash(ctx, "abc123def4567890")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,186 +527,89 @@ func TestGetTraces(t *testing.T) {
 }
 
 func TestGetChannels(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	channels, err := db.GetChannels()
+	channels, err := db.ListChannelSummaries(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(channels) != 1 {
 		t.Errorf("expected 1 channel, got %d", len(channels))
 	}
-	if channels[0]["name"] != "#test" {
-		t.Errorf("expected #test channel, got %v", channels[0]["name"])
-	}
-}
-
-func TestGetNetworkStatus(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
-
-	ht := HealthThresholds{
-		InfraDegradedHours: 24,
-		InfraSilentHours:   72,
-		NodeDegradedHours:  1,
-		NodeSilentHours:    24,
-	}
-	result, err := db.GetNetworkStatus(ht)
-	if err != nil {
-		t.Fatal(err)
-	}
-	total, _ := result["total"].(int)
-	if total != 3 {
-		t.Errorf("expected 3 total nodes, got %d", total)
+	if channels[0].ChannelHash != "#test" {
+		t.Errorf("expected #test channel, got %v", channels[0].ChannelHash)
 	}
 }
 
 func TestGetMaxTransmissionID(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	maxID := db.GetMaxTransmissionID()
+	maxID, err := db.GetMaxTransmissionID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if maxID != 3 {
 		t.Errorf("expected max ID 3, got %d", maxID)
 	}
 }
 
-func TestGetNewTransmissionsSince(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
-
-	txs, err := db.GetNewTransmissionsSince(0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(txs) != 3 {
-		t.Errorf("expected 3 new transmissions, got %d", len(txs))
-	}
-
-	txs, err = db.GetNewTransmissionsSince(1, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(txs) != 2 {
-		t.Errorf("expected 2 new transmissions after ID 1, got %d", len(txs))
-	}
-}
-
 func TestGetTransmissionByIDFound(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	tx, err := db.GetTransmissionByID(1)
+	tx, err := db.GetPacketByID(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tx == nil {
-		t.Fatal("expected transmission, got nil")
+		t.Fatal("expected packet, got nil")
 	}
-	if tx["hash"] != "abc123def4567890" {
-		t.Errorf("expected hash abc123def4567890, got %v", tx["hash"])
+	if tx.Hash != "abc123def4567890" {
+		t.Errorf("expected hash abc123def4567890, got %v", tx.Hash)
 	}
-	if tx["raw_hex"] != "AABB" {
-		t.Errorf("expected raw_hex AABB, got %v", tx["raw_hex"])
+	if tx.RawHex != "AABB" {
+		t.Errorf("expected raw_hex AABB, got %v", tx.RawHex)
 	}
 }
 
-func TestGetTransmissionByIDNotFound(t *testing.T) {
+func TestGetPacketByIDNotFound(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	result, _ := db.GetTransmissionByID(9999)
-	if result != nil {
-		t.Error("expected nil result for nonexistent transmission")
+	result, err := db.GetPacketByID(ctx, 9999)
+	if err == nil || result != nil {
+		t.Error("expected not-found error and nil result for nonexistent packet")
 	}
 }
 
 func TestGetPacketByHashNotFound(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
-	result, _ := db.GetPacketByHash("nonexistenthash1")
-	if result != nil {
-		t.Error("expected nil result for nonexistent hash")
+	result, err := db.GetPacketByHash(ctx, "nonexistenthash1")
+	if err == nil || result != nil {
+		t.Error("expected not-found error and nil result for nonexistent hash")
 	}
 }
 
-func TestGetObserverIdsForRegion(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
-
-	t.Run("with data", func(t *testing.T) {
-		ids, err := db.GetObserverIdsForRegion("SJC")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(ids) != 1 {
-			t.Errorf("expected 1 observer for SJC, got %d", len(ids))
-		}
-		if ids[0] != "obs1" {
-			t.Errorf("expected obs1, got %s", ids[0])
-		}
-	})
-
-	t.Run("multiple codes", func(t *testing.T) {
-		ids, err := db.GetObserverIdsForRegion("SJC,SFO")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(ids) != 2 {
-			t.Errorf("expected 2 observers, got %d", len(ids))
-		}
-	})
-
-	t.Run("case and trim normalization", func(t *testing.T) {
-		db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-			VALUES ('obs3', 'Observer Three', ' sjc ', ?, '2026-01-01T00:00:00Z', 1)`, time.Now().UTC().Format(time.RFC3339))
-		ids, err := db.GetObserverIdsForRegion(" sjc ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(ids) != 2 {
-			t.Errorf("expected 2 observers for normalized sjc, got %d", len(ids))
-		}
-	})
-
-	t.Run("empty param", func(t *testing.T) {
-		ids, err := db.GetObserverIdsForRegion("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ids != nil {
-			t.Error("expected nil for empty region")
-		}
-	})
-
-	t.Run("not found", func(t *testing.T) {
-		ids, err := db.GetObserverIdsForRegion("ZZZ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(ids) != 0 {
-			t.Errorf("expected 0 observers for ZZZ, got %d", len(ids))
-		}
-	})
-}
-
 func TestGetChannelMessages(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	t.Run("matching channel", func(t *testing.T) {
-		messages, total, err := db.GetChannelMessages("#test", 100, 0)
+		messages, err := db.ListChannelMessages(ctx, "#test", false, nil, 100, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, err := db.CountChannelMessages(ctx, "#test", false, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -723,7 +622,11 @@ func TestGetChannelMessages(t *testing.T) {
 	})
 
 	t.Run("non-matching channel", func(t *testing.T) {
-		messages, total, err := db.GetChannelMessages("#nonexistent", 100, 0)
+		messages, err := db.ListChannelMessages(ctx, "#nonexistent", false, nil, 100, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, err := db.CountChannelMessages(ctx, "#nonexistent", false, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -736,7 +639,7 @@ func TestGetChannelMessages(t *testing.T) {
 	})
 
 	t.Run("default limit", func(t *testing.T) {
-		messages, _, err := db.GetChannelMessages("#test", 0, 0)
+		messages, err := db.ListChannelMessages(ctx, "#test", false, nil, 0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -747,197 +650,62 @@ func TestGetChannelMessages(t *testing.T) {
 }
 
 func TestGetChannelMessagesRegionFiltering(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	now := time.Now().UTC()
-	ts1 := now.Add(-2 * time.Minute).Format(time.RFC3339)
-	ts2 := now.Add(-1 * time.Minute).Format(time.RFC3339)
-	epoch1 := now.Add(-2 * time.Minute).Unix()
-	epoch2 := now.Add(-1 * time.Minute).Unix()
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer One', 'SJC')`)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs2', 'Observer Two', ' sfo ')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'chanregion0001', ?, 1, 5,
-		'{"type":"CHAN","channel":"#region","text":"SjcUser: One","sender":"SjcUser"}', '#region')`, ts1)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB', 'chanregion0002', ?, 1, 5,
-		'{"type":"CHAN","channel":"#region","text":"SfoUser: Two","sender":"SfoUser"}', '#region')`, ts2)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10.0, -90, '[]', ?)`, epoch1)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 2, 9.0, -91, '[]', ?)`, epoch2)
-
-	msgsSJC, totalSJC, err := db.GetChannelMessages("#region", 100, 0, " sjc ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if totalSJC != 1 || len(msgsSJC) != 1 {
-		t.Fatalf("expected 1 SJC message, total=%d len=%d", totalSJC, len(msgsSJC))
-	}
-	if msgsSJC[0]["sender"] != "SjcUser" {
-		t.Fatalf("expected SJC sender SjcUser, got %v", msgsSJC[0]["sender"])
-	}
-
-	msgsMulti, totalMulti, err := db.GetChannelMessages("#region", 100, 0, "sjc, SFO")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if totalMulti != 2 || len(msgsMulti) != 2 {
-		t.Fatalf("expected 2 multi-region messages, total=%d len=%d", totalMulti, len(msgsMulti))
-	}
-}
-
-func TestBuildPacketWhereFilters(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
-
-	t.Run("type filter", func(t *testing.T) {
-		pt := 4
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Type: &pt, Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for type=4")
-		}
-	})
-
-	t.Run("route filter", func(t *testing.T) {
-		rt := 1
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Route: &rt, Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for route=1")
-		}
-	})
-
-	t.Run("observer filter", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Observer: "obs1", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for observer=obs1")
-		}
-	})
-
-	t.Run("hash filter", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Hash: "abc123def4567890", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		// 1 transmission with this hash (has 2 observations, but transmission-centric)
-		if result.Total != 1 {
-			t.Errorf("expected 1 result for hash filter, got %d", result.Total)
-		}
-	})
-
-	t.Run("since filter", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Since: "2020-01-01", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for since filter")
-		}
-	})
-
-	t.Run("until filter", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Until: "2099-01-01", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for until filter")
-		}
-	})
-
-	t.Run("region filter", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Region: "SJC", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for region=SJC")
-		}
-	})
-
-	t.Run("node filter by name", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Node: "TestRepeater", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for node=TestRepeater")
-		}
-	})
-
-	t.Run("node filter by pubkey", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{Limit: 50, Node: "aabbccdd11223344", Order: "DESC"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results for node pubkey filter")
-		}
-	})
-
-	t.Run("combined filters", func(t *testing.T) {
-		pt := 4
-		rt := 1
-		result, err := db.QueryPackets(PacketQuery{
-			Limit:    50,
-			Type:     &pt,
-			Route:    &rt,
-			Observer: "obs1",
-			Since:    "2020-01-01",
-			Order:    "DESC",
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Total == 0 {
-			t.Error("expected results with combined filters")
-		}
-	})
-
-	t.Run("default limit", func(t *testing.T) {
-		result, err := db.QueryPackets(PacketQuery{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result == nil {
-			t.Error("expected non-nil result")
-		}
-	})
+	msgsSJC, err := db.ListChannelMessages(ctx, "#test", false, []string{"SJC"}, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totalSJC, err := db.CountChannelMessages(ctx, "#test", false, []string{"SJC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgsSJC) == 0 || totalSJC == 0 {
+		t.Fatal("expected channel messages received in SJC")
+	}
+	msgsUnknown, err := db.ListChannelMessages(ctx, "#test", false, []string{"ZZZ"}, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totalUnknown, err := db.CountChannelMessages(ctx, "#test", false, []string{"ZZZ"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgsUnknown) != 0 || totalUnknown != 0 {
+		t.Fatalf("expected no messages for unknown region, count=%d len=%d", totalUnknown, len(msgsUnknown))
+	}
 }
 
 func TestResolveNodePubkey(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	t.Run("by pubkey", func(t *testing.T) {
-		pk := db.resolveNodePubkey("aabbccdd11223344")
+		pk, err := db.ResolveNodePubkey(t.Context(), "aabbccdd11223344")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if pk != "aabbccdd11223344" {
 			t.Errorf("expected aabbccdd11223344, got %s", pk)
 		}
 	})
 
 	t.Run("by name", func(t *testing.T) {
-		pk := db.resolveNodePubkey("TestRepeater")
+		pk, err := db.ResolveNodePubkey(t.Context(), "TestRepeater")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if pk != "aabbccdd11223344" {
 			t.Errorf("expected aabbccdd11223344, got %s", pk)
 		}
 	})
 
 	t.Run("not found returns input", func(t *testing.T) {
-		pk := db.resolveNodePubkey("nonexistent")
+		pk, err := db.ResolveNodePubkey(t.Context(), "nonexistent")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if pk != "nonexistent" {
 			t.Errorf("expected 'nonexistent' back, got %s", pk)
 		}
@@ -946,11 +714,10 @@ func TestResolveNodePubkey(t *testing.T) {
 
 func TestGetNodesFiltering(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	t.Run("role filter", func(t *testing.T) {
-		nodes, total, _, err := db.GetNodes(50, 0, "repeater", "", "", "", "", "")
+		nodes, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Role: "repeater"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -963,7 +730,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("search filter", func(t *testing.T) {
-		nodes, _, _, err := db.GetNodes(50, 0, "", "Companion", "", "", "", "")
+		nodes, _, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Search: "Companion"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -973,7 +740,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("sort by name", func(t *testing.T) {
-		nodes, _, _, err := db.GetNodes(50, 0, "", "", "", "", "name", "")
+		nodes, _, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Sort: database.NodeSortName})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -983,7 +750,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("sort by packetCount", func(t *testing.T) {
-		nodes, _, _, err := db.GetNodes(50, 0, "", "", "", "", "packetCount", "")
+		nodes, _, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Sort: database.NodeSortPacketCount})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -993,7 +760,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("sort by lastSeen", func(t *testing.T) {
-		nodes, _, _, err := db.GetNodes(50, 0, "", "", "", "", "lastSeen", "")
+		nodes, _, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Sort: database.NodeSortLastSeen})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1003,25 +770,22 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("lastHeard filter 30d", func(t *testing.T) {
-		// The filter works by computing since = now - 30d; seed data last_seen may or may not match.
-		// Just verify the filter runs without error.
-		_, _, _, err := db.GetNodes(50, 0, "", "", "", "30d", "", "")
+		since := time.Now().UTC().Add(-30 * 24 * time.Hour)
+		_, _, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, HeardSince: &since})
 		if err != nil {
 			t.Fatal(err)
 		}
 	})
 
 	t.Run("lastHeard filter various", func(t *testing.T) {
-		for _, lh := range []string{"1h", "6h", "24h", "7d", "30d", "invalid"} {
-			_, _, _, err := db.GetNodes(50, 0, "", "", "", lh, "", "")
-			if err != nil {
-				t.Fatalf("lastHeard=%s failed: %v", lh, err)
-			}
+		since := time.Now().UTC().Add(-24 * time.Hour)
+		if _, _, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, HeardSince: &since}); err != nil {
+			t.Fatal(err)
 		}
 	})
 
 	t.Run("default limit", func(t *testing.T) {
-		nodes, _, _, err := db.GetNodes(0, 0, "", "", "", "", "", "")
+		nodes, _, err := db.ListNodes(t.Context(), database.NodeListParams{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1031,7 +795,8 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("before filter", func(t *testing.T) {
-		_, total, _, err := db.GetNodes(50, 0, "", "", "2026-01-02T00:00:00Z", "", "", "")
+		before := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		_, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Before: &before})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1041,7 +806,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("offset", func(t *testing.T) {
-		nodes, total, _, err := db.GetNodes(1, 1, "", "", "", "", "", "")
+		nodes, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 1, Offset: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1054,7 +819,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("region filter SJC", func(t *testing.T) {
-		nodes, total, _, err := db.GetNodes(50, 0, "", "", "", "", "", "SJC")
+		nodes, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Regions: []string{"SJC"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1064,13 +829,13 @@ func TestGetNodesFiltering(t *testing.T) {
 		if len(nodes) != 1 {
 			t.Fatalf("expected 1 node, got %d", len(nodes))
 		}
-		if nodes[0]["public_key"] != "aabbccdd11223344" {
-			t.Errorf("expected TestRepeater, got %v", nodes[0]["public_key"])
+		if nodes[0].PublicKey != "aabbccdd11223344" {
+			t.Errorf("expected TestRepeater, got %v", nodes[0].PublicKey)
 		}
 	})
 
 	t.Run("region filter SFO", func(t *testing.T) {
-		_, total, _, err := db.GetNodes(50, 0, "", "", "", "", "", "SFO")
+		_, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Regions: []string{"SFO"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1080,7 +845,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("region filter multi", func(t *testing.T) {
-		_, total, _, err := db.GetNodes(50, 0, "", "", "", "", "", "SJC,SFO")
+		_, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Regions: []string{"SJC", "SFO"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1090,7 +855,7 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 
 	t.Run("region filter unknown", func(t *testing.T) {
-		_, total, _, err := db.GetNodes(50, 0, "", "", "", "", "", "AMS")
+		_, total, err := db.ListNodes(t.Context(), database.NodeListParams{Limit: 50, Regions: []string{"AMS"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1100,615 +865,133 @@ func TestGetNodesFiltering(t *testing.T) {
 	})
 }
 
-// setupTestDBV2 creates an in-memory SQLite database with the v2 schema
-// where observations use observer_id TEXT instead of observer_idx INTEGER.
-func setupTestDBV2(t *testing.T) *DB {
-	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.SetMaxOpenConns(1)
-
-	schema := `
-		CREATE TABLE nodes (
-			public_key TEXT PRIMARY KEY,
-			name TEXT,
-			role TEXT,
-			lat REAL,
-			lon REAL,
-			last_seen TEXT,
-			first_seen TEXT,
-			advert_count INTEGER DEFAULT 0,
-			battery_mv INTEGER,
-			temperature_c REAL,
-			foreign_advert INTEGER DEFAULT 0
-		);
-
-		CREATE TABLE observers (
-			id TEXT PRIMARY KEY,
-			name TEXT,
-			iata TEXT,
-			last_seen TEXT,
-			first_seen TEXT,
-			packet_count INTEGER DEFAULT 0,
-			last_packet_at TEXT DEFAULT NULL,
-			inactive INTEGER DEFAULT 0
-		);
-
-		CREATE TABLE transmissions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			raw_hex TEXT NOT NULL,
-			hash TEXT NOT NULL UNIQUE,
-			first_seen TEXT NOT NULL,
-			route_type INTEGER,
-			payload_type INTEGER,
-			payload_version INTEGER,
-			decoded_json TEXT,
-			channel_hash TEXT DEFAULT NULL,
-			from_pubkey TEXT DEFAULT NULL,
-			created_at TEXT DEFAULT (datetime('now'))
-		);
-
-		CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-			observer_id TEXT,
-			observer_name TEXT,
-			direction TEXT,
-			snr REAL,
-			rssi REAL,
-			score INTEGER,
-			path_json TEXT,
-			timestamp INTEGER NOT NULL,
-			raw_hex TEXT
-		);
-
-		CREATE TRIGGER IF NOT EXISTS test_from_pubkey_advert
-		AFTER INSERT ON transmissions
-		FOR EACH ROW
-		WHEN NEW.from_pubkey IS NULL AND NEW.payload_type = 4 AND NEW.decoded_json IS NOT NULL
-			AND json_extract(NEW.decoded_json, '$.pubKey') IS NOT NULL
-			AND json_extract(NEW.decoded_json, '$.pubKey') <> ''
-		BEGIN
-			UPDATE transmissions
-			SET from_pubkey = json_extract(NEW.decoded_json, '$.pubKey')
-			WHERE id = NEW.id;
-		END;
-		CREATE INDEX IF NOT EXISTS idx_transmissions_from_pubkey ON transmissions(from_pubkey);
-	`
-	if _, err := conn.Exec(schema); err != nil {
-		t.Fatal(err)
-	}
-
-	return &DB{conn: conn, isV3: false}
-}
-
-func TestGetNodesRegionFilterV2(t *testing.T) {
-	db := setupTestDBV2(t)
-	defer db.Close()
-
-	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
-
-	// Seed observer with IATA code
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs-v2-1', 'V2 Observer', 'LAX', ?, '2026-01-01T00:00:00Z', 10)`, recent)
-
-	// Seed a node
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES ('v2pubkey11223344', 'V2Node', 'repeater', 34.0, -118.0, ?, '2026-01-01T00:00:00Z', 5)`, recent)
-
-	// Seed an ADVERT transmission for the node
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('AABB', 'v2hash0001', ?, 1, 4, '{"pubKey":"v2pubkey11223344","name":"V2Node","type":"ADVERT"}')`, recent)
-
-	// Seed v2-style observation: observer_id references observers.id directly
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_id, observer_name, snr, rssi, path_json, timestamp)
-		VALUES (1, 'obs-v2-1', 'V2 Observer', 10.0, -90, '[]', ?)`, recentEpoch)
-
-	t.Run("v2 region filter match", func(t *testing.T) {
-		nodes, total, _, err := db.GetNodes(50, 0, "", "", "", "", "", "LAX")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if total != 1 {
-			t.Errorf("expected 1 node for LAX region (v2 schema), got %d", total)
-		}
-		if len(nodes) != 1 {
-			t.Fatalf("expected 1 node, got %d", len(nodes))
-		}
-		if nodes[0]["public_key"] != "v2pubkey11223344" {
-			t.Errorf("expected V2Node, got %v", nodes[0]["public_key"])
-		}
-	})
-
-	t.Run("v2 region filter no match", func(t *testing.T) {
-		_, total, _, err := db.GetNodes(50, 0, "", "", "", "", "", "JFK")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if total != 0 {
-			t.Errorf("expected 0 nodes for JFK region (v2 schema), got %d", total)
-		}
-	})
-}
-
-func TestGetChannelMessagesDedup(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	// Seed observers
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer One', 'SJC')`)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs2', 'Observer Two', 'SFO')`)
-
-	// Insert two transmissions with same hash to test dedup
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'chanmsg00000001', '2026-01-15T10:00:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#general","text":"User1: Hello","sender":"User1"}', '#general')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB', 'chanmsg00000002', '2026-01-15T10:01:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#general","text":"User2: World","sender":"User2"}', '#general')`)
-
-	// Observations: first msg seen by two observers (dedup), second by one
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 12.0, -90, '["aa"]', 1736935200)`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 2, 10.0, -92, '["aa"]', 1736935210)`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 14.0, -88, '[]', 1736935260)`)
-
-	messages, total, err := db.GetChannelMessages("#general", 100, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Two unique messages (deduped by sender:hash)
-	if total < 2 {
-		t.Errorf("expected at least 2 unique messages, got %d", total)
-	}
-	if len(messages) < 2 {
-		t.Errorf("expected at least 2 messages, got %d", len(messages))
-	}
-
-	// Verify dedup: first message should have repeats > 1 because 2 observations
-	found := false
-	for _, m := range messages {
-		if m["text"] == "Hello" {
-			found = true
-			repeats, _ := m["repeats"].(int)
-			if repeats < 2 {
-				t.Errorf("expected repeats >= 2 for deduped msg, got %d", repeats)
-			}
-		}
-	}
-	if !found {
-		// Message text might be parsed differently
-		t.Log("Note: message text parsing may vary")
-	}
-}
-
-func TestGetChannelMessagesNoSender(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer One', 'SJC')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('CC', 'chanmsg00000003', '2026-01-15T10:02:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#noname","text":"plain text no colon"}', '#noname')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 12.0, -90, null, 1736935300)`)
-
-	messages, total, err := db.GetChannelMessages("#noname", 100, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Errorf("expected 1 message, got %d", total)
-	}
-	if len(messages) != 1 {
-		t.Errorf("expected 1 message, got %d", len(messages))
-	}
-}
-
-func TestGetNetworkStatusDateFormats(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	// Insert nodes with different date formats
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen)
-		VALUES ('node1111', 'NodeRFC', 'repeater', ?)`, time.Now().Format(time.RFC3339))
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen)
-		VALUES ('node2222', 'NodeSQL', 'companion', ?)`, time.Now().Format("2006-01-02 15:04:05"))
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen)
-		VALUES ('node3333', 'NodeNull', 'room', NULL)`)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen)
-		VALUES ('node4444', 'NodeBad', 'sensor', 'not-a-date')`)
-
-	ht := HealthThresholds{
-		InfraDegradedHours: 24,
-		InfraSilentHours:   72,
-		NodeDegradedHours:  1,
-		NodeSilentHours:    24,
-	}
-	result, err := db.GetNetworkStatus(ht)
-	if err != nil {
-		t.Fatal(err)
-	}
-	total, _ := result["total"].(int)
-	if total != 4 {
-		t.Errorf("expected 4 nodes, got %d", total)
-	}
-	// Verify the function handles all date formats without error
-	active, _ := result["active"].(int)
-	degraded, _ := result["degraded"].(int)
-	silent, _ := result["silent"].(int)
-	if active+degraded+silent != 4 {
-		t.Errorf("expected sum of statuses = 4, got %d", active+degraded+silent)
-	}
-	roleCounts, ok := result["roleCounts"].(map[string]int)
-	if !ok {
-		t.Fatal("expected roleCounts map")
-	}
-	if roleCounts["repeater"] != 1 {
-		t.Errorf("expected 1 repeater, got %d", roleCounts["repeater"])
-	}
-}
-
 func TestOpenDBValid(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-
-	// Bring the database fully under goose's control before OpenDB —
-	// it now asserts readiness via database.AssertReady rather than
-	// accepting any file with a "transmissions" table.
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	// Now test OpenDB (read-only)
-	database, err := OpenDB(dbPath)
+	ctx := t.Context()
+	dsn := pgtest.NewDatabase(t)
+	db, err := OpenDB(ctx, dsn)
 	if err != nil {
 		t.Fatalf("OpenDB failed: %v", err)
 	}
-	defer database.Close()
+	defer db.Close()
 
-	// Verify it works
-	maxID := database.GetMaxTransmissionID()
+	maxID, err := db.GetMaxTransmissionID(ctx)
+	if err != nil {
+		t.Fatalf("GetMaxTransmissionID: %v", err)
+	}
 	if maxID != 0 {
 		t.Errorf("expected 0, got %d", maxID)
 	}
 }
 
 func TestOpenDBInvalidPath(t *testing.T) {
-	_, err := OpenDB(filepath.Join(t.TempDir(), "nonexistent", "sub", "dir", "test.db"))
+	ctx := t.Context()
+	_, err := OpenDB(ctx, "not a postgres connection string")
 	if err == nil {
 		t.Error("expected error for invalid path")
 	}
 }
 
-// TestDetectSchemaScopeName verifies that OpenDB sets hasScopeName and
-// hasDefaultScope via the real detectSchema path when the columns are present.
-// The existing ScopeStats tests set these flags manually — this test ensures
-// the flag-setting code itself is covered.
-func TestDetectSchema_FlagsTrueOnFullyMigratedDB(t *testing.T) {
-	// Every schema feature flag detectSchema() sets is guaranteed true
-	// on any database that passes OpenDB's AssertReady check, since the
-	// full goose migration chain unconditionally adds these
-	// columns/tables. These flags are legacy — remove this test (and
-	// the flags themselves) as each dependent query is converted to
-	// sqlc; see DB struct comment.
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "detect.db")
-
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer db.Close()
-
-	if !db.hasScopeName {
-		t.Error("hasScopeName should be true on a fully migrated database")
-	}
-	if !db.hasDefaultScope {
-		t.Error("hasDefaultScope should be true on a fully migrated database")
-	}
-}
-
-func TestGetChannelMessagesObserverFallback(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	// Observer with ID but no name entry (observer_idx won't match)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'chanmsg00000004', '2026-01-15T10:00:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#obs","text":"Sender: Test","sender":"Sender"}', '#obs')`)
-	// Observation without observer (observer_idx = NULL)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, NULL, 12.0, -90, null, 1736935200)`)
-
-	messages, total, err := db.GetChannelMessages("#obs", 100, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Errorf("expected 1, got %d", total)
-	}
-	if len(messages) != 1 {
-		t.Errorf("expected 1 message, got %d", len(messages))
-	}
-}
-
-func TestGetChannelsMultiple(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer', 'SJC')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'chan1hash', '2026-01-15T10:00:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#alpha","text":"Alice: Hello","sender":"Alice"}', '#alpha')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB', 'chan2hash', '2026-01-15T10:01:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#beta","text":"Bob: World","sender":"Bob"}', '#beta')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('CC', 'chan3hash', '2026-01-15T10:02:00Z', 1, 5,
-		'{"type":"CHAN","channel":"","text":"No channel"}')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('DD', 'chan4hash', '2026-01-15T10:03:00Z', 1, 5,
-		'{"type":"OTHER"}')`)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('EE', 'chan5hash', '2026-01-15T10:04:00Z', 1, 5, 'not-valid-json')`)
-
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 12.0, -90, null, 1736935200)`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 12.0, -90, null, 1736935260)`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (3, 1, 12.0, -90, null, 1736935320)`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (4, 1, 12.0, -90, null, 1736935380)`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (5, 1, 12.0, -90, null, 1736935440)`)
-
-	channels, err := db.GetChannels()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// #alpha, #beta, and "unknown" (empty channel)
-	if len(channels) < 2 {
-		t.Errorf("expected at least 2 channels, got %d", len(channels))
-	}
-}
-
 func TestQueryGroupedPacketsWithFilters(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
 
 	rt := 1
-	result, err := db.QueryGroupedPackets(PacketQuery{Limit: 50, Route: &rt})
+	_, total, err := db.QueryGroupedPackets(ctx, database.PacketQuery{Limit: 50, Route: &rt})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Total == 0 {
+	if total == 0 {
 		t.Error("expected results for grouped with route filter")
 	}
 }
 
-func TestNullHelpers(t *testing.T) {
-	// nullStr
-	if nullStr(sql.NullString{Valid: false}) != nil {
-		t.Error("expected nil for invalid NullString")
-	}
-	if nullStr(sql.NullString{Valid: true, String: "hello"}) != "hello" {
-		t.Error("expected 'hello' for valid NullString")
-	}
-
-	// nullFloat
-	if nullFloat(sql.NullFloat64{Valid: false}) != nil {
-		t.Error("expected nil for invalid NullFloat64")
-	}
-	if nullFloat(sql.NullFloat64{Valid: true, Float64: 3.14}) != 3.14 {
-		t.Error("expected 3.14 for valid NullFloat64")
-	}
-
-	// nullInt
-	if nullInt(sql.NullInt64{Valid: false}) != nil {
-		t.Error("expected nil for invalid NullInt64")
-	}
-	if nullInt(sql.NullInt64{Valid: true, Int64: 42}) != 42 {
-		t.Error("expected 42 for valid NullInt64")
-	}
-}
-
-// TestGetChannelsStaleMessage verifies that GetChannels returns the newest message
-// per channel even when an older message has a later observation timestamp.
-// This is the regression test for #171.
-func TestGetChannelsStaleMessage(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer1', 'SJC')`)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs2', 'Observer2', 'SFO')`)
-
-	// Older message (first_seen T1)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'oldhash1', '2026-01-15T10:00:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#test","text":"Alice: Old message","sender":"Alice"}', '#test')`)
-	// Newer message (first_seen T2 > T1)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB', 'newhash2', '2026-01-15T10:05:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#test","text":"Bob: New message","sender":"Bob"}', '#test')`)
-
-	// Observations: older message re-observed AFTER newer message (stale scenario)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (1, 1, 12.0, -90, 1736935200)`) // old msg first obs
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (2, 1, 14.0, -88, 1736935500)`) // new msg obs
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (1, 2, 10.0, -95, 1736935800)`) // old msg re-observed LATER
-
-	channels, err := db.GetChannels()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(channels) != 1 {
-		t.Fatalf("expected 1 channel, got %d", len(channels))
-	}
-	ch := channels[0]
-
-	if ch["lastMessage"] != "New message" {
-		t.Errorf("expected lastMessage='New message' (newest by first_seen), got %q", ch["lastMessage"])
-	}
-	if ch["lastSender"] != "Bob" {
-		t.Errorf("expected lastSender='Bob', got %q", ch["lastSender"])
-	}
-	if ch["messageCount"] != 2 {
-		t.Errorf("expected messageCount=2 (unique transmissions), got %v", ch["messageCount"])
-	}
-}
-
-func TestGetChannelsRegionFiltering(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer1', 'SJC')`)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs2', 'Observer2', 'SFO')`)
-
-	// Channel message seen only in SJC
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'hash1', '2026-01-15T10:00:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#sjc-only","text":"Alice: Hello SJC","sender":"Alice"}', '#sjc-only')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (1, 1, 12.0, -90, 1736935200)`)
-
-	// Channel message seen only in SFO
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB', 'hash2', '2026-01-15T10:05:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#sfo-only","text":"Bob: Hello SFO","sender":"Bob"}', '#sfo-only')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (2, 2, 14.0, -88, 1736935500)`)
-
-	// No region filter — both channels
-	all, err := db.GetChannels()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("expected 2 channels without region filter, got %d", len(all))
-	}
-
-	// Filter SJC — only #sjc-only
-	sjc, err := db.GetChannels("SJC")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sjc) != 1 {
-		t.Fatalf("expected 1 channel for SJC, got %d", len(sjc))
-	}
-	if sjc[0]["name"] != "#sjc-only" {
-		t.Errorf("expected channel '#sjc-only', got %q", sjc[0]["name"])
-	}
-
-	// Filter SFO — only #sfo-only
-	sfo, err := db.GetChannels("SFO")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sfo) != 1 {
-		t.Fatalf("expected 1 channel for SFO, got %d", len(sfo))
-	}
-	if sfo[0]["name"] != "#sfo-only" {
-		t.Errorf("expected channel '#sfo-only', got %q", sfo[0]["name"])
-	}
-}
-
 func TestNodeTelemetryFields(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
-	// Insert node with telemetry data
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count, battery_mv, temperature_c)
-		VALUES ('pk_telem1', 'SensorNode', 'sensor', 37.0, -122.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 5, 3700, 28.5)`)
+	now := time.Now().UTC()
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "pk_telem1", Name: "SensorNode", Role: "sensor", RxTime: now, IngestNow: now,
+	})
+	battery, temperature := 3700, 28.5
+	if err := db.UpdateBatteryVoltageAndTempC(ctx, "pk_telem1", &battery, &temperature); err != nil {
+		t.Fatalf("UpdateBatteryVoltageAndTempC(): %v", err)
+	}
 
 	// Test via GetNodeByPubkey
-	node, err := db.GetNodeByPubkey("pk_telem1")
+	node, err := db.GetNodeByPubkey(ctx, "pk_telem1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if node == nil {
 		t.Fatal("expected node, got nil")
 	}
-	if node["battery_mv"] != 3700 {
-		t.Errorf("battery_mv=%v, want 3700", node["battery_mv"])
+	if node.BatteryMv == nil || *node.BatteryMv != battery {
+		t.Errorf("battery_mv=%v, want %d", node.BatteryMv, battery)
 	}
-	if node["temperature_c"] != 28.5 {
-		t.Errorf("temperature_c=%v, want 28.5", node["temperature_c"])
+	if node.TemperatureC == nil || *node.TemperatureC != temperature {
+		t.Errorf("temperature_c=%v, want %v", node.TemperatureC, temperature)
 	}
 
-	// Test via GetNodes
-	nodes, _, _, err := db.GetNodes(50, 0, "sensor", "", "", "", "", "")
+	// Test via the typed node list API.
+	nodes, _, err := db.ListNodes(ctx, database.NodeListParams{Limit: 50, Role: "sensor"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(nodes) != 1 {
 		t.Fatalf("expected 1 sensor node, got %d", len(nodes))
 	}
-	if nodes[0]["battery_mv"] != 3700 {
-		t.Errorf("GetNodes battery_mv=%v, want 3700", nodes[0]["battery_mv"])
+	if nodes[0].BatteryMv == nil || *nodes[0].BatteryMv != battery {
+		t.Errorf("ListNodes battery_mv=%v, want %d", nodes[0].BatteryMv, battery)
 	}
 
 	// Test node without telemetry — fields should be nil
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count)
-		VALUES ('pk_notelem', 'PlainNode', 'repeater', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 3)`)
-	node2, _ := db.GetNodeByPubkey("pk_notelem")
-	if node2["battery_mv"] != nil {
-		t.Errorf("expected nil battery_mv for node without telemetry, got %v", node2["battery_mv"])
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "pk_notelem", Name: "PlainNode", Role: "repeater", RxTime: now, IngestNow: now,
+	})
+	node2, err := db.GetNodeByPubkey(ctx, "pk_notelem")
+	if err != nil {
+		t.Fatalf("GetNodeByPubkey(pk_notelem): %v", err)
 	}
-	if node2["temperature_c"] != nil {
-		t.Errorf("expected nil temperature_c for node without telemetry, got %v", node2["temperature_c"])
+	if node2.BatteryMv != nil {
+		t.Errorf("expected nil battery_mv for node without telemetry, got %v", node2.BatteryMv)
 	}
-}
-
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
+	if node2.TemperatureC != nil {
+		t.Errorf("expected nil temperature_c for node without telemetry, got %v", node2.TemperatureC)
+	}
 }
 
 func TestGetObserverMetrics(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
 	now := time.Now().UTC()
-	t1 := now.Add(-2 * time.Hour).Format(time.RFC3339)
-	t2 := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	t3 := now.Format(time.RFC3339)
-
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, battery_mv) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		"obs1", t1, -112.5, 100, 500, 3, 3720)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors) VALUES (?, ?, ?, ?, ?, ?)",
-		"obs1", t2, -110.0, 200, 800, 5)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors) VALUES (?, ?, ?, ?, ?, ?)",
-		"obs1", t3, -108.0, 300, 1100, 8)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)",
-		"obs2", t1, -115.0)
+	nf1, nf2, nf3, nf4 := -112.5, -110.0, -108.0, -115.0
+	tx1, tx2, tx3 := 100, 200, 300
+	rx1, rx2, rx3 := 500, 800, 1100
+	errors1, errors2, errors3, battery := 3, 5, 8, 3720
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs1", Timestamp: now.Add(-2 * time.Hour), NoiseFloor: &nf1,
+		TxAirSecs: &tx1, RxAirSecs: &rx1, RecvErrors: &errors1, BatteryMv: &battery,
+	})
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs1", Timestamp: now.Add(-time.Hour), NoiseFloor: &nf2,
+		TxAirSecs: &tx2, RxAirSecs: &rx2, RecvErrors: &errors2,
+	})
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs1", Timestamp: now, NoiseFloor: &nf3,
+		TxAirSecs: &tx3, RxAirSecs: &rx3, RecvErrors: &errors3,
+	})
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs2", Timestamp: now.Add(-2 * time.Hour), NoiseFloor: &nf4,
+	})
 
 	// Query all for obs1
-	since := now.Add(-3 * time.Hour).Format(time.RFC3339)
-	metrics, reboots, err := db.GetObserverMetrics("obs1", since, "", "5m", 3600)
+	since := now.Add(-3 * time.Hour)
+	srv := &Server{db: db}
+	metrics, reboots, err := srv.observerMetrics(ctx, "obs1", &since, nil, "5m", 3600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1737,7 +1020,8 @@ func TestGetObserverMetrics(t *testing.T) {
 	}
 
 	// Query with until filter
-	metrics2, _, err := db.GetObserverMetrics("obs1", since, t2, "5m", 3600)
+	until := now.Add(-time.Hour)
+	metrics2, _, err := srv.observerMetrics(ctx, "obs1", &since, &until, "5m", 3600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1747,22 +1031,25 @@ func TestGetObserverMetrics(t *testing.T) {
 }
 
 func TestGetMetricsSummary(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
 	now := time.Now().UTC()
-	t1 := now.Add(-2 * time.Hour).Format(time.RFC3339)
-	t2 := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	nf1, nf2, nf3 := -112.0, -108.0, -115.0
+	battery := 3720
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs1", Timestamp: now.Add(-2 * time.Hour), NoiseFloor: &nf1, BatteryMv: &battery,
+	})
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs1", Timestamp: now.Add(-time.Hour), NoiseFloor: &nf2,
+	})
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs2", Timestamp: now.Add(-2 * time.Hour), NoiseFloor: &nf3,
+	})
 
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, battery_mv) VALUES (?, ?, ?, ?)",
-		"obs1", t1, -112.0, 3720)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)",
-		"obs1", t2, -108.0)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)",
-		"obs2", t1, -115.0)
-
-	since := now.Add(-24 * time.Hour).Format(time.RFC3339)
-	summary, err := db.GetMetricsSummary(since)
+	since := now.Add(-24 * time.Hour)
+	summary, err := db.GetMetricsSummary(ctx, since)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1798,17 +1085,18 @@ func TestGetMetricsSummary(t *testing.T) {
 }
 
 func TestObserverMetricsAPIEndpoints(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
 	now := time.Now().UTC()
-	t1 := now.Add(-1 * time.Hour).Format(time.RFC3339)
-
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES (?, ?, ?)",
-		"obs1", t1, -112.0)
+	nf := -112.0
+	mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+		ObserverID: "obs1", Timestamp: now.Add(-time.Hour), NoiseFloor: &nf,
+	})
 
 	// Query directly to verify
-	metrics, _, err := db.GetObserverMetrics("obs1", "", "", "5m", 300)
+	metrics, _, err := (&Server{db: db}).observerMetrics(ctx, "obs1", nil, nil, "5m", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1818,14 +1106,14 @@ func TestObserverMetricsAPIEndpoints(t *testing.T) {
 }
 
 func TestComputeDeltas(t *testing.T) {
-	intPtr := func(v int) *int { return &v }
+	int64Ptr := func(v int64) *int64 { return &v }
 	floatPtr := func(v float64) *float64 { return &v }
+	at := func(minute int) time.Time {
+		return time.Date(2026, time.April, 5, 0, minute, 0, 0, time.UTC)
+	}
 
 	t.Run("empty input", func(t *testing.T) {
-		result, reboots, err := computeDeltas(nil, 300)
-		if err != nil {
-			t.Fatal(err)
-		}
+		result, reboots := computeDeltas(nil, 300)
 		if result != nil {
 			t.Errorf("expected nil, got %v", result)
 		}
@@ -1835,14 +1123,11 @@ func TestComputeDeltas(t *testing.T) {
 	})
 
 	t.Run("normal delta computation", func(t *testing.T) {
-		raw := []rawMetricsSample{
-			{Timestamp: "2026-04-05T00:00:00Z", NoiseFloor: floatPtr(-112), TxAirSecs: intPtr(100), RxAirSecs: intPtr(500), RecvErrors: intPtr(3), PacketsRecv: intPtr(1000)},
-			{Timestamp: "2026-04-05T00:05:00Z", NoiseFloor: floatPtr(-110), TxAirSecs: intPtr(115), RxAirSecs: intPtr(525), RecvErrors: intPtr(5), PacketsRecv: intPtr(1100)},
+		raw := []database.ObserverMetric{
+			{Timestamp: at(0), NoiseFloor: floatPtr(-112), TxAirSecs: int64Ptr(100), RxAirSecs: int64Ptr(500), RecvErrors: int64Ptr(3), PacketsRecv: int64Ptr(1000)},
+			{Timestamp: at(5), NoiseFloor: floatPtr(-110), TxAirSecs: int64Ptr(115), RxAirSecs: int64Ptr(525), RecvErrors: int64Ptr(5), PacketsRecv: int64Ptr(1100)},
 		}
-		result, reboots, err := computeDeltas(raw, 300)
-		if err != nil {
-			t.Fatal(err)
-		}
+		result, reboots := computeDeltas(raw, 300)
 		if len(result) != 2 {
 			t.Fatalf("expected 2 results, got %d", len(result))
 		}
@@ -1877,22 +1162,19 @@ func TestComputeDeltas(t *testing.T) {
 	})
 
 	t.Run("reboot detection", func(t *testing.T) {
-		raw := []rawMetricsSample{
-			{Timestamp: "2026-04-05T00:00:00Z", TxAirSecs: intPtr(1000), RxAirSecs: intPtr(5000)},
-			{Timestamp: "2026-04-05T00:05:00Z", TxAirSecs: intPtr(10), RxAirSecs: intPtr(20)}, // reboot!
-			{Timestamp: "2026-04-05T00:10:00Z", TxAirSecs: intPtr(25), RxAirSecs: intPtr(45)},
+		raw := []database.ObserverMetric{
+			{Timestamp: at(0), TxAirSecs: int64Ptr(1000), RxAirSecs: int64Ptr(5000)},
+			{Timestamp: at(5), TxAirSecs: int64Ptr(10), RxAirSecs: int64Ptr(20)}, // reboot!
+			{Timestamp: at(10), TxAirSecs: int64Ptr(25), RxAirSecs: int64Ptr(45)},
 		}
-		result, reboots, err := computeDeltas(raw, 300)
-		if err != nil {
-			t.Fatal(err)
-		}
+		result, reboots := computeDeltas(raw, 300)
 		if len(reboots) != 1 {
 			t.Fatalf("expected 1 reboot, got %d", len(reboots))
 		}
-		if reboots[0] != "2026-04-05T00:05:00Z" {
-			t.Errorf("reboot timestamp = %s", reboots[0])
+		if got := types.FormatWireTimeSeconds(reboots[0].Time); got != "2026-04-05T00:05:00Z" {
+			t.Errorf("reboot timestamp = %s", got)
 		}
-		if !result[1].IsReboot {
+		if result[1].IsRebootSample == nil || !*result[1].IsRebootSample {
 			t.Error("second sample should be marked as reboot")
 		}
 		// Reboot sample should have nil deltas
@@ -1909,14 +1191,11 @@ func TestComputeDeltas(t *testing.T) {
 	})
 
 	t.Run("gap detection", func(t *testing.T) {
-		raw := []rawMetricsSample{
-			{Timestamp: "2026-04-05T00:00:00Z", TxAirSecs: intPtr(100)},
-			{Timestamp: "2026-04-05T00:15:00Z", TxAirSecs: intPtr(200)}, // 15min gap > 2*300s
+		raw := []database.ObserverMetric{
+			{Timestamp: at(0), TxAirSecs: int64Ptr(100)},
+			{Timestamp: at(15), TxAirSecs: int64Ptr(200)}, // 15min gap > 2*300s
 		}
-		result, _, err := computeDeltas(raw, 300)
-		if err != nil {
-			t.Fatal(err)
-		}
+		result, _ := computeDeltas(raw, 300)
 		// Gap sample should have nil deltas
 		if result[1].TxAirtimePct != nil {
 			t.Error("gap sample should have nil tx_airtime_pct")
@@ -1925,20 +1204,26 @@ func TestComputeDeltas(t *testing.T) {
 }
 
 func TestGetObserverMetricsResolution(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
+	srv := &Server{db: db}
+	since := time.Date(2026, time.April, 4, 0, 0, 0, 0, time.UTC)
 
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs) VALUES (?, ?, ?, ?)",
-		"obs1", "2026-04-05T00:00:00Z", -112.0, 100)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs) VALUES (?, ?, ?, ?)",
-		"obs1", "2026-04-05T00:05:00Z", -110.0, 200)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs) VALUES (?, ?, ?, ?)",
-		"obs1", "2026-04-05T01:00:00Z", -108.0, 500)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs) VALUES (?, ?, ?, ?)",
-		"obs1", "2026-04-05T01:05:00Z", -106.0, 600)
+	metricAt := func(hour, minute int, noise, tx int) {
+		nf := float64(noise)
+		mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+			ObserverID: "obs1", Timestamp: time.Date(2026, time.April, 5, hour, minute, 0, 0, time.UTC),
+			NoiseFloor: &nf, TxAirSecs: &tx,
+		})
+	}
+	metricAt(0, 0, -112, 100)
+	metricAt(0, 5, -110, 200)
+	metricAt(1, 0, -108, 500)
+	metricAt(1, 5, -106, 600)
 
 	// 5m resolution: all 4 rows
-	m5, _, err := db.GetObserverMetrics("obs1", "2026-04-04T00:00:00Z", "", "5m", 300)
+	m5, _, err := srv.observerMetrics(ctx, "obs1", &since, nil, "5m", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1947,7 +1232,7 @@ func TestGetObserverMetricsResolution(t *testing.T) {
 	}
 
 	// 1h resolution: 2 buckets
-	m1h, _, err := db.GetObserverMetrics("obs1", "2026-04-04T00:00:00Z", "", "1h", 300)
+	m1h, _, err := srv.observerMetrics(ctx, "obs1", &since, nil, "1h", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1956,7 +1241,7 @@ func TestGetObserverMetricsResolution(t *testing.T) {
 	}
 
 	// 1d resolution: 1 bucket
-	m1d, _, err := db.GetObserverMetrics("obs1", "2026-04-04T00:00:00Z", "", "1d", 300)
+	m1d, _, err := srv.observerMetrics(ctx, "obs1", &since, nil, "1d", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1966,67 +1251,91 @@ func TestGetObserverMetricsResolution(t *testing.T) {
 }
 
 func TestHourlyResolutionDeltasNotNull(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
+	srv := &Server{db: db}
+	since := time.Date(2026, time.April, 4, 0, 0, 0, 0, time.UTC)
 
-	// Two hourly buckets, each with one sample. With old MAX+hardcoded gap threshold,
-	// the 3600s gap would exceed sampleInterval*2 (600s) and deltas would be null.
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, packets_sent, packets_recv) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		"obs_hr", "2026-04-05T10:00:00Z", -110.0, 100, 200, 5, 50, 100)
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, packets_sent, packets_recv) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		"obs_hr", "2026-04-05T11:00:00Z", -108.0, 200, 400, 10, 80, 200)
+	observerPubkey := strings.Repeat("d", 64)
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        observerPubkey,
+		Name:      ptr("Hourly"),
+		IATA:      "SJC",
+		Meta:      nil,
+		LastSeen:  time.Now().UTC(),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
-	m, _, err := db.GetObserverMetrics("obs_hr", "2026-04-04T00:00:00Z", "", "1h", 300)
+	metricAt := func(hour int, noise float64, tx, rx, recvErrors, sent, received int) {
+		mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+			ObserverID: observerPubkey, Timestamp: time.Date(2026, time.April, 5, hour, 0, 0, 0, time.UTC),
+			NoiseFloor: &noise, TxAirSecs: &tx, RxAirSecs: &rx, RecvErrors: &recvErrors,
+			PacketsSent: &sent, PacketsRecv: &received,
+		})
+	}
+	metricAt(10, -110, 100, 200, 5, 50, 100)
+	metricAt(11, -108, 200, 400, 10, 80, 200)
+
+	m, _, err := srv.observerMetrics(ctx, observerPubkey, &since, nil, "1h", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(m) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(m))
 	}
-	// Second row should have computed deltas (not null)
 	if m[1].TxAirtimePct == nil {
 		t.Error("1h resolution: tx_airtime_pct should not be nil — gap threshold must scale with resolution")
 	}
 }
 
 func TestLastValuePreservesReboot(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	seedTestData(t, db)
+	srv := &Server{db: db}
+	since := time.Date(2026, time.April, 4, 0, 0, 0, 0, time.UTC)
 
-	// Hour bucket with two samples: pre-reboot (high) and post-reboot (low).
-	// With MAX(), the pre-reboot value wins and the reboot is hidden.
-	// With LAST (latest timestamp), the post-reboot value wins.
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, packets_sent, packets_recv) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		"obs_rb", "2026-04-05T10:00:00Z", -110.0, 1000, 2000, 500, 400, 800) // pre-reboot baseline
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, packets_sent, packets_recv) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		"obs_rb", "2026-04-05T10:20:00Z", -110.0, 5000, 6000, 900, 700, 1200) // pre-reboot peak
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, packets_sent, packets_recv) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		"obs_rb", "2026-04-05T10:40:00Z", -110.0, 10, 20, 1, 5, 10) // post-reboot (counter reset)
+	observerPubkey := strings.Repeat("e", 64)
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        observerPubkey,
+		Name:      ptr("Reboot"),
+		IATA:      "SJC",
+		Meta:      nil,
+		LastSeen:  time.Now().UTC(),
+		IngestNow: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
-	// Next hour bucket
-	db.conn.Exec("INSERT INTO observer_metrics (observer_id, timestamp, noise_floor, tx_air_secs, rx_air_secs, recv_errors, packets_sent, packets_recv) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		"obs_rb", "2026-04-05T11:00:00Z", -108.0, 100, 120, 5, 20, 50)
+	metricAt := func(hour, minute int, noise float64, tx, rx, recvErrors, sent, received int) {
+		mustCreateTestObserverMetrics(t, ctx, db, database.ObserverMetricsInput{
+			ObserverID: observerPubkey, Timestamp: time.Date(2026, time.April, 5, hour, minute, 0, 0, time.UTC),
+			NoiseFloor: &noise, TxAirSecs: &tx, RxAirSecs: &rx, RecvErrors: &recvErrors,
+			PacketsSent: &sent, PacketsRecv: &received,
+		})
+	}
+	metricAt(10, 0, -110, 1000, 2000, 500, 400, 800)
+	metricAt(10, 20, -110, 5000, 6000, 900, 700, 1200)
+	metricAt(10, 40, -110, 10, 20, 1, 5, 10)
+	metricAt(11, 0, -108, 100, 120, 5, 20, 50)
 
-	m, reboots, err := db.GetObserverMetrics("obs_rb", "2026-04-04T00:00:00Z", "", "1h", 300)
+	m, reboots, err := srv.observerMetrics(ctx, observerPubkey, &since, nil, "1h", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(m) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(m))
 	}
-
-	// First bucket should use the LAST value (post-reboot: tx_air_secs=10).
-	// Second bucket (tx_air_secs=100) is a normal increase from 10→100.
-	// With LAST-value semantics, the second bucket should have valid deltas (not a reboot).
-	// With MAX(), first bucket would have tx_air_secs=5000, and second=100 would
-	// trigger a false reboot detection.
-	if m[1].IsReboot {
+	if m[1].IsRebootSample != nil {
 		t.Error("second bucket should NOT be flagged as reboot with LAST-value aggregation")
 	}
 	if m[1].TxAirtimePct == nil {
 		t.Error("second bucket should have non-nil tx_airtime_pct")
 	}
-	_ = reboots // reboots list is informational
+	_ = reboots
 }
 
 func TestParseWindowDuration(t *testing.T) {
@@ -2052,95 +1361,25 @@ func TestParseWindowDuration(t *testing.T) {
 	}
 }
 
-// TestPerObservationRawHexEnrich verifies enrichObs returns per-observation raw_hex
-// when available, falling back to transmission raw_hex when NULL (#881).
-func TestPerObservationRawHexEnrich(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-
-	// Insert observers
-	db.conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs-a', 'Observer A')`)
-	db.conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs-b', 'Observer B')`)
-
-	var rowA, rowB int64
-	db.conn.QueryRow(`SELECT rowid FROM observers WHERE id='obs-a'`).Scan(&rowA)
-	db.conn.QueryRow(`SELECT rowid FROM observers WHERE id='obs-b'`).Scan(&rowB)
-
-	// Insert transmission with raw_hex
-	txHex := "deadbeef"
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen) VALUES (?, 'hash1', '2026-04-21T10:00:00Z')`, txHex)
-
-	// Insert two observations: A has its own raw_hex, B has NULL (historical)
-	obsAHex := "c0ffee01"
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, raw_hex)
-		VALUES (1, ?, -5.0, -90.0, '[]', 1745236800, ?)`, rowA, obsAHex)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, ?, -3.0, -85.0, '["aabb"]', 1745236801)`, rowB)
-
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store load: %v", err)
-	}
-
-	tx := store.byHash["hash1"]
-	if tx == nil {
-		t.Fatal("transmission not loaded")
-	}
-	if len(tx.Observations) < 2 {
-		t.Fatalf("expected 2 observations, got %d", len(tx.Observations))
-	}
-
-	// Check enriched observations
-	for _, obs := range tx.Observations {
-		m := store.enrichObs(obs)
-		rh, _ := m["raw_hex"].(string)
-		if obs.RawHex != "" {
-			// Observer A: should get per-observation raw_hex
-			if rh != obsAHex {
-				t.Errorf("obs with own raw_hex: got %q, want %q", rh, obsAHex)
-			}
-		} else {
-			// Observer B: should fall back to transmission raw_hex
-			if rh != txHex {
-				t.Errorf("obs without raw_hex: got %q, want %q (tx fallback)", rh, txHex)
-			}
-		}
-	}
-}
-
 func TestGetScopeStats(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+	since := now.Add(-24 * time.Hour)
+	create := func(hash string, route types.RouteType, scope *string) {
+		t.Helper()
+		mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+			Hash: hash, RawHex: "AA01", RouteType: route, PayloadType: types.PayloadType(5), ScopeName: scope,
+		}, now)
 	}
-	conn.SetMaxOpenConns(1)
-	db := &DB{conn: conn}
-	defer db.conn.Close()
+	named, unknown := "#belgium", ""
+	create("scope-named", types.RouteTransportFlood, &named)
+	create("scope-unknown", types.RouteTransportFlood, &unknown)
+	create("scope-null", types.RouteTransportFlood, nil)
+	create("scope-flood", types.RouteFlood, nil)
+	create("scope-direct", types.RouteDirect, nil)
 
-	// Create minimal schema
-	db.conn.Exec(`CREATE TABLE IF NOT EXISTS transmissions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		raw_hex TEXT, hash TEXT, first_seen TEXT, route_type INTEGER,
-		payload_type INTEGER, payload_version INTEGER, decoded_json TEXT,
-		scope_name TEXT DEFAULT NULL, from_pubkey TEXT DEFAULT NULL
-	)`)
-	db.conn.Exec(`CREATE TABLE IF NOT EXISTS nodes (public_key TEXT PRIMARY KEY, role TEXT)`)
-	// Manually set hasScopeName since we bypassed the detector
-	db.hasScopeName = true
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	// Transport scoped, known region
-	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('a', ?, 0, '#belgium')`, now)
-	// Transport scoped, unknown
-	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('b', ?, 0, '')`, now)
-	// Transport unscoped (NULL)
-	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('c', ?, 0, NULL)`, now)
-	// Non-transport FLOOD (route_type=1) — inherently unscoped per MeshCore protocol (#1838)
-	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('d', ?, 1, NULL)`, now)
-	// Non-transport DIRECT (route_type=2) — inherently unscoped per MeshCore protocol (#1838)
-	db.conn.Exec(`INSERT INTO transmissions (hash, first_seen, route_type, scope_name) VALUES ('e', ?, 2, NULL)`, now)
-
-	stats, err := db.GetScopeStats("24h")
+	stats, err := db.GetScopeStats(ctx, since, time.Hour)
 	if err != nil {
 		t.Fatalf("GetScopeStats: %v", err)
 	}
@@ -2169,79 +1408,56 @@ func TestGetScopeStats(t *testing.T) {
 // scope_name states (NULL is unscoped, an empty string is unknown scope, a
 // name is a named scope).
 func TestGetScopeStatsAdvertsByRole(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	conn.SetMaxOpenConns(1)
-	db := &DB{conn: conn, hasScopeName: true}
-	defer db.conn.Close()
-
-	for _, stmt := range []string{
-		`CREATE TABLE transmissions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			hash TEXT, first_seen TEXT, route_type INTEGER, payload_type INTEGER,
-			scope_name TEXT DEFAULT NULL, from_pubkey TEXT DEFAULT NULL
-		)`,
-		`CREATE TABLE nodes (public_key TEXT PRIMARY KEY, role TEXT)`,
-		`INSERT INTO nodes (public_key, role) VALUES ('rpt', 'repeater'), ('cmp', 'companion'), ('sns', 'sensor'), ('norole', '')`,
-	} {
-		if _, err := db.conn.Exec(stmt); err != nil {
-			t.Fatalf("schema: %v", err)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	now := time.Now().UTC()
+	since := now.Add(-24 * time.Hour)
+	create := func(hash string, route types.RouteType, payload types.PayloadType, scope *string, pubkey string, role types.NodeRole) {
+		t.Helper()
+		var advert *database.NodeInput
+		if pubkey != "" {
+			advert = &database.NodeInput{PublicKey: pubkey, Name: pubkey, Role: role, RxTime: now, IngestNow: now}
 		}
+		mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+			Hash: hash, RawHex: "AA01", RouteType: route, PayloadType: payload, ScopeName: scope, Advert: advert,
+		}, now)
 	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	old := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
-	rows := []struct {
-		hash    string
-		seen    string
-		route   int
-		ptype   int
-		scope   interface{}
-		fromKey interface{}
+	named, unknown := "#belgium", ""
+	for _, row := range []struct {
+		hash  string
+		route types.RouteType
+		scope *string
+		key   string
+		role  types.NodeRole
 	}{
-		// Totals per role differ from alphabetical order so the test pins
-		// ORDER BY total: repeater 4, unknown 3, companion 2, sensor 2.
-		// companion and sensor tie, which pins the role-name tie-break.
-		// Repeater: every scope state on flood routes, two named.
-		{"r1", now, 1, 4, nil, "rpt"},
-		{"r2", now, 0, 4, "", "rpt"},
-		{"r3", now, 0, 4, "#belgium", "rpt"},
-		{"r8", now, 1, 4, "#belgium", "rpt"},
-		// Excluded: zero-hop adverts are DIRECT/TRANSPORT_DIRECT, not flood.
-		{"r4", now, 2, 4, nil, "rpt"},
-		{"r5", now, 3, 4, "#belgium", "rpt"},
-		// Excluded: not an advert.
-		{"r6", now, 0, 5, "#belgium", "rpt"},
-		// Excluded: outside the window.
-		{"r7", old, 1, 4, nil, "rpt"},
-		// Companion: one unscoped, one named.
-		{"c1", now, 1, 4, nil, "cmp"},
-		{"c3", now, 0, 4, "#belgium", "cmp"},
-		// Sensor: one unscoped, one unknown scope.
-		{"s1", now, 1, 4, nil, "sns"},
-		{"s2", now, 0, 4, "", "sns"},
-		// No node row, and a node row without a role: both "unknown".
-		{"u1", now, 1, 4, nil, "stranger"},
-		{"u2", now, 0, 4, "", "norole"},
-		{"u3", now, 0, 4, "#belgium", nil},
+		{"r1", types.RouteFlood, nil, "rpt", "repeater"},
+		{"r2", types.RouteTransportFlood, &unknown, "rpt", "repeater"},
+		{"r3", types.RouteTransportFlood, &named, "rpt", "repeater"},
+		{"r4", types.RouteDirect, nil, "rpt", "repeater"},
+		{"r5", types.RouteTransportDirect, &named, "rpt", "repeater"},
+		{"r6", types.RouteTransportFlood, &named, "rpt", "repeater"},
+		{"c1", types.RouteFlood, nil, "cmp", "companion"},
+		{"c3", types.RouteTransportFlood, &named, "cmp", "companion"},
+		{"s1", types.RouteFlood, nil, "sns", "sensor"},
+		{"s2", types.RouteTransportFlood, &unknown, "sns", "sensor"},
+		{"u1", types.RouteFlood, nil, "stranger", ""},
+		{"u2", types.RouteTransportFlood, &unknown, "norole", ""},
+		{"u3", types.RouteTransportFlood, &named, "", ""},
+	} {
+		create(row.hash, row.route, types.PayloadADVERT, row.scope, row.key, row.role)
 	}
-	for _, r := range rows {
-		if _, err := db.conn.Exec(
-			`INSERT INTO transmissions (hash, first_seen, route_type, payload_type, scope_name, from_pubkey) VALUES (?, ?, ?, ?, ?, ?)`,
-			r.hash, r.seen, r.route, r.ptype, r.scope, r.fromKey,
-		); err != nil {
-			t.Fatalf("seed %s: %v", r.hash, err)
-		}
-	}
+	old := now.Add(-48 * time.Hour)
+	mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+		Hash: "r7", RawHex: "AA01", RouteType: types.RouteFlood, PayloadType: types.PayloadADVERT,
+	}, old)
+	create("r6-non-advert", types.RouteTransportFlood, types.PayloadType(5), &named, "rpt", "repeater")
 
-	stats, err := db.GetScopeStats("24h")
+	stats, err := db.GetScopeStats(ctx, since, time.Hour)
 	if err != nil {
 		t.Fatalf("GetScopeStats: %v", err)
 	}
 	// Ordered by total adverts descending, then role name.
-	want := []ScopeAdvertRoleCount{
+	want := []database.ScopeAdvertRoleCount{
 		{Role: "repeater", Unscoped: 1, UnknownScope: 1, Named: 2},
 		{Role: "unknown", Unscoped: 1, UnknownScope: 1, Named: 1},
 		{Role: "companion", Unscoped: 1, UnknownScope: 0, Named: 1},
@@ -2253,17 +1469,9 @@ func TestGetScopeStatsAdvertsByRole(t *testing.T) {
 }
 
 func TestGetScopeStatsAdvertsByRoleEmpty(t *testing.T) {
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	conn.SetMaxOpenConns(1)
-	db := &DB{conn: conn, hasScopeName: true}
-	defer db.conn.Close()
-	db.conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY, first_seen TEXT, route_type INTEGER, payload_type INTEGER, scope_name TEXT, from_pubkey TEXT)`)
-	db.conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY, role TEXT)`)
-
-	stats, err := db.GetScopeStats("1h")
+	ctx := t.Context()
+	db := setupTestDB(t)
+	stats, err := db.GetScopeStats(ctx, time.Now().Add(-time.Hour), time.Hour)
 	if err != nil {
 		t.Fatalf("GetScopeStats: %v", err)
 	}
@@ -2279,29 +1487,46 @@ func TestGetScopeStatsAdvertsByRoleEmpty(t *testing.T) {
 // were appended, so tx.ResolvedPath was nil at index time — #806 fixed this
 // by indexing inline during the scan, this test locks it in.
 func TestLoadIndexesRelayHopsFromResolvedPath(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-
-	now := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
-	epoch := time.Now().UTC().Add(-1 * time.Hour).Unix()
+	now := time.Now().UTC().Add(-time.Hour)
 
 	// Insert a node whose pubkey does NOT appear in any decoded_json —
 	// it only relays traffic (appears in resolved_path of other packets).
 	const relayPubkey = "relay000aabbccddeeff0011"
 	const senderPubkey = "sender00112233445566"
 
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('FF01', 'relaytest0001hash', ?, 1, 4, ?)`,
-		now, `{"pubKey":"`+senderPubkey+`","name":"Sender","type":"ADVERT"}`)
+	transmissionID := mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+		RawHex:      "FF01",
+		Hash:        "relaytest0001hash",
+		RouteType:   types.RouteFlood,
+		PayloadType: types.PayloadADVERT,
+		DecodedJSON: `{"pubKey":"` + senderPubkey + `","name":"Sender","type":"ADVERT"}`,
+		Advert: &database.NodeInput{
+			PublicKey: senderPubkey,
+			Name:      "Sender",
+			Role:      "repeater",
+			RxTime:    now,
+			IngestNow: now,
+		},
+	}, now)
+	resolvedRelay := relayPubkey
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: relayPubkey,
+		Name:      "Relay",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now,
+		IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed relay node: %v", err)
+	}
+	mustInsertUnobservedTestObservation(t, ctx, db, transmissionID, now, 10, -90, []string{"ee"}, []*string{&resolvedRelay})
 
-	// Observer hears the packet via the relay node.
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, resolved_path)
-		VALUES (1, 1, 10.0, -90, '["rr"]', ?, ?)`,
-		epoch, `["`+relayPubkey+`"]`)
-
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// The sender should be in byNode via decoded_json.
@@ -2318,113 +1543,67 @@ func TestLoadIndexesRelayHopsFromResolvedPath(t *testing.T) {
 	}
 }
 
-// failingQuerier wraps a real *sql.DB but forces the PRAGMA probe for a chosen
-// table to fail, so the #1901 fail-loud path can be exercised deterministically.
-type failingQuerier struct {
-	real   *sql.DB
-	failOn string // if the query text contains this substring, return err
-	err    error
-}
-
-func (f *failingQuerier) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	if f.failOn != "" && strings.Contains(query, f.failOn) {
-		return nil, f.err
-	}
-	return f.real.QueryContext(ctx, query, args...)
-}
-
-// TestDetectSchemaFailsLoudOnProbeError is the regression guard for #1901: a
-// probe-query failure must surface as an error so OpenDB can abort startup,
-// instead of being silently swallowed and leaving the server in v2 mode against
-// a v3 database for the whole process lifetime.
-func TestDetectSchemaFailsLoudOnProbeError(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "v3.db")
-	conn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.SetMaxOpenConns(1)
-	// v3-shaped: observations carries observer_idx.
-	if _, err := conn.Exec(`CREATE TABLE observations (id INTEGER PRIMARY KEY, observer_idx INTEGER)`); err != nil {
-		conn.Close()
-		t.Fatal(err)
-	}
-	conn.Exec(`CREATE TABLE transmissions (id INTEGER PRIMARY KEY)`)
-	conn.Exec(`CREATE TABLE nodes (public_key TEXT PRIMARY KEY)`)
-	conn.Close()
-
-	real, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer real.Close()
-
-	q := &failingQuerier{real: real, failOn: "table_info(observations)", err: errors.New("injected probe failure")}
-	db := &DB{}
-	if err := db.detectSchema(context.Background(), q); err == nil {
-		t.Fatal("detectSchema must return an error when a schema probe fails (#1901)")
-	}
-	if db.isV3 {
-		t.Error("isV3 must not be set when detection failed")
-	}
-}
-
-// GetChannels scoped msg_count and last_activity through observations/observers,
-// but the sample_json subquery that feeds lastMessage/lastSender did not join
-// either table. It therefore always returned the globally newest message on the
-// channel, so an operator filtering on their own region saw a preview line from
-// a message their observers never heard.
+// TestGetChannelsPreviewRespectsRegionFilter verifies channel previews are
+// sampled from messages heard in the requested observer region.
 func TestGetChannelsPreviewRespectsRegionFilter(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
+	now := time.Now().UTC()
+	obsSJC := mustCreateTestObserver(t, ctx, db, "obs-sjc", "Observer SJC", "SJC", now)
+	obsSFO := mustCreateTestObserver(t, ctx, db, "obs-sfo", "Observer SFO", "SFO", now)
+	createMessage := func(hash, sender, text string, firstSeen time.Time, observerID int64) {
+		t.Helper()
+		decoded := `{"type":"CHAN","channel":"#shared","text":"` + sender + `: ` + text + `","sender":"` + sender + `"}`
+		id := mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+			RawHex:      hash,
+			Hash:        hash,
+			RouteType:   types.RouteFlood,
+			PayloadType: types.PayloadGRP_TXT,
+			DecodedJSON: decoded,
+			ChannelHash: "#shared",
+		}, firstSeen)
+		dbtest.Observation(t, db, id, observerID, firstSeen, 12, -90, nil...)
+	}
+	createMessage("AA01", "Alice", "heard in SJC", now.Add(-10*time.Minute), obsSJC)
+	createMessage("AA02", "Bob", "heard in SFO", now.Add(-5*time.Minute), obsSFO)
 
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs1', 'Observer1', 'SJC')`)
-	db.conn.Exec(`INSERT INTO observers (id, name, iata) VALUES ('obs2', 'Observer2', 'SFO')`)
-
-	// One channel, seen in both regions. The SFO message is the newer one, so it
-	// is what an unscoped preview would show.
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('AA', 'hash1', '2026-01-15T10:00:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#shared","text":"Alice: heard in SJC","sender":"Alice"}', '#shared')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (1, 1, 12.0, -90, 1736935200)`)
-
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json, channel_hash)
-		VALUES ('BB', 'hash2', '2026-01-15T10:05:00Z', 1, 5,
-		'{"type":"CHAN","channel":"#shared","text":"Bob: heard in SFO","sender":"Bob"}', '#shared')`)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, timestamp)
-		VALUES (2, 2, 14.0, -88, 1736935500)`)
-
-	sjc, err := db.GetChannels("SJC")
+	srv := &Server{db: db}
+	sjc, err := srv.getChannels(ctx, "SJC")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(sjc) != 1 {
 		t.Fatalf("expected 1 channel for SJC, got %d", len(sjc))
 	}
-	if got := sjc[0]["lastSender"]; got != "Alice" {
+	if got := sjc[0].LastSender; got == nil || *got != "Alice" {
 		t.Errorf("preview sender = %v, want Alice: SJC must not be shown Bob's message, "+
 			"which only SFO heard", got)
 	}
-	if got := sjc[0]["lastMessage"]; got != "heard in SJC" {
+	if got := sjc[0].LastMessage; got == nil || *got != "heard in SJC" {
 		t.Errorf("preview message = %v, want \"heard in SJC\"", got)
 	}
 
 	// The other direction, so the test cannot pass by always picking the oldest.
-	sfo, err := db.GetChannels("SFO")
+	sfo, err := srv.getChannels(ctx, "SFO")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sfo[0]["lastSender"]; got != "Bob" {
+	if len(sfo) != 1 {
+		t.Fatalf("expected 1 channel for SFO, got %d", len(sfo))
+	}
+	if got := sfo[0].LastSender; got == nil || *got != "Bob" {
 		t.Errorf("preview sender = %v, want Bob for SFO", got)
 	}
 
 	// Unscoped still shows the globally newest, which was never in question.
-	all, err := db.GetChannels()
+	all, err := srv.getChannels(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := all[0]["lastSender"]; got != "Bob" {
+	if len(all) != 1 {
+		t.Fatalf("expected 1 unfiltered channel, got %d", len(all))
+	}
+	if got := all[0].LastSender; got == nil || *got != "Bob" {
 		t.Errorf("unfiltered preview sender = %v, want Bob (the newest message)", got)
 	}
 }

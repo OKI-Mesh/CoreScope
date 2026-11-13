@@ -7,6 +7,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Issue #1749 (root-cause update) — the panic-recovery + escalation
@@ -176,9 +179,11 @@ func TestRunLivenessWatchdog_ProductionWiringUsesAsyncEmit_1749(t *testing.T) {
 // mirrors TestIngestorStatsSnapshot_WatchdogFieldsRoundTrip_1810 for
 // the new field: it must serialize through JSON and deserialize via
 // the server's envelope shape alongside the existing watchdog fields.
+// the new field: it must serialize through JSON and deserialize through
+// the shared Decode the server uses, alongside the existing watchdog fields.
 func TestIngestorStatsSnapshot_WatchdogLogDropCountRoundTrip_1749(t *testing.T) {
-	snap := IngestorStatsSnapshot{
-		SampledAt:            "2026-07-18T12:30:00Z",
+	snap := ingeststats.Stats{
+		SampledAt:            &types.WireTimeSeconds{Time: time.Date(2026, 7, 18, 12, 30, 0, 0, time.UTC)},
 		WatchdogLastTickUnix: 1752841800,
 		WatchdogPanicCount:   0,
 		WatchdogLogDropCount: 413,
@@ -190,8 +195,8 @@ func TestIngestorStatsSnapshot_WatchdogLogDropCountRoundTrip_1749(t *testing.T) 
 	if !bytes.Contains(b, []byte(`"watchdogLogDropCount":413`)) {
 		t.Fatalf("watchdogLogDropCount missing from JSON: %s", string(b))
 	}
-	var back IngestorStatsSnapshot
-	if err := json.Unmarshal(b, &back); err != nil {
+	back, err := ingeststats.Decode(b)
+	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if back.WatchdogLogDropCount != 413 {

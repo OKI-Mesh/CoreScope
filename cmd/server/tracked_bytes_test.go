@@ -124,7 +124,7 @@ func TestEvictionTriggersWithImprovedEstimates(t *testing.T) {
 	store.maxMemoryMB = 3            // 3MB limit
 
 	beforeCount := len(store.packets)
-	store.RunEviction()
+	runEviction(t, store)
 	afterCount := len(store.packets)
 
 	if afterCount >= beforeCount {
@@ -147,8 +147,8 @@ func BenchmarkEstimateStoreTxBytes(b *testing.B) {
 		parsedPath:  []string{"hop1", "hop2", "hop3", "hop4", "hop5"},
 		pathParsed:  true,
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		estimateStoreTxBytes(tx)
 	}
 }
@@ -159,8 +159,8 @@ func BenchmarkEstimateStoreObsBytes(b *testing.B) {
 		ObserverID: "observer1234",
 		PathJSON:   `["a","b","c"]`,
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		estimateStoreObsBytes(obs)
 	}
 }
@@ -173,7 +173,7 @@ func TestTrackedBytes_PathKnownAfterCreate(t *testing.T) {
 	store := makeTestStore(0, time.Now().UTC(), 0)
 	store.retentionHours = 1
 
-	tx := &StoreTx{ID: 1, Hash: "aabb", FirstSeen: time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339),
+	tx := &StoreTx{ID: 1, Hash: "aabb", FirstSeen: time.Now().UTC().Add(-2 * time.Hour),
 		obsKeys: map[string]bool{}, observerSet: map[string]bool{}}
 	store.trackedBytes += rechargeTx(tx)
 	bare := store.trackedBytes

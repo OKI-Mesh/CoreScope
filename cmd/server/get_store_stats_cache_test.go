@@ -9,6 +9,7 @@ import (
 // TestGetStoreStats_CacheHit verifies that a second call within 30s returns
 // the cached observation counts without re-querying the database.
 func TestGetStoreStats_CacheHit(t *testing.T) {
+	ctx := t.Context()
 	srv, _ := setupTestServer(t)
 	store := srv.store
 
@@ -18,7 +19,7 @@ func TestGetStoreStats_CacheHit(t *testing.T) {
 	store.statsLast24h = 777
 	store.statsCacheMu.Unlock()
 
-	st, err := store.GetStoreStats()
+	st, err := store.GetStoreStats(ctx)
 	if err != nil {
 		t.Fatalf("GetStoreStats: %v", err)
 	}
@@ -33,6 +34,7 @@ func TestGetStoreStats_CacheHit(t *testing.T) {
 // TestGetStoreStats_CacheExpiry verifies that a cache older than 30s is
 // discarded and the database query re-runs to refresh the values.
 func TestGetStoreStats_CacheExpiry(t *testing.T) {
+	ctx := t.Context()
 	srv, _ := setupTestServer(t)
 	store := srv.store
 
@@ -42,7 +44,7 @@ func TestGetStoreStats_CacheExpiry(t *testing.T) {
 	store.statsLast24h = 9999
 	store.statsCacheMu.Unlock()
 
-	if _, err := store.GetStoreStats(); err != nil {
+	if _, err := store.GetStoreStats(ctx); err != nil {
 		t.Fatalf("GetStoreStats: %v", err)
 	}
 
@@ -71,6 +73,7 @@ func TestGetStoreStats_CacheExpiry(t *testing.T) {
 // callers produce no data race on the stats cache fields.
 // Run with: go test -race ./... -run TestGetStoreStats_CacheConcurrentReaders
 func TestGetStoreStats_CacheConcurrentReaders(t *testing.T) {
+	ctx := t.Context()
 	srv, _ := setupTestServer(t)
 	store := srv.store
 
@@ -80,7 +83,7 @@ func TestGetStoreStats_CacheConcurrentReaders(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := store.GetStoreStats(); err != nil {
+			if _, err := store.GetStoreStats(ctx); err != nil {
 				errs <- err
 			}
 		}()
@@ -105,6 +108,7 @@ func TestGetStoreStats_CacheConcurrentReaders(t *testing.T) {
 // The test seeds the cache with values the database cannot produce, then makes
 // it stale. If the stale value comes back, the caller was not made to wait.
 func TestGetStoreStats_StaleCacheServedWithoutBlocking(t *testing.T) {
+	ctx := t.Context()
 	srv, _ := setupTestServer(t)
 	store := srv.store
 
@@ -116,7 +120,7 @@ func TestGetStoreStats_StaleCacheServedWithoutBlocking(t *testing.T) {
 	store.statsCacheTime = time.Now().Add(-90 * time.Second) // well past the 30s TTL
 	store.statsCacheMu.Unlock()
 
-	st, err := store.GetStoreStats()
+	st, err := store.GetStoreStats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +149,7 @@ func TestGetStoreStats_StaleCacheServedWithoutBlocking(t *testing.T) {
 // #1910: concurrent cold-cache callers must agree, which they cannot do if each
 // runs its own scan against a moving table.
 func TestGetStoreStats_ConcurrentColdCallersAgree(t *testing.T) {
+	ctx := t.Context()
 	srv, _ := setupTestServer(t)
 	store := srv.store
 
@@ -159,7 +164,7 @@ func TestGetStoreStats_ConcurrentColdCallersAgree(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			st, err := store.GetStoreStats()
+			st, err := store.GetStoreStats(ctx)
 			if err != nil {
 				t.Error(err)
 				return

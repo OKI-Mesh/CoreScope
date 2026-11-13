@@ -118,14 +118,14 @@ func ResultPath(dbPath, id string) (string, error) {
 }
 
 // WriteRequest atomically writes a request file (temp file + rename).
-func WriteRequest(dbPath string, req Request) error {
+func WriteRequest(path string, req Request) error {
 	if !validID(req.ID) {
 		return errors.New("invalid prune request id")
 	}
-	if _, err := EnsureDir(dbPath); err != nil {
+	if _, err := EnsureDir(path); err != nil {
 		return err
 	}
-	p, _ := RequestPath(dbPath, req.ID)
+	p, _ := RequestPath(path, req.ID)
 	b, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
 		return err

@@ -1,0 +1,24 @@
+{
+  "count": 3,
+  "dryRun": true,
+  "nodes": [
+    {
+      "lat": 36.1,
+      "lon": -86.8,
+      "name": "Node-001",
+      "pubkey": "b3fb31b8a62863610f7eec12e388c52807b4ab61172edc415b1d3428a4506f26"
+    },
+    {
+      "lat": 43.3,
+      "lon": -1.3,
+      "name": "Node-002",
+      "pubkey": "2192b2d1b0f57326fbefb369b3799ca56298518234167ee0234406ffe8576fc0"
+    },
+    {
+      "lat": 41.9,
+      "lon": -87.6,
+      "name": "Node-003",
+      "pubkey": "036f0e80b3acfb62c02eea033837993a22933655a535ffb9abdcdb30c7f56c51"
+    }
+  ]
+}

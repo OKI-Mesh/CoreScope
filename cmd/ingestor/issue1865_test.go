@@ -7,44 +7,42 @@ package main
 
 import (
 	"database/sql"
-	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
-// seedNode inserts a node into both nodes and inactive_nodes (lowercase key).
+// seedNode inserts an active node (lowercase key).
 func seedNode(t *testing.T, store *Store, pubkey string) {
 	t.Helper()
-	if _, err := store.db.Exec(`INSERT INTO nodes (public_key, name) VALUES (?, ?)`, pubkey, "n_"+pubkey[:4]); err != nil {
-		t.Fatalf("seed node %s: %v", pubkey, err)
-	}
-	if _, err := store.db.Exec(`INSERT INTO inactive_nodes (public_key, name) VALUES (?, ?)`, pubkey, "n_"+pubkey[:4]); err != nil {
-		t.Fatalf("seed inactive node %s: %v", pubkey, err)
-	}
+	dbtest.Node(t, store.db, pubkey, "n_"+pubkey[:4], "")
 }
 
-func configuredScope(t *testing.T, store *Store, pubkey string) (sql.NullString, sql.NullString) {
+func seedInactiveNode(t *testing.T, store *Store, pubkey string) {
 	t.Helper()
-	var sc, at sql.NullString
-	if err := store.db.QueryRow(
-		`SELECT configured_scope, configured_scope_at FROM nodes WHERE public_key = ?`, pubkey,
-	).Scan(&sc, &at); err != nil {
-		t.Fatalf("read configured_scope for %s: %v", pubkey, err)
-	}
+	testExec(t, store, `INSERT INTO nodes (public_key, name, inactive, last_seen, first_seen) VALUES ($1, $2, TRUE, now(), now())`, pubkey, "n_"+pubkey[:4])
+}
+
+func configuredScope(t *testing.T, store *Store, pubkey string) (sql.NullString, *time.Time) {
+	t.Helper()
+	var sc sql.NullString
+	var at *time.Time
+	mustScan(t, testRow(t, store, "SELECT configured_scope, configured_scope_at FROM nodes WHERE public_key = $1", pubkey), &sc, &at)
 	return sc, at
 }
 
 func openNeighborsStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := OpenStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
+
+	store := newTestStore(t)
 	t.Cleanup(func() { store.Close() })
 	return store
 }
 
 func TestHandleNeighborsReportWritesSelfAndResponded(t *testing.T) {
 	store := openNeighborsStore(t)
+	ctx := t.Context()
 
 	// Report keys are UPPERCASE; nodes.public_key is lowercase hex.
 	const originUpper = "FEEDCA4AD4E2AE615AAAB3CB73FAEC6EF0C7AF4D410F5C58A70FC0F724B7C933"
@@ -58,7 +56,7 @@ func TestHandleNeighborsReportWritesSelfAndResponded(t *testing.T) {
 	seedNode(t, store, respLower)
 	seedNode(t, store, timeoutLower)
 	// Pre-existing confirmed scope on the timeout node — a timeout must NOT clobber it.
-	if err := store.UpdateNodeConfiguredScope(timeoutLower, "eu", "2026-07-24T00:00:00Z"); err != nil {
+	if err := store.UpdateNodeConfiguredScope(ctx, timeoutLower, "eu", time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,7 +69,7 @@ func TestHandleNeighborsReportWritesSelfAndResponded(t *testing.T) {
 			map[string]interface{}{"pubkey": respUpper, "scopes": "de,eu", "status": "responded"},
 		},
 	}
-	handleNeighborsReport(store, "test", "obs-topic-id", report)
+	handleNeighborsReport(ctx, store, "test", "obs-topic-id", report)
 
 	// self scopes written under the lowercased origin_id.
 	if sc, _ := configuredScope(t, store, originLower); !sc.Valid || sc.String != "*" {
@@ -89,6 +87,7 @@ func TestHandleNeighborsReportWritesSelfAndResponded(t *testing.T) {
 
 func TestHandleNeighborsReportUnknownNeighborIsNoop(t *testing.T) {
 	store := openNeighborsStore(t)
+	ctx := t.Context()
 	// No node seeded for this pubkey — UPDATE must match no row (no insert, no error).
 	report := map[string]interface{}{
 		"timestamp": "2026-07-25T10:46:14Z",
@@ -96,66 +95,54 @@ func TestHandleNeighborsReportUnknownNeighborIsNoop(t *testing.T) {
 			map[string]interface{}{"pubkey": "aa" + "00000000000000000000000000000000000000000000000000000000000000"[2:], "scopes": "de", "status": "responded"},
 		},
 	}
-	handleNeighborsReport(store, "test", "obs", report)
-	var n int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM nodes`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	handleNeighborsReport(ctx, store, "test", "obs", report)
+	n := countRows(t, store, "nodes")
+
 	if n != 0 {
 		t.Errorf("nodes count = %d, want 0 (report must not create nodes)", n)
 	}
 }
 
 func TestHandleNeighborsReportRespondedEmptyScopeIsStored(t *testing.T) {
+	var reportTS = time.Date(2026, 7, 25, 10, 46, 14, 0, time.UTC)
+
 	store := openNeighborsStore(t)
+	ctx := t.Context()
 	pk := "cc00000000000000000000000000000000000000000000000000000000000001"
 	seedNode(t, store, pk)
 	// A responded query with empty scopes is a valid "no scopes configured".
 	report := map[string]interface{}{
-		"timestamp": "2026-07-25T10:46:14Z",
+		"timestamp": reportTS.Format(time.RFC3339),
 		"neighbors": []interface{}{
 			map[string]interface{}{"pubkey": pk, "scopes": "", "status": "responded"},
 		},
 	}
-	handleNeighborsReport(store, "test", "obs", report)
+	handleNeighborsReport(ctx, store, "test", "obs", report)
 	sc, at := configuredScope(t, store, pk)
 	if !sc.Valid || sc.String != "" {
 		t.Errorf("responded-empty configured_scope = %v, want stored empty string", sc)
 	}
-	if !at.Valid || at.String == "" {
+	if !at.Equal(reportTS) {
 		t.Errorf("configured_scope_at = %v, want the report timestamp", at)
 	}
 }
 
-func TestUpdateNodeConfiguredScopeLastWriteWins(t *testing.T) {
+func TestUpdateNodeConfiguredScopeAppliesToInactiveNode(t *testing.T) {
 	store := openNeighborsStore(t)
-	pk := "dd00000000000000000000000000000000000000000000000000000000000001"
-	seedNode(t, store, pk)
+	ctx := t.Context()
+	pk := "dd00000000000000000000000000000000000000000000000000000000000002"
+	seedInactiveNode(t, store, pk)
 
-	if err := store.UpdateNodeConfiguredScope(pk, "eu", "2026-07-25T12:00:00Z"); err != nil {
-		t.Fatal(err)
-	}
-	// Older report must NOT clobber the newer confirmed value.
-	if err := store.UpdateNodeConfiguredScope(pk, "stale", "2026-07-24T00:00:00Z"); err != nil {
-		t.Fatal(err)
-	}
-	if sc, _ := configuredScope(t, store, pk); sc.String != "#eu" {
-		t.Errorf("configured_scope = %q, want '#eu' (older report must not overwrite)", sc.String)
-	}
-	// Newer report updates.
-	if err := store.UpdateNodeConfiguredScope(pk, "de", "2026-07-26T00:00:00Z"); err != nil {
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "de", time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 	if sc, _ := configuredScope(t, store, pk); sc.String != "#de" {
-		t.Errorf("configured_scope = %q, want '#de' (newer report should update)", sc.String)
+		t.Errorf("configured_scope = %q, want '#de' (inactive nodes still record scope reports)", sc.String)
 	}
-	// inactive_nodes mirrored.
-	var inactive sql.NullString
-	if err := store.db.QueryRow(`SELECT configured_scope FROM inactive_nodes WHERE public_key = ?`, pk).Scan(&inactive); err != nil {
-		t.Fatal(err)
-	}
-	if inactive.String != "#de" {
-		t.Errorf("inactive_nodes.configured_scope = %q, want '#de'", inactive.String)
+	var inactive bool
+	mustScan(t, testRow(t, store, "SELECT inactive FROM nodes WHERE public_key = $1", pk), &inactive)
+	if !inactive {
+		t.Error("a scope report must not reactivate the node")
 	}
 }
 
@@ -166,46 +153,82 @@ func TestUpdateNodeConfiguredScopeLastWriteWins(t *testing.T) {
 // canonicalized to UTC "Z" form regardless of the incoming offset/precision.
 func TestUpdateNodeConfiguredScopeNormalizesAndOrdersByInstant(t *testing.T) {
 	store := openNeighborsStore(t)
+	ctx := t.Context()
 	pk := "ee00000000000000000000000000000000000000000000000000000000000001"
 	seedNode(t, store, pk)
 
 	// Baseline: noon UTC.
-	if err := store.UpdateNodeConfiguredScope(pk, "eu", "2026-07-25T12:00:00Z"); err != nil {
+	baseline := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "eu", baseline); err != nil {
 		t.Fatal(err)
 	}
-	if _, at := configuredScope(t, store, pk); at.String != "2026-07-25T12:00:00Z" {
-		t.Fatalf("stored at = %q, want canonical 'Z' form", at.String)
+	if _, at := configuredScope(t, store, pk); !at.Equal(baseline) {
+		t.Fatalf("stored at = %v, want %v", at, baseline)
+	}
+
+	// Tie: same instant as the baseline, different scope. Pins > vs >=.
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "tie", time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if sc, _ := configuredScope(t, store, pk); sc.String != "#eu" { // "#tie" if the guard is >=
+		t.Errorf("tie: configured_scope = %q, want '#eu' (same-instant report must not overwrite)", sc.String)
+	}
+
+	// Earlier instant (08:00 EDT == 12:00Z is a tie; 07:00 EDT == 11:00Z is older): must not overwrite.
+	older := time.Date(2026, 7, 25, 7, 0, 0, 0, time.FixedZone("EDT", -4*3600))
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "stale", older); err != nil {
+		t.Fatal(err)
+	}
+	if sc, _ := configuredScope(t, store, pk); sc.String != "#eu" {
+		t.Errorf("older report overwrote: configured_scope = %q, want '#eu'", sc.String)
 	}
 
 	// "2026-07-25T13:30:00+02:00" == 11:30Z, chronologically EARLIER than 12:00Z,
 	// but lexicographically GREATER ("13:30..." > "12:00...Z"). Must be skipped.
-	if err := store.UpdateNodeConfiguredScope(pk, "stale", "2026-07-25T13:30:00+02:00"); err != nil {
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "stale", time.Date(2026, 7, 25, 13, 30, 0, 0, time.FixedZone("", 2*60*60))); err != nil {
 		t.Fatal(err)
 	}
 	if sc, _ := configuredScope(t, store, pk); sc.String != "#eu" {
 		t.Errorf("configured_scope = %q, want '#eu' (earlier +02:00 report must not win)", sc.String)
 	}
 
-	// "2026-07-25T15:00:00+02:00" == 13:00Z, chronologically LATER. Must update,
-	// and be stored canonicalized to UTC.
-	if err := store.UpdateNodeConfiguredScope(pk, "de", "2026-07-25T15:00:00+02:00"); err != nil {
+	// 15:00+02:00 == 13:00Z, chronologically LATER than the 12:00Z baseline. Must update.
+	later, err := time.Parse(time.RFC3339, "2026-07-25T15:00:00+02:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "de", later); err != nil {
 		t.Fatal(err)
 	}
 	sc, at := configuredScope(t, store, pk)
 	if sc.String != "#de" {
 		t.Errorf("configured_scope = %q, want '#de' (later +02:00 report should win)", sc.String)
 	}
-	if at.String != "2026-07-25T13:00:00Z" {
-		t.Errorf("stored at = %q, want canonical '2026-07-25T13:00:00Z'", at.String)
+	want := time.Date(2026, 7, 25, 13, 0, 0, 0, time.UTC)
+	if !at.Equal(want) {
+		t.Errorf("stored at = %v, want the instant %v", at, want)
 	}
 
-	// Firmware's real format (microseconds + "+00:00") canonicalizes to "Z".
-	if err := store.UpdateNodeConfiguredScope(pk, "dk", "2026-07-26T09:43:48.000000+00:00"); err != nil {
+	got := reportTime(map[string]interface{}{"timestamp": "2026-07-26T09:43:48.000000+00:00"}, time.Time{})
+	want = time.Date(2026, 7, 26, 9, 43, 48, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("reportTime = %v, want %v", got, want) // a zero value here means the parse failed
+	}
+	if got.Location() != time.UTC {
+		t.Errorf("reportTime location = %v, want UTC (canonicalized at the parse boundary)", got.Location())
+	}
+
+	if err := store.UpdateNodeConfiguredScope(ctx, pk, "dk", got); err != nil {
 		t.Fatal(err)
 	}
-	if _, at := configuredScope(t, store, pk); at.String != "2026-07-26T09:43:48Z" {
-		t.Errorf("stored at = %q, want canonical '2026-07-26T09:43:48Z'", at.String)
+	sc, at = configuredScope(t, store, pk)
+	if sc.String != "#dk" {
+		t.Errorf("configured_scope = %q, want '#dk' (later report should win)", sc.String)
 	}
+	if !at.Equal(want) {
+		t.Errorf("stored at = %v, want %v", at, want)
+	}
+
 }
 
 // #1865: the OTA scope query returns bare region names while every other

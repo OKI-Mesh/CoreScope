@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // DefaultKnownChannelsURL is the suggested upstream catalogue, pinned to a
@@ -38,20 +40,42 @@ const maxKnownChannelsBytes = 4 * 1024 * 1024
 
 // KnownChannelEntry is one catalogue entry, region-stamped.
 type KnownChannelEntry struct {
-	Channel     string `json:"channel"` // e.g. "#antwerpen" (# prefix preserved)
-	Description string `json:"description,omitempty"`
-	Key         string `json:"key,omitempty"` // optional PSK (base64) — present for some entries
-	Region      string `json:"region"`        // ISO 3166-1 alpha-2 lowercase
-	RegionName  string `json:"regionName,omitempty"`
+	Channel     string // e.g. "#antwerpen" (# prefix preserved)
+	Description string
+	Key         string // optional PSK (base64) — present for some entries
+	Region      string // ISO 3166-1 alpha-2 lowercase
+	RegionName  string
 }
 
 // KnownChannelsSnapshot is the immutable parsed catalogue surfaced over /api.
 type KnownChannelsSnapshot struct {
-	GeneratedAt string              `json:"generatedAt,omitempty"` // upstream generation timestamp
-	License     string              `json:"license,omitempty"`
-	FetchedAt   time.Time           `json:"fetchedAt"`
-	Source      string              `json:"source"`
-	Entries     []KnownChannelEntry `json:"entries"`
+	GeneratedAt string // upstream generation timestamp
+	License     string
+	FetchedAt   time.Time
+	Source      string
+	Entries     []KnownChannelEntry
+}
+
+// response is the wire form of the snapshot. Entries is never nil, so an empty
+// catalogue is "entries": [].
+func (s *KnownChannelsSnapshot) response() api.KnownChannelsResponse {
+	entries := make([]api.KnownChannel, len(s.Entries))
+	for i, e := range s.Entries {
+		entries[i] = api.KnownChannel{
+			Channel:     e.Channel,
+			Description: optString(e.Description),
+			Key:         optString(e.Key),
+			Region:      e.Region,
+			RegionName:  optString(e.RegionName),
+		}
+	}
+	return api.KnownChannelsResponse{
+		GeneratedAt: optString(s.GeneratedAt),
+		License:     optString(s.License),
+		FetchedAt:   s.FetchedAt,
+		Source:      s.Source,
+		Entries:     entries,
+	}
 }
 
 // upstreamPayload mirrors the channels-by-country.json shape.

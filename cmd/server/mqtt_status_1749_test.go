@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // Issue #1749 (root-cause fix): /api/mqtt/status must surface
@@ -45,16 +47,21 @@ func TestMqttStatus_ExposesWatchdogLogDropCount_1749(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	var resp MqttStatusResponse
+	var resp api.MqttStatusResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, rec.Body.String())
 	}
-	if resp.WatchdogLogDropCount != 413 {
-		t.Errorf("WatchdogLogDropCount = %d, want 413; body=%s", resp.WatchdogLogDropCount, rec.Body.String())
+	if resp.WatchdogLogDropCount == nil || *resp.WatchdogLogDropCount != 413 {
+		t.Errorf("WatchdogLogDropCount = %v, want 413; body=%s", resp.WatchdogLogDropCount, rec.Body.String())
 	}
 	// Sanity: the two pre-existing watchdog fields must still round-trip
 	// alongside the new one (no accidental field clobbering).
-	if resp.WatchdogLastTickUnix != 1752841800 {
-		t.Errorf("WatchdogLastTickUnix = %d, want 1752841800; body=%s", resp.WatchdogLastTickUnix, rec.Body.String())
+	if resp.WatchdogLastTickUnix == nil || *resp.WatchdogLastTickUnix != 1752841800 {
+		t.Errorf("WatchdogLastTickUnix = %v, want 1752841800; body=%s", resp.WatchdogLastTickUnix, rec.Body.String())
+	}
+	// A zero count is left out of the response (the spec marks it optional),
+	// so no panics shows up as an absent field.
+	if resp.WatchdogPanicCount != nil {
+		t.Errorf("WatchdogPanicCount = %v, want absent; body=%s", *resp.WatchdogPanicCount, rec.Body.String())
 	}
 }

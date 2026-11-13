@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // #1888: /api/stats.totalObservers and /api/observers disagreed because they
@@ -17,43 +19,49 @@ import (
 // fallback (DB.GetStats) already applied the inactive filter, the store path
 // did not.
 
-// seedObserversForCount inserts 3 live observers and 2 soft-deleted ones.
-func seedObserversForCount(t *testing.T, db *DB) {
+// seedObserversForCount inserts 4 live observers and 1 soft-deleted one.
+func seedObserversForCount(t *testing.T, db *database.DB) {
 	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.conn.Exec(`DELETE FROM observers`); err != nil {
-		t.Fatalf("clear observers: %v", err)
-	}
-	live := []string{"live1", "live2", "live3"}
-	for _, id := range live {
-		if _, err := db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen, packet_count, inactive)
-			VALUES (?, ?, ?, ?, 10, 0)`, id, "Observer "+id, now, now); err != nil {
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	for _, id := range []string{"live1", "live2", "live3", "nullflag"} {
+		if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+			ID:        id,
+			Name:      ptr("Observer " + id),
+			LastSeen:  now,
+			IngestNow: now,
+		}); err != nil {
 			t.Fatalf("insert %s: %v", id, err)
 		}
 	}
-	// One explicitly soft-deleted, one with a NULL flag — GetObservers treats
-	// NULL as live, so only the inactive=1 row must be excluded.
-	if _, err := db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen, packet_count, inactive)
-		VALUES ('gone1', 'Gone One', ?, ?, 5, 1)`, now, now); err != nil {
+
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        "gone1",
+		Name:      ptr("Gone One"),
+		LastSeen:  now,
+		IngestNow: now,
+	}); err != nil {
 		t.Fatalf("insert gone1: %v", err)
 	}
-	if _, err := db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen, packet_count, inactive)
-		VALUES ('nullflag', 'Null Flag', ?, ?, 5, NULL)`, now, now); err != nil {
-		t.Fatalf("insert nullflag: %v", err)
+	if err := db.MarkObserverInactive(ctx, "gone1"); err != nil {
+		t.Fatalf("soft-delete gone1: %v", err)
 	}
 }
 
 func TestStoreStatsTotalObserversExcludesSoftDeleted(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	seedTestData(t, db)
+
 	seedObserversForCount(t, db)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
-	st, err := store.GetStoreStats()
+	st, err := store.GetStoreStats(ctx)
 	if err != nil {
 		t.Fatalf("GetStoreStats: %v", err)
 	}
@@ -65,20 +73,22 @@ func TestStoreStatsTotalObserversExcludesSoftDeleted(t *testing.T) {
 // The count must equal what the Observers page actually lists — that is the
 // whole point of the issue: three UI surfaces showing three numbers.
 func TestStoreStatsTotalObserversMatchesObserverList(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
 	seedObserversForCount(t, db)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
-	st, err := store.GetStoreStats()
+	st, err := store.GetStoreStats(ctx)
 	if err != nil {
 		t.Fatalf("GetStoreStats: %v", err)
 	}
-	observers, err := db.GetObservers()
+	observers, err := db.GetObservers(ctx)
 	if err != nil {
 		t.Fatalf("GetObservers: %v", err)
 	}
@@ -91,20 +101,22 @@ func TestStoreStatsTotalObserversMatchesObserverList(t *testing.T) {
 // The store path and the DB fallback must not report different totals for the
 // same database.
 func TestStoreAndDBStatsAgreeOnTotalObservers(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
 	seedObserversForCount(t, db)
 
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
-	storeStats, err := store.GetStoreStats()
+	storeStats, err := store.GetStoreStats(ctx)
 	if err != nil {
 		t.Fatalf("GetStoreStats: %v", err)
 	}
-	dbStats, err := db.GetStats()
+	dbStats, err := db.GetStats(ctx, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("GetStats: %v", err)
 	}

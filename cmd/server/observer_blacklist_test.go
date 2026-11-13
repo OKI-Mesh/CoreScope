@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 func TestConfigIsObserverBlacklisted(t *testing.T) {
@@ -47,9 +51,18 @@ func TestConfigIsObserverBlacklistedNil(t *testing.T) {
 }
 
 func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('goodobs', 'GoodObs', 'SFO', datetime('now'))")
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('badobs', 'BadObs', 'LAX', datetime('now'))")
+	now := time.Now().UTC()
+
+	for _, o := range []database.ObserverInput{
+		{ID: "goodobs", Name: ptr("GoodObs"), IATA: "SFO", LastSeen: now, IngestNow: now},
+		{ID: "badobs", Name: ptr("BadObs"), IATA: "LAX", LastSeen: now, IngestNow: now},
+	} {
+		if _, err := db.CreateOrUpdateObserver(ctx, o); err != nil {
+			t.Fatalf("seed observer %s: %v", o.ID, err)
+		}
+	}
 
 	cfg := &Config{
 		ObserverBlacklist: []string{"badobs"},
@@ -65,20 +78,20 @@ func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp ObserverListResponse
+	var resp api.ObserverListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
 	for _, obs := range resp.Observers {
-		if obs.ID == "badobs" {
+		if obs.Id == "badobs" {
 			t.Error("blacklisted observer should not appear in observers list")
 		}
 	}
 
 	foundGood := false
 	for _, obs := range resp.Observers {
-		if obs.ID == "goodobs" {
+		if obs.Id == "goodobs" {
 			foundGood = true
 		}
 	}
@@ -88,8 +101,15 @@ func TestObserverBlacklistFiltersHandleObservers(t *testing.T) {
 }
 
 func TestObserverBlacklistFiltersObserverDetail(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('badobs', 'BadObs', 'LAX', datetime('now'))")
+	now := time.Now().UTC()
+
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "badobs", Name: ptr("BadObs"), IATA: "LAX", LastSeen: now, IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
 	cfg := &Config{
 		ObserverBlacklist: []string{"badobs"},
@@ -107,8 +127,15 @@ func TestObserverBlacklistFiltersObserverDetail(t *testing.T) {
 }
 
 func TestNoObserverBlacklistPassesAll(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	db.conn.Exec("INSERT OR IGNORE INTO observers (id, name, iata, last_seen) VALUES ('someobs', 'SomeObs', 'SFO', datetime('now'))")
+	now := time.Now().UTC()
+
+	if _, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID: "someobs", Name: ptr("SomeObs"), IATA: "SFO", LastSeen: now, IngestNow: now,
+	}); err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
 
 	cfg := &Config{}
 	srv := NewServer(db, cfg, NewHub())
@@ -122,14 +149,14 @@ func TestNoObserverBlacklistPassesAll(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var resp ObserverListResponse
+	var resp api.ObserverListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
 	foundSome := false
 	for _, obs := range resp.Observers {
-		if obs.ID == "someobs" {
+		if obs.Id == "someobs" {
 			foundSome = true
 		}
 	}

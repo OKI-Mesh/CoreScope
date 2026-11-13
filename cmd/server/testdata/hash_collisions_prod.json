@@ -1,0 +1,579 @@
+{
+  "by_size": {
+    "1": {
+      "stats": {
+        "collision_count": 24,
+        "nodes_for_byte": 138,
+        "pct_used": 42.1875,
+        "space_size": 256,
+        "total_nodes": 1615,
+        "unique_prefixes": 108,
+        "using_this_size": 191
+      },
+      "collisions": [
+        {
+          "prefix": "6B",
+          "byte_size": 1,
+          "appearances": 3,
+          "nodes": [
+            {
+              "public_key": "6bd2cc41a54604f0cd4ad39392c56407376999b72b700b25d05773a8031163d3",
+              "name": "Repeater 21",
+              "role": "repeater",
+              "lat": 0,
+              "lon": 0,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "6bdd580696f79e8ef50f7f49f5b2e9bf08e59251762fa872955a3b720b18710f",
+              "name": "Repeater 22",
+              "role": "repeater",
+              "lat": 39.5,
+              "lon": -84.4,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "6bb201a030395f039618332f664db7cf9b9fb722010d3f17ec698887667c6b38",
+              "name": "Repeater 23",
+              "role": "repeater",
+              "lat": 39.8,
+              "lon": -84.1,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "max_dist_km": 34.6,
+          "classification": "local",
+          "with_coords": 2
+        },
+        {
+          "prefix": "96",
+          "byte_size": 1,
+          "appearances": 3,
+          "nodes": [
+            {
+              "public_key": "96295e755833e72c3891bfa5a497d8abeb02cd48331328f387e83c853a61ccd0",
+              "name": "Repeater 24",
+              "role": "repeater",
+              "lat": 40.1,
+              "lon": -83.0,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "967599c6b1ecc3fb70e235a90b3d978914d77ba78de565f05ed5ffc2469ea8c6",
+              "name": "Repeater 25",
+              "role": "repeater",
+              "lat": 0,
+              "lon": 0,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "963027cbb31881c8432f13893d870dae83d0439d2999fd0de372e498e73b680f",
+              "name": "Repeater 26",
+              "role": "repeater",
+              "lat": 39.7,
+              "lon": -84.3,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "max_dist_km": 126.9,
+          "classification": "regional",
+          "with_coords": 2
+        },
+        {
+          "prefix": "C0",
+          "byte_size": 1,
+          "appearances": 3,
+          "nodes": [
+            {
+              "public_key": "c016e008e808bc4f571e5b98161cff281dec34ea35c555fa7ed5496310497bb2",
+              "name": "Repeater 27",
+              "role": "repeater",
+              "lat": 38.4,
+              "lon": -85.8,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "c0a13e374c0edbfb81794f225eb1563b6d15052743251a46f86b1185cc862ac5",
+              "name": "Repeater 28",
+              "role": "repeater",
+              "lat": 39.8,
+              "lon": -84.1,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "c0f4acac73a124ad019b62e366685ff5bf7fbf0f7457c04cf0b083a56451abc4",
+              "name": "Repeater 29",
+              "role": "repeater",
+              "lat": 39.2,
+              "lon": -84.2,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "max_dist_km": 218.1,
+          "classification": "distant",
+          "with_coords": 3
+        },
+        {
+          "prefix": "52",
+          "byte_size": 1,
+          "appearances": 2,
+          "nodes": [
+            {
+              "public_key": "5205420da80217fcaeb7cf92456056ffea1384e3cb286a6793ebe63fb3d61fd7",
+              "name": "Repeater 30",
+              "role": "repeater",
+              "lat": 39.4,
+              "lon": -87.7,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "52c204d937b0bc0f85a7fd9b8880b4f4ff744940d0c5be733e8eb7bb7c41a859",
+              "name": "Repeater 31",
+              "role": "repeater",
+              "lat": 0,
+              "lon": 0,
+              "hash_size": 1,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "max_dist_km": 0,
+          "classification": "incomplete",
+          "with_coords": 1
+        }
+      ],
+      "one_byte_cells": {
+        "00": [],
+        "0A": [],
+        "52": [
+          {
+            "public_key": "5205420da80217fcaeb7cf92456056ffea1384e3cb286a6793ebe63fb3d61fd7",
+            "name": "Repeater 30",
+            "role": "repeater",
+            "lat": 39.4,
+            "lon": -87.7,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "52c204d937b0bc0f85a7fd9b8880b4f4ff744940d0c5be733e8eb7bb7c41a859",
+            "name": "Repeater 31",
+            "role": "repeater",
+            "lat": 0,
+            "lon": 0,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "522b3e270de96e97bf52196d2f24ed772310c295f8d84616b6fb80b83c2b4ac1",
+            "name": "Repeater 41",
+            "role": "repeater",
+            "lat": 41.1,
+            "lon": -85.1,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          }
+        ],
+        "6B": [
+          {
+            "public_key": "6bd2cc41a54604f0cd4ad39392c56407376999b72b700b25d05773a8031163d3",
+            "name": "Repeater 21",
+            "role": "repeater",
+            "lat": 0,
+            "lon": 0,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "6bdd580696f79e8ef50f7f49f5b2e9bf08e59251762fa872955a3b720b18710f",
+            "name": "Repeater 22",
+            "role": "repeater",
+            "lat": 39.5,
+            "lon": -84.4,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "6bb201a030395f039618332f664db7cf9b9fb722010d3f17ec698887667c6b38",
+            "name": "Repeater 23",
+            "role": "repeater",
+            "lat": 39.8,
+            "lon": -84.1,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "6bc9b86ae3f10e20e2d0636038981bdc96175f8dc94ae7ad554adf05dfcf1d74",
+            "name": "Repeater 32",
+            "role": "repeater",
+            "lat": 39.3,
+            "lon": -84.8,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "6bb7faf4e43e95665dd8b3a210352ad5de166f9b230877f0ad62fd686fbaba0e",
+            "name": "Repeater 33",
+            "role": "repeater",
+            "lat": 36.3,
+            "lon": -86.5,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          }
+        ],
+        "96": [
+          {
+            "public_key": "96295e755833e72c3891bfa5a497d8abeb02cd48331328f387e83c853a61ccd0",
+            "name": "Repeater 24",
+            "role": "repeater",
+            "lat": 40.1,
+            "lon": -83.0,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "967599c6b1ecc3fb70e235a90b3d978914d77ba78de565f05ed5ffc2469ea8c6",
+            "name": "Repeater 25",
+            "role": "repeater",
+            "lat": 0,
+            "lon": 0,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "963027cbb31881c8432f13893d870dae83d0439d2999fd0de372e498e73b680f",
+            "name": "Repeater 26",
+            "role": "repeater",
+            "lat": 39.7,
+            "lon": -84.3,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "96d98aea9665b41eb8857e345eac4e785316d3f1f538135ef461fdf54d66b560",
+            "name": "Repeater 34",
+            "role": "repeater",
+            "lat": 0,
+            "lon": 0,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "965d27c5969b717d5b6e88e0cd83c90e6ff4a7b1c5e4ab3e2a1c0e758e324813",
+            "name": "Repeater 35",
+            "role": "repeater",
+            "lat": 39.1,
+            "lon": -84.1,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "96bec0412316e8b2cdbf15ece094750e3844608f82955d7746879f486852d478",
+            "name": "Repeater 36",
+            "role": "repeater",
+            "lat": 40.9,
+            "lon": -81.4,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          }
+        ],
+        "C0": [
+          {
+            "public_key": "c016e008e808bc4f571e5b98161cff281dec34ea35c555fa7ed5496310497bb2",
+            "name": "Repeater 27",
+            "role": "repeater",
+            "lat": 38.4,
+            "lon": -85.8,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "c0a13e374c0edbfb81794f225eb1563b6d15052743251a46f86b1185cc862ac5",
+            "name": "Repeater 28",
+            "role": "repeater",
+            "lat": 39.8,
+            "lon": -84.1,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "c0f4acac73a124ad019b62e366685ff5bf7fbf0f7457c04cf0b083a56451abc4",
+            "name": "Repeater 29",
+            "role": "repeater",
+            "lat": 39.2,
+            "lon": -84.2,
+            "hash_size": 1,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "c09daf510e3c697486f8be955d5df4079feeb7253926ebd3aac1edc94476b518",
+            "name": "Repeater 37",
+            "role": "repeater",
+            "lat": 41.1,
+            "lon": -85.0,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "c0ffee7eba9330a2bbf097534c6fa16ffd86720599f0482cf3cee50d781f31c7",
+            "name": "Repeater 38",
+            "role": "repeater",
+            "lat": 40.1,
+            "lon": -83.0,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "c027bd86378cefc374f2260497175e2e72cace4b9a0099cf548caf0336af2df7",
+            "name": "Repeater 39",
+            "role": "repeater",
+            "lat": 39.7,
+            "lon": -84.6,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          },
+          {
+            "public_key": "c0ffee77359c5454770110066ac68a5f96455c61ea1f8fec3f5390880e29f761",
+            "name": "Repeater 40",
+            "role": "repeater",
+            "lat": 41.4,
+            "lon": -82.2,
+            "hash_size": 2,
+            "hash_size_inconsistent": false
+          }
+        ]
+      }
+    },
+    "2": {
+      "stats": {
+        "collision_count": 2,
+        "nodes_for_byte": 549,
+        "pct_used": 0.83465576171875,
+        "space_size": 65536,
+        "total_nodes": 1615,
+        "unique_prefixes": 547,
+        "using_this_size": 690
+      },
+      "collisions": [
+        {
+          "prefix": "C0FF",
+          "byte_size": 2,
+          "appearances": 2,
+          "nodes": [
+            {
+              "public_key": "c0ffee7eba9330a2bbf097534c6fa16ffd86720599f0482cf3cee50d781f31c7",
+              "name": "Repeater 38",
+              "role": "repeater",
+              "lat": 40.1,
+              "lon": -83.0,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "c0ffee77359c5454770110066ac68a5f96455c61ea1f8fec3f5390880e29f761",
+              "name": "Repeater 40",
+              "role": "repeater",
+              "lat": 41.4,
+              "lon": -82.2,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "max_dist_km": 160.0,
+          "classification": "regional",
+          "with_coords": 2
+        },
+        {
+          "prefix": "D666",
+          "byte_size": 2,
+          "appearances": 2,
+          "nodes": [
+            {
+              "public_key": "d6662bbaaebd1b27e3635df2d35929711b5a8adfc1d88f61b15d8b7e16ba3bfc",
+              "name": "Repeater 42",
+              "role": "repeater",
+              "lat": 39.4,
+              "lon": -84.6,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "d6661f71ba1e355898b43437906ac65742f57a72b38ee82671e533996b2e4d54",
+              "name": "Repeater 43",
+              "role": "repeater",
+              "lat": 36.3,
+              "lon": -86.5,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "max_dist_km": 381.6,
+          "classification": "distant",
+          "with_coords": 2
+        }
+      ],
+      "two_byte_cells": {
+        "00": {
+          "group_nodes": [],
+          "two_byte_map": {},
+          "max_collision": 0,
+          "collision_count": 0
+        },
+        "C0": {
+          "group_nodes": [
+            {
+              "public_key": "c09daf510e3c697486f8be955d5df4079feeb7253926ebd3aac1edc94476b518",
+              "name": "Repeater 37",
+              "role": "repeater",
+              "lat": 41.1,
+              "lon": -85.0,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "c0ffee7eba9330a2bbf097534c6fa16ffd86720599f0482cf3cee50d781f31c7",
+              "name": "Repeater 38",
+              "role": "repeater",
+              "lat": 40.1,
+              "lon": -83.0,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "c027bd86378cefc374f2260497175e2e72cace4b9a0099cf548caf0336af2df7",
+              "name": "Repeater 39",
+              "role": "repeater",
+              "lat": 39.7,
+              "lon": -84.6,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "c0ffee77359c5454770110066ac68a5f96455c61ea1f8fec3f5390880e29f761",
+              "name": "Repeater 40",
+              "role": "repeater",
+              "lat": 41.4,
+              "lon": -82.2,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "two_byte_map": {
+            "C027": [
+              {
+                "public_key": "c027bd86378cefc374f2260497175e2e72cace4b9a0099cf548caf0336af2df7",
+                "name": "Repeater 39",
+                "role": "repeater",
+                "lat": 39.7,
+                "lon": -84.6,
+                "hash_size": 2,
+                "hash_size_inconsistent": false
+              }
+            ],
+            "C09D": [
+              {
+                "public_key": "c09daf510e3c697486f8be955d5df4079feeb7253926ebd3aac1edc94476b518",
+                "name": "Repeater 37",
+                "role": "repeater",
+                "lat": 41.1,
+                "lon": -85.0,
+                "hash_size": 2,
+                "hash_size_inconsistent": false
+              }
+            ],
+            "C0FF": [
+              {
+                "public_key": "c0ffee7eba9330a2bbf097534c6fa16ffd86720599f0482cf3cee50d781f31c7",
+                "name": "Repeater 38",
+                "role": "repeater",
+                "lat": 40.1,
+                "lon": -83.0,
+                "hash_size": 2,
+                "hash_size_inconsistent": false
+              },
+              {
+                "public_key": "c0ffee77359c5454770110066ac68a5f96455c61ea1f8fec3f5390880e29f761",
+                "name": "Repeater 40",
+                "role": "repeater",
+                "lat": 41.4,
+                "lon": -82.2,
+                "hash_size": 2,
+                "hash_size_inconsistent": false
+              }
+            ]
+          },
+          "max_collision": 2,
+          "collision_count": 1
+        },
+        "D6": {
+          "group_nodes": [
+            {
+              "public_key": "d6662bbaaebd1b27e3635df2d35929711b5a8adfc1d88f61b15d8b7e16ba3bfc",
+              "name": "Repeater 42",
+              "role": "repeater",
+              "lat": 39.4,
+              "lon": -84.6,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            },
+            {
+              "public_key": "d6661f71ba1e355898b43437906ac65742f57a72b38ee82671e533996b2e4d54",
+              "name": "Repeater 43",
+              "role": "repeater",
+              "lat": 36.3,
+              "lon": -86.5,
+              "hash_size": 2,
+              "hash_size_inconsistent": false
+            }
+          ],
+          "two_byte_map": {
+            "D666": [
+              {
+                "public_key": "d6662bbaaebd1b27e3635df2d35929711b5a8adfc1d88f61b15d8b7e16ba3bfc",
+                "name": "Repeater 42",
+                "role": "repeater",
+                "lat": 39.4,
+                "lon": -84.6,
+                "hash_size": 2,
+                "hash_size_inconsistent": false
+              },
+              {
+                "public_key": "d6661f71ba1e355898b43437906ac65742f57a72b38ee82671e533996b2e4d54",
+                "name": "Repeater 43",
+                "role": "repeater",
+                "lat": 36.3,
+                "lon": -86.5,
+                "hash_size": 2,
+                "hash_size_inconsistent": false
+              }
+            ]
+          },
+          "max_collision": 2,
+          "collision_count": 1
+        }
+      }
+    },
+    "3": {
+      "stats": {
+        "collision_count": 0,
+        "nodes_for_byte": 54,
+        "pct_used": 0.0003218650817871094,
+        "space_size": 16777216,
+        "total_nodes": 1615,
+        "unique_prefixes": 54,
+        "using_this_size": 60
+      },
+      "collisions": []
+    }
+  },
+  "inconsistent_nodes": []
+}

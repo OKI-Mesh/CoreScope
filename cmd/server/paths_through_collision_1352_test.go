@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -15,26 +18,15 @@ import (
 // server + router ready to serve /api/nodes/{pk}/paths.
 type collisionScenario struct {
 	srv    *Server
-	db     *DB
+	db     *database.DB
 	router *mux.Router
 
 	nodeAPK string
 	nodeBPK string
 	nodeCPK string
 
-	recent      string
-	recentEpoch int64
-}
-
-// mustExec runs db.conn.Exec and fails the test on error. Used so INSERT
-// failures (schema drift, NOT NULL violations) surface as test failures
-// rather than silently producing an empty database that lets later
-// assertions pass vacuously (#1352 round-1 adv #2).
-func mustExec(t *testing.T, db *DB, query string, args ...any) {
-	t.Helper()
-	if _, err := db.conn.Exec(query, args...); err != nil {
-		t.Fatalf("Exec failed: %v\n  query: %s\n  args:  %v", err, query, args)
-	}
+	recent      time.Time
+	observerIdx int64
 }
 
 // setupCollisionScenario wires up the shared #1352 fixture: 3 "c0"-prefix
@@ -42,43 +34,66 @@ func mustExec(t *testing.T, db *DB, query string, args ...any) {
 // inserts transmissions/observations and queries via s.query.
 func setupCollisionScenario(t *testing.T, withGPS bool) *collisionScenario {
 	t.Helper()
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	recent := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := time.Now().Add(-1 * time.Hour).Unix()
+	recent := time.Now().UTC().Add(-1 * time.Hour)
 
 	sc := &collisionScenario{
-		db:          db,
-		nodeAPK:     "c0dedad42222aaaa",
-		nodeBPK:     "c0ffeec733333333",
-		nodeCPK:     "c0efb77f44444444",
-		recent:      recent,
-		recentEpoch: recentEpoch,
+		db:      db,
+		nodeAPK: "c0dedad42222aaaa" + strings.Repeat("0", 48),
+		nodeBPK: "c0ffeec733333333" + strings.Repeat("0", 48),
+		nodeCPK: "c0efb77f44444444" + strings.Repeat("0", 48),
+		recent:  recent,
 	}
 
-	// GPS placement: when withGPS=true, ALL three siblings have distinct
-	// GPS points (worst-case for the biased resolver, see fallback test).
-	// When withGPS=false, only B has GPS (canonical-branch test).
-	aLat, aLon := 0.0, 0.0
-	bLat, bLon := 37.79, -122.41
-	cLat, cLon := 0.0, 0.0
+	var aLat, aLon, cLat, cLon *float64
+	bLat, bLon := fptr(37.79), fptr(-122.41)
 	if withGPS {
-		aLat, aLon = 37.78, -122.40
-		cLat, cLon = 37.50, -122.00
+		aLat, aLon = fptr(37.78), fptr(-122.40)
+		cLat, cLon = fptr(37.50), fptr(-122.00)
 	}
 
-	mustExec(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeA', 'repeater', ?, ?, ?, '2026-01-01', 1)`, sc.nodeAPK, aLat, aLon, recent)
-	mustExec(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeB', 'repeater', ?, ?, ?, '2026-01-01', 1)`, sc.nodeBPK, bLat, bLon, recent)
-	mustExec(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeC', 'repeater', ?, ?, ?, '2026-01-01', 1)`, sc.nodeCPK, cLat, cLon, recent)
+	for _, n := range []struct {
+		pk       string
+		name     string
+		lat, lon *float64
+	}{
+		{sc.nodeAPK, "NodeA", aLat, aLon},
+		{sc.nodeBPK, "NodeB", bLat, bLon},
+		{sc.nodeCPK, "NodeC", cLat, cLon},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: n.pk,
+			Name:      n.name,
+			Role:      "repeater",
+			Lat:       n.lat,
+			Lon:       n.lon,
+			RxTime:    recent,
+			IngestNow: recent,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", n.name, err)
+		}
+	}
+
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(40),
+		Name:      ptr("Collision Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  recent,
+		IngestNow: recent,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+	sc.observerIdx = obsIdx
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
 	sc.srv = srv
 
-	// store is wired after observations are inserted, by reloadStore().
 	return sc
 }
 
@@ -87,9 +102,19 @@ func setupCollisionScenario(t *testing.T, withGPS bool) *collisionScenario {
 // the store snapshot is empty and queries return nothing.
 func (sc *collisionScenario) reloadStore(t *testing.T) {
 	t.Helper()
-	store := NewPacketStore(sc.db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	ctx := t.Context()
+	store := newPacketStoreForTest(t, sc.db)
+	store.RefreshNodeCache(ctx)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for !store.PathHopIndexReady() {
+		select {
+		case <-deadline:
+			t.Fatal("path-hop index not ready within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	sc.srv.store = store
 	router := mux.NewRouter()
@@ -98,7 +123,7 @@ func (sc *collisionScenario) reloadStore(t *testing.T) {
 }
 
 // query issues GET /api/nodes/{pk}/paths and returns the decoded response.
-func (sc *collisionScenario) query(t *testing.T, pk string) NodePathsResponse {
+func (sc *collisionScenario) query(t *testing.T, pk string) api.NodePathsResponse {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/nodes/"+pk+"/paths", nil)
 	w := httptest.NewRecorder()
@@ -106,7 +131,7 @@ func (sc *collisionScenario) query(t *testing.T, pk string) NodePathsResponse {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /paths for %s: code=%d body=%s", pk, w.Code, w.Body.String())
 	}
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -129,17 +154,38 @@ func (sc *collisionScenario) query(t *testing.T, pk string) NodePathsResponse {
 // Only B is in the canonical resolved_path; only paths-through-B
 // must include the tx. paths-through-A and paths-through-C must exclude it.
 func TestHandleNodePaths_PrefixCollision_1352(t *testing.T) {
-	sc := setupCollisionScenario(t, false /* only B has GPS */)
-	mustExec(t, sc.db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (42, 'DEAD', 'hash_1352', ?)`, sc.recent)
-	mustExec(t, sc.db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (42, NULL, '["c0"]', ?, ?)`, sc.recentEpoch, `["`+sc.nodeBPK+`"]`)
+	ctx := t.Context()
+	sc := setupCollisionScenario(t, false)
+
+	txID, _, err := sc.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "1352a00000000042",
+		RawHex:      "dead",
+		RouteType:   1,
+		PayloadType: 4,
+		DecodedJSON: "{}",
+	}, sc.recent)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := sc.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(sc.observerIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      sc.recent,
+	}, []string{"c0"}, []*string{sptr(sc.nodeBPK)})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 	sc.reloadStore(t)
 
 	respA := sc.query(t, sc.nodeAPK)
 	respB := sc.query(t, sc.nodeBPK)
 	respC := sc.query(t, sc.nodeCPK)
 
-	// A and C are NOT in the canonical resolved_path → must be excluded.
 	if respA.TotalTransmissions != 0 {
 		t.Errorf("nodeA (c0dedad…) paths-through: canonical resolved_path names B, not A — "+
 			"expected 0 transmissions, got %d (wrong-node attribution #1352)",
@@ -150,7 +196,6 @@ func TestHandleNodePaths_PrefixCollision_1352(t *testing.T) {
 			"expected 0 transmissions, got %d (wrong-node attribution #1352)",
 			respC.TotalTransmissions)
 	}
-	// B IS named by the canonical resolved_path → must be included.
 	if respB.TotalTransmissions != 1 {
 		t.Errorf("nodeB (c0ffeec…) paths-through: B is canonical relay — "+
 			"expected 1 transmission, got %d", respB.TotalTransmissions)
@@ -169,10 +214,32 @@ func TestHandleNodePaths_PrefixCollision_1352(t *testing.T) {
 // the colliders must sum to AT MOST 1 (ideally 0). Old buggy code:
 // all three = 3. Fixed: ≤1, and we tighten further to ≤1 explicitly.
 func TestHandleNodePaths_PrefixCollision_1352_FallbackBranch(t *testing.T) {
-	sc := setupCollisionScenario(t, true /* all three have GPS */)
-	mustExec(t, sc.db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (43, 'BEEF', 'hash_1352_fb', ?)`, sc.recent)
-	mustExec(t, sc.db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (43, NULL, '["c0"]', ?, NULL)`, sc.recentEpoch)
+	ctx := t.Context()
+	sc := setupCollisionScenario(t, true)
+
+	txID, _, err := sc.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "1352b00000000043",
+		RawHex:      "beef",
+		RouteType:   1,
+		PayloadType: 4,
+		DecodedJSON: "{}",
+	}, sc.recent)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := sc.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(sc.observerIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      sc.recent,
+	}, []string{"c0"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 	sc.reloadStore(t)
 
 	a := sc.query(t, sc.nodeAPK).TotalTransmissions
@@ -180,12 +247,6 @@ func TestHandleNodePaths_PrefixCollision_1352_FallbackBranch(t *testing.T) {
 	c := sc.query(t, sc.nodeCPK).TotalTransmissions
 
 	sum := a + b + c
-	// Old buggy code: a==1 && b==1 && c==1 → sum==3 (wrong-node attribution
-	// on all). Fixed: sum ∈ {0, 1}. Asserting sum ≤ 1 catches the degenerate
-	// "all zero" implementation as legitimate (it IS legitimate — ambiguous
-	// hops with no SQL confirmation must be excluded) while still rejecting
-	// the bug. The positive case (sum==1 when unambiguous) is covered by
-	// the canonical sub-test above and by FallbackUniquePrefix below.
 	if sum > 1 {
 		t.Errorf("ambiguous-prefix tx with NULL resolved_path attributed to %d nodes total (A=%d B=%d C=%d); "+
 			"expected sum ≤ 1 — paths-through must not return the same tx for multiple sibling prefix collisions (#1352)",
@@ -204,23 +265,67 @@ func TestHandleNodePaths_PrefixCollision_1352_FallbackBranch(t *testing.T) {
 // Setup: only ONE node has the prefix "ab". NULL resolved_path so we take
 // the fallback branch. paths-through-target MUST include exactly 1 tx.
 func TestHandleNodePaths_FallbackUniquePrefix_1352(t *testing.T) {
-	db := setupTestDB(t)
-	recent := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := time.Now().Add(-1 * time.Hour).Unix()
-	pk := "abcdef0123456789"
+	ctx := t.Context()
 
-	mustExec(t, db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'UniqueNode', 'repeater', 37.78, -122.4, ?, '2026-01-01', 1)`, pk, recent)
-	mustExec(t, db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (44, 'CAFE', 'hash_1352_unique', ?)`, recent)
-	mustExec(t, db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (44, NULL, '["ab"]', ?, NULL)`, recentEpoch)
+	db := setupTestDB(t)
+	recent := time.Now().UTC().Add(-1 * time.Hour)
+	pk := "abcdef0123456789" + strings.Repeat("0", 48)
+
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pk,
+		Name:      "UniqueNode",
+		Role:      "repeater",
+		Lat:       fptr(37.78),
+		Lon:       fptr(-122.4),
+		RxTime:    recent,
+		IngestNow: recent,
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(41),
+		Name:      ptr("Unique Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  recent,
+		IngestNow: recent,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "1352c00000000044",
+		RawHex:      "cafe",
+		RouteType:   1,
+		PayloadType: 4,
+		DecodedJSON: "{}",
+	}, recent)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(obsIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      recent,
+	}, []string{"ab"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()
@@ -232,7 +337,7 @@ func TestHandleNodePaths_FallbackUniquePrefix_1352(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /paths: code=%d body=%s", w.Code, w.Body.String())
 	}
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -263,26 +368,63 @@ func TestHandleNodePaths_FallbackUniquePrefix_1352(t *testing.T) {
 // prefix") even if it can't currently mutation-detect every
 // formulation of the structural guard.
 func TestHandleNodePaths_FallbackPreconfirmed_1352(t *testing.T) {
-	sc := setupCollisionScenario(t, true /* all three have GPS so resolver bias is maximal */)
+	ctx := t.Context()
+	sc := setupCollisionScenario(t, true)
 
-	// tx 50: best obs has NULL resolved_path (fallback branch). A SECOND
-	// obs persists resolved_path = [B] which populates the byPathHop index
-	// for B's full pubkey AND lets confirmedBySQL hit via INSTR.
-	mustExec(t, sc.db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (50, 'F00D', 'hash_1352_pre', ?)`, sc.recent)
-	mustExec(t, sc.db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (50, NULL, '["c0"]', ?, NULL)`, sc.recentEpoch)
-	// Second observation (different observer) — same tx, persisted resolved_path = [B].
-	// This populates byPathHop[B] during Load(), so confirmedByFullKey is true
-	// when paths-through-B is queried.
-	mustExec(t, sc.db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (50, 1, '["c0"]', ?, ?)`, sc.recentEpoch+1, `["`+sc.nodeBPK+`"]`)
+	secondObsIdx, err := sc.db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(42),
+		Name:      ptr("Second Collision Observer"),
+		IATA:      "OAK",
+		Meta:      nil,
+		LastSeen:  sc.recent,
+		IngestNow: sc.recent,
+	})
+	if err != nil {
+		t.Fatalf("seed second observer: %v", err)
+	}
+
+	txID, _, err := sc.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "1352d00000000050",
+		RawHex:      "f00d",
+		RouteType:   1,
+		PayloadType: 4,
+		DecodedJSON: "{}",
+	}, sc.recent)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := sc.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(sc.observerIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      sc.recent,
+	}, []string{"c0"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("seed first observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+	_, inserted, err = sc.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(secondObsIdx),
+		SNR:            fptr(6.0),
+		RSSI:           fptr(-89.0),
+		Timestamp:      sc.recent.Add(time.Second),
+	}, []string{"c0"}, []*string{sptr(sc.nodeBPK)})
+	if err != nil {
+		t.Fatalf("seed second observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 	sc.reloadStore(t)
 
 	respA := sc.query(t, sc.nodeAPK)
 	respB := sc.query(t, sc.nodeBPK)
 	respC := sc.query(t, sc.nodeCPK)
 
-	// B is preconfirmed by SQL/index → tx survives the collision guard.
 	if respB.TotalTransmissions != 1 {
 		t.Errorf("nodeB preconfirmed via byPathHop/SQL: tx MUST attribute despite "+
 			"multi-candidate `c0` prefix — got %d, expected 1. The SQL/index "+
@@ -291,7 +433,6 @@ func TestHandleNodePaths_FallbackPreconfirmed_1352(t *testing.T) {
 			"populated from persisted resolved_path, or containsTarget is being "+
 			"reset inside the per-hop loop.", respB.TotalTransmissions)
 	}
-	// A and C are NOT preconfirmed and the prefix IS ambiguous → excluded.
 	if respA.TotalTransmissions != 0 {
 		t.Errorf("nodeA not preconfirmed, prefix ambiguous: expected 0, got %d", respA.TotalTransmissions)
 	}
@@ -316,16 +457,34 @@ func TestHandleNodePaths_FallbackPreconfirmed_1352(t *testing.T) {
 // and serves as a regression seat-belt for future edits to
 // resolveWithContext that might start returning nil for len>=1.
 func TestHandleNodePaths_FallbackUnresolvableHop_1352(t *testing.T) {
-	sc := setupCollisionScenario(t, false /* only B has GPS */)
+	ctx := t.Context()
+	sc := setupCollisionScenario(t, false)
 
-	mustExec(t, sc.db, `INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (60, 'FEED', 'hash_1352_unres', ?)`, sc.recent)
-	mustExec(t, sc.db, `INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (60, NULL, '["c0"]', ?, NULL)`, sc.recentEpoch)
+	txID, _, err := sc.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "1352e00000000060",
+		RawHex:      "feed",
+		RouteType:   1,
+		PayloadType: 4,
+		DecodedJSON: "{}",
+	}, sc.recent)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := sc.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(sc.observerIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      sc.recent,
+	}, []string{"c0"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 	sc.reloadStore(t)
 
-	// Query A (no GPS): biased resolver in the fallback branch picks B via
-	// tier-3 GPS preference; B's pubkey != A's lowerPK so the resolvable
-	// arm's pubkey-match condition fails. Either way: NOT attributed to A.
 	respA := sc.query(t, sc.nodeAPK)
 	if respA.TotalTransmissions != 0 {
 		t.Errorf("nodeA (no GPS) with multi-candidate `c0` prefix + NULL resolved_path: "+

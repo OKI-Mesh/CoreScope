@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/gorilla/mux"
 )
 
@@ -87,7 +88,7 @@ func TestKnownChannelsRouteRegionFilter(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	var resp KnownChannelsSnapshot
+	var resp api.KnownChannelsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, w.Body.String())
 	}
@@ -190,7 +191,7 @@ func TestKnownChannelsHandlerNilCache(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (nil cache must fail-soft); body=%s", w.Code, w.Body.String())
 	}
-	var resp KnownChannelsSnapshot
+	var resp api.KnownChannelsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, w.Body.String())
 	}
@@ -223,7 +224,7 @@ func TestKnownChannelsRegionEmptyPassthrough(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	var resp KnownChannelsSnapshot
+	var resp api.KnownChannelsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, w.Body.String())
 	}
