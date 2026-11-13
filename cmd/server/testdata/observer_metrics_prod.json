@@ -1,71 +1,55 @@
 {
   "metrics": [
     {
-      "timestamp": "2026-11-08T06:00:00Z",
-      "noise_floor": -119.65,
-      "battery_mv": null,
-      "tx_airtime_pct": null,
+      "battery_mv": 4209,
+      "noise_floor": -111,
+      "recv_error_rate": null,
       "rx_airtime_pct": null,
-      "recv_error_rate": null
+      "timestamp": "2026-11-12T13:20:00Z",
+      "tx_airtime_pct": null
     },
     {
-      "timestamp": "2026-11-08T07:00:00Z",
-      "noise_floor": -119.95,
-      "battery_mv": null,
-      "tx_airtime_pct": 0,
-      "rx_airtime_pct": 0.33,
-      "recv_error_rate": null
+      "battery_mv": 4209,
+      "noise_floor": -110,
+      "recv_error_rate": null,
+      "rx_airtime_pct": 3,
+      "timestamp": "2026-11-12T13:25:00Z",
+      "tx_airtime_pct": 0
     },
     {
-      "timestamp": "2026-11-08T08:00:00Z",
-      "noise_floor": -119.5,
-      "battery_mv": null,
-      "tx_airtime_pct": 0,
-      "rx_airtime_pct": 0.47,
-      "recv_error_rate": null
+      "battery_mv": 4209,
+      "noise_floor": -111,
+      "recv_error_rate": null,
+      "rx_airtime_pct": 2,
+      "timestamp": "2026-11-12T13:30:00Z",
+      "tx_airtime_pct": 0
     },
     {
-      "timestamp": "2026-11-08T09:00:00Z",
-      "noise_floor": -119.8,
-      "battery_mv": null,
-      "tx_airtime_pct": 0,
-      "rx_airtime_pct": 0.53,
-      "recv_error_rate": null
+      "battery_mv": 4209,
+      "noise_floor": -111,
+      "recv_error_rate": null,
+      "rx_airtime_pct": 4.67,
+      "timestamp": "2026-11-12T13:35:00Z",
+      "tx_airtime_pct": 0
     },
     {
-      "timestamp": "2026-11-08T10:00:00Z",
-      "noise_floor": -119.7,
-      "battery_mv": null,
-      "tx_airtime_pct": 0,
-      "rx_airtime_pct": 0.61,
-      "recv_error_rate": null
+      "battery_mv": 4192,
+      "noise_floor": -112,
+      "recv_error_rate": null,
+      "rx_airtime_pct": 3.33,
+      "timestamp": "2026-11-12T13:40:00Z",
+      "tx_airtime_pct": 0
     },
     {
-      "timestamp": "2026-11-08T11:00:00Z",
-      "noise_floor": -119.55,
-      "battery_mv": null,
-      "tx_airtime_pct": 0,
-      "rx_airtime_pct": 0.83,
-      "recv_error_rate": null
-    },
-    {
-      "timestamp": "2026-11-08T12:00:00Z",
-      "noise_floor": -119.75,
-      "battery_mv": null,
-      "tx_airtime_pct": 0,
-      "rx_airtime_pct": 1.19,
-      "recv_error_rate": null
-    },
-    {
-      "timestamp": "2026-11-08T13:00:00Z",
-      "noise_floor": -117.8,
-      "battery_mv": null,
-      "tx_airtime_pct": 0.03,
-      "rx_airtime_pct": 1.28,
-      "recv_error_rate": null
+      "battery_mv": 4209,
+      "noise_floor": -111,
+      "recv_error_rate": null,
+      "rx_airtime_pct": 3.67,
+      "timestamp": "2026-11-12T13:45:00Z",
+      "tx_airtime_pct": 0
     }
   ],
-  "observer_id": "91728387DCC9FCA7A2D18748AE3C6416CC6DEE3A39809171D8ABA223C72FDCC2",
-  "observer_name": "Observer 01",
+  "observer_id": "8F5D01D2E7F4AE4467BC0EE996DBF360E9DF3692A99F97542F869B7A3A73A0D9",
+  "observer_name": "Observer-015",
   "reboots": []
 }

@@ -1,169 +1,113 @@
 {
   "attributionMethod": "repeater",
   "distribution": {
-    "1": 893,
-    "2": 790,
-    "3": 82
+    "1": 1104,
+    "2": 5912,
+    "3": 184
   },
   "distributionByRepeaters": {
-    "1": 12,
-    "2": 50,
-    "3": 5
+    "0": 6,
+    "1": 48,
+    "2": 208,
+    "3": 11
   },
   "hourly": [
     {
-      "1": 0,
-      "2": 2,
-      "3": 0,
-      "hour": "2026-11-05T15"
+      "1": 32,
+      "2": 106,
+      "3": 19,
+      "hour": "2026-11-11T13"
     },
     {
-      "1": 4,
-      "2": 2,
-      "3": 0,
-      "hour": "2026-11-05T16"
+      "1": 40,
+      "2": 132,
+      "3": 12,
+      "hour": "2026-11-11T14"
     },
     {
-      "1": 5,
-      "2": 6,
-      "3": 0,
-      "hour": "2026-11-05T17"
+      "1": 13,
+      "2": 127,
+      "3": 1,
+      "hour": "2026-11-11T15"
     }
   ],
   "multiByteCapability": [
     {
-      "pubkey": "f260181a2e53a48b7c4645a077efd0a5d15459502196a0faaf1badab843d151e",
-      "name": "Repeater 08",
-      "role": "repeater",
-      "status": "confirmed",
       "evidence": "advert",
+      "lastSeen": "2026-11-13T13:02:02Z",
       "maxHashSize": 2,
-      "lastSeen": "2026-11-09T03:32:02Z"
+      "name": "Node-001",
+      "pubkey": "f26018f3e797fc8a60eb71dd2a70eb61979ced69942d87d7360205382a9f0a5e",
+      "role": "repeater",
+      "status": "confirmed"
     },
     {
-      "pubkey": "052399778344e6aa2e489d3bc862aa8878273719e3ff909fa01f4343e4009be6",
-      "name": "Repeater 09",
-      "role": "repeater",
-      "status": "confirmed",
       "evidence": "advert",
+      "lastSeen": "2026-11-13T13:07:32Z",
       "maxHashSize": 2,
-      "lastSeen": "2026-11-09T01:39:40Z"
+      "name": "Node-002",
+      "pubkey": "052399e9293b67ca0861845e345f557a82d4cc9b08311498f3c69c182c366d56",
+      "role": "repeater",
+      "status": "confirmed"
     },
     {
-      "pubkey": "cf2ce056e9311760257aa8752720e5b07404baf59507c6a0d1ff9d4248bd084d",
-      "name": "Repeater 10",
+      "evidence": "advert",
+      "lastSeen": "2026-11-11T22:34:54Z",
+      "maxHashSize": 3,
+      "name": "Node-003",
+      "pubkey": "0bf5865e87015fb5e77dfa01dd2bca2ee0a80f89dd55c656e214e07d320e0c36",
       "role": "repeater",
-      "status": "suspected",
-      "evidence": "path",
-      "maxHashSize": 2,
-      "lastSeen": "2026-11-06T01:09:47Z"
-    },
-    {
-      "pubkey": "d97a579b1375529e878c8c83c9c69117e35a326bdc5d0ed80d44008d41da328e",
-      "name": "Repeater 11",
-      "role": "repeater",
-      "status": "suspected",
-      "evidence": "path",
-      "maxHashSize": 2,
-      "lastSeen": "2026-11-06T06:24:50Z"
-    },
-    {
-      "pubkey": "3bba4a31619f10f2f461d40f62e58f6d328a5fbdfe0c0556ef8f21e8110888d4",
-      "name": "Repeater 12",
-      "role": "repeater",
-      "status": "unknown",
-      "evidence": "",
-      "maxHashSize": 1,
-      "lastSeen": "2026-11-03T03:02:29Z"
-    },
-    {
-      "pubkey": "e57eb85826f70a8bb82097101f5b7426666026c182cda7b349d8d41d17d80458",
-      "name": "Repeater 13",
-      "role": "repeater",
-      "status": "unknown",
-      "evidence": "",
-      "maxHashSize": 1,
-      "lastSeen": "2026-11-03T11:00:25Z"
+      "status": "confirmed"
     }
   ],
   "multiByteNodes": [
     {
       "hashSize": 2,
-      "lastSeen": "2026-11-09T02:50:10Z",
-      "name": "Repeater 17",
-      "packets": 84,
-      "pubkey": "ab848495803323247b0c3f5bd4ad53ce4128221bcd953a5e2cb3ddfaa92dfa1a",
+      "lastSeen": "2026-11-13T12:31:35Z",
+      "name": "Node-004",
+      "packets": 61,
+      "pubkey": "7221eec186cd20c31a41530264ea2812014f691f807ef0ab3bfe1df0f0172953",
       "role": "repeater"
     },
     {
       "hashSize": 2,
-      "lastSeen": "2026-11-09T03:40:23Z",
-      "name": "Repeater 16",
-      "packets": 22,
-      "pubkey": "6e2a797e37227fd2c98787842c2c34340f98976a499720addda6e8e013667013",
+      "lastSeen": "2026-11-13T12:58:41Z",
+      "name": "Node-006",
+      "packets": 49,
+      "pubkey": "6224f26cc802cb1fadc29f2f5cd2609b891b214a1c1b4b27bfaf2fa38931c9cb",
       "role": "repeater"
-    },
-    {
-      "hashSize": 2,
-      "lastSeen": "2026-11-09T00:38:36Z",
-      "name": "Room 18",
-      "packets": 21,
-      "pubkey": "7887092a5c656fb52575a74d4023bd158309751e2838c6da413e6b5447a89930",
-      "role": "room"
-    },
-    {
-      "hashSize": 2,
-      "lastSeen": "2026-11-09T02:40:50Z",
-      "name": "Companion 19",
-      "packets": 2,
-      "pubkey": "3b10b617280127ebe89357edba363cb9f7a5ca6bf61e6a80228d9814c19db29e",
-      "role": "companion"
     },
     {
       "hashSize": 3,
-      "lastSeen": "2026-11-08T13:39:31Z",
-      "name": "Repeater 20",
-      "packets": 2,
-      "pubkey": "5695fe744dede464b161215758c94df5f8c65b44384e5c35a383fbfc317aaf86",
+      "lastSeen": "2026-11-13T13:02:44Z",
+      "name": "Node-008",
+      "packets": 49,
+      "pubkey": "ac010fe80fd3c2442e94be9d419d03c07c86d4da9719bc1f489cfa7cad125b2e",
       "role": "repeater"
     }
   ],
   "topHops": [
     {
-      "count": 462,
-      "hex": "66C8",
-      "name": "Repeater 14",
-      "pubkey": "66c83bab554a93ca8f997c2c342291c9aec68d2b0ea34527230d9d163c40cecb",
+      "count": 4219,
+      "hex": "AC01",
+      "name": "Node-008",
+      "pubkey": "ac010fe80fd3c2442e94be9d419d03c07c86d4da9719bc1f489cfa7cad125b2e",
       "size": 2
     },
     {
-      "count": 447,
-      "hex": "DC12",
-      "name": "Repeater 15",
-      "pubkey": "dc12b8bd64641eb0596940cbaa544f0a0326af1c1b5017cb443e1957e616ec80",
+      "count": 1670,
+      "hex": "F3C3",
+      "name": "Node-010",
+      "pubkey": "f3c3068b960409c6c6996c63a75d44e996c7dff59429ed2e6aff8764f75de89f",
       "size": 2
     },
     {
-      "count": 401,
-      "hex": "6E",
-      "name": "Repeater 16",
-      "pubkey": "6e2a797e37227fd2c98787842c2c34340f98976a499720addda6e8e013667013",
-      "size": 1
-    },
-    {
-      "count": 82,
-      "hex": "7A59",
-      "name": null,
-      "pubkey": null,
-      "size": 2
-    },
-    {
-      "count": 74,
-      "hex": "FAED",
-      "name": null,
-      "pubkey": null,
+      "count": 1594,
+      "hex": "8AC7",
+      "name": "Node-011",
+      "pubkey": "8ac7c2f73b4d2016f1c0a179fa20db80f5829fb37619b4263e14f9d9361fa8e7",
       "size": 2
     }
   ],
-  "total": 1765
+  "total": 7200
 }
