@@ -188,7 +188,7 @@ message PerfPacketStoreStats {
   int32 queries = 5;
   // Currently in-memory packet count.
   int32 in_memory = 6 [json_name = "inMemory"];
-  // Whether only SQLite is used (no in-memory store).
+  // Always false. Kept for older consumers.
   bool sqlite_only = 7 [json_name = "sqliteOnly"];
   // Maximum packet capacity.
   int32 max_packets = 8 [json_name = "maxPackets"];
@@ -246,6 +246,6 @@ message PerfResponse {
   PerfCacheStats cache = 6;
   // Packet store detailed stats.
   PerfPacketStoreStats packet_store = 7 [json_name = "packetStore"];
-  // SQLite database stats.
+  // Database stats.
   DbStats db_stats = 8 [json_name = "dbStats"];
 }

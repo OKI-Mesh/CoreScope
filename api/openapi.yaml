@@ -3391,7 +3391,7 @@ components:
         inserts: { type: integer, format: int64 }
         queries: { type: integer, format: int64 }
         inMemory: { type: integer }
-        sqliteOnly: { type: boolean, description: Always false. }
+        sqliteOnly: { type: boolean, description: Always false. Kept for older consumers. }
         maxPackets: { type: integer }
         estimatedMB: { type: number, format: double }
         trackedMB: { type: number, format: double }

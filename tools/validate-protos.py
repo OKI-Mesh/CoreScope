@@ -285,9 +285,6 @@ FIELD_TYPE_TO_MESSAGE = {
     'PerfCacheStats': 'PerfCacheStats',
     'PerfPacketStoreStats': 'PerfPacketStoreStats',
     'PacketStoreIndexes': 'PacketStoreIndexes',
-    'SqliteStats': 'SqliteStats',
-    'SqliteRowCounts': 'SqliteRowCounts',
-    'WalPages': 'WalPages',
     # common.proto
     'RoleCounts': 'RoleCounts',
     'SignalStats': 'SignalStats',

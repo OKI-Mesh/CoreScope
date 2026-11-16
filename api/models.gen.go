@@ -2757,7 +2757,7 @@ type PerfPacketStoreStats struct {
 	Queries        int64            `json:"queries"`
 	RetentionHours float64          `json:"retentionHours"`
 
-	// SqliteOnly Always false.
+	// SqliteOnly Always false. Kept for older consumers.
 	SqliteOnly        bool    `json:"sqliteOnly"`
 	TotalLoaded       int     `json:"totalLoaded"`
 	TotalObservations int     `json:"totalObservations"`

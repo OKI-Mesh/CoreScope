@@ -921,7 +921,7 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 		breakdownNote = memBreakdownNote
 	}
 
-	// SQLite stats
+	// Database stats
 	var dbStats *api.DbStats
 	ss, err := s.db.GetDBSizeStats(r.Context())
 	if err == nil {
