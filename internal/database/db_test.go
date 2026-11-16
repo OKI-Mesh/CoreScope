@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
@@ -8,7 +9,7 @@ import (
 	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 )
 
-func TestMain(m *testing.M) { pgtest.Run(m) }
+func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
 
 func newDB(t *testing.T) *database.DB { return dbtest.New(t) }
 
