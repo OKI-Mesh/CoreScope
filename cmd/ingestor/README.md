@@ -1,35 +1,32 @@
 # MeshCore MQTT Ingestor (Go)
 
-Standalone MQTT ingestion service for CoreScope. Connects to MQTT brokers, decodes raw MeshCore packets, and writes to the same SQLite database used by the Node.js web server.
-
-This is the first step of a larger Go rewrite — separating MQTT ingestion from the web server.
+Standalone MQTT ingestion service for CoreScope. Connects to MQTT brokers, decodes raw MeshCore packets, and writes them to the Postgres database the web server reads.
 
 ## Architecture
 
 ```
-MQTT Broker(s)  →  Go Ingestor  →  SQLite DB  ←  Node.js Web Server
-                    (this binary)     (shared)
+MQTT Broker(s)  →  Go Ingestor  →  Postgres  ←  Go Web Server
+                    (this binary)    (shared)
 ```
 
 - **Single static binary** — no runtime dependencies, no CGO
-- **SQLite** via `github.com/mattn/go-sqlite3` (cgo; cross-compiled with `zig cc`, see the root `Makefile`)
+- **Postgres** via `github.com/jackc/pgx/v5`; the schema is owned by the goose migrations in `internal/database/postgres/migrations`, applied by `cmd/migrate`
 - **MQTT** via `github.com/eclipse/paho.mqtt.golang`
-- Runs **alongside** the Node.js server — they share the DB file
-- Does NOT serve HTTP/WebSocket — that stays in Node.js
+- Runs **alongside** the Go server; they share the database
+- Does NOT serve HTTP/WebSocket — that stays in the server
 
 ## Build
 
-Requires Go 1.22+.
+Requires the Go version in the root `go.mod`.
 
 ```bash
-cd cmd/ingestor
-go build -o corescope-ingestor .
+go build -o corescope-ingestor ./cmd/ingestor
 ```
 
-Cross-compile for Linux (e.g., for the production VM):
+The binary is pure Go, so cross-compiling needs no C toolchain:
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o corescope-ingestor .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o corescope-ingestor ./cmd/ingestor
 ```
 
 ## Run
@@ -38,13 +35,13 @@ GOOS=linux GOARCH=amd64 go build -o corescope-ingestor .
 ./corescope-ingestor -config /path/to/config.json
 ```
 
-The config file uses the same format as the Node.js `config.json`. The ingestor reads the `mqttSources` array (or legacy `mqtt` object) and `dbPath` fields.
+The ingestor reads `config.json`: the `mqttSources` array (or legacy `mqtt` object) and the `db` block.
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DB_PATH` | SQLite database path | `data/meshcore.db` |
+| `DATABASE_URL` | Postgres connection string, used when `db.connectionString` is not set | — |
 | `MQTT_BROKER` | Single MQTT broker URL (overrides config) | — |
 | `MQTT_TOPIC` | MQTT topic (used with `MQTT_BROKER`) | `meshcore/#` |
 | `CORESCOPE_INGESTOR_STATS` | Path to the per-second stats JSON file consumed by the server's `/api/perf/io` and `/api/perf/write-sources` endpoints (#1120) | `/tmp/corescope-ingestor-stats.json` |
@@ -52,7 +49,7 @@ The config file uses the same format as the Node.js `config.json`. The ingestor 
 ### Stats file (`CORESCOPE_INGESTOR_STATS`)
 
 Every second the ingestor publishes a JSON snapshot of its counters
-(`tx_inserted`, `obs_inserted`, `walCommits`, `backfillUpdates.*`, etc.) plus
+(`tx_inserted`, `obs_inserted`, etc.) plus
 a `procIO` block sampled from `/proc/self/io` (read/write/cancelled bytes per
 second + syscall counts). The server reads this file and surfaces the data on
 the Perf page so operators can self-diagnose write-volume anomalies.
@@ -70,7 +67,7 @@ the corescope user can write to.
 
 ```json
 {
-  "dbPath": "data/meshcore.db",
+  "db": { "connectionString": "postgres://corescope:PASSWORD@localhost:5432/corescope" },
   "mqttSources": [
     {
       "name": "local",
@@ -81,9 +78,9 @@ the corescope user can write to.
 }
 ```
 
-### Full Config (same as Node.js)
+### Full Config
 
-The ingestor reads these fields from the existing `config.json`:
+The ingestor reads these fields from `config.json`:
 
 - `mqttSources[]` — array of MQTT broker connections
   - `name` — display name for logging
@@ -93,7 +90,7 @@ The ingestor reads these fields from the existing `config.json`:
   - `iataFilter` — optional regional filter
   - `clientId`: optional MQTT ClientID. Default `corescope-<name>-<random>`, new suffix per ingestor start. Two running ingestors must not share a value on one broker
 - `mqtt` — legacy single-broker config (auto-converted to `mqttSources`)
-- `dbPath` — SQLite DB path (default: `data/meshcore.db`)
+- `db.connectionString` — Postgres DSN (falls back to `$DATABASE_URL`)
 
 ## Test
 
@@ -109,41 +106,21 @@ go test -v ./...
 3. Receives raw hex packets via JSON messages (`{ "raw": "...", "SNR": ..., "RSSI": ... }`)
 4. Decodes MeshCore packet headers, paths, and payloads (ported from `decoder.js`)
 5. Computes content hashes (path-independent, SHA-256-based)
-6. Writes to SQLite: `transmissions` + `observations` tables
+6. Writes to Postgres: `transmissions` + `observations` tables
 7. Upserts `nodes` from decoded ADVERT packets (with validation)
 8. Upserts `observers` from MQTT topic metadata
 
-## Schema Compatibility
+## Schema
 
-The Go ingestor creates the same v3 schema as the Node.js server:
+The tables are defined by the goose migrations in `internal/database/postgres/migrations`; run `bin/migrate` (or the compose `migrate` step) before starting the ingestor. The main ones:
 
 - `transmissions` — deduplicated by content hash
-- `observations` — per-observer sightings with `observer_idx` (rowid reference)
+- `observations` — per-observer sightings, referencing `observers(id)`
 - `nodes` — mesh nodes discovered from adverts
 - `observers` — MQTT feed sources
 
-Both processes can write to the same DB concurrently (SQLite WAL mode).
-
-## What's Not Ported (Yet)
-
-- Companion bridge format (Format 2 — `meshcore/advertisement`, channel messages, etc.)
-- Channel key decryption (GRP_TXT encrypted payload decryption)
-- WebSocket broadcast to browsers
-- In-memory packet store
-- Cache invalidation
-
-These stay in the Node.js server for now.
+The server and the ingestor are separate processes writing to one Postgres database; Postgres handles the concurrency.
 
 ## Files
 
-```
-cmd/ingestor/
-  main.go          — entry point, MQTT connect, message handler
-  decoder.go       — MeshCore packet decoder (ported from decoder.js)
-  decoder_test.go  — decoder tests (25 tests, golden fixtures)
-  db.go            — SQLite writer (schema-compatible with db.js)
-  db_test.go       — DB tests (schema validation, insert/upsert, E2E)
-  config.go        — config struct + loader
-  util.go          — shared utilities
-  go.mod / go.sum  — Go module definition
-```
+`main.go` is the entry point and MQTT message handler; `store.go`, `transmissions.go`, `observers.go`, `nodes.go` and `observer_metrics.go` write to the database; `maintenance.go` and `prune_geofilter.go` do retention; `ingest_buffer.go` is the startup buffer; `config.go` holds the config struct and loader. `ls cmd/ingestor` has the rest.

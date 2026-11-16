@@ -12,7 +12,7 @@ import (
 // goHeapInuseMB, goSysMB, plus the deprecated trackedMB alias.
 //
 // We assert presence, type, sign, and ordering invariants — but NOT
-// "RSS within X% of true RSS" because that is flaky in CI under cgo,
+// "RSS within X% of true RSS" because that is flaky in CI under
 // containerization, and shared-runner load.
 func TestStatsMemoryFields(t *testing.T) {
 	_, router := setupTestServer(t)

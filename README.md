@@ -238,18 +238,18 @@ corescope/
 ### Building
 
 ```bash
-make build        # all four binaries for your machine, into dist/
-make build-server # just one
-make crossbuild   # static linux/amd64 + linux/arm64 binaries
+go build ./...                                  # compile everything
+go build -o corescope-server ./cmd/server       # one binary
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+  go build -trimpath -o corescope-server ./cmd/server   # cross-compile
 ```
 
-The SQLite driver is [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3), which
-is cgo, so a plain `GOOS=linux go build` from a Mac will not work: cross-compiling
-needs a C compiler that can target the other platform. `make crossbuild` uses
-[`zig`](https://ziglang.org/download/) as that compiler (install it and it just
-works) and links statically against musl, so the result is one self-contained file
-that runs on Alpine or scratch. The container build does the same thing — see
-`Dockerfile`.
+Every binary is pure Go, so cross-compiling needs no C toolchain: set
+`CGO_ENABLED=0` and the target `GOOS`/`GOARCH`, and the result is one static,
+self-contained file that runs on Alpine or scratch. CI and the `Dockerfile` run
+the same `go build` commands. The Dockerfile and `.github/workflows/deploy.yml`
+also stamp the version with `-ldflags "-X main.Version=..."`; pass the same flags
+if you need a stamped binary locally.
 
 ### Test Suite
 
@@ -257,11 +257,12 @@ that runs on Alpine or scratch. The container build does the same thing — see
 
 ```bash
 # Go backend tests
-cd cmd/server && go test ./... -v
-cd cmd/ingestor && go test ./... -v
+go test ./... -count=1
+go vet ./...
+gofmt -l cmd internal api
 
-# Or across all 14 modules at once
-make test
+# cmd/etl is its own module (it keeps the SQLite driver)
+cd cmd/etl && go test ./...
 
 # Node.js frontend + integration tests
 npm test

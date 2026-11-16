@@ -117,7 +117,7 @@ func main() {
 
 	// Subscribe-early + buffer (#1608): the MQTT subscription is brought up
 	// before startup maintenance so no packets are missed while the single
-	// SQLite writer is blocked (e.g. a large CREATE INDEX migration). Received
+	// write path is busy (e.g. a large CREATE INDEX migration). Received
 	// messages are buffered here and drained once Ready() is called below.
 	ingestBuffer := NewIngestBuffer(cfg.IngestBufferSizeOrDefault())
 	ingestBuffer.Start()
@@ -278,7 +278,7 @@ func main() {
 
 	// Packet (transmissions) retention: previously lived in cmd/server,
 	// moved to ingestor in #1283 to eliminate cross-process write
-	// contention (SQLITE_BUSY). 0 = disabled.
+	// contention. 0 = disabled.
 	packetDays := cfg.PacketDaysOrZero()
 	if packetDays > 0 {
 		if n, err := store.PruneOldPackets(ctx, packetDays); err != nil {

@@ -9,15 +9,15 @@ import (
 
 // IngestBuffer decouples MQTT message receipt from DB writes (#1608).
 //
-// On boot the ingestor must subscribe to MQTT immediately, but the single
-// SQLite writer (#1283) can be held for minutes by a startup migration
-// (e.g. a large CREATE INDEX) or prune. Without buffering, every QoS-0 packet
-// received in that window is lost. IngestBuffer holds received work in a
-// bounded FIFO and a single consumer goroutine drains it once Ready() is
-// called — i.e. once the write path is free.
+// On boot the ingestor must subscribe to MQTT immediately, but the write path
+// can be busy for minutes with a startup migration (e.g. a large CREATE INDEX)
+// or prune. Without buffering, every QoS-0 packet received in that window is
+// lost. IngestBuffer holds received work in a bounded FIFO and a single
+// consumer goroutine drains it once Ready() is called — i.e. once startup
+// maintenance has finished.
 //
-// A single consumer preserves the single-writer invariant: jobs run one at a
-// time, exactly as paho's in-order handler did before. Submit never blocks the
+// A single consumer keeps ingest ordered: jobs run one at a time, exactly as
+// paho's in-order handler did before. Submit never blocks the
 // MQTT delivery goroutine; if the buffer is full it drops and counts (bounded
 // memory). Buffering replays the original messages, so it introduces NO
 // duplicates (contrast: a QoS-1 broker-queue would).

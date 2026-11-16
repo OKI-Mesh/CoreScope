@@ -337,7 +337,8 @@ type RetentionConfig struct {
 	MetricsDays  int `json:"metricsDays"`
 }
 
-// DBConfig is the shared SQLite vacuum/maintenance config (#919, #921).
+// DBConfig is the shared database config: the connection string and the
+// chunked startup-load settings (#919, #921).
 type DBConfig = dbconfig.DBConfig
 
 // MetricsRetentionDays returns configured metrics retention or 30 days default.
