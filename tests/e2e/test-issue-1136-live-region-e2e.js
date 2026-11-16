@@ -12,7 +12,7 @@
  *   2. Waits for the observer roster to load and verifies the live module
  *      has a populated observer_id → IATA map (proves the parse path works).
  *   3. Programmatically selects a region (SJC) that we know maps to fixture
- *      observers (test-fixtures/e2e-fixture.db has multiple observers in
+ *      observers (test-fixtures/e2e-fixture.sql has multiple observers in
  *      SJC, OAK, MRY, SFO).
  *   4. Synthesizes a packet whose observer_id IS in the SJC region and
  *      pushes it through the same path live websocket packets take.

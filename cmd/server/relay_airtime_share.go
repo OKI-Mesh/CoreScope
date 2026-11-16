@@ -5,7 +5,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/lora"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // relay_airtime_share.go — issues #1359 + #1768
@@ -82,24 +84,16 @@ func (s *PacketStore) resolveLoRaPreset() lora.Preset {
 	return p
 }
 
-// presetResponse shapes the preset for the API response and the
+// relayPreset shapes the preset for the API response and the
 // analytics caption (issue #1768 — operators can't interpret an
 // "Airtime %" headline without knowing what PHY assumptions it bakes
 // in). All four free params plus the derived preamble are surfaced.
-type presetResponse struct {
-	FreqHz   float64 `json:"freq_hz"`
-	BWkHz    float64 `json:"bw_khz"`
-	SF       int     `json:"sf"`
-	CR       int     `json:"cr"`
-	Preamble int     `json:"preamble"`
-}
-
-func presetJSON(p lora.Preset) presetResponse {
-	return presetResponse{
+func relayPreset(p lora.Preset) api.RelayPreset {
+	return api.RelayPreset{
 		FreqHz:   p.FreqHz,
-		BWkHz:    p.BWkHz,
-		SF:       p.SF,
-		CR:       p.CR,
+		BwKhz:    p.BWkHz,
+		Sf:       p.SF,
+		Cr:       p.CR,
 		Preamble: p.Preamble,
 	}
 }
@@ -122,27 +116,20 @@ func (s *PacketStore) distinctRelayCount(tx *StoreTx) int {
 
 // computeRelayAirtimeShare aggregates relay-airtime-share per payload_type.
 //
-// Returns:
-//
-//	{
-//	  "rows":        [{payload_type, type, count, count_pct, score, airtime_pct}, ...] sorted by airtime_pct desc,
-//	  "total_count": int,
-//	  "total_score": int64 (nanoseconds of LoRa Time-on-Air × repeater-count, summed across packets),
-//	  "window":      window label,
-//	  "cached":      false (overwritten by cached wrapper),
-//	}
-func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) map[string]interface{} {
+// Rows are sorted by airtime share, largest first. TotalScore is nanoseconds
+// of LoRa Time-on-Air × repeater-count, summed across packets. Cached is false
+// here; the cached wrapper sets it on a hit.
+func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) api.RelayAirtimeShareResponse {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ptNames := payloadTypeNames
 	preset := s.resolveLoRaPreset()
 
 	type bucket struct {
 		count int
 		score int64 // sum of ToA(payload) × relays, in nanoseconds
 	}
-	buckets := make(map[int]*bucket)
+	buckets := map[types.PayloadType]*bucket{}
 	seenHash := make(map[string]bool, len(s.packets))
 	totalCount := 0
 	var totalScore int64
@@ -183,11 +170,11 @@ func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) map[string]int
 		totalScore += score
 	}
 
-	rows := make([]map[string]interface{}, 0, len(buckets))
+	rows := make([]api.RelayAirtimeRow, 0, len(buckets))
 	for pt, b := range buckets {
-		name := ptNames[pt]
-		if name == "" {
-			name = "UNK"
+		name := "UNK"
+		if pt.Valid() {
+			name = pt.String()
 		}
 		var countPct, airtimePct float64
 		if totalCount > 0 {
@@ -196,68 +183,58 @@ func (s *PacketStore) computeRelayAirtimeShare(window TimeWindow) map[string]int
 		if totalScore > 0 {
 			airtimePct = float64(b.score) / float64(totalScore) * 100.0
 		}
-		rows = append(rows, map[string]interface{}{
-			"payload_type": name,
-			"type":         pt,
-			"count":        b.count,
-			"count_pct":    countPct,
-			"score":        b.score,
-			"airtime_pct":  airtimePct,
+		rows = append(rows, api.RelayAirtimeRow{
+			PayloadType: name,
+			Type:        pt,
+			Count:       b.count,
+			CountPct:    countPct,
+			Score:       b.score,
+			AirtimePct:  airtimePct,
 		})
 	}
 
 	// Sort descending by airtime_pct; tiebreak count desc, then name asc
 	// for deterministic ordering.
 	sort.SliceStable(rows, func(i, j int) bool {
-		ai, _ := rows[i]["airtime_pct"].(float64)
-		aj, _ := rows[j]["airtime_pct"].(float64)
-		if ai != aj {
-			return ai > aj
+		if rows[i].AirtimePct != rows[j].AirtimePct {
+			return rows[i].AirtimePct > rows[j].AirtimePct
 		}
-		ci, _ := rows[i]["count"].(int)
-		cj, _ := rows[j]["count"].(int)
-		if ci != cj {
-			return ci > cj
+		if rows[i].Count != rows[j].Count {
+			return rows[i].Count > rows[j].Count
 		}
-		ni, _ := rows[i]["payload_type"].(string)
-		nj, _ := rows[j]["payload_type"].(string)
-		return ni < nj
+		return rows[i].PayloadType < rows[j].PayloadType
 	})
 
 	label := ""
 	if !window.IsZero() {
 		label = window.Label
 	}
-	return map[string]interface{}{
-		"rows":        rows,
-		"total_count": totalCount,
-		"total_score": totalScore,
-		"preset":      presetJSON(preset),
-		"window":      label,
-		"cached":      false,
+	return api.RelayAirtimeShareResponse{
+		Rows:       rows,
+		TotalCount: totalCount,
+		TotalScore: totalScore,
+		Preset:     relayPreset(preset),
+		Window:     label,
+		Cached:     false,
 	}
 }
 
 // GetRelayAirtimeShareWithWindow is the cached wrapper around
-// computeRelayAirtimeShare. Reuses the existing rfCache + rfCacheTTL pool
-// (shared with RF / topology / distance analytics — no new cache layer per
-// #1359 spec).
-func (s *PacketStore) GetRelayAirtimeShareWithWindow(window TimeWindow) map[string]interface{} {
+// computeRelayAirtimeShare. It has its own map, relayAirtimeCache, because
+// rfCache holds typed RF results. It shares rfCacheTTL and is cleared together
+// with rfCache when new observations arrive.
+func (s *PacketStore) GetRelayAirtimeShareWithWindow(window TimeWindow) api.RelayAirtimeShareResponse {
 	cacheKey := "relay-airtime-share|"
 	if !window.IsZero() {
 		cacheKey += window.CacheKey()
 	}
 	s.cacheMu.Lock()
-	if cached, ok := s.rfCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+	if cached, ok := s.relayAirtimeCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		s.cacheHits++
 		s.cacheMu.Unlock()
-		// Shallow copy with cached=true so the JSON client can tell.
-		m := cached.data
-		out := make(map[string]interface{}, len(m)+1)
-		for k, v := range m {
-			out[k] = v
-		}
-		out["cached"] = true
+		// Copy with cached=true so the JSON client can tell.
+		out := cached.data
+		out.Cached = true
 		return out
 	}
 	s.cacheMisses++
@@ -266,7 +243,10 @@ func (s *PacketStore) GetRelayAirtimeShareWithWindow(window TimeWindow) map[stri
 	result := s.computeRelayAirtimeShare(window)
 
 	s.cacheMu.Lock()
-	s.rfCache[cacheKey] = &cachedResult{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
+	if s.relayAirtimeCache == nil {
+		s.relayAirtimeCache = make(map[string]*cachedRelayAirtime)
+	}
+	s.relayAirtimeCache[cacheKey] = &cachedRelayAirtime{data: result, expiresAt: time.Now().Add(s.rfCacheTTL)}
 	s.cacheMu.Unlock()
 
 	return result

@@ -37,20 +37,20 @@ func applyMemoryLimit(maxMemoryMB int, envSet bool) (int64, string) {
 	// transient peaks (cold-load row-scan / decode pipeline, Go's NextGC
 	// trigger at ~2x live heap). See issue #836 heap profile.
 	//
-	// GOMEMLIMIT covers memory the Go runtime manages — heap, stacks and
-	// runtime structures — and nothing else. Since the SQLite driver became
-	// cgo (github.com/mattn/go-sqlite3), what SQLite allocates in C is
-	// outside it, so this limit is not an RSS ceiling: actual RSS is this
-	// plus the native allocations plus whatever the runtime has reserved
-	// but not returned.
+	// GOMEMLIMIT covers memory the Go runtime manages: heap, stacks and
+	// runtime structures. The binary is pure Go (pgx has no C library), so
+	// that is nearly all of the process. Query result buffers, prepared
+	// statement caches and connection buffers for the Postgres pool live on
+	// the Go heap and count against it; the database server's own memory
+	// (shared_buffers, work_mem) lives in the Postgres process and does not.
+	// What sits outside the limit is whatever the runtime has reserved but not
+	// yet returned to the OS, so this is still not a hard RSS ceiling.
 	//
-	// The page cache, at least, is deliberately bounded: both DSNs pin
-	// _cache_size=-2000, i.e. ~2 MiB per connection, ~8 MiB across
-	// SetMaxOpenConns(4). That fits inside the headroom above rather than
-	// eating into the store budget. It does not bound SQLite's other native
-	// allocations, so if the connection count or _cache_size grows
-	// materially, or a workload starts holding many prepared statements,
-	// this derivation needs revisiting against measured RSS.
+	// The headroom above was derived from heap profiles before the move to
+	// Postgres. The pool size and result-set sizes changed with it, so if the
+	// pool grows materially or a query starts returning large result sets,
+	// re-check this derivation against measured RSS (processRSSMB in
+	// /api/perf) rather than trusting the 1.5x.
 	limit := int64(maxMemoryMB) * 1024 * 1024 * 3 / 2
 	debug.SetMemoryLimit(limit)
 	return limit, "derived"

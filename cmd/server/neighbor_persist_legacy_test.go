@@ -1,10 +1,10 @@
 package main
 
 import (
-	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // TestNeighborPersist_LegacyEdgeInvariant (#1638 adv-#1): edges loaded from
@@ -14,31 +14,41 @@ import (
 // pre-existing observations land in bucket 0 (legacy/unknown, conservative
 // weight in the JS confidence indicator).
 func TestNeighborPersist_LegacyEdgeInvariant(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "neighbor_legacy.db")
-	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rw.Close()
-	if _, err := rw.Exec(`CREATE TABLE neighbor_edges (
-		node_a TEXT NOT NULL,
-		node_b TEXT NOT NULL,
-		count INTEGER DEFAULT 1,
-		last_seen TEXT,
-		PRIMARY KEY (node_a, node_b)
-	)`); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := rw.Exec(
-		`INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, ?, ?)`,
-		"aaaa", "bbbb", 7, now,
-	); err != nil {
-		t.Fatal(err)
+	ctx := t.Context()
+	db := setupTestDB(t)
+
+	// Canonical order: node_a <= node_b. Valid lowercase keys for the table's guards.
+	nodeA := "aaaa000000000001"
+	nodeB := "bbbb000000000002"
+
+	// neighbor_edges may carry foreign keys to nodes (see the FK follow-up);
+	// seeding both nodes keeps this test valid either way.
+	now := time.Now().UTC()
+	for _, n := range []database.NodeInput{
+		{PublicKey: nodeA, Name: "A", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: nodeB, Name: "B", Role: "repeater", RxTime: now, IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
+		}
 	}
 
-	g := loadNeighborEdgesFromDB(rw)
+	// A flat-count edge with no per-mode evidence: what a snapshot-only edge
+	// looks like in the table.
+	changed, err := db.UpsertNeighborEdges(ctx, []database.NeighborEdgeInput{
+		{NodeA: nodeA, NodeB: nodeB, Hits: 7, LastSeen: now.Truncate(time.Millisecond)},
+	})
+	if err != nil {
+		t.Fatalf("seed edge: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("UpsertNeighborEdges changed %d rows, want 1", changed)
+	}
+
+	g, err := loadNeighborEdgesFromDB(ctx, db)
+	if err != nil {
+		t.Fatalf("load neighbor graph: %v", err)
+	}
 	edges := g.AllEdges()
 	if len(edges) != 1 {
 		t.Fatalf("expected 1 edge, got %d", len(edges))
@@ -54,7 +64,7 @@ func TestNeighborPersist_LegacyEdgeInvariant(t *testing.T) {
 	if got := e.CountsByMode[0]; got != 7 {
 		t.Errorf("CountsByMode[0] = %d, want 7 (all legacy count in bucket 0)", got)
 	}
-	// Buckets 1/2/3 must be empty — no real wire-mode evidence on a
+	// Buckets 1/2/3 must be empty: no real wire-mode evidence on a
 	// snapshot-only edge.
 	for _, m := range []int{1, 2, 3} {
 		if got := e.CountsByMode[m]; got != 0 {
@@ -74,34 +84,37 @@ func TestNeighborPersist_LegacyEdgeInvariant(t *testing.T) {
 // TestNeighborPersist_LegacyEdgeMergeOnReload covers the "row appears twice
 // in the snapshot" path (loader's else-branch): subsequent counts must
 // accumulate into bucket 0 too, preserving the invariant.
-func TestNeighborPersist_LegacyEdgeMergeOnReload(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "neighbor_legacy_merge.db")
-	rw, err := sql.Open("sqlite", "file:"+dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rw.Close()
-	// No PRIMARY KEY so we can insert two rows for the same (a,b) pair to
-	// exercise the loader's else-branch.
-	if _, err := rw.Exec(`CREATE TABLE neighbor_edges (
-		node_a TEXT NOT NULL,
-		node_b TEXT NOT NULL,
-		count INTEGER DEFAULT 1,
-		last_seen TEXT
-	)`); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, cnt := range []int{3, 4} {
-		if _, err := rw.Exec(
-			`INSERT INTO neighbor_edges (node_a, node_b, count, last_seen) VALUES (?, ?, ?, ?)`,
-			"aaaa", "bbbb", cnt, now,
-		); err != nil {
-			t.Fatal(err)
+func TestNeighborPersist_RepeatedUpsertMergesOnReload(t *testing.T) {
+	ctx := t.Context()
+	db := setupTestDB(t)
+
+	nodeA := "aaaa000000000001"
+	nodeB := "bbbb000000000002"
+
+	now := time.Now().UTC()
+	for _, n := range []database.NodeInput{
+		{PublicKey: nodeA, Name: "A", Role: "repeater", RxTime: now, IngestNow: now},
+		{PublicKey: nodeB, Name: "B", Role: "repeater", RxTime: now, IngestNow: now},
+	} {
+		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
+			t.Fatalf("seed %s: %v", n.Name, err)
 		}
 	}
-	g := loadNeighborEdgesFromDB(rw)
+
+	// Two separate upserts for the same pair, as two builder ticks would do.
+	ts := now.Truncate(time.Millisecond)
+	for _, hits := range []int32{3, 4} {
+		if _, err := db.UpsertNeighborEdges(ctx, []database.NeighborEdgeInput{
+			{NodeA: nodeA, NodeB: nodeB, Hits: hits, LastSeen: ts},
+		}); err != nil {
+			t.Fatalf("upsert hits=%d: %v", hits, err)
+		}
+	}
+
+	g, err := loadNeighborEdgesFromDB(ctx, db)
+	if err != nil {
+		t.Fatalf("load neighbor graph: %v", err)
+	}
 	edges := g.AllEdges()
 	if len(edges) != 1 {
 		t.Fatalf("expected 1 merged edge, got %d", len(edges))

@@ -1,0 +1,72 @@
+{
+  "window": "1h",
+  "summary": {
+    "transportTotal": 20,
+    "scoped": 20,
+    "unscoped": 1245,
+    "unknownScope": 20
+  },
+  "byRegion": [],
+  "timeSeries": [
+    {
+      "t": "2026-11-09T15:05:00Z",
+      "scoped": 4,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:10:00Z",
+      "scoped": 1,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:15:00Z",
+      "scoped": 2,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:25:00Z",
+      "scoped": 5,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:35:00Z",
+      "scoped": 2,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:40:00Z",
+      "scoped": 1,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:45:00Z",
+      "scoped": 3,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:50:00Z",
+      "scoped": 2,
+      "unscoped": 0
+    }
+  ],
+  "advertsByRole": [
+    {
+      "role": "repeater",
+      "unscoped": 59,
+      "unknownScope": 0,
+      "named": 0
+    },
+    {
+      "role": "companion",
+      "unscoped": 8,
+      "unknownScope": 0,
+      "named": 0
+    },
+    {
+      "role": "room",
+      "unscoped": 2,
+      "unknownScope": 0,
+      "named": 0
+    }
+  ]
+}

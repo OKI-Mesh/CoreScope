@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/websocket"
 )
 
@@ -61,20 +62,36 @@ func TestHubBroadcast(t *testing.T) {
 }
 
 func TestPollerCreation(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 	seedTestData(t, db)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked: %v", err)
+	}
 	hub := NewHub()
 
-	poller := NewPoller(db, hub, 100*time.Millisecond)
+	poller := NewPoller(db, store, hub, 100*time.Millisecond)
 	if poller == nil {
 		t.Fatal("expected poller")
 	}
 
-	// Start and stop
-	go poller.Start()
+	done := make(chan struct{})
+	go func() {
+		poller.Start(ctx)
+		close(done)
+	}()
 	time.Sleep(200 * time.Millisecond)
 	poller.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poller did not stop")
+	}
 }
 
 func TestHubMultipleClients(t *testing.T) {
@@ -186,75 +203,8 @@ func TestBroadcastMarshalError(t *testing.T) {
 }
 
 func TestPollerBroadcastsNewData(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
-	hub := NewHub()
-
-	// Create a client to receive broadcasts
-	client := &Client{
-		send: make(chan []byte, 256),
-	}
-	hub.mu.Lock()
-	hub.clients[client] = true
-	hub.mu.Unlock()
-
-	poller := NewPoller(db, hub, 50*time.Millisecond)
-	go poller.Start()
-
-	// Insert new data to trigger broadcast
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type)
-		VALUES ('EEFF', 'newhash123456789', '2026-01-16T10:00:00Z', 1, 4)`)
-
-	time.Sleep(200 * time.Millisecond)
-	poller.Stop()
-
-	// Check if client received broadcast with packet field (fixes #162)
-	select {
-	case msg := <-client.send:
-		if len(msg) == 0 {
-			t.Error("expected non-empty broadcast message")
-		}
-		var parsed map[string]interface{}
-		if err := json.Unmarshal(msg, &parsed); err != nil {
-			t.Fatalf("failed to parse broadcast: %v", err)
-		}
-		if parsed["type"] != "packet" {
-			t.Errorf("expected type=packet, got %v", parsed["type"])
-		}
-		data, ok := parsed["data"].(map[string]interface{})
-		if !ok {
-			t.Fatal("expected data to be an object")
-		}
-		// packets.js filters on m.data.packet — must exist
-		pkt, ok := data["packet"]
-		if !ok || pkt == nil {
-			t.Error("expected data.packet to exist (required by packets.js WS handler)")
-		}
-		pktMap, ok := pkt.(map[string]interface{})
-		if !ok {
-			t.Fatal("expected data.packet to be an object")
-		}
-		// Verify key fields exist in nested packet (timestamp required by packets.js)
-		for _, field := range []string{"id", "hash", "payload_type", "timestamp"} {
-			if _, exists := pktMap[field]; !exists {
-				t.Errorf("expected data.packet.%s to exist", field)
-			}
-		}
-	default:
-		// Might not have received due to timing
-	}
-
-	// Clean up
-	hub.mu.Lock()
-	delete(hub.clients, client)
-	hub.mu.Unlock()
-}
-
-func TestPollerBroadcastsMultipleObservations(t *testing.T) {
-	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
 	hub := NewHub()
 
 	client := &Client{
@@ -269,123 +219,299 @@ func TestPollerBroadcastsMultipleObservations(t *testing.T) {
 		hub.mu.Unlock()
 	}()
 
-	poller := NewPoller(db, hub, 50*time.Millisecond)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store load failed: %v", err)
-	}
-	poller.store = store
-	go poller.Start()
-	defer poller.Stop()
+	now := time.Now().UTC().Truncate(time.Second)
+	obsIdx := seedObserver(t, db, padKey("0b51"), "BRU", now)
 
-	// Wait for poller to initialize its lastID/lastObsID cursors before
-	// inserting new data; otherwise the poller may snapshot a lastID that
-	// already includes the test data and never broadcast it.
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked: %v", err)
+	}
+
+	poller := NewPoller(db, store, hub, 50*time.Millisecond)
+	go poller.Start(ctx)
+	defer poller.Stop()
 	time.Sleep(100 * time.Millisecond)
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('FACE', 'starbursthash237a', ?, 1, 4, '{"pubKey":"aabbccdd11223344","type":"ADVERT"}')`, now); err != nil {
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "ee11ff22aabb3344",
+		RawHex:      "EEFF",
+		RouteType:   types.RouteFlood,
+		PayloadType: types.PayloadType(4),
+	}, now)
+	if err != nil {
+		t.Fatalf("insert tx: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    &obsIdx,
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      now,
+	}, []string{"aa"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("insert observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+
+	type broadcast struct {
+		Type string `json:"type"`
+		Data struct {
+			Packet map[string]json.RawMessage `json:"packet"`
+		} `json:"data"`
+	}
+
+	select {
+	case msg := <-client.send:
+		if len(msg) == 0 {
+			t.Fatal("expected non-empty broadcast message")
+		}
+		var parsed broadcast
+		if err := json.Unmarshal(msg, &parsed); err != nil {
+			t.Fatalf("failed to parse broadcast: %v", err)
+		}
+		if parsed.Type != "packet" {
+			t.Errorf("expected type=packet, got %v", parsed.Type)
+		}
+		if parsed.Data.Packet == nil {
+			t.Fatal("expected data.packet to exist (required by packets.js WS handler)")
+		}
+		for _, field := range []string{"id", "hash", "payload_type", "timestamp"} {
+			if _, exists := parsed.Data.Packet[field]; !exists {
+				t.Errorf("expected data.packet.%s to exist", field)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for broadcast")
+	}
+}
+
+func TestPollerBroadcastsMultipleObservations(t *testing.T) {
+	ctx := t.Context()
+
+	db := setupTestDB(t)
+	hub := NewHub()
+
+	client := &Client{
+		send: make(chan []byte, 256),
+	}
+	hub.mu.Lock()
+	hub.clients[client] = true
+	hub.mu.Unlock()
+	defer func() {
+		hub.mu.Lock()
+		delete(hub.clients, client)
+		hub.mu.Unlock()
+	}()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	obsIdx1 := seedObserver(t, db, padKey("0b51"), "BRU", now)
+	obsIdx2 := seedObserver(t, db, padKey("0b52"), "GNT", now)
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked: %v", err)
+	}
+
+	poller := NewPoller(db, store, hub, 50*time.Millisecond)
+	go poller.Start(ctx)
+	defer poller.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	const hash = "57a2b0000000237a"
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        hash,
+		RawHex:      "FACE",
+		RouteType:   types.RouteFlood,
+		PayloadType: types.PayloadType(4),
+		DecodedJSON: `{"pubKey":"` + padKey("aabbccdd11223344") + `","type":"ADVERT"}`,
+	}, now)
+	if err != nil {
 		t.Fatalf("insert tx failed: %v", err)
 	}
-	var txID int
-	if err := db.conn.QueryRow(`SELECT id FROM transmissions WHERE hash='starbursthash237a'`).Scan(&txID); err != nil {
-		t.Fatalf("query tx id failed: %v", err)
-	}
-	ts := time.Now().Unix()
-	if _, err := db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (?, 1, 14.0, -82, '["aa"]', ?),
-		       (?, 2, 10.5, -90, '["aa","bb"]', ?),
-		       (?, 1, 7.0, -96, '["aa","bb","cc"]', ?)`,
-		txID, ts, txID, ts+1, txID, ts+2); err != nil {
-		t.Fatalf("insert observations failed: %v", err)
+
+	type pollerPacketMessage struct {
+		Type string `json:"type"`
+		Data struct {
+			Hash       string `json:"hash"`
+			PathJSON   string `json:"path_json"`
+			ObserverID string `json:"observer_id"`
+		} `json:"data"`
 	}
 
-	deadline := time.After(2 * time.Second)
-	var dataMsgs []map[string]interface{}
-	for len(dataMsgs) < 3 {
-		select {
-		case raw := <-client.send:
-			var parsed map[string]interface{}
-			if err := json.Unmarshal(raw, &parsed); err != nil {
-				t.Fatalf("unmarshal ws msg failed: %v", err)
+	waitForPath := func(wantPath string) pollerPacketMessage {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case raw := <-client.send:
+				var parsed pollerPacketMessage
+				if err := json.Unmarshal(raw, &parsed); err != nil {
+					t.Fatalf("unmarshal ws msg failed: %v", err)
+				}
+				t.Logf("ws msg: type=%s hash=%s path=%q observer=%q raw=%.300s", parsed.Type, parsed.Data.Hash, parsed.Data.PathJSON, parsed.Data.ObserverID, raw)
+				if parsed.Type == "packet" && parsed.Data.Hash == hash && parsed.Data.PathJSON == wantPath {
+					return parsed
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for a broadcast with path %s", wantPath)
 			}
-			if parsed["type"] != "packet" {
-				continue
-			}
-			data, ok := parsed["data"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if data["hash"] == "starbursthash237a" {
-				dataMsgs = append(dataMsgs, data)
-			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for 3 observation broadcasts, got %d", len(dataMsgs))
 		}
 	}
 
-	if len(dataMsgs) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(dataMsgs))
+	observations := []struct {
+		observerIdx int64
+		snr         float64
+		rssi        float64
+		hops        []string
+		pathHash    string
+		wantPath    string
+		at          time.Time
+	}{
+		{obsIdx1, 14.0, -82, []string{"aa"}, "h1", `["AA"]`, now},
+		{obsIdx2, 10.5, -90, []string{"aa", "bb"}, "h2", `["AA","BB"]`, now.Add(time.Second)},
+		{obsIdx1, 7.0, -96, []string{"aa", "bb", "cc"}, "h3", `["AA","BB","CC"]`, now.Add(2 * time.Second)},
 	}
 
-	paths := make([]string, 0, 3)
 	observers := make(map[string]bool)
-	for _, m := range dataMsgs {
-		hash, _ := m["hash"].(string)
-		if hash != "starbursthash237a" {
-			t.Fatalf("unexpected hash %q", hash)
+	for _, o := range observations {
+		idx := o.observerIdx
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    &idx,
+			SNR:            fptr(o.snr),
+			RSSI:           fptr(o.rssi),
+			PathHash:       o.pathHash,
+			Timestamp:      o.at,
+		}, o.hops, make([]*string, len(o.hops)))
+		if err != nil {
+			t.Fatalf("insert observation failed: %v", err)
 		}
-		p, _ := m["path_json"].(string)
-		paths = append(paths, p)
-		if oid, ok := m["observer_id"].(string); ok && oid != "" {
-			observers[oid] = true
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+		msg := waitForPath(o.wantPath)
+		if msg.Data.ObserverID != "" {
+			observers[msg.Data.ObserverID] = true
 		}
 	}
-	sort.Strings(paths)
-	wantPaths := []string{`["aa","bb","cc"]`, `["aa","bb"]`, `["aa"]`}
-	sort.Strings(wantPaths)
-	for i := range wantPaths {
-		if paths[i] != wantPaths[i] {
-			t.Fatalf("path mismatch at %d: got %q want %q", i, paths[i], wantPaths[i])
-		}
-	}
+
 	if len(observers) < 2 {
 		t.Fatalf("expected observations from >=2 observers, got %d", len(observers))
 	}
 }
 
 func TestIngestNewObservationsBroadcast(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	defer db.Close()
-	seedTestData(t, db)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store load failed: %v", err)
+	now := time.Now().UTC().Truncate(time.Second)
+	obsIdx1 := seedObserver(t, db, padKey("0b51"), "BRU", now)
+	obsIdx2 := seedObserver(t, db, padKey("0b52"), "GNT", now)
+
+	const hash = "abc123def4567890"
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        hash,
+		RawHex:      "0a1b2c",
+		RouteType:   types.RouteFlood,
+		PayloadType: types.PayloadType(4),
+		DecodedJSON: `{"type":"ADVERT"}`,
+	}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("insert tx: %v", err)
+	}
+	idx1 := obsIdx1
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    &idx1,
+		SNR:            fptr(12.5),
+		RSSI:           fptr(-90),
+		PathHash:       "h-initial",
+		Timestamp:      now.Add(-time.Hour),
+	}, []string{"aa"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("insert initial observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected initial observation to be inserted for tx %d", txID)
 	}
 
-	maxObs := db.GetMaxObservationID()
-	now := time.Now().Unix()
-	if _, err := db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 2, 6.0, -100, '["aa","zz"]', ?),
-		       (1, 1, 5.0, -101, '["aa","yy"]', ?)`, now, now+1); err != nil {
-		t.Fatalf("insert new observations failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache: %v", err)
+	}
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
-	maps := store.IngestNewObservations(maxObs, 500)
-	if len(maps) != 2 {
-		t.Fatalf("expected 2 broadcast maps, got %d", len(maps))
+	maxObs, err := db.GetMaxObservationID(ctx)
+	if err != nil {
+		t.Fatalf("GetMaxObservationID(): %v", err)
 	}
-	for _, m := range maps {
-		if m["hash"] != "abc123def4567890" {
-			t.Fatalf("unexpected hash in map: %v", m["hash"])
+
+	idx2 := obsIdx2
+	_, inserted, err = db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    &idx2,
+		SNR:            fptr(6.0),
+		RSSI:           fptr(-100),
+		PathHash:       "h-new-1",
+		Timestamp:      now,
+	}, []string{"aa", "bb"}, []*string{nil, nil})
+	if err != nil {
+		t.Fatalf("insert new observation 1: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected new observation 1 to be inserted for tx %d", txID)
+	}
+	_, inserted, err = db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    &idx1,
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-101),
+		PathHash:       "h-new-2",
+		Timestamp:      now.Add(time.Second),
+	}, []string{"aa", "cc"}, []*string{nil, nil})
+	if err != nil {
+		t.Fatalf("insert new observation 2: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected new observation 2 to be inserted for tx %d", txID)
+	}
+
+	packets, _, err := store.IngestNewObservations(ctx, maxObs, 500)
+	if err != nil {
+		t.Fatalf("IngestNewObservations(): %v", err)
+	}
+	if len(packets) != 2 {
+		t.Fatalf("expected 2 broadcast packets, got %d", len(packets))
+	}
+	for _, packet := range packets {
+		if packet.Hash == nil || *packet.Hash != hash {
+			t.Fatalf("unexpected hash in packet: %v", packet.Hash)
 		}
-		path, ok := m["path_json"].(string)
-		if !ok || path == "" {
-			t.Fatalf("missing path_json in map: %#v", m)
+		if packet.PathJSON == nil || *packet.PathJSON == "" {
+			t.Fatalf("missing path_json in packet: %#v", packet)
 		}
-		if _, ok := m["observer_id"]; !ok {
-			t.Fatalf("missing observer_id in map: %#v", m)
+		if packet.ObserverID == nil {
+			t.Fatalf("missing observer_id in packet: %#v", packet)
+		}
+	}
+	gotPaths := map[string]bool{}
+	for _, packet := range packets {
+		gotPaths[*packet.PathJSON] = true
+	}
+	for _, want := range []string{`["AA","BB"]`, `["AA","CC"]`} {
+		if !gotPaths[want] {
+			t.Errorf("missing broadcast with path %s (got %v)", want, gotPaths)
 		}
 	}
 }

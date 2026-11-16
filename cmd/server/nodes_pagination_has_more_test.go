@@ -6,6 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/gorilla/mux"
 )
 
 // TestNodesHasMoreSurvivesPostLimitFiltering pins the contract that lets a
@@ -23,69 +28,81 @@ import (
 // compute it from the filtered slice) and the page-1 assertion fails — that is
 // exactly the arrangement that stranded every node behind a filtered row.
 func TestNodesHasMoreSurvivesPostLimitFiltering(t *testing.T) {
-	srv, router := setupTestServer(t)
+	ctx := t.Context()
+	db := setupTestDB(t)
+	srv := NewServer(db, &Config{Port: 3000}, NewHub())
+	router := mux.NewRouter()
+	srv.RegisterRoutes(router)
 
-	// setupTestServer seeds its own fixture nodes; clear them so the page
-	// boundaries below are exactly the ones this test sets up.
-	if _, err := srv.db.conn.Exec(`DELETE FROM nodes`); err != nil {
-		t.Fatalf("clear fixture nodes: %v", err)
-	}
-
-	// 7 nodes, newest first by last_seen so page order is deterministic.
+	now := time.Now().UTC()
 	for i := 0; i < 7; i++ {
 		name := fmt.Sprintf("visible-%d", i)
-		if i == 1 {
-			name = "🚫 hidden-1" // lands inside page 1 (offset 0, limit 3)
+		lat, lon := 45.0, -85.0
+		switch i {
+		case 1:
+			name = "outside-geo-1"
+			lat, lon = 10.0, 10.0
+		case 4:
+			name = "🚫 hidden-4"
 		}
-		lastSeen := fmt.Sprintf("2026-06-0%dT00:00:00Z", 7-i)
-		if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-			(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-			VALUES (?, ?, 'repeater', 0, 0, ?, '2026-06-01T00:00:00Z', 1)`,
-			fmt.Sprintf("deadbeef0000200%d", i), name, lastSeen); err != nil {
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: scopeKey(0xdead0000 + i),
+			Name:      name,
+			Role:      "repeater",
+			Lat:       fptr(lat),
+			Lon:       fptr(lon),
+			RxTime:    time.Date(2026, 6, 7-i, 0, 0, 0, 0, time.UTC),
+			IngestNow: now,
+		}); err != nil {
 			t.Fatalf("insert %d: %v", i, err)
 		}
 	}
 	srv.cfg.SetHiddenNamePrefixes([]string{"🚫"})
+	srv.cfg.GeoFilter = &GeoFilterConfig{
+		LatMin: fptr(40), LatMax: fptr(50),
+		LonMin: fptr(-90), LonMax: fptr(-80),
+	}
 
-	page := func(offset int) NodeListResponse {
+	page := func(offset int) api.NodeListResponse {
 		req := httptest.NewRequest("GET", fmt.Sprintf("/api/nodes?limit=3&offset=%d", offset), nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("offset %d: status %d body=%s", offset, w.Code, w.Body.String())
 		}
-		var got NodeListResponse
+		var got api.NodeListResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("offset %d: decode: %v", offset, err)
 		}
 		return got
 	}
 
-	// Page 1 is a row short because the hidden node was dropped after the LIMIT.
 	first := page(0)
 	if len(first.Nodes) != 2 {
-		t.Fatalf("page 1: expected 2 rows after filtering, got %d", len(first.Nodes))
+		t.Fatalf("page 1: expected 2 rows after the geo-filter dropped one, got %d", len(first.Nodes))
 	}
 	if !first.HasMore {
-		t.Fatalf("page 1: has_more must stay true on a page shortened by filtering " +
-			"(4 more nodes are waiting) — a client stopping here strands them")
+		t.Fatalf("page 1: has_more must stay true on a page shortened by the geo-filter " +
+			"(3 more nodes are waiting), a client stopping here strands them")
 	}
 
-	// Walking has_more reaches every visible node, including the last page.
 	seen := map[string]bool{}
 	for offset, more := 0, true; more && offset < 100; offset += 3 {
 		p := page(offset)
 		for _, n := range p.Nodes {
-			pk, _ := n["public_key"].(string)
-			seen[pk] = true
+			seen[n.PublicKey] = true
 		}
 		more = p.HasMore
 	}
-	if len(seen) != 6 {
-		t.Fatalf("expected all 6 visible nodes across the walk, got %d", len(seen))
+	if len(seen) != 5 {
+		t.Fatalf("expected the 5 nodes that pass both filters across the walk, got %d", len(seen))
+	}
+	for _, i := range []int{1, 4} {
+		if seen[scopeKey(0xdead0000+i)] {
+			t.Errorf("node %d must not appear: it is hidden or outside the geo-filter", i)
+		}
 	}
 
-	// The final page reports has_more=false rather than relying on a short page.
 	if last := page(6); last.HasMore {
 		t.Fatalf("final page: has_more must be false, got true")
 	}

@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // handleClientRfSample processes one RF environment sample from
 // meshcore/client/{PUBLIC_KEY}/rf. The topic pubkey is the identity (ACL-bound
 // by the broker); origin_id in the payload is informational and MUST NOT be
 // used as a fallback — that would defeat the trust model.
-func handleClientRfSample(store *Store, tag, rxPubkey string, msg map[string]interface{}) {
+func handleClientRfSample(ctx context.Context, store *Store, tag, rxPubkey string, msg map[string]interface{}) {
 	rxPubkey = strings.ToLower(strings.TrimSpace(rxPubkey))
 	if !clientPubkeyRe.MatchString(rxPubkey) {
 		log.Printf("MQTT [%s] rf: invalid pubkey %.8q, dropping", tag, rxPubkey)
@@ -38,12 +42,12 @@ func handleClientRfSample(store *Store, tag, rxPubkey string, msg map[string]int
 	}
 
 	rxTime, _ := resolveRxTimeCore(msg, tag)
-	sampledAt := rxTime.Format(rxTimeMillisLayout)
+	sampledAt := rxTime
 
-	o := &ClientRfSample{
+	o := &types.ClientRfSample{
 		RxPubkey:   rxPubkey,
-		SampledAt:  sampledAt,
-		IngestedAt: time.Now().UTC().Format(time.RFC3339),
+		SampledAt:  sampledAt.Truncate(time.Millisecond),
+		IngestedAt: time.Now().UTC(),
 		Lat:        lat, Lon: lon,
 		UptimeSecs: int64(uptime),
 	}
@@ -72,7 +76,7 @@ func handleClientRfSample(store *Store, tag, rxPubkey string, msg map[string]int
 	o.DirectTx = optInt64(msg, "direct_tx")
 	o.RecvErrors = optInt64(msg, "recv_errors")
 
-	if _, err := store.InsertClientRfSample(o); err != nil {
+	if _, err := store.InsertClientRfSample(ctx, o); err != nil {
 		log.Printf("MQTT [%s] rf sample insert: %v", tag, err)
 	}
 }
@@ -122,59 +126,31 @@ type ClientRfDelta struct {
 // uptime_secs did not increase are skipped: that is a reboot (or a counter
 // wrap), and subtracting across it would produce a large negative or a bogus
 // spike. Absolutes stay in the table; only this view does arithmetic.
-func (s *Store) ClientRfDeltas(rxPubkey, from, to string) ([]ClientRfDelta, error) {
+func (s *Store) ClientRfDeltas(ctx context.Context, rxPubkey string, from, to time.Time) ([]ClientRfDelta, error) {
 	rxPubkey = strings.ToLower(strings.TrimSpace(rxPubkey))
-	rows, err := s.db.Query(`
-		SELECT sampled_at, lat, lon, stationary, uptime_secs,
-		       rx_air_secs, tx_air_secs, recv, recv_errors,
-		       LAG(sampled_at)  OVER w AS prev_at,
-		       LAG(uptime_secs) OVER w AS prev_uptime,
-		       LAG(rx_air_secs) OVER w AS prev_rx,
-		       LAG(tx_air_secs) OVER w AS prev_tx,
-		       LAG(recv)        OVER w AS prev_recv,
-		       LAG(recv_errors) OVER w AS prev_errs
-		FROM client_rf_samples
-		WHERE rx_pubkey = ? AND sampled_at >= ? AND sampled_at < ?
-		WINDOW w AS (ORDER BY sampled_at)
-		ORDER BY sampled_at`, rxPubkey, from, to)
+	samples, err := s.db.ListClientRfSamplesWithPrev(ctx, rxPubkey, from, to)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var out []ClientRfDelta
-	for rows.Next() {
-		var at string
-		var lat, lon float64
-		var stationary int
-		var uptime int64
-		var rx, tx, recv, errs *int64
-		var prevAt *string
-		var prevUptime, prevRx, prevTx, prevRecv, prevErrs *int64
-		if err := rows.Scan(&at, &lat, &lon, &stationary, &uptime, &rx, &tx, &recv, &errs,
-			&prevAt, &prevUptime, &prevRx, &prevTx, &prevRecv, &prevErrs); err != nil {
-			log.Printf("client_rf_samples delta scan: %v", err)
-			continue
+	for _, r := range samples {
+		if r.PrevAt == nil || r.PrevUptime == nil || r.UptimeSecs <= *r.PrevUptime {
+			continue // first row of the window, or a reboot/wrap: no delta
 		}
-		if prevAt == nil || prevUptime == nil || uptime <= *prevUptime {
-			continue // first row of the window, or a reboot/wrap — no delta
-		}
-		t1, err1 := time.Parse(time.RFC3339, *prevAt)
-		t2, err2 := time.Parse(time.RFC3339, at)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		d := ClientRfDelta{
-			At: at, Lat: lat, Lon: lon, Stationary: stationary == 1,
-			WallMillis: t2.Sub(t1).Milliseconds(),
-		}
-		d.RxAirDelta = deltaOf(rx, prevRx)
-		d.TxAirDelta = deltaOf(tx, prevTx)
-		d.RecvDelta = deltaOf(recv, prevRecv)
-		d.RecvErrDelta = deltaOf(errs, prevErrs)
-		out = append(out, d)
+		out = append(out, ClientRfDelta{
+			At:           r.SampledAt.Format(time.RFC3339),
+			Lat:          r.Lat,
+			Lon:          r.Lon,
+			Stationary:   r.Stationary,
+			WallMillis:   r.SampledAt.Sub(*r.PrevAt).Milliseconds(),
+			RxAirDelta:   deltaOf(r.RxAirSecs, r.PrevRx),
+			TxAirDelta:   deltaOf(r.TxAirSecs, r.PrevTx),
+			RecvDelta:    deltaOf(r.Recv, r.PrevRecv),
+			RecvErrDelta: deltaOf(r.RecvErrors, r.PrevErrs),
+		})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func deltaOf(cur, prev *int64) *int64 {
@@ -186,4 +162,29 @@ func deltaOf(cur, prev *int64) *int64 {
 		d = 0
 	}
 	return &d
+}
+
+func (s *Store) PruneOldClientRfSamples(ctx context.Context, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil // disabled
+	}
+	n, err := s.pruneOldClientRfSamplesAt(ctx, time.Now().UTC().AddDate(0, 0, -days))
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		log.Printf("[prune] deleted %d client_rf_samples older than %d days", n, days)
+	}
+	return n, nil
+}
+
+// pruneOldClientRfSamplesAt is the cutoff-instant seam behind
+// PruneOldClientRfSamples: it lets tests place a row on a specific side of the
+// cutoff without racing time.Now().
+func (s *Store) pruneOldClientRfSamplesAt(ctx context.Context, cutoff time.Time) (int64, error) {
+	n, err := s.db.PruneClientRfSamples(ctx, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune client_rf_samples: %w", err)
+	}
+	return n, nil
 }

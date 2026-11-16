@@ -1,5 +1,7 @@
 # Migrating from Node.js to Go Engine
 
+> **Historical.** This guide describes the Node.js to Go move when the database was a SQLite file (`meshcore.db`). CoreScope now stores everything in PostgreSQL, so the file paths, `DB_PATH`, WAL notes and backup steps below no longer apply. To start a new deployment see [DEPLOY.md](../DEPLOY.md), and to convert an existing SQLite database see [Database](user-guide/database.md#moving-from-sqlite).
+
 Guide for existing CoreScope users switching from the Node.js Docker image to the Go version.
 
 > **Status (July 2025):** The Go engine is fully functional for production use.

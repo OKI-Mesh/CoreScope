@@ -1,0 +1,87 @@
+{
+ "timeRange": {
+  "from": "2026-11-02T19:44:51Z",
+  "to": "2026-11-09T19:44:51Z",
+  "days": 7
+ },
+ "packets": [
+  {
+   "hash": "75bb2fffe86ca440",
+   "timestamp": "2026-11-06T06:07:33Z",
+   "hops": 1,
+   "tags": [
+    "flood",
+    "unscoped",
+    "advert"
+   ]
+  },
+  {
+   "hash": "cfd2bc500e0f9480",
+   "timestamp": "2026-11-06T06:09:01Z",
+   "hops": 4,
+   "tags": [
+    "flood",
+    "unscoped"
+   ]
+  },
+  {
+   "hash": "9f4710e31e6e703e",
+   "timestamp": "2026-11-06T06:09:46Z",
+   "hops": 2,
+   "tags": [
+    "flood",
+    "unscoped",
+    "advert"
+   ]
+  },
+  {
+   "hash": "3fecf8966611b03c",
+   "timestamp": "2026-11-06T06:10:36Z",
+   "hops": 2,
+   "tags": [
+    "flood",
+    "unscoped",
+    "advert"
+   ]
+  },
+  {
+   "hash": "3c618ae0b1379687",
+   "timestamp": "2026-11-06T06:11:49Z",
+   "hops": 1,
+   "tags": [
+    "flood",
+    "unscoped",
+    "advert"
+   ]
+  },
+  {
+   "hash": "26645877e69879bb",
+   "timestamp": "2026-11-06T06:11:51Z",
+   "hops": 5,
+   "tags": [
+    "flood",
+    "unscoped"
+   ]
+  },
+  {
+   "hash": "c3385240d4e4facf",
+   "timestamp": "2026-11-06T06:12:53Z",
+   "hops": 1,
+   "tags": [
+    "flood",
+    "unscoped",
+    "advert"
+   ]
+  },
+  {
+   "hash": "1f3a346339629c1f",
+   "timestamp": "2026-11-06T06:13:06Z",
+   "hops": 2,
+   "tags": [
+    "flood",
+    "unscoped"
+   ]
+  }
+ ],
+ "ambiguous": 1234
+}

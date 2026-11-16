@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // End-to-end fixture test for issue #1201 sub-task 4.
@@ -67,26 +72,27 @@ type t1201Node struct {
 	obsCount int
 }
 
-func t1201InsertNode(t *testing.T, db *DB, n t1201Node) {
+func t1201InsertNode(t *testing.T, ctx context.Context, db *database.DB, n t1201Node) {
 	t.Helper()
-	// NOTE: `obsCount` is written to the `advert_count` column. That column
-	// is what resolveWithContext reads (via nodeInfo.ObservationCount /
-	// betterByObsCount) as the tier-3 popularity tiebreak. If the tier-3
-	// source column ever changes (e.g. observations.packet_count), the
-	// "Berlin would win tier-3" premise of this fixture weakens silently —
-	// update both this insert and the candidate scoring assertions.
-	_, err := db.conn.Exec(
-		`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count) VALUES (?, ?, 'repeater', ?, ?, ?, '2026-01-01T00:00:00Z', ?)`,
-		n.pk, "node-"+n.pk[:4], n.lat, n.lon, "2026-05-01T00:00:00Z", n.obsCount,
-	)
-	if err != nil {
-		t.Fatalf("insert node %s: %v", n.pk, err)
-	}
+	seen := time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC)
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: n.pk,
+		Name:      "node-" + n.pk[:4],
+		Role:      "repeater",
+		Lat:       &n.lat,
+		Lon:       &n.lon,
+		RxTime:    seen,
+		IngestNow: seen,
+	})
+	// advert_count is the tier-3 popularity tiebreak used by the resolver.
+	mustIncrementTestNodeAdvertCount(t, ctx, db, n.pk, n.obsCount)
 }
 
 // TestTopHopsRespectsContextAcrossAllCallSites is the end-to-end regression
 // sentinel for issue #1201. See file-header docblock for design.
 func TestTopHopsRespectsContextAcrossAllCallSites(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 
 	// Insert all repeater nodes with GPS + observation counts.
@@ -104,54 +110,28 @@ func TestTopHopsRespectsContextAcrossAllCallSites(t *testing.T) {
 		{t1201_8acc, 52.60, 13.50, 200}, // would win tier-3 without context
 	}
 	for _, n := range nodes {
-		t1201InsertNode(t, db, n)
+		t1201InsertNode(t, ctx, db, n)
 	}
 
 	// Insert observer row (referenced by observations via observer_idx).
-	if _, err := db.conn.Exec(
-		`INSERT INTO observers (id, name, last_seen, first_seen, packet_count) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', 100)`,
-		t1201Observer, "obs-ca", "2026-05-01T00:00:00Z",
-	); err != nil {
-		t.Fatal(err)
-	}
+	observerID := mustCreateTestObserver(t, ctx, db, t1201Observer, "obs-ca", "", time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC))
 
 	// Insert 50 transmissions, each with path ["72","8a"], sender pubkey
 	// embedded in decoded_json (read by buildHopContextPubkeys via ParsedDecoded).
-	// Wrapped in a single BEGIN/COMMIT — shaves wall time on slow CI runners.
 	decoded, _ := json.Marshal(map[string]interface{}{"pubKey": t1201Sender, "type": "data"})
-	pathJSON := `["72","8a"]`
-	baseTime := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	tx, err := db.conn.Begin()
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
+	baseTime := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Minute)
 	for i := 0; i < 50; i++ {
-		ts := baseTime.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
+		ts := baseTime.Add(time.Duration(i) * time.Minute)
 		hash := fmt.Sprintf("hash1201_%03d", i)
-		res, err := tx.Exec(
-			`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json) VALUES (?, ?, ?, 1, 1, ?)`,
-			"AA", hash, ts, string(decoded),
-		)
-		if err != nil {
-			_ = tx.Rollback()
-			t.Fatal(err)
-		}
-		txID, _ := res.LastInsertId()
-		if _, err := tx.Exec(
-			`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp) VALUES (?, 1, 12.0, -90, ?, ?)`,
-			txID, pathJSON, baseTime.Add(time.Duration(i)*time.Minute).Unix(),
-		); err != nil {
-			_ = tx.Rollback()
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit tx: %v", err)
+		txID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+			"AA", hash, string(decoded), types.RouteFlood, types.PayloadRESPONSE, "",
+		), ts)
+		dbtest.Observation(t, db, txID, observerID, ts, 12, -90, []string{"72", "8a"}...)
 	}
 
 	// Build store and seed graph BEFORE Load() — Load calls buildDistanceIndex
 	// which reads s.graph; if it's nil, tier 1 is skipped.
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	g := NewNeighborGraph()
 	// Strong sender↔72aa and sender↔8aaa edges (count well above
 	// affinityMinObservations, recent timestamp).
@@ -168,8 +148,12 @@ func TestTopHopsRespectsContextAcrossAllCallSites(t *testing.T) {
 	}
 	store.graph.Store(g)
 
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load: %v", err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
 	}
 
 	// #1011: distance index is now lazy — trigger it explicitly and

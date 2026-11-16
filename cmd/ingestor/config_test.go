@@ -22,9 +22,6 @@ func TestLoadConfigValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DBPath != "/tmp/test.db" {
-		t.Errorf("dbPath=%s, want /tmp/test.db", cfg.DBPath)
-	}
 	if len(cfg.MQTTSources) != 1 {
 		t.Fatalf("mqttSources len=%d, want 1", len(cfg.MQTTSources))
 	}
@@ -34,15 +31,11 @@ func TestLoadConfigValidJSON(t *testing.T) {
 }
 
 func TestLoadConfigMissingFile(t *testing.T) {
-	t.Setenv("DB_PATH", "")
 	t.Setenv("MQTT_BROKER", "")
 
 	cfg, err := LoadConfig("/nonexistent/path/config.json")
 	if err != nil {
 		t.Fatalf("missing config should not error (zero-config mode), got: %v", err)
-	}
-	if cfg.DBPath != "data/meshcore.db" {
-		t.Errorf("dbPath=%s, want data/meshcore.db", cfg.DBPath)
 	}
 	// Should default to localhost MQTT
 	if len(cfg.MQTTSources) != 1 {
@@ -64,23 +57,6 @@ func TestLoadConfigMalformedJSON(t *testing.T) {
 	_, err := LoadConfig(cfgPath)
 	if err == nil {
 		t.Error("expected error for malformed JSON")
-	}
-}
-
-func TestLoadConfigEnvVarDBPath(t *testing.T) {
-	t.Setenv("DB_PATH", "/override/db.sqlite")
-	t.Setenv("MQTT_BROKER", "")
-
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	os.WriteFile(cfgPath, []byte(`{"dbPath": "original.db"}`), 0o644)
-
-	cfg, err := LoadConfig(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DBPath != "/override/db.sqlite" {
-		t.Errorf("dbPath=%s, want /override/db.sqlite", cfg.DBPath)
 	}
 }
 
@@ -129,7 +105,6 @@ func TestLoadConfigEnvVarMQTTBrokerDefaultTopic(t *testing.T) {
 }
 
 func TestLoadConfigLegacyMQTT(t *testing.T) {
-	t.Setenv("DB_PATH", "")
 	t.Setenv("MQTT_BROKER", "")
 
 	dir := t.TempDir()
@@ -159,7 +134,6 @@ func TestLoadConfigLegacyMQTT(t *testing.T) {
 }
 
 func TestLoadConfigLegacyMQTTNotUsedWhenSourcesExist(t *testing.T) {
-	t.Setenv("DB_PATH", "")
 	t.Setenv("MQTT_BROKER", "")
 
 	dir := t.TempDir()
@@ -182,25 +156,7 @@ func TestLoadConfigLegacyMQTTNotUsedWhenSourcesExist(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultDBPath(t *testing.T) {
-	t.Setenv("DB_PATH", "")
-	t.Setenv("MQTT_BROKER", "")
-
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	os.WriteFile(cfgPath, []byte(`{}`), 0o644)
-
-	cfg, err := LoadConfig(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.DBPath != "data/meshcore.db" {
-		t.Errorf("dbPath=%s, want data/meshcore.db", cfg.DBPath)
-	}
-}
-
 func TestLoadConfigLegacyMQTTEmptyBroker(t *testing.T) {
-	t.Setenv("DB_PATH", "")
 	t.Setenv("MQTT_BROKER", "")
 
 	dir := t.TempDir()
@@ -244,7 +200,6 @@ func TestResolvedSourcesEmpty(t *testing.T) {
 }
 
 func TestLoadConfigWithAllFields(t *testing.T) {
-	t.Setenv("DB_PATH", "")
 	t.Setenv("MQTT_BROKER", "")
 
 	dir := t.TempDir()
@@ -431,7 +386,6 @@ func TestResolvedSourcesSchemeMapping(t *testing.T) {
 // TestLoadConfigWSSource verifies that a WebSocket MQTT source round-trips through
 // LoadConfig correctly â€” username/password preserved, scheme unchanged.
 func TestLoadConfigWSSource(t *testing.T) {
-	t.Setenv("DB_PATH", "")
 	t.Setenv("MQTT_BROKER", "")
 
 	dir := t.TempDir()

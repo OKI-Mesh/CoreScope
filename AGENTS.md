@@ -15,10 +15,10 @@ Go backend + static frontend. No build step. No framework. No bundler.
 cmd/server/        — Go API server (REST + WebSocket broadcast + static file serving)
   main.go          — Entry point, flags, SPA handler
   routes.go        — All /api/* endpoints
-  store.go         — In-memory packet store + analytics + SQLite queries
+  store.go         — In-memory packet store + analytics + database queries
   config.go        — Configuration loading
   decoder.go       — MeshCore packet decoder
-cmd/ingestor/      — Go MQTT ingestor (separate binary, writes to shared SQLite DB)
+cmd/ingestor/      — Go MQTT ingestor (separate binary, writes to the shared Postgres database)
 public/            — Frontend (vanilla JS, one file per page) — ACTIVE, NOT DEPRECATED
   app.js           — SPA router, shared globals, theme loading
   roles.js         — ROLE_COLORS, TYPE_COLORS, health thresholds, shared helpers
@@ -36,24 +36,25 @@ public/            — Frontend (vanilla JS, one file per page) — ACTIVE, NOT 
   live.css         — Live page styles
   home.css         — Home page styles
   index.html       — SPA shell, script/style tags with __BUST__ placeholder (auto-replaced at server startup)
-test-fixtures/     — Real data SQLite fixture from staging (used for E2E tests)
+test-fixtures/     — Real data Postgres fixture from staging, as SQL (`e2e-fixture.sql`, loaded by `scripts/e2e-db.sh` for E2E tests)
 scripts/           — Tooling (coverage collector, fixture capture, frontend instrumentation)
 ```
 
 ### Data Flow
-1. MQTT brokers → Go ingestor (`cmd/ingestor/`) ingests packets → decodes → writes to SQLite
-2. Go server (`cmd/server/`) polls SQLite for new packets, broadcasts via WebSocket
+1. MQTT brokers → Go ingestor (`cmd/ingestor/`) ingests packets → decodes → writes to Postgres
+2. Go server (`cmd/server/`) polls Postgres for new packets, broadcasts via WebSocket
 3. Frontend fetches via REST API (`/api/*`), filters/sorts client-side
 
 ### Read/Write Separation Invariant (#1283)
 - **All DB writes live in `cmd/ingestor/`.** INSERT / UPDATE / DELETE / VACUUM /
   schema migrations / retention all run in the ingestor process.
-- **`cmd/server/` is read-only.** It opens SQLite with `mode=ro` and must not
-  acquire a write lock. Adding a write-side helper (e.g. a `cachedRW`-style
-  RW connection) regresses this invariant and races the ingestor → SQLITE_BUSY.
-- Enforcement: `cmd/server/readonly_invariant_test.go` reflect-asserts that
-  `PruneOldPackets`, `PruneOldMetrics`, and `RemoveStaleObservers` are NOT
-  methods on the server's `*DB`. If you need a new write, add it to
+- **`cmd/server/` is read-only.** Its pool comes from `database.OpenReadOnly`,
+  which sets `default_transaction_read_only = on`, and it never calls
+  `OpenReadWrite`. Adding a write-side helper to the server regresses this
+  invariant.
+- Enforcement: `cmd/server/readonly_invariant_test.go` scans the server's
+  non-test source for writer call sites (`OpenReadWrite(`, raw DML against the
+  node directory, multibyte-persist helpers). If you need a new write, add it to
   `cmd/ingestor/`.
 
 ### What's Deprecated (DO NOT TOUCH)
@@ -92,9 +93,9 @@ Every change must consider performance impact BEFORE implementation. This codeba
 No proof = no merge.
 
 ### 1. No commit without tests
-Every change that touches logic MUST have tests. For Go backend: `cd cmd/server && go test ./...` and `cd cmd/ingestor && go test ./...`, or `make test` for all 14 modules. For frontend: `node tests/unit/test-packet-filter.js && node tests/unit/test-aging.js && node tests/unit/test-frontend-helpers.js`. If you add new logic, add tests. No exceptions.
+Every change that touches logic MUST have tests. For Go backend: `go test ./... -count=1` from the repo root (plus `cd cmd/etl && go test ./...`, which is a separate module). CI runs the same `go build` and `go test` commands. For frontend: `node tests/unit/test-packet-filter.js && node tests/unit/test-aging.js && node tests/unit/test-frontend-helpers.js`. If you add new logic, add tests. No exceptions.
 
-The SQLite driver (`github.com/mattn/go-sqlite3`) is cgo. **`CGO_ENABLED=0` still *builds*** — that is the trap. It links a stub, and the binary dies on the first query with `go-sqlite3 requires cgo to work. This is a stub`, so a green build proves nothing. A plain `GOOS=linux go build` likewise cannot cross-compile it. Use `make build` / `make crossbuild` — the latter needs [`zig`](https://ziglang.org/download/) as the cross C compiler and produces static musl binaries. Never re-add `CGO_ENABLED=0`.
+Every binary is pure Go (pgx needs no C library), so builds use `CGO_ENABLED=0` and cross-compile with just `GOOS`/`GOARCH`. There is no Makefile; use `go build` directly, as CI and the Dockerfile do. `go test -race` is the one thing that needs cgo; it uses the host C compiler.
 
 ### 2. No commit without browser validation
 After pushing, verify the change works in an actual browser. Use `browser profile=openclaw` against the running instance. Take a screenshot if the change is visual. If you can't validate it, say so — don't claim it works.

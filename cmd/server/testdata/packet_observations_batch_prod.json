@@ -1,0 +1,102 @@
+{
+  "results": {
+    "a47ebe195c446658": [
+      {
+        "direction": "rx",
+        "hash": "a47ebe195c446658",
+        "id": 33466894,
+        "observer_iata": "CVG",
+        "observer_id": "18315E8B1BA6840E5020DA27772B1D40538BD54E000BEC6426B1B8FD65C3E2ED",
+        "observer_name": "Observer-001",
+        "path_json": "[\"CF0702\",\"088C2E\",\"6A3DFF\"]",
+        "raw_hex": "0183cf0702088c2e6a3dffbe46c55e2b4a5457f3a0788677e911cf23ad8bbae6dfbe9073e0410c2d5b5681925bcb5df7db68426a4e5ca3b399528212beb1b6706de7e1d87d7ebbc91d7e524d364776036b98a121ba7d15f3108e42fe83fccd7e77f80aae6f2e7454df9453a8209535fea55662c8145b99b7ee937ceb680ca3c97ef6045dd623521c8e229340e28d35",
+        "resolved_path": [
+          null,
+          null,
+          "6a3dff69bffe4612fb6e8c152a543dddaaac964d453ebec2ffa9ff7e18c1d853"
+        ],
+        "rssi": -56,
+        "snr": 12.5,
+        "timestamp": "2026-11-13T13:19:25.000Z"
+      }
+    ],
+    "a951d6730dc06db4": [
+      {
+        "direction": "rx",
+        "hash": "a951d6730dc06db4",
+        "id": 32502385,
+        "observer_iata": "IND",
+        "observer_id": "AA5862E06EA2845E452DB630262544B255C08ADC4D07A1E3E5EEC5B1718A72E3",
+        "observer_name": "Observer-002",
+        "path_json": "[\"2F6918\",\"BEC28F\",\"9FE80B\",\"EC7C28\",\"AB9C13\",\"E832C0\",\"592D06\",\"7BF613\",\"EABF5F\",\"239B8D\"]",
+        "raw_hex": "1D862F6918BEC28F9FE80BEC7C28AB9C1357414468D3AD44998EC29529AA2F57E84D432D1E4F9D21CD287D1F631B8C5177E5759B62BE1392D334B7F9DEF28A53EFA5F779D8E777",
+        "resolved_path": [
+          "2f6918e9518627f67d68e8cfff5cfae39204ea1ae79e380a947558f08e6be61e",
+          null,
+          "9fe80bca74cc390b4a84b69dac52f7cf2199aa427f5959f574bef4a51a5a11b6",
+          null,
+          null,
+          null,
+          "592d0656cc389951b40d1725a610612383c6553a7a808b39ffdfc3b3a7c44e45",
+          "7bf613f32f861fd9ef2239f75aa1e5dccc1a29edd3bad8e738af249f984be7fa",
+          "eabf5f2f421d63ddc44969b2d032a39e4614d0ed4322b6d20dc34c3b642d19ec",
+          "239b8dfafad7803a6397f4006d750131eb5d51b5eafd5d1e9aaa7d958b207bd6"
+        ],
+        "rssi": -28,
+        "snr": 11.75,
+        "timestamp": "2026-11-11T13:18:48.000Z"
+      },
+      {
+        "direction": "rx",
+        "hash": "a951d6730dc06db4",
+        "id": 32502387,
+        "observer_iata": "IND",
+        "observer_id": "A34168BA441E261DA253452920F60E5728452E6FF102B983F31AB5D3D74D9C80",
+        "observer_name": "Observer-003",
+        "path_json": "[\"2F6918\",\"BEC28F\",\"9FE80B\",\"EC7C28\",\"AB9C13\",\"E832C0\",\"592D06\",\"7F24D1\",\"F07D35\",\"313337\",\"E76DA7\",\"4F99B5\"]",
+        "raw_hex": "1D862F6918BEC28F9FE80BEC7C28AB9C1357414468D3AD44998EC29529AA2F57E84D432D1E4F9D21CD287D1F631B8C5177E5759B62BE1392D334B7F9DEF28A53EFA5F779D8E777",
+        "resolved_path": [
+          "2f6918e9518627f67d68e8cfff5cfae39204ea1ae79e380a947558f08e6be61e",
+          null,
+          "9fe80bca74cc390b4a84b69dac52f7cf2199aa427f5959f574bef4a51a5a11b6",
+          null,
+          null,
+          null,
+          "592d0656cc389951b40d1725a610612383c6553a7a808b39ffdfc3b3a7c44e45",
+          "7f24d1e39ade5d3fb09f272f29dd5a2a0107cf8a7144331c2c307259284f5f01",
+          "f07d350e01b29ed73fd3c950f8a1f5cf59692e719ae591df7d88e8a69ba90a0b",
+          "3133373c8f7245012805f92a8c901178b0d469bd4ad34ae6754a6cacd1ea3dd7",
+          "e76da7e1ee1719f348b48e8811097fc90a2e3b6c50b8598cce4bd8e9892b49d1",
+          "4f99b5cce5cc2cf269abff34f0a3a4c12888974b7e3156a3c0d510ed3d489008"
+        ],
+        "rssi": -37,
+        "snr": 11,
+        "timestamp": "2026-11-11T13:18:48.000Z"
+      },
+      {
+        "direction": "rx",
+        "hash": "a951d6730dc06db4",
+        "id": 32502374,
+        "observer_iata": "IND",
+        "observer_id": "7D59247448B215E5F243D8976715EC5013C9894F569E6C7590C4BB2EC7FB09F6",
+        "observer_name": "Observer-004",
+        "path_json": "[\"2F6918\",\"BEC28F\",\"9FE80B\",\"EC7C28\",\"AB9C13\",\"E832C0\",\"592D06\",\"7BF613\",\"E41827\"]",
+        "raw_hex": "1D862F6918BEC28F9FE80BEC7C28AB9C1357414468D3AD44998EC29529AA2F57E84D432D1E4F9D21CD287D1F631B8C5177E5759B62BE1392D334B7F9DEF28A53EFA5F779D8E777",
+        "resolved_path": [
+          "2f6918e9518627f67d68e8cfff5cfae39204ea1ae79e380a947558f08e6be61e",
+          null,
+          "9fe80bca74cc390b4a84b69dac52f7cf2199aa427f5959f574bef4a51a5a11b6",
+          null,
+          null,
+          null,
+          "592d0656cc389951b40d1725a610612383c6553a7a808b39ffdfc3b3a7c44e45",
+          "7bf613f32f861fd9ef2239f75aa1e5dccc1a29edd3bad8e738af249f984be7fa",
+          "e4182771480406c2ee29bebddef1ec1aaa34caf8838353813443ca63c79ce74e"
+        ],
+        "rssi": -12,
+        "snr": 11.25,
+        "timestamp": "2026-11-11T13:18:45.000Z"
+      }
+    ]
+  }
+}

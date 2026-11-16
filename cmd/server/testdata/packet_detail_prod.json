@@ -1,0 +1,95 @@
+{
+  "observation_count": 2,
+  "observations": [
+    {
+      "direction": "rx",
+      "hash": "46b600e1c61b6ae7",
+      "id": 44048878,
+      "observer_iata": "BBB",
+      "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+      "observer_name": "Fixture Observer B",
+      "path_json": "[\"8605\"]",
+      "raw_hex": "11418605045AAFBBFD1BA2EF",
+      "resolved_path": [
+        "005a50a9efff83da43bdbcfec06bc7e5ca95f153a3341168c5c776f9fa5f523e"
+      ],
+      "rssi": -99,
+      "snr": 1.8,
+      "timestamp": "2026-11-09T02:42:00.000Z"
+    },
+    {
+      "direction": "rx",
+      "hash": "46b600e1c61b6ae7",
+      "id": 44048822,
+      "observer_iata": "BBB",
+      "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+      "observer_name": "Fixture Observer B",
+      "path_json": "[\"2E8F\"]",
+      "raw_hex": "11412E8F045AAFBBFD1BA2EF",
+      "resolved_path": [
+        "1dec6fa84f378fdad489caa0369e6131260faef8f5013a275a91e0caca3702b5"
+      ],
+      "rssi": -9,
+      "snr": 11.8,
+      "timestamp": "2026-11-09T02:41:59.000Z"
+    }
+  ],
+  "packet": {
+    "_parsedPath": [
+      "8605"
+    ],
+    "decoded_json": "{\"type\":\"ADVERT\",\"pubKey\":\"9c586ddfc7bf24973f77338a83cc848a61e2c048e6437af3dedd21ba8d375c0e\",\"timestamp\":1794192113,\"timestampISO\":\"2026-11-09T02:41:53.000Z\",\"signature\":\"f3f15a23e43f1388ece45c2f00ba41bfd2920b2279d403707655f6153c114205645761ef0cb669e4c9879bb2dbb64c5fdd8de10211f307fd0d0366b6b96ceee5\",\"signatureValid\":true,\"flags\":{\"raw\":146,\"type\":2,\"chat\":false,\"repeater\":true,\"room\":false,\"sensor\":false,\"hasLocation\":true,\"hasFeat1\":false,\"hasFeat2\":false,\"hasName\":true},\"lat\":39.0,\"lon\":-82.0,\"name\":\"Fixture Repeater\"}",
+    "direction": "rx",
+    "first_seen": "2026-11-09T02:41:59Z",
+    "hash": "46b600e1c61b6ae7",
+    "id": 2983911,
+    "observation_count": 2,
+    "observations": [
+      {
+        "direction": "rx",
+        "id": 44048878,
+        "observer_iata": "BBB",
+        "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+        "observer_name": "Fixture Observer B",
+        "path_json": "[\"8605\"]",
+        "resolved_path": [
+          "005a50a9efff83da43bdbcfec06bc7e5ca95f153a3341168c5c776f9fa5f523e"
+        ],
+        "rssi": -99,
+        "snr": 1.8,
+        "timestamp": "2026-11-09T02:42:00.000Z"
+      },
+      {
+        "direction": "rx",
+        "id": 44048822,
+        "observer_iata": "BBB",
+        "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+        "observer_name": "Fixture Observer B",
+        "path_json": "[\"2E8F\"]",
+        "resolved_path": [
+          "1dec6fa84f378fdad489caa0369e6131260faef8f5013a275a91e0caca3702b5"
+        ],
+        "rssi": -9,
+        "snr": 11.8,
+        "timestamp": "2026-11-09T02:41:59.000Z"
+      }
+    ],
+    "observer_iata": "BBB",
+    "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+    "observer_name": "Fixture Observer B",
+    "path_json": "[\"8605\"]",
+    "payload_type": 4,
+    "raw_hex": "11412E8F045AAFBBFD1BA2EF",
+    "resolved_path": [
+      "005a50a9efff83da43bdbcfec06bc7e5ca95f153a3341168c5c776f9fa5f523e"
+    ],
+    "route_type": 1,
+    "rssi": -99,
+    "scope_name": null,
+    "snr": 1.8,
+    "timestamp": "2026-11-09T02:41:59Z"
+  },
+  "path": [
+    "8605"
+  ]
+}

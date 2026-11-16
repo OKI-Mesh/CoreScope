@@ -22,22 +22,24 @@ import (
 // s.packets must also be present in s.byHash[tx.Hash]. Violation = silent
 // partial data loss.
 func TestHotStartup_loadChunk_IndexSliceConsistency(t *testing.T) {
+	ctx := t.Context()
+
 	// 10 recent + 1200 old: 1200 > 2 * mergeBatchSize(500) so the merge
 	// spans 3 batches, widening the inconsistency window for the reader.
 	dbPath := createTestDBWithAgedPackets(t, 10, 1200)
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1,
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if len(store.packets) != 10 {
 		t.Fatalf("setup: expected 10 packets after hot Load, got %d", len(store.packets))
@@ -78,7 +80,7 @@ func TestHotStartup_loadChunk_IndexSliceConsistency(t *testing.T) {
 	// Trigger the batched merge.
 	chunkEnd := time.Now().UTC().Add(-1 * time.Hour)
 	chunkStart := time.Now().UTC().Add(-72 * time.Hour)
-	if err := store.loadChunk(chunkStart, chunkEnd); err != nil {
+	if err := store.loadChunk(ctx, chunkStart, chunkEnd); err != nil {
 		stop.Store(true)
 		wg.Wait()
 		t.Fatalf("loadChunk failed: %v", err)

@@ -1,0 +1,143 @@
+{
+  "cached": false,
+  "preset": {
+    "freq_hz": 0,
+    "bw_khz": 62.5,
+    "sf": 7,
+    "cr": 5,
+    "preamble": 32
+  },
+  "rows": [
+    {
+      "airtime_pct": 28.611422443178867,
+      "count": 3417,
+      "count_pct": 10.447624289121263,
+      "payload_type": "GRP_TXT",
+      "score": 26200432102443,
+      "type": 5
+    },
+    {
+      "airtime_pct": 26.9490803586873,
+      "count": 3312,
+      "count_pct": 10.126582278481013,
+      "payload_type": "ADVERT",
+      "score": 24678170110672,
+      "type": 4
+    },
+    {
+      "airtime_pct": 18.381134213892043,
+      "count": 8723,
+      "count_pct": 26.67094722680854,
+      "payload_type": "REQ",
+      "score": 16832216569917,
+      "type": 0
+    },
+    {
+      "airtime_pct": 10.758761254810313,
+      "count": 2368,
+      "count_pct": 7.240261725677246,
+      "payload_type": "ANON_REQ",
+      "score": 9852155876656,
+      "type": 7
+    },
+    {
+      "airtime_pct": 4.60776313374409,
+      "count": 2737,
+      "count_pct": 8.368495077355837,
+      "payload_type": "RESPONSE",
+      "score": 4219482109621,
+      "type": 1
+    },
+    {
+      "airtime_pct": 4.5437327516161385,
+      "count": 2512,
+      "count_pct": 7.6805479116981585,
+      "payload_type": "TXT_MSG",
+      "score": 4160847356918,
+      "type": 2
+    },
+    {
+      "airtime_pct": 3.9908834329534293,
+      "count": 1912,
+      "count_pct": 5.846022136611019,
+      "payload_type": "PATH",
+      "score": 3654584829591,
+      "type": 8
+    },
+    {
+      "airtime_pct": 1.1575246631875435,
+      "count": 2391,
+      "count_pct": 7.310585213722252,
+      "payload_type": "TRACE",
+      "score": 1059983872000,
+      "type": 9
+    },
+    {
+      "airtime_pct": 0.5319065571190942,
+      "count": 43,
+      "count_pct": 0.13147434721457835,
+      "payload_type": "GRP_DATA",
+      "score": 487084543326,
+      "type": 6
+    },
+    {
+      "airtime_pct": 0.39819370379603214,
+      "count": 225,
+      "count_pct": 0.6879471656576774,
+      "payload_type": "ACK",
+      "score": 364639231784,
+      "type": 3
+    },
+    {
+      "airtime_pct": 0.021117205347452993,
+      "count": 78,
+      "count_pct": 0.2384883507613282,
+      "payload_type": "MULTIPART",
+      "score": 19337728000,
+      "type": 10
+    },
+    {
+      "airtime_pct": 0.01712233039160159,
+      "count": 4976,
+      "count_pct": 15.214333761389348,
+      "payload_type": "CONTROL",
+      "score": 15679488000,
+      "type": 11
+    },
+    {
+      "airtime_pct": 0.016387653597761318,
+      "count": 2,
+      "count_pct": 0.006115085916957133,
+      "payload_type": "UNK",
+      "score": 15006720000,
+      "type": 12
+    },
+    {
+      "airtime_pct": 0.007820338137423177,
+      "count": 3,
+      "count_pct": 0.0091726288754357,
+      "payload_type": "UNK",
+      "score": 7161343998,
+      "type": 13
+    },
+    {
+      "airtime_pct": 0.0047720444692213775,
+      "count": 5,
+      "count_pct": 0.015287714792392833,
+      "payload_type": "UNK",
+      "score": 4369919998,
+      "type": 14
+    },
+    {
+      "airtime_pct": 0.0023779150716915346,
+      "count": 2,
+      "count_pct": 0.006115085916957133,
+      "payload_type": "RAW_CUSTOM",
+      "score": 2177536000,
+      "type": 15
+    }
+  ],
+  "total_count": 32706,
+  "total_score": 91573329338924,
+  "window": "24h"
+}

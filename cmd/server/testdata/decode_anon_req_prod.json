@@ -1,0 +1,23 @@
+{
+  "decoded": {
+    "header": {
+      "payloadType": 7,
+      "payloadTypeName": "ANON_REQ",
+      "payloadVersion": 0,
+      "routeType": 2,
+      "routeTypeName": "DIRECT"
+    },
+    "path": {
+      "hashCount": 0,
+      "hashSize": 0,
+      "hops": []
+    },
+    "payload": {
+      "destHash": "2f",
+      "encryptedData": "e46d58fc5de6cf8a2a53cb24753bc0ec",
+      "mac": "e00f",
+      "srcPubKey": "5180127cc53ef9544387fd8fb0f8bbd6b8cd2e0a456f1e6d28729073f89696cb",
+      "type": "ANON_REQ"
+    }
+  }
+}

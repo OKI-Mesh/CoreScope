@@ -1,0 +1,12 @@
+{
+  "traces": [
+    {
+      "observer": "CC5E6DF598C029BB8DE1AC0BCF110B8F0D489EDAB27DD093486EA679678FF471",
+      "observer_name": "Observer 05",
+      "path_json": "[]",
+      "rssi": -34,
+      "snr": 11.75,
+      "time": "2026-11-09T06:55:05.000Z"
+    }
+  ]
+}

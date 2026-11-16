@@ -63,6 +63,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
@@ -199,16 +200,16 @@ func writeAnalyticsWarmup503(w http.ResponseWriter) {
 // recomputers manually so the background goroutines never fire. The
 // test only needs the *analyticsRecomputer pointers to be non-nil and
 // in the warmup state.
-func (s *PacketStore) installWarmupBlocker_1659(block <-chan struct{}) {
-	blockCompute := func() interface{} {
+func (s *PacketStore) installWarmupBlocker_1659(ctx context.Context, block <-chan struct{}) {
+	blockCompute := func(context.Context) interface{} {
 		<-block
 		return nil
 	}
 	s.analyticsRecomputerMu.Lock()
 	defer s.analyticsRecomputerMu.Unlock()
-	s.recompRF = newAnalyticsRecomputer("rf-test-block", time.Hour, blockCompute)
-	s.recompTopology = newAnalyticsRecomputer("topo-test-block", time.Hour, blockCompute)
-	s.recompChannels = newAnalyticsRecomputer("chan-test-block", time.Hour, blockCompute)
+	s.recompRF = newAnalyticsRecomputer(ctx, "rf-test-block", time.Hour, blockCompute)
+	s.recompTopology = newAnalyticsRecomputer(ctx, "topo-test-block", time.Hour, blockCompute)
+	s.recompChannels = newAnalyticsRecomputer(ctx, "chan-test-block", time.Hour, blockCompute)
 	// Do NOT call Start() — leaving firstPassDoneNs at zero is exactly
 	// the warmup state the test wants to exercise.
 }

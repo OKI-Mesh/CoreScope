@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 )
 
@@ -16,71 +17,16 @@ import (
 // POST /api/paths/inspect — beam-search scorer for prefix path candidates.
 // Spec: issue #944 §2.1–2.5.
 
-// pathInspectRequest is the JSON body for the inspect endpoint.
-type pathInspectRequest struct {
-	Prefixes []string            `json:"prefixes"`
-	Context  *pathInspectContext `json:"context,omitempty"`
-	Limit    int                 `json:"limit,omitempty"`
-}
-
-type pathInspectContext struct {
-	ObserverID string `json:"observerId,omitempty"`
-	Since      string `json:"since,omitempty"`
-	Until      string `json:"until,omitempty"`
-}
-
-// pathCandidate is one scored candidate path in the response.
-type pathCandidate struct {
-	Path  []string `json:"path"`
-	Names []string `json:"names"`
-	Score float64  `json:"score"`
-	// Speculative is true when the score is below speculativeThreshold or any
-	// hop is below the configured path-trust threshold. Consumers needing the
-	// reason should inspect evidence.perHop[].trusted.
-	Speculative bool         `json:"speculative"`
-	Evidence    pathEvidence `json:"evidence"`
-}
-
-type pathEvidence struct {
-	PerHop []hopEvidence `json:"perHop"`
-}
-
-type hopEvidence struct {
-	Prefix               string           `json:"prefix"`
-	CandidatesConsidered int              `json:"candidatesConsidered"`
-	Chosen               string           `json:"chosen"`
-	EdgeWeight           float64          `json:"edgeWeight"`
-	Trusted              bool             `json:"trusted"`
-	Alternatives         []hopAlternative `json:"alternatives,omitempty"`
-}
-
-// hopAlternative shows a candidate that was considered but not chosen for this hop.
-type hopAlternative struct {
-	PublicKey string  `json:"publicKey"`
-	Name      string  `json:"name"`
-	Score     float64 `json:"score"`
-}
-
-type pathInspectResponse struct {
-	Candidates []pathCandidate        `json:"candidates"`
-	Input      map[string]interface{} `json:"input"`
-	Stats      map[string]interface{} `json:"stats"`
-	// Stale is true when the response was served from a stale neighbor graph
-	// while a background rebuild is in progress (issue #1203).
-	Stale bool `json:"stale,omitempty"`
-}
-
 // beamEntry represents a partial path being extended during beam search.
 type beamEntry struct {
 	pubkeys  []string
 	names    []string
-	evidence []hopEvidence
+	evidence []api.PathHopEvidence
 	score    float64 // product of per-hop scores (pre-geometric-mean)
 }
 
 const (
 	beamWidth            = 20
-	maxInputHops         = 64
 	maxPrefixBytes       = 3
 	maxRequestItems      = 64
 	geoMaxKm             = 50.0
@@ -102,19 +48,19 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 	// Body limit per spec §2.1.
 	r.Body = http.MaxBytesReader(w, r.Body, inspectBodyLimit)
 
-	var req pathInspectRequest
+	var req api.PathInspectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
 	// Validate prefixes.
 	if len(req.Prefixes) == 0 {
-		http.Error(w, `{"error":"prefixes required"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "prefixes required")
 		return
 	}
 	if len(req.Prefixes) > maxRequestItems {
-		http.Error(w, `{"error":"too many prefixes (max 64)"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "too many prefixes (max 64)")
 		return
 	}
 
@@ -124,27 +70,30 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 		p = strings.ToLower(strings.TrimSpace(p))
 		req.Prefixes[i] = p
 		if len(p) == 0 || len(p)%2 != 0 {
-			http.Error(w, `{"error":"prefixes must be even-length hex"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "prefixes must be even-length hex")
 			return
 		}
 		if _, err := hex.DecodeString(p); err != nil {
-			http.Error(w, `{"error":"prefixes must be valid hex"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "prefixes must be valid hex")
 			return
 		}
 		byteLen := len(p) / 2
 		if byteLen > maxPrefixBytes {
-			http.Error(w, `{"error":"prefix exceeds 3 bytes"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "prefix exceeds 3 bytes")
 			return
 		}
 		if prefixByteLen == -1 {
 			prefixByteLen = byteLen
 		} else if byteLen != prefixByteLen {
-			http.Error(w, `{"error":"mixed prefix lengths not allowed"}`, http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "mixed prefix lengths not allowed")
 			return
 		}
 	}
 
-	limit := req.Limit
+	limit := 0
+	if req.Limit != nil {
+		limit = *req.Limit
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -157,8 +106,7 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 	s.store.inspectMu.RLock()
 	if cached, ok := s.store.inspectCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		s.store.inspectMu.RUnlock()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(cached.data)
+		writeJSON(w, cached.data)
 		return
 	}
 	s.store.inspectMu.RUnlock()
@@ -188,7 +136,7 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{"retry": true})
+		json.NewEncoder(w).Encode(api.PathInspectColdStart{Retry: true})
 		return
 	}
 	if graph.IsStale() {
@@ -212,7 +160,7 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build response with per-hop alternatives (spec §2.7, M2 fix).
-	candidates := make([]pathCandidate, 0, len(beam))
+	candidates := make([]api.PathCandidate, 0, len(beam))
 	for _, entry := range beam {
 		nHops := len(entry.pubkeys)
 		var score float64
@@ -221,7 +169,7 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Populate per-hop alternatives: other candidates at each hop that weren't chosen.
-		evidence := make([]hopEvidence, len(entry.evidence))
+		evidence := make([]api.PathHopEvidence, len(entry.evidence))
 		copy(evidence, entry.evidence)
 		allHopsTrusted := true
 		for hi, ev := range evidence {
@@ -234,9 +182,9 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 				allHopsTrusted = false
 			}
 			allCands := pm.m[prefix]
-			var alts []hopAlternative
+			var alts []api.PathHopAlternative
 			for _, c := range allCands {
-				if !canAppearInPath(c.Role) || c.PublicKey == ev.Chosen {
+				if !c.Role.RelaysTraffic() || c.PublicKey == ev.Chosen {
 					continue
 				}
 				var partialEntry beamEntry
@@ -245,14 +193,14 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 				}
 				// Score this alternative in the context of the partial path.
 				altScore := s.store.scoreHop(partialEntry, c, ev.CandidatesConsidered, graph, nodeByPK, now, hi)
-				alts = append(alts, hopAlternative{PublicKey: c.PublicKey, Name: c.Name, Score: math.Round(altScore*1000) / 1000})
+				alts = append(alts, api.PathHopAlternative{PublicKey: c.PublicKey, Name: c.Name, Score: math.Round(altScore*1000) / 1000})
 			}
 			// Sort alternatives by score descending, cap at 5.
 			sort.Slice(alts, func(i, j int) bool { return alts[i].Score > alts[j].Score })
 			if len(alts) > 5 {
 				alts = alts[:5]
 			}
-			evidence[hi] = hopEvidence{
+			evidence[hi] = api.PathHopEvidence{
 				Prefix:               ev.Prefix,
 				CandidatesConsidered: ev.CandidatesConsidered,
 				Chosen:               ev.Chosen,
@@ -262,28 +210,28 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		candidates = append(candidates, pathCandidate{
+		candidates = append(candidates, api.PathCandidate{
 			Path:        entry.pubkeys,
 			Names:       entry.names,
 			Score:       math.Round(score*1000) / 1000,
 			Speculative: score < speculativeThreshold || !allHopsTrusted,
-			Evidence:    pathEvidence{PerHop: evidence},
+			Evidence:    api.PathEvidence{PerHop: evidence},
 		})
 	}
 
 	elapsed := time.Since(start).Milliseconds()
-	resp := pathInspectResponse{
+	resp := api.PathInspectResponse{
 		Candidates: candidates,
 		Stale:      stale,
-		Input: map[string]interface{}{
-			"prefixes": req.Prefixes,
-			"hops":     len(req.Prefixes),
+		Input: api.PathInspectInput{
+			Prefixes: req.Prefixes,
+			Hops:     len(req.Prefixes),
 		},
-		Stats: map[string]interface{}{
-			"beamWidth":              beamWidth,
-			"expansionsRun":          len(req.Prefixes) * beamWidth,
-			"elapsedMs":              elapsed,
-			"minHashBytesForMapping": pt.MinHashBytesOrDefault(),
+		Stats: api.PathInspectStats{
+			BeamWidth:              beamWidth,
+			ExpansionsRun:          len(req.Prefixes) * beamWidth,
+			ElapsedMs:              elapsed,
+			MinHashBytesForMapping: pt.MinHashBytesOrDefault(),
 		},
 	}
 
@@ -309,19 +257,18 @@ func (s *Server) handlePathInspect(w http.ResponseWriter, r *http.Request) {
 		s.store.inspectMu.Unlock()
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, resp)
 }
 
 type inspectCachedResult struct {
-	data      pathInspectResponse
+	data      api.PathInspectResponse
 	expiresAt time.Time
 }
 
-func (s *PacketStore) inspectCacheKey(req pathInspectRequest) string {
+func (s *PacketStore) inspectCacheKey(req api.PathInspectRequest) string {
 	key := strings.Join(req.Prefixes, ",")
 	if req.Context != nil {
-		key += "|" + req.Context.ObserverID + "|" + req.Context.Since + "|" + req.Context.Until
+		key += "|" + deref(req.Context.ObserverId) + "|" + deref(req.Context.Since) + "|" + deref(req.Context.Until)
 	}
 	return key
 }
@@ -335,7 +282,7 @@ func (s *PacketStore) beamSearch(prefixes []string, pm *prefixMap, graph *Neighb
 		// Filter by role at lookup time (spec §2.2 step 2).
 		var filtered []nodeInfo
 		for _, c := range candidates {
-			if canAppearInPath(c.Role) {
+			if c.Role.RelaysTraffic() {
 				filtered = append(filtered, c)
 			}
 		}
@@ -357,7 +304,7 @@ func (s *PacketStore) beamSearch(prefixes []string, pm *prefixMap, graph *Neighb
 				newEntry := beamEntry{
 					pubkeys: append(append([]string{}, entry.pubkeys...), cand.PublicKey),
 					names:   append(append([]string{}, entry.names...), cand.Name),
-					evidence: append(append([]hopEvidence{}, entry.evidence...), hopEvidence{
+					evidence: append(append([]api.PathHopEvidence{}, entry.evidence...), api.PathHopEvidence{
 						Prefix:               prefix,
 						CandidatesConsidered: candidateCount,
 						Chosen:               cand.PublicKey,

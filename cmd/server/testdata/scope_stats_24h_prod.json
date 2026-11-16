@@ -1,0 +1,158 @@
+{
+  "window": "24h",
+  "summary": {
+    "transportTotal": 342,
+    "scoped": 342,
+    "unscoped": 35007,
+    "unknownScope": 342
+  },
+  "byRegion": [],
+  "timeSeries": [
+    {
+      "t": "2026-11-08T16:00:00Z",
+      "scoped": 5,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T17:00:00Z",
+      "scoped": 2,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T18:00:00Z",
+      "scoped": 2,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T19:00:00Z",
+      "scoped": 9,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T20:00:00Z",
+      "scoped": 4,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T21:00:00Z",
+      "scoped": 7,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T22:00:00Z",
+      "scoped": 6,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-08T23:00:00Z",
+      "scoped": 10,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T00:00:00Z",
+      "scoped": 6,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T01:00:00Z",
+      "scoped": 5,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T02:00:00Z",
+      "scoped": 9,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T03:00:00Z",
+      "scoped": 5,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T04:00:00Z",
+      "scoped": 7,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T05:00:00Z",
+      "scoped": 16,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T06:00:00Z",
+      "scoped": 29,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T07:00:00Z",
+      "scoped": 26,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T08:00:00Z",
+      "scoped": 33,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T09:00:00Z",
+      "scoped": 26,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T10:00:00Z",
+      "scoped": 26,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T11:00:00Z",
+      "scoped": 30,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T12:00:00Z",
+      "scoped": 22,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T13:00:00Z",
+      "scoped": 18,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T14:00:00Z",
+      "scoped": 19,
+      "unscoped": 0
+    },
+    {
+      "t": "2026-11-09T15:00:00Z",
+      "scoped": 20,
+      "unscoped": 0
+    }
+  ],
+  "advertsByRole": [
+    {
+      "role": "repeater",
+      "unscoped": 1388,
+      "unknownScope": 9,
+      "named": 0
+    },
+    {
+      "role": "companion",
+      "unscoped": 144,
+      "unknownScope": 1,
+      "named": 0
+    },
+    {
+      "role": "room",
+      "unscoped": 65,
+      "unknownScope": 0,
+      "named": 0
+    },
+    {
+      "role": "unknown",
+      "unscoped": 1,
+      "unknownScope": 1,
+      "named": 0
+    }
+  ]
+}

@@ -6,6 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+
 	"github.com/gorilla/mux"
 )
 
@@ -14,25 +18,44 @@ import (
 // returns nil → /api/nodes/{pk}/health.recentPackets[].resolved_path is missing
 // while /api/packets shows it.
 func TestRepro810(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
-	db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen, packet_count) VALUES ('obs1','O1',?, '2026-01-01T00:00:00Z', 100)`, recent)
-	db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen, packet_count) VALUES ('obs2','O2',?, '2026-01-01T00:00:00Z', 100)`, recent)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, first_seen, advert_count) VALUES ('aabbccdd11223344','R','repeater',?, '2026-01-01T00:00:00Z', 1)`, recent)
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json) VALUES ('AABB','testhash00000001',?,1,4,'{"pubKey":"aabbccdd11223344","type":"ADVERT"}')`, recent)
+	recent := now.Add(-1 * time.Hour)
+	observer1 := mustCreateTestObserver(t, ctx, db, "obs1", "O1", "", recent)
+	observer2 := mustCreateTestObserver(t, ctx, db, "obs2", "O2", "", recent)
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "aabbccdd11223344",
+		Name:      "R",
+		Role:      "repeater",
+		RxTime:    recent,
+		IngestNow: now,
+	})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: "eeff00112233aabb",
+		Name:      "Relay",
+		Role:      "repeater",
+		RxTime:    recent,
+		IngestNow: now,
+	})
+	txID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AABB", "testhash00000001", `{"pubKey":"aabbccdd11223344","type":"ADVERT"}`,
+		types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
 	// Longest-path obs WITHOUT resolved_path
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp) VALUES (1,1,12.5,-90,'["aa","bb","cc"]',?)`, recentEpoch)
+	dbtest.Observation(t, db, txID, observer1, recent, 12.5, -90, []string{"aa", "bb", "cc"}...)
 	// Shorter-path obs WITH resolved_path
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp, resolved_path) VALUES (1,2,8.0,-95,'["aa","bb"]',?,'["aabbccdd11223344","eeff00112233aabb"]')`, recentEpoch-100)
+	resolvedA := "aabbccdd11223344"
+	resolvedB := "eeff00112233aabb"
+	dbtest.Observation(t, db, txID, observer2, recent.Add(-100*time.Second), 8, -95, "aa:"+resolvedA, "bb:"+resolvedB)
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()

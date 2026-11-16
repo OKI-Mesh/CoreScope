@@ -1,0 +1,41 @@
+{
+  "totalNodes": 1615,
+  "roles": [
+    {
+      "role": "repeater",
+      "nodeCount": 1281,
+      "withSkew": 740,
+      "meanAbsSkewSec": 15587746.19,
+      "medianAbsSkewSec": 57.15,
+      "okCount": 419,
+      "warningCount": 18,
+      "criticalCount": 0,
+      "absurdCount": 0,
+      "noClockCount": 303
+    },
+    {
+      "role": "companion",
+      "nodeCount": 292,
+      "withSkew": 187,
+      "meanAbsSkewSec": 8851548.39,
+      "medianAbsSkewSec": 6.8,
+      "okCount": 165,
+      "warningCount": 4,
+      "criticalCount": 0,
+      "absurdCount": 0,
+      "noClockCount": 18
+    },
+    {
+      "role": "room",
+      "nodeCount": 42,
+      "withSkew": 35,
+      "meanAbsSkewSec": 18167881.98,
+      "medianAbsSkewSec": 16.8,
+      "okCount": 23,
+      "warningCount": 0,
+      "criticalCount": 0,
+      "absurdCount": 0,
+      "noClockCount": 12
+    }
+  ]
+}

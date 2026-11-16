@@ -6,7 +6,7 @@
  *   keep emoji branch in render path for back-compat with operator
  *   stored values),
  *   geofilter-builder.html, audio.js, filter-ux.js, style.css ::before
- *   glyph, cmd/server/routes.go (lockstep with customize-v2.js defaults).
+ *   glyph, cmd/server/config_api.go (lockstep with customize-v2.js defaults).
  *
  * Asserts (per file):
  *   1. Zero UI-iconography codepoints outside an allowlist
@@ -39,7 +39,7 @@ const M5_FILES = [
   'public/audio.js',
   'public/filter-ux.js',
   'public/style.css',
-  'cmd/server/routes.go',
+  'cmd/server/config_api.go',
 ];
 
 const MIN_USE_REFS = {
@@ -49,7 +49,7 @@ const MIN_USE_REFS = {
   'public/audio.js': 1,
   'public/filter-ux.js': 2,   // M2 already added some
   'public/style.css': 0,      // CSS uses background-image SVG data-URI; not a literal <use>
-  'cmd/server/routes.go': 0,
+  'cmd/server/config_api.go': 0,
 };
 
 const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
@@ -103,13 +103,13 @@ function assertCustomizeDefaultsUsePhTokens() {
   }
 }
 
-function assertRoutesGoUsesPhTokens() {
-  const txt = fs.readFileSync(path.join(ROOT, 'cmd/server/routes.go'), 'utf8');
+function assertConfigApiUsesPhTokens() {
+  const txt = fs.readFileSync(path.join(ROOT, 'cmd/server/config_api.go'), 'utf8');
   // Onboarding home defaults must echo Phosphor tokens, not raw emoji.
   // 4 steps × 1 token + 2 footerLinks × 1 token = 6 occurrences minimum.
   const phTokens = (txt.match(/ph:[a-z-]+/g) || []).length;
   assert.ok(phTokens >= 6,
-    `cmd/server/routes.go must echo ≥6 'ph:<name>' tokens in home defaults (got ${phTokens})`);
+    `cmd/server/config_api.go must echo ≥6 'ph:<name>' tokens in home defaults (got ${phTokens})`);
 }
 
 function main() {
@@ -122,7 +122,7 @@ function main() {
   try { assertCustomizeDefaultsUsePhTokens(); console.log('  ✓ customize.js + customize-v2.js DEFAULTS use ph: tokens'); }
   catch (e) { console.error(`  ✗ ${e.message}`); failed++; }
 
-  try { assertRoutesGoUsesPhTokens(); console.log('  ✓ cmd/server/routes.go home defaults use ph: tokens'); }
+  try { assertConfigApiUsesPhTokens(); console.log('  ✓ cmd/server/config_api.go home defaults use ph: tokens'); }
   catch (e) { console.error(`  ✗ ${e.message}`); failed++; }
 
   for (const rel of M5_FILES) {

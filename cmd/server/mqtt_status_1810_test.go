@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // PR #1810 round-1: /api/mqtt/status must surface WatchdogLastTickUnix
@@ -42,14 +44,14 @@ func TestMqttStatus_ExposesWatchdogFields_1810(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	var resp MqttStatusResponse
+	var resp api.MqttStatusResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, rec.Body.String())
 	}
-	if resp.WatchdogLastTickUnix != 1751313000 {
-		t.Errorf("WatchdogLastTickUnix = %d, want 1751313000; body=%s", resp.WatchdogLastTickUnix, rec.Body.String())
+	if resp.WatchdogLastTickUnix == nil || *resp.WatchdogLastTickUnix != 1751313000 {
+		t.Errorf("WatchdogLastTickUnix = %v, want 1751313000; body=%s", resp.WatchdogLastTickUnix, rec.Body.String())
 	}
-	if resp.WatchdogPanicCount != 7 {
-		t.Errorf("WatchdogPanicCount = %d, want 7; body=%s", resp.WatchdogPanicCount, rec.Body.String())
+	if resp.WatchdogPanicCount == nil || *resp.WatchdogPanicCount != 7 {
+		t.Errorf("WatchdogPanicCount = %v, want 7; body=%s", resp.WatchdogPanicCount, rec.Body.String())
 	}
 }

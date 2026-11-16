@@ -11,6 +11,9 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/decoder"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 func TestPayloadTypeNamesAll13(t *testing.T) {
@@ -21,17 +24,10 @@ func TestPayloadTypeNamesAll13(t *testing.T) {
 		0x08: "PATH", 0x09: "TRACE", 0x0A: "MULTIPART", 0x0B: "CONTROL",
 		0x0F: "RAW_CUSTOM",
 	}
-	if len(payloadTypeNames) != len(want) {
-		t.Errorf("payloadTypeNames has %d entries, want %d", len(payloadTypeNames), len(want))
-	}
 	for code, name := range want {
-		got, ok := payloadTypeNames[code]
-		if !ok {
-			t.Errorf("payloadTypeNames missing 0x%02X (%s)", code, name)
-			continue
-		}
+		got := types.PayloadType(code).String()
 		if got != name {
-			t.Errorf("payloadTypeNames[0x%02X] = %q, want %q", code, got, name)
+			t.Errorf("PayloadType(0x%02X).String() = %q, want %q", code, got, name)
 		}
 	}
 }
@@ -42,7 +38,7 @@ func TestDecodeRawCustomExposesLengthAndTag(t *testing.T) {
 	// Path byte: 0 hops, hash_size=1 → upper bits 0, lower 0 → 0x00.
 	// Payload: first byte tag 0xA5, then arbitrary data.
 	hexStr := "7D00A5DEADBEEF"
-	pkt, err := DecodePacket(hexStr, false)
+	pkt, err := decoder.DecodePacket(hexStr, nil, false)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

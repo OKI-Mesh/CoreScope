@@ -7,8 +7,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
+
+func loadStoreForPaths(t *testing.T, db *database.DB) *PacketStore {
+	t.Helper()
+	ctx := t.Context()
+	store := newPacketStoreForTest(t, db)
+	store.RefreshNodeCache(ctx)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for !store.PathHopIndexReady() {
+		select {
+		case <-deadline:
+			t.Fatal("path-hop index not ready within 5s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return store
+}
 
 // TestHandleNodePaths_PrefixCollisionExclusion verifies that paths through a node
 // sharing a 2-char prefix with another node are not returned as false positives
@@ -20,37 +42,40 @@ import (
 //   - tx1: path ["7a"], resolved_path NULL → false positive candidate, must be excluded
 //   - tx2: path ["7a"], resolved_path contains nodeA pubkey → SQL-confirmed, must be included
 func TestHandleNodePaths_PrefixCollisionExclusion(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
-	recent := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := time.Now().Add(-1 * time.Hour).Unix()
+	recent := time.Now().UTC().Add(-1 * time.Hour)
 
 	nodeAPK := "7acb1111aaaabbbb"
 	nodeBPK := "7aff2222ccccdddd" // same "7a" prefix, has GPS so resolveHop("7a") picks B
 
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeA', 'repeater', 0, 0, ?, '2026-01-01', 1)`, nodeAPK, recent)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'NodeB', 'repeater', 37.5, -122.0, ?, '2026-01-01', 1)`, nodeBPK, recent)
+	latA, lonA := 0.0, 0.0
+	latB, lonB := 37.5, -122.0
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: nodeAPK, Name: "NodeA", Role: "repeater", Lat: &latA, Lon: &lonA, RxTime: recent, IngestNow: recent,
+	})
+	mustCreateTestNode(t, ctx, db, database.NodeInput{
+		PublicKey: nodeBPK, Name: "NodeB", Role: "repeater", Lat: &latB, Lon: &lonB, RxTime: recent, IngestNow: recent,
+	})
 
 	// tx1: no resolved_path — should be excluded by hop-level check
-	db.conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (10, 'AA', 'hash_fp', ?)`, recent)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (10, NULL, '["7a"]', ?, NULL)`, recentEpoch)
+	tx1ID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AA", "hash_fp", "", types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
+	mustInsertUnobservedTestObservation(t, ctx, db, tx1ID, recent, 0, 0, []string{"7a"}, nil)
 
 	// tx2: resolved_path confirms nodeA — must be included
-	db.conn.Exec(`INSERT INTO transmissions (id, raw_hex, hash, first_seen) VALUES (11, 'BB', 'hash_tp', ?)`, recent)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, path_json, timestamp, resolved_path)
-		VALUES (11, NULL, '["7a"]', ?, ?)`, recentEpoch, `["`+nodeAPK+`"]`)
+	tx2ID := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"BB", "hash_tp", "", types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
+	mustInsertUnobservedTestObservation(t, ctx, db, tx2ID, recent, 0, 0,
+		[]string{"7a"}, []*string{&nodeAPK})
 
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
-	}
-	srv.store = store
+	srv := NewServer(db, &Config{Port: 3000}, NewHub())
+	srv.store = loadStoreForPaths(t, db)
 	router := mux.NewRouter()
+	srv.RegisterRoutes(router)
 	srv.RegisterRoutes(router)
 
 	req := httptest.NewRequest("GET", "/api/nodes/"+nodeAPK+"/paths", nil)
@@ -61,7 +86,7 @@ func TestHandleNodePaths_PrefixCollisionExclusion(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp NodePathsResponse
+	var resp api.NodePathsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

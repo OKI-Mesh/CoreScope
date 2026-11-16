@@ -116,52 +116,49 @@ func TestMaxFloat(t *testing.T) {
 	}
 }
 
-// TestEnrichNodeUsefulness_TrafficNormalization is the regression guard for
+// TestComputeNodeUsefulness_TrafficNormalization is the regression guard for
 // the #1762 BLOCKER: the exposed traffic_share_score must stay the RAW share,
 // while the composite must use the max-NORMALIZED traffic so the 0.20 weight
 // is fully realized (not collapsed to ~0.01 by a tiny raw fraction).
-func TestEnrichNodeUsefulness_TrafficNormalization(t *testing.T) {
-	node := map[string]interface{}{}
+func TestComputeNodeUsefulness_TrafficNormalization(t *testing.T) {
 	// Raw share 0.05, but it IS the population max → normalized 1.0.
-	enrichNodeUsefulness(node, 0.05, usefulnessAxes{1.0, 0, 0, 0}, true)
+	got := computeNodeUsefulness(0.05, usefulnessAxes{1.0, 0, 0, 0}, true)
 
-	if node["traffic_share_score"] != 0.05 {
-		t.Errorf("traffic_share_score should be the RAW 0.05, got %v", node["traffic_share_score"])
+	if got.TrafficShareScore != 0.05 {
+		t.Errorf("TrafficShareScore should be the RAW 0.05, got %v", got.TrafficShareScore)
 	}
 	// Composite = 0.20 * normalized(1.0) = 0.20, NOT 0.20*0.05 = 0.01.
-	if got, _ := node["usefulness_score"].(float64); math.Abs(got-usefulnessWeightTraffic) > 1e-9 {
-		t.Errorf("composite should be the full traffic weight %v, got %v", usefulnessWeightTraffic, got)
+	if math.Abs(got.UsefulnessScore-usefulnessWeightTraffic) > 1e-9 {
+		t.Errorf("composite should be the full traffic weight %v, got %v", usefulnessWeightTraffic, got.UsefulnessScore)
 	}
-	if node["usefulness_grade"] == nil {
+	if got.UsefulnessGrade == "" {
 		t.Error("a node with non-zero traffic should carry a grade")
 	}
 }
 
-// TestEnrichNodeUsefulness_ColdStartOmitsGrade: all-zero axes BEFORE the
-// recomputers have run (axesComputed=false) → no usefulness_grade field (cold
-// start), not a misleading "F".
-func TestEnrichNodeUsefulness_ColdStartOmitsGrade(t *testing.T) {
-	node := map[string]interface{}{}
-	enrichNodeUsefulness(node, 0, usefulnessAxes{0, 0, 0, 0}, false)
-	if _, ok := node["usefulness_grade"]; ok {
-		t.Errorf("usefulness_grade should be omitted on cold-start, got %v", node["usefulness_grade"])
+// TestComputeNodeUsefulness_ColdStartOmitsGrade: all-zero axes BEFORE the
+// recomputers have run (axesComputed=false) → empty grade (cold start), not a
+// misleading "F".
+func TestComputeNodeUsefulness_ColdStartOmitsGrade(t *testing.T) {
+	got := computeNodeUsefulness(0, usefulnessAxes{0, 0, 0, 0}, false)
+	if got.UsefulnessGrade != "" {
+		t.Errorf("UsefulnessGrade should be empty on cold-start, got %q", got.UsefulnessGrade)
 	}
-	if node["usefulness_score"] != float64(0) {
-		t.Errorf("usefulness_score should be 0 on cold-start, got %v", node["usefulness_score"])
+	if got.UsefulnessScore != 0 {
+		t.Errorf("UsefulnessScore should be 0 on cold-start, got %v", got.UsefulnessScore)
 	}
 }
 
-// TestEnrichNodeUsefulness_IsolatedNodeGetsF: all-zero axes AFTER the
+// TestComputeNodeUsefulness_IsolatedNodeGetsF: all-zero axes AFTER the
 // recomputers have run (axesComputed=true) is a genuinely isolated repeater —
 // it MUST surface a real "F" rather than have its grade withheld (#1762
 // MAJOR-4).
-func TestEnrichNodeUsefulness_IsolatedNodeGetsF(t *testing.T) {
-	node := map[string]interface{}{}
-	enrichNodeUsefulness(node, 0, usefulnessAxes{0, 0, 0, 0}, true)
-	if g, ok := node["usefulness_grade"]; !ok || g != "F" {
-		t.Errorf("isolated node (axes computed) should grade F, got %v ok=%v", g, ok)
+func TestComputeNodeUsefulness_IsolatedNodeGetsF(t *testing.T) {
+	got := computeNodeUsefulness(0, usefulnessAxes{0, 0, 0, 0}, true)
+	if got.UsefulnessGrade != "F" {
+		t.Errorf("isolated node (axes computed) should grade F, got %q", got.UsefulnessGrade)
 	}
-	if node["usefulness_score"] != float64(0) {
-		t.Errorf("usefulness_score should be 0 for isolated node, got %v", node["usefulness_score"])
+	if got.UsefulnessScore != 0 {
+		t.Errorf("UsefulnessScore should be 0 for isolated node, got %v", got.UsefulnessScore)
 	}
 }

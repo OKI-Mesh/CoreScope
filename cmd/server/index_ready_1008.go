@@ -73,9 +73,11 @@
 package main
 
 import (
-	"log"
+	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
 )
 
 // writeIndexLoading503 emits the standard 503 response used by handlers
@@ -86,7 +88,8 @@ func writeIndexLoading503(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write([]byte(`{"error":"index loading","retryAfter":5}`))
+	body, _ := json.Marshal(api.IndexLoadingResponse{Error: "index loading", RetryAfter: 5})
+	_, _ = w.Write(body)
 }
 
 // SubpathIndexReady reports whether the subpath index build kicked off
@@ -145,42 +148,6 @@ func (s *PacketStore) maybeCloseIndexReadyCh() {
 	default:
 		close(s.indexReadyChan)
 	}
-}
-
-// startBackgroundIndexBuilds is called from Load() after s.loaded=true
-// to populate the subpath + path-hop indexes off the critical path
-// (#1008). It returns immediately; the work runs in two background
-// goroutines (one per index — see review m7) that each acquire
-// s.mu.Lock() independently, install their map, then set the
-// corresponding atomic ready flag.
-//
-// At Cascadia scale (~5M observations) this previously blocked HTTP
-// readiness ~60s inside Load() under s.mu. Running the two builds in
-// parallel halves the pathHop-not-ready window since the two builders
-// are independent of each other.
-func (s *PacketStore) startBackgroundIndexBuilds() {
-	go func() {
-		t0 := time.Now()
-		s.mu.Lock()
-		s.buildSubpathIndex()
-		s.mu.Unlock()
-		// Atomic.Store happens-after s.mu.Unlock; handlers that
-		// observe Ready()==true synchronize-with this store.
-		s.subpathReady.Store(true)
-		s.maybeCloseIndexReadyCh()
-		log.Printf("[startup] index build complete: subpath (%s)",
-			time.Since(t0).Round(time.Millisecond))
-	}()
-	go func() {
-		t1 := time.Now()
-		s.mu.Lock()
-		s.buildPathHopIndex()
-		s.mu.Unlock()
-		s.pathHopReady.Store(true)
-		s.maybeCloseIndexReadyCh()
-		log.Printf("[startup] index build complete: pathHop (%s)",
-			time.Since(t1).Round(time.Millisecond))
-	}()
 }
 
 // markIndexesReadySync is the synchronous-build entry point used by

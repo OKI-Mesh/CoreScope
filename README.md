@@ -12,7 +12,7 @@ Self-hosted, open-source MeshCore packet analyzer. Collects MeshCore packets via
 
 ## ⚡ Performance
 
-The Go backend serves all 40+ API endpoints from an in-memory packet store with 5 indexes (hash, txID, obsID, observer, node). SQLite is for persistence only — reads never touch disk.
+The Go backend serves all 40+ API endpoints from an in-memory packet store with 5 indexes (hash, txID, obsID, observer, node). Postgres is for persistence only — reads are served from memory.
 
 | Metric | Value |
 |--------|-------|
@@ -75,50 +75,23 @@ Full experience on your phone — proper touch controls, iOS safe area support, 
 
 ## Quick Start
 
-### Pre-built Image (Recommended)
-
-No build step required — just run:
+### Docker Compose
 
 ```bash
-docker run -d --name corescope \
-  --restart=unless-stopped \
-  -p 80:80 -p 1883:1883 \
-  -v /your/data:/app/data \
-  ghcr.io/kpa-clawbot/corescope:latest
-```
-
-Open `http://localhost` — done. No config file needed; CoreScope starts with sensible defaults.
-
-For HTTPS with a custom domain, add `-p 443:443` and mount your Caddyfile:
-```bash
-docker run -d --name corescope \
-  --restart=unless-stopped \
-  -p 80:80 -p 443:443 -p 1883:1883 \
-  -v /your/data:/app/data \
-  -v /your/Caddyfile:/etc/caddy/Caddyfile:ro \
-  -v /your/caddy-data:/data/caddy \
-  ghcr.io/kpa-clawbot/corescope:latest
-```
-
-Disable built-in services with `-e DISABLE_MOSQUITTO=true` or `-e DISABLE_CADDY=true`, or drop a `.env` file in your data volume. See [docs/deployment.md](docs/deployment.md) for the full reference.
-
-### Build from Source
-
-```bash
-git clone https://github.com/Kpa-clawbot/CoreScope.git
+git clone https://github.com/OKI-Mesh/CoreScope.git
 cd CoreScope
-./manage.sh setup
+cp .env.example .env     # set POSTGRES_PASSWORD (letters and digits only)
+docker compose up -d --build
 ```
 
-The setup wizard walks you through config, domain, HTTPS, build, and run.
+Open `http://localhost:3000`. No config file is needed; CoreScope starts with sensible defaults. Compose runs Postgres 18 with PostGIS (`pgdata` volume) next to the app, and sets `DATABASE_URL` for you. Caddy (HTTPS) and Mosquitto (MQTT) are optional compose overrides; list them in `COMPOSE_FILE` in `.env`. See [docs/deployment.md](docs/deployment.md) for the full reference, and [docs/user-guide/database.md](docs/user-guide/database.md) for connection settings, migrations and backups.
+
+Day-to-day:
 
 ```bash
-./manage.sh status       # Health check + packet/node counts
-./manage.sh logs         # Follow logs
-./manage.sh backup       # Backup database
-./manage.sh update       # Pull latest + rebuild + restart
-./manage.sh mqtt-test    # Check if observer data is flowing
-./manage.sh help         # All commands
+docker compose logs -f prod      # follow logs
+docker compose up -d --build     # pull latest source, rebuild, restart
+docker compose exec -T postgres pg_dump -U corescope --format=custom corescope > backup.dump   # back up
 ```
 
 ### Configure
@@ -156,14 +129,14 @@ Copy `config.example.json` to `config.json` and edit:
 | `mqttSources` | External MQTT broker connections (optional) |
 | `channelKeys` | Channel decryption keys (hex). Hashtag channels auto-derived via SHA256 |
 | `defaultRegion` | Default IATA region code for the UI |
-| `dbPath` | SQLite database path (default: `data/meshcore.db`) |
+| `db.connectionString` | Postgres connection string (falls back to `$DATABASE_URL`) |
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `PORT` | Override config port |
-| `DB_PATH` | Override SQLite database path |
+| `DATABASE_URL` | Postgres connection string, used when `db.connectionString` is empty |
 
 ## Architecture
 
@@ -171,7 +144,7 @@ Copy `config.example.json` to `config.json` and edit:
                            ┌─────────────────────────────────────────────┐
                            │              Docker Container               │
                            │                                             │
-Observer → USB →           │  Mosquitto ──→ Go Ingestor ──→ SQLite DB   │
+Observer → USB →           │  Mosquitto ──→ Go Ingestor ──→ Postgres   │
   meshcoretomqtt → MQTT ──→│                    │                        │
                            │              Go HTTP Server ──→ WebSocket   │
                            │                    │               │        │
@@ -201,14 +174,14 @@ corescope/
 │   │   ├── main.go          # Entry point
 │   │   ├── routes.go        # 40+ API endpoint handlers
 │   │   ├── store.go         # In-memory packet store (5 indexes)
-│   │   ├── db.go            # SQLite persistence layer
+│   │   ├── db.go            # DB response helpers
 │   │   ├── decoder.go       # MeshCore packet decoder
 │   │   ├── websocket.go     # WebSocket broadcast
 │   │   └── *_test.go        # 327 test functions
 │   └── ingestor/            # Go MQTT ingestor
 │       ├── main.go          # MQTT subscription + packet processing
 │       ├── decoder.go       # Packet decoder (shared logic)
-│       ├── db.go            # SQLite write path
+│       ├── store.go         # Postgres write path
 │       └── *_test.go        # 53 test functions
 ├── proto/                   # Protobuf API definitions
 ├── public/                  # Vanilla JS frontend (no build step)
@@ -238,18 +211,18 @@ corescope/
 ### Building
 
 ```bash
-make build        # all four binaries for your machine, into dist/
-make build-server # just one
-make crossbuild   # static linux/amd64 + linux/arm64 binaries
+go build ./...                                  # compile everything
+go build -o corescope-server ./cmd/server       # one binary
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+  go build -trimpath -o corescope-server ./cmd/server   # cross-compile
 ```
 
-The SQLite driver is [`mattn/go-sqlite3`](https://github.com/mattn/go-sqlite3), which
-is cgo, so a plain `GOOS=linux go build` from a Mac will not work: cross-compiling
-needs a C compiler that can target the other platform. `make crossbuild` uses
-[`zig`](https://ziglang.org/download/) as that compiler (install it and it just
-works) and links statically against musl, so the result is one self-contained file
-that runs on Alpine or scratch. The container build does the same thing — see
-`Dockerfile`.
+Every binary is pure Go, so cross-compiling needs no C toolchain: set
+`CGO_ENABLED=0` and the target `GOOS`/`GOARCH`, and the result is one static,
+self-contained file that runs on Alpine or scratch. CI and the `Dockerfile` run
+the same `go build` commands. The Dockerfile and `.github/workflows/deploy.yml`
+also stamp the version with `-ldflags "-X main.Version=..."`; pass the same flags
+if you need a stamped binary locally.
 
 ### Test Suite
 
@@ -257,11 +230,12 @@ that runs on Alpine or scratch. The container build does the same thing — see
 
 ```bash
 # Go backend tests
-cd cmd/server && go test ./... -v
-cd cmd/ingestor && go test ./... -v
+go test ./... -count=1
+go vet ./...
+gofmt -l cmd internal api
 
-# Or across all 14 modules at once
-make test
+# cmd/etl is its own module (it keeps the SQLite driver)
+cd cmd/etl && go test ./...
 
 # Node.js frontend + integration tests
 npm test
@@ -276,9 +250,9 @@ node tests/e2e/test-e2e-playwright.js
 node tools/generate-packets.js --api --count 200
 ```
 
-### Migrating from Node.js
+### Moving from SQLite
 
-If you're running an existing Node.js deployment, see [docs/go-migration.md](docs/go-migration.md) for a step-by-step guide. The Go engine reads the same SQLite database and `config.json` — no data migration needed.
+An existing SQLite database is converted with `cmd/etl` into an empty, migrated Postgres database. See [docs/user-guide/database.md](docs/user-guide/database.md). The older Node.js-to-Go guide in [docs/go-migration.md](docs/go-migration.md) is kept as history.
 
 ## Contributing
 
@@ -286,7 +260,7 @@ Contributions welcome. Please read [AGENTS.md](AGENTS.md) for coding conventions
 
 **Live instance:** [analyzer.00id.net](https://analyzer.00id.net) — all API endpoints are public, no auth required.
 
-**API Documentation:** CoreScope auto-generates an OpenAPI 3.0 spec. Browse the interactive Swagger UI at [`/api/docs`](https://analyzer.00id.net/api/docs) or fetch the machine-readable spec at [`/api/spec`](https://analyzer.00id.net/api/spec).
+**API Documentation:** The HTTP API is described by the hand-written OpenAPI 3.1 document in api/openapi.yaml. Browse it as Swagger UI at /api/docs or fetch the YAML at /api/spec.
 
 ## License
 

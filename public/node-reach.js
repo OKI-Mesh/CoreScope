@@ -187,6 +187,7 @@
         'Rank by neighbour count among all nodes with edges. #1 = most-connected node in the network.') +
       '</div>' +
       '<div class="nq-group-h">Last ' + d.window.days + ' days</div>' +
+      (d.window.truncated ? '<div class="nq-msg nq-truncated">This node relays so much traffic that only the newest observations in this window were counted, so the totals below are a lower bound for the full ' + d.window.days + ' days.</div>' : '') +
       '<div class="analytics-stats">' +
       statCard('Links', d.links.length, 'Neighbours seen this window',
         'Distinct direct neighbours seen in paths this window (any direction).') +

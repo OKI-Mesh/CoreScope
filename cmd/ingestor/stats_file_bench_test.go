@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 const benchProcSelfIOSample = `rchar: 12345678
@@ -40,7 +43,7 @@ func TestStatsFileWriterBench_Sanity(t *testing.T) {
 // regress vs. the previous in-package implementation.
 func BenchmarkParseProcSelfIOInto(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		var s procIOSnapshot
 		parseProcSelfIOInto(bufio.NewScanner(strings.NewReader(benchProcSelfIOSample)), &s)
 	}
@@ -59,8 +62,8 @@ func BenchmarkStatsFileWriter_Tick(b *testing.B) {
 	// fresh map each call in production; we use a stable one here so
 	// the bench measures the encode path, not map allocation).
 	backfills := map[string]int64{"path_a": 100, "path_b": 200}
-	stamp := time.Now().UTC().Format(time.RFC3339)
-	io := &PerfIOSample{
+	stamp := &types.WireTimeSeconds{Time: time.Now().UTC()}
+	io := &ingeststats.IOSample{
 		ReadBytesPerSec:           100,
 		WriteBytesPerSec:          200,
 		CancelledWriteBytesPerSec: 0,
@@ -75,9 +78,9 @@ func BenchmarkStatsFileWriter_Tick(b *testing.B) {
 	n.Store(123456)
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		snap := IngestorStatsSnapshot{
+
+	for b.Loop() {
+		snap := ingeststats.Stats{
 			SampledAt:          stamp,
 			TxInserted:         n.Load(),
 			ObsInserted:        n.Load(),

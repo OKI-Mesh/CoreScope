@@ -1,44 +1,84 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestRepeaterRelayActivity_Active verifies that a repeater whose pubkey
 // appears as a relay hop in a recent (non-advert) packet is reported with
 // a non-zero lastRelayed timestamp and relayActive=true.
 func TestRepeaterRelayActivity_Active(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	pubkey := "aabbccdd11223344"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepActive", "repeater", recentTS(1))
+	now := time.Now().UTC()
+	pubkey := "aabbccdd" + strings.Repeat("1", 56)
+	observerKey := scopeKey(50)
 
-	store := NewPacketStore(db, nil)
-
-	// A non-advert packet (payload_type=1, TXT_MSG) with the repeater pubkey
-	// indexed as a path hop. Index by lowercase pubkey directly to mirror
-	// the resolved-path entries that decode-window writes.
-	pt := 1
-	relayed := &StoreTx{
-		RawHex:      "0100",
-		PayloadType: &pt,
-		PathJSON:    `["aa"]`,
-		FirstSeen:   recentTS(2),
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepActive",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
 	}
-	store.mu.Lock()
-	relayed.ID = len(store.packets) + 1
-	relayed.Hash = "test-relay-1"
-	store.packets = append(store.packets, relayed)
-	store.byHash[relayed.Hash] = relayed
-	store.byTxID[relayed.ID] = relayed
-	store.byPathHop[pubkey] = append(store.byPathHop[pubkey], relayed)
-	store.mu.Unlock()
+
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        observerKey,
+		Name:      ptr("Relay Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	relayedAt := now.Add(-2 * time.Hour)
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "a1e1a00000000001",
+		RawHex:      "0100",
+		RouteType:   1,
+		PayloadType: 1,
+		DecodedJSON: "{}",
+	}, relayedAt)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(obsIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      relayedAt,
+	}, []string{"aa"}, []*string{sptr(pubkey)})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	info := store.GetRepeaterRelayInfo(pubkey, 24)
-	if info.LastRelayed == "" {
+	if info.LastRelayed.IsZero() {
 		t.Fatalf("expected non-empty LastRelayed for active relayer, got empty (RelayActive=%v)", info.RelayActive)
 	}
 	if !info.RelayActive {
@@ -56,29 +96,78 @@ func TestRepeaterRelayActivity_Active(t *testing.T) {
 // hop on one FLOOD (unscoped) and one DIRECT tx - the shared fixture for the
 // per-node and bulk UnscopedRelayCount24h tests, so the seeding pattern cannot
 // drift between the two. hashPrefix keeps the packet hashes distinguishable.
-func seedUnscopedRelayFixture(t *testing.T, hashPrefix string) (*PacketStore, string, func()) {
+func seedUnscopedRelayFixture(t *testing.T) (*PacketStore, string) {
 	t.Helper()
-	db := setupCapabilityTestDB(t)
-	pubkey := "aabbccdd11223344"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepUnscoped", "repeater", recentTS(1))
-	store := NewPacketStore(db, nil)
-	pt := 1 // non-advert (TXT_MSG)
-	flood := routeTypeFlood
-	direct := 2 // ROUTE_TYPE_DIRECT - scoped/directed, must NOT count as unscoped
-	mk := func(hash string, rt int) *StoreTx {
-		return &StoreTx{RawHex: "0100", PayloadType: &pt, RouteType: &rt, PathJSON: `["aa"]`, FirstSeen: recentTS(2), Hash: hash}
+	ctx := t.Context()
+	db := setupTestDB(t)
+
+	now := time.Now().UTC()
+	pubkey := "aabbccdd" + strings.Repeat("1", 56)
+
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepUnscoped",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
 	}
-	store.mu.Lock()
-	for _, tx := range []*StoreTx{mk(hashPrefix+"unscoped-1", flood), mk(hashPrefix+"direct-1", direct)} {
-		tx.ID = len(store.packets) + 1
-		store.packets = append(store.packets, tx)
-		store.byHash[tx.Hash] = tx
-		store.byTxID[tx.ID] = tx
-		store.byPathHop[pubkey] = append(store.byPathHop[pubkey], tx)
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(52),
+		Name:      ptr("Unscoped Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
 	}
-	store.mu.Unlock()
-	return store, pubkey, func() { db.conn.Close() }
+
+	relayedAt := now.Add(-2 * time.Hour)
+	for _, p := range []struct {
+		hash      string
+		routeType types.RouteType
+	}{
+		{"a2e1000000000001", routeTypeFlood},
+		{"a2e1000000000002", 2},
+	} {
+		txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+			Hash:        p.hash,
+			RawHex:      "0100",
+			RouteType:   p.routeType,
+			PayloadType: 1,
+			DecodedJSON: "{}",
+		}, relayedAt)
+		if err != nil {
+			t.Fatalf("seed transmission %s: %v", p.hash, err)
+		}
+		_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+			TransmissionID: txID,
+			ObserverIdx:    iptr64(obsIdx),
+			SNR:            fptr(5.0),
+			RSSI:           fptr(-90.0),
+			Timestamp:      relayedAt,
+		}, []string{"aa"}, []*string{sptr(pubkey)})
+		if err != nil {
+			t.Fatalf("seed observation %s: %v", p.hash, err)
+		}
+		if !inserted {
+			t.Fatalf("expected observation to be inserted for tx %d", txID)
+		}
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
+	return store, pubkey
 }
 
 // assertUnscopedCounts pins the contract both lookups share: FLOOD hops count
@@ -96,8 +185,7 @@ func assertUnscopedCounts(t *testing.T, info RepeaterRelayInfo) {
 // TestRepeaterUnscopedRelayCount verifies that UnscopedRelayCount24h counts only
 // route_type==FLOOD (unscoped) relay hops, as a subset of RelayCount24h.
 func TestRepeaterUnscopedRelayCount(t *testing.T) {
-	store, pubkey, done := seedUnscopedRelayFixture(t, "")
-	defer done()
+	store, pubkey := seedUnscopedRelayFixture(t)
 	assertUnscopedCounts(t, store.GetRepeaterRelayInfo(pubkey, 24))
 }
 
@@ -105,18 +193,35 @@ func TestRepeaterUnscopedRelayCount(t *testing.T) {
 // has not appeared as a relay hop reports an empty LastRelayed and
 // relayActive=false.
 func TestRepeaterRelayActivity_Idle(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	pubkey := "ccddeeff55667788"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepIdle", "repeater", recentTS(1))
+	now := time.Now().UTC()
+	pubkey := "ccddeeff" + strings.Repeat("5", 56)
 
-	store := NewPacketStore(db, nil)
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepIdle",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	info := store.GetRepeaterRelayInfo(pubkey, 24)
-	if info.LastRelayed != "" {
-		t.Errorf("expected empty LastRelayed for idle repeater, got %q", info.LastRelayed)
+	if !info.LastRelayed.IsZero() {
+		t.Errorf("expected zero LastRelayed for idle repeater, got %s", info.LastRelayed)
 	}
 	if info.RelayActive {
 		t.Errorf("expected RelayActive=false for idle repeater, got true")
@@ -130,35 +235,71 @@ func TestRepeaterRelayActivity_Idle(t *testing.T) {
 // relay-hop appearances are older than the configured window reports
 // a non-empty LastRelayed but relayActive=false.
 func TestRepeaterRelayActivity_Stale(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	pubkey := "1122334455667788"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepStale", "repeater", recentTS(1))
+	now := time.Now().UTC()
+	pubkey := "11223344" + strings.Repeat("5", 56)
 
-	store := NewPacketStore(db, nil)
-
-	pt := 1
-	staleTS := time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02T15:04:05.000Z")
-	old := &StoreTx{
-		RawHex:      "0100",
-		PayloadType: &pt,
-		PathJSON:    `["11"]`,
-		FirstSeen:   staleTS,
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepStale",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
 	}
-	store.mu.Lock()
-	old.ID = len(store.packets) + 1
-	old.Hash = "test-relay-stale"
-	store.packets = append(store.packets, old)
-	store.byHash[old.Hash] = old
-	store.byTxID[old.ID] = old
-	store.byPathHop[pubkey] = append(store.byPathHop[pubkey], old)
-	store.mu.Unlock()
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(53),
+		Name:      ptr("Stale Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	staleAt := now.Add(-48 * time.Hour).Truncate(time.Millisecond)
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "a3e1000000000001",
+		RawHex:      "0100",
+		RouteType:   1,
+		PayloadType: 1,
+		DecodedJSON: "{}",
+	}, staleAt)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(obsIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      staleAt,
+	}, []string{"11"}, []*string{sptr(pubkey)})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	info := store.GetRepeaterRelayInfo(pubkey, 24)
-	if info.LastRelayed != staleTS {
-		t.Errorf("expected LastRelayed=%q (stale ts), got %q", staleTS, info.LastRelayed)
+	if want := staleAt; !info.LastRelayed.Equal(want) {
+		t.Errorf("expected LastRelayed=%s (stale ts), got %s", want, info.LastRelayed)
 	}
 	if info.RelayActive {
 		t.Errorf("expected RelayActive=false for relay older than window, got true")
@@ -172,35 +313,71 @@ func TestRepeaterRelayActivity_Stale(t *testing.T) {
 // by the repeater itself (payload_type=4) are NOT counted as relay activity —
 // adverts demonstrate liveness, not relaying.
 func TestRepeaterRelayActivity_IgnoresAdverts(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	pubkey := "deadbeef00000001"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepAdvertOnly", "repeater", recentTS(1))
+	now := time.Now().UTC()
+	pubkey := "deadbeef" + strings.Repeat("0", 55) + "1"
 
-	store := NewPacketStore(db, nil)
-
-	// Self-advert with the repeater as its own first hop. Should NOT count.
-	pt := 4
-	adv := &StoreTx{
-		RawHex:      "0140de",
-		PayloadType: &pt,
-		PathJSON:    `["de"]`,
-		FirstSeen:   recentTS(2),
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepAdvertOnly",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
 	}
-	store.mu.Lock()
-	adv.ID = len(store.packets) + 1
-	adv.Hash = "test-advert-1"
-	store.packets = append(store.packets, adv)
-	store.byHash[adv.Hash] = adv
-	store.byTxID[adv.ID] = adv
-	store.byPathHop[pubkey] = append(store.byPathHop[pubkey], adv)
-	store.mu.Unlock()
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(54),
+		Name:      ptr("Advert Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	advertAt := now.Add(-2 * time.Hour)
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "a4e1000000000001",
+		RawHex:      "0140de",
+		RouteType:   1,
+		PayloadType: 4,
+		DecodedJSON: "{}",
+	}, advertAt)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(obsIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      advertAt,
+	}, []string{"de"}, []*string{sptr(pubkey)})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	info := store.GetRepeaterRelayInfo(pubkey, 24)
-	if info.LastRelayed != "" {
-		t.Errorf("expected empty LastRelayed (adverts ignored), got %q", info.LastRelayed)
+	if !info.LastRelayed.IsZero() {
+		t.Errorf("expected zero LastRelayed (adverts ignored), got %s", info.LastRelayed)
 	}
 	if info.RelayActive {
 		t.Errorf("expected RelayActive=false (adverts ignored), got true")
@@ -223,40 +400,74 @@ func TestRepeaterRelayActivity_IgnoresAdverts(t *testing.T) {
 // "never observed as relay hop" claim on nodes that clearly have paths
 // shown through them. See https://analyzer-stg.00id.net/#/nodes/<pk>.
 func TestRepeaterRelayActivity_PrefixHop(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
+	now := time.Now().UTC()
 	pubkey := "a36a21290d9c25a158130fe7c489541210d5f09f25fab997db5e942fb7680510"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepPrefix", "repeater", recentTS(1))
 
-	store := NewPacketStore(db, nil)
-
-	// Non-advert packet with a single raw 1-byte hop matching the target
-	// pubkey's first byte ("a3"). Index it the way addTxToPathHopIndex
-	// does — under the raw hop key only, not the full pubkey.
-	pt := 1
-	tx := &StoreTx{
-		RawHex:      "0100",
-		PayloadType: &pt,
-		PathJSON:    `["a3"]`,
-		FirstSeen:   recentTS(2),
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepPrefix",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
 	}
-	store.mu.Lock()
-	tx.ID = len(store.packets) + 1
-	tx.Hash = "test-relay-prefix-1"
-	store.packets = append(store.packets, tx)
-	store.byHash[tx.Hash] = tx
-	store.byTxID[tx.ID] = tx
-	addTxToPathHopIndex(store.byPathHop, tx)
-	store.mu.Unlock()
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(55),
+		Name:      ptr("Prefix Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	relayedAt := now.Add(-2 * time.Hour)
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "a5e1000000000001",
+		RawHex:      "0100",
+		RouteType:   1,
+		PayloadType: 1,
+		DecodedJSON: "{}",
+	}, relayedAt)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(obsIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      relayedAt,
+	}, []string{"a3"}, []*string{nil})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	info := store.GetRepeaterRelayInfo(pubkey, 24)
 	if info.RelayCount24h < 1 {
 		t.Fatalf("expected RelayCount24h>=1 for node with prefix-matched hop in path, got %d (LastRelayed=%q)",
 			info.RelayCount24h, info.LastRelayed)
 	}
-	if info.LastRelayed == "" {
+	if info.LastRelayed.IsZero() {
 		t.Errorf("expected non-empty LastRelayed when prefix hop matched, got empty")
 	}
 	if !info.RelayActive {
@@ -270,34 +481,67 @@ func TestRepeaterRelayActivity_PrefixHop(t *testing.T) {
 // gates the `seen[tx.ID]` dedup map: without it, hop counts would double
 // for any tx that resolved-path indexing recorded under both keys.
 func TestRepeaterRelayActivity_DedupAcrossPrefixAndFullKey(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
+	ctx := t.Context()
+	db := setupTestDB(t)
 
+	now := time.Now().UTC()
 	pubkey := "a36a21290d9c25a158130fe7c489541210d5f09f25fab997db5e942fb7680510"
-	db.conn.Exec("INSERT INTO nodes (public_key, name, role, last_seen) VALUES (?, ?, ?, ?)",
-		pubkey, "RepDedup", "repeater", recentTS(1))
 
-	store := NewPacketStore(db, nil)
-
-	pt := 1
-	tx := &StoreTx{
-		RawHex:      "0100",
-		PayloadType: &pt,
-		PathJSON:    `["a3"]`,
-		FirstSeen:   recentTS(2),
+	if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: pubkey,
+		Name:      "RepDedup",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    now.Add(-1 * time.Hour),
+		IngestNow: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed node: %v", err)
 	}
-	store.mu.Lock()
-	tx.ID = len(store.packets) + 1
-	tx.Hash = "test-relay-dedup-1"
-	store.packets = append(store.packets, tx)
-	store.byHash[tx.Hash] = tx
-	store.byTxID[tx.ID] = tx
-	// Index under BOTH the full pubkey AND the raw 1-byte prefix — this
-	// is the exact double-index case that occurs when wire ingest records
-	// the raw hop and a later resolution pass also records the full key.
-	store.byPathHop[pubkey] = append(store.byPathHop[pubkey], tx)
-	store.byPathHop[pubkey[:2]] = append(store.byPathHop[pubkey[:2]], tx)
-	store.mu.Unlock()
+	obsIdx, err := db.CreateOrUpdateObserver(ctx, database.ObserverInput{
+		ID:        scopeKey(56),
+		Name:      ptr("Dedup Observer"),
+		IATA:      "SFO",
+		Meta:      nil,
+		LastSeen:  now,
+		IngestNow: now,
+	})
+	if err != nil {
+		t.Fatalf("seed observer: %v", err)
+	}
+
+	relayedAt := now.Add(-2 * time.Hour)
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        "a6e1000000000001",
+		RawHex:      "0100",
+		RouteType:   1,
+		PayloadType: 1,
+		DecodedJSON: "{}",
+	}, relayedAt)
+	if err != nil {
+		t.Fatalf("seed transmission: %v", err)
+	}
+	_, inserted, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    iptr64(obsIdx),
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-90.0),
+		Timestamp:      relayedAt,
+	}, []string{"a3"}, []*string{sptr(pubkey)})
+	if err != nil {
+		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
+
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
+	}
+	if err := store.RefreshNodeCache(ctx); err != nil {
+		t.Fatalf("RefreshNodeCache(): %v", err)
+	}
 
 	info := store.GetRepeaterRelayInfo(pubkey, 24)
 	if info.RelayCount24h != 1 {
@@ -315,7 +559,6 @@ func TestRepeaterRelayActivity_DedupAcrossPrefixAndFullKey(t *testing.T) {
 // (computeRepeaterRelayInfoMap) counts unscoped floods identically to the
 // per-node path: only route_type==FLOOD hops, as a subset of RelayCount24h.
 func TestRepeaterUnscopedRelayCount_Bulk(t *testing.T) {
-	store, pubkey, done := seedUnscopedRelayFixture(t, "bulk-")
-	defer done()
+	store, pubkey := seedUnscopedRelayFixture(t)
 	assertUnscopedCounts(t, store.computeRepeaterRelayInfoMap(24)[pubkey])
 }

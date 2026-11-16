@@ -1,14 +1,15 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // createTestDBWithResolvedPath creates a fixture DB containing numTx old
@@ -18,69 +19,46 @@ import (
 // column so loadChunk's hasResolvedPath branch is exercised.
 func createTestDBWithResolvedPath(t *testing.T, numTx int, relayPubkeys []string) string {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	migrateConn, err := sql.Open("sqlite", dbPath)
+	dsn := pgtest.NewDatabase(t)
+	ctx := t.Context()
+	db, err := database.OpenReadWrite(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-
-	exec := func(s string, args ...interface{}) {
-		if _, err := conn.Exec(s, args...); err != nil {
-			t.Fatalf("setup exec failed: %v\nSQL: %s", err, s)
-		}
-	}
-
-	// Real observers row so the LEFT JOIN observers ON obs.rowid =
-	// o.observer_idx resolves.
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
-	if err != nil {
-		t.Fatalf("insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("observer rowid: %v", err)
-	}
-
-	// Build resolved_path JSON array of pubkey strings: ["pk1","pk2",...]
-	rpJSON := "["
-	for i, pk := range relayPubkeys {
-		if i > 0 {
-			rpJSON += ","
-		}
-		rpJSON += fmt.Sprintf("%q", pk)
-	}
-	rpJSON += "]"
-
+	defer db.Close()
 	now := time.Now().UTC()
+	observerID := mustCreateTestObserver(t, ctx, db, "obs1", "Obs1", "", now)
+	for _, pubkey := range relayPubkeys {
+		if err := db.CreateOrUpdateNode(ctx, database.NodeInput{
+			PublicKey: pubkey, Name: pubkey, Role: "repeater", RxTime: now, IngestNow: now,
+		}); err != nil {
+			t.Fatalf("create relay node: %v", err)
+		}
+	}
+
 	for i := 0; i < numTx; i++ {
 		txTime := now.Add(-48 * time.Hour).Add(time.Duration(i) * time.Second)
-		ts := txTime.Format(time.RFC3339)
-		tsUnix := txTime.Unix()
 		hash := fmt.Sprintf("hash1558_%d", i)
-		exec(`INSERT INTO transmissions
-			(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-			VALUES (?,?,?,?,0,4,1,?,?)`,
-			i+1, "aa", hash, ts, `{}`, tsUnix)
-		exec(`INSERT INTO observations
-			(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, resolved_path)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			i+1, i+1, observerRowID, "RX", -10.0, -80.0, 5, `[]`, tsUnix, rpJSON)
+		txID := mustCreateTestTransmission(t, ctx, db, database.TransmissionInput{
+			RawHex: "aa", Hash: hash, RouteType: types.RouteFlood,
+			PayloadType: types.PayloadADVERT, DecodedJSON: `{}`,
+		}, txTime)
+		hops := make([]string, len(relayPubkeys))
+		resolved := make([]*string, len(relayPubkeys))
+		for i, pubkey := range relayPubkeys {
+			hops[i] = strings.ToLower(pubkey[:2])
+			resolved[i] = &relayPubkeys[i]
+		}
+		merged := make([]string, len(hops))
+		for i, h := range hops {
+			merged[i] = h
+			if i < len(resolved) && resolved[i] != nil {
+				merged[i] = h + ":" + *resolved[i]
+			}
+		}
+		dbtest.Observation(t, db, txID, observerID, txTime, -10, -80, merged...)
 	}
-	return dbPath
+	return dsn
 }
 
 // TestLoadChunk_IndexesResolvedPathPubkeys_Issue1558 verifies the
@@ -107,6 +85,8 @@ func createTestDBWithResolvedPath(t *testing.T, numTx int, relayPubkeys []string
 // `resolved_path` of every observation, s.byNode contains the
 // transmission.
 func TestLoadChunk_IndexesResolvedPathPubkeys_Issue1558(t *testing.T) {
+	ctx := t.Context()
+
 	// Two distinct relay pubkeys appear in every observation's resolved_path.
 	// Neither is an endpoint pubkey in decoded_json — so the ONLY path
 	// they can enter byNode through is the resolved_path branch.
@@ -115,22 +95,18 @@ func TestLoadChunk_IndexesResolvedPathPubkeys_Issue1558(t *testing.T) {
 
 	dbPath := createTestDBWithResolvedPath(t, 3, []string{relayPK1, relayPK2})
 
-	db, err := OpenDB(dbPath)
+	db, err := OpenDB(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.conn.Close()
-
-	if !db.hasResolvedPath {
-		t.Fatalf("setup: fixture should expose resolved_path column; hasResolvedPath=false")
-	}
+	defer db.Close()
 
 	store := NewPacketStore(db, &PacketStoreConfig{
 		RetentionHours:  72,
 		HotStartupHours: 1, // initial Load should NOT pick up 48h-old fixture rows
 	})
-	if err := store.Load(); err != nil {
-		t.Fatal(err)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// Confirm the fixture rows are outside the hot window — Load() must
 	// not have already populated byNode for the relay pubkeys; otherwise
@@ -144,7 +120,7 @@ func TestLoadChunk_IndexesResolvedPathPubkeys_Issue1558(t *testing.T) {
 	// this is the code path under test.
 	chunkStart := time.Now().UTC().Add(-72 * time.Hour)
 	chunkEnd := time.Now().UTC().Add(-1 * time.Hour)
-	if err := store.loadChunk(chunkStart, chunkEnd); err != nil {
+	if err := store.loadChunk(ctx, chunkStart, chunkEnd); err != nil {
 		t.Fatalf("loadChunk failed: %v", err)
 	}
 

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Issue #1726: a MeshCore v1.16.0 repeater configured for 2-byte path hashes
@@ -21,8 +23,8 @@ import (
 //
 //	hs=1 → path byte 0x01 (top 2 bits 00, hop bits non-zero)
 //	hs=2 → path byte 0x41 (top 2 bits 01)
-func hashAdvertTx(pk string, hs int, firstSeen string) *StoreTx {
-	pt := 4 // ADVERT
+func hashAdvertTx(pk string, hs int, firstSeen time.Time) *StoreTx {
+	pt := types.PayloadType(4) // ADVERT
 	pathByte := "01"
 	if hs == 2 {
 		pathByte = "41"
@@ -37,8 +39,8 @@ func hashAdvertTx(pk string, hs int, firstSeen string) *StoreTx {
 
 // ts formats a relative timestamp the way the ingestor writes first_seen
 // (time.RFC3339, no fractional seconds).
-func ts(d time.Duration) string {
-	return time.Now().UTC().Add(d).Format(time.RFC3339)
+func ts(d time.Duration) time.Time {
+	return time.Now().UTC().Add(d)
 }
 
 func TestIssue1726_SettledNodeNotInconsistent(t *testing.T) {
@@ -48,7 +50,7 @@ func TestIssue1726_SettledNodeNotInconsistent(t *testing.T) {
 	// Chronological history within the 7-day window: a single 1-byte blip
 	// 5 days ago, then settled to 2-byte. Old heuristic: AllSizes={1,2},
 	// 2 transitions → Inconsistent=true. The node is actually settled at 2-byte.
-	ps.byPayloadType[4] = []*StoreTx{
+	ps.byPayloadType[types.PayloadType(4)] = []*StoreTx{
 		hashAdvertTx(pk, 2, ts(-6*24*time.Hour)),
 		hashAdvertTx(pk, 1, ts(-5*24*time.Hour)),
 		hashAdvertTx(pk, 2, ts(-2*24*time.Hour)),
@@ -90,11 +92,8 @@ func TestIssue1726_HashSizeUsesChronologicallyLatest(t *testing.T) {
 	}
 }
 
-// Chronological ordering must be robust to FirstSeen format differences:
-// the ingestor writes RFC3339 with no fractional seconds, but a fractional
-// (".000Z") form must still order correctly relative to it. A naive string
-// compare would sort the no-fraction "...05Z" after a same-second "...05.000Z"
-// (because 'Z' > '.'), picking the wrong "latest" advert.
+// Chronological ordering uses typed timestamps and remains correct at
+// sub-second precision.
 func TestIssue1726_OrderingRobustToTimestampFormat(t *testing.T) {
 	ps := NewPacketStore(nil, nil)
 	pk := "1234000056780000abcd0000ef120000345600007890000012340000567800ab"
@@ -104,11 +103,11 @@ func TestIssue1726_OrderingRobustToTimestampFormat(t *testing.T) {
 	// compare sorts "...05Z" AFTER "...05.001Z" ('Z' > '.'), so it would treat
 	// the older 1-byte advert as latest; chronological parsing must not.
 	base := time.Now().UTC().Truncate(time.Second).Add(-3 * 24 * time.Hour)
-	older := base.Format(time.RFC3339)                                         // "...05Z"
-	newer := base.Add(1 * time.Millisecond).Format("2006-01-02T15:04:05.000Z") // "...05.001Z"
+	older := base
+	newer := base.Add(time.Millisecond)
 
-	pt := 4
-	mk := func(pathByte, firstSeen string) *StoreTx {
+	pt := types.PayloadType(4)
+	mk := func(pathByte string, firstSeen time.Time) *StoreTx {
 		return &StoreTx{
 			RawHex:      "11" + pathByte + "aabb",
 			FirstSeen:   firstSeen,
@@ -116,7 +115,7 @@ func TestIssue1726_OrderingRobustToTimestampFormat(t *testing.T) {
 			DecodedJSON: `{"pubKey":"` + pk + `","type":"ADVERT"}`,
 		}
 	}
-	ps.byPayloadType[4] = []*StoreTx{
+	ps.byPayloadType[types.PayloadType(4)] = []*StoreTx{
 		mk("41", newer), // 2-byte, newest, appended first
 		mk("01", older), // 1-byte, oldest
 	}

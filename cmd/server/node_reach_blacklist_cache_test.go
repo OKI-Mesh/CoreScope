@@ -19,8 +19,7 @@ import (
 // re-serves the prior reach body and the assertion fails.
 func TestNodeReach_BlacklistMutationBustsCache(t *testing.T) {
 	resetReachState(t)
-	db, n := newReachIntegrationDB(t, `["AABB","01FA","CCDD"]`)
-	defer db.conn.Close()
+	db, n := newReachIntegrationDB(t, []string{"aabb", "01fa", "ccdd"})
 
 	// Start with a non-empty blacklist (some unrelated decoy pubkey) so the
 	// blacklist set is materialised on the first IsBlacklisted call below.
@@ -47,7 +46,7 @@ func TestNodeReach_BlacklistMutationBustsCache(t *testing.T) {
 	// cache hits, and the prior 200 body is re-served.
 	rr2 := serveReach(srv, "/api/nodes/"+n+"/reach?days=30")
 	if rr2.Code != http.StatusNotFound {
-		t.Fatalf("post-blacklist mutation: status=%d want 404 (cached payload was served — #1629)", rr2.Code)
+		t.Fatalf("post-blacklist mutation: status=%d want 404 (cached payload was served, #1629)", rr2.Code)
 	}
 }
 
@@ -88,8 +87,7 @@ func TestConfig_BlacklistGenerationIncrements(t *testing.T) {
 // steady stream of edits cannot leak entries unboundedly.
 func TestNodeReach_BlacklistMutationPurgesCache(t *testing.T) {
 	resetReachState(t)
-	db, n := newReachIntegrationDB(t, `["AABB","01FA","CCDD"]`)
-	defer db.conn.Close()
+	db, n := newReachIntegrationDB(t, []string{"aabb", "01fa", "ccdd"})
 
 	cfg := &Config{}
 	srv := &Server{store: newTestStoreWithDB(t, db, cfg), db: db, cfg: cfg, perfStats: NewPerfStats()}

@@ -1,0 +1,126 @@
+{
+  "branding": {
+    "faviconUrl": "/favicon.ico",
+    "logoUrl": "https://example.org/images/logo-mark.svg",
+    "siteName": "Example Mesh CoreScope",
+    "tagline": "Real-time mesh network analyzer for Example Region"
+  },
+  "theme": {
+    "accent": "#525252",
+    "accentHover": "#737373",
+    "background": "#f5f5f5",
+    "border": "#d4d4d4",
+    "cardBg": "#ffffff",
+    "contentBg": "#f5f5f5",
+    "detailBg": "#ffffff",
+    "inputBg": "#ffffff",
+    "navBg": "#171717",
+    "navBg2": "#262626",
+    "navText": "#ffffff",
+    "navTextMuted": "#a3a3a3",
+    "rowHover": "#efefef",
+    "rowStripe": "#fafafa",
+    "sectionBg": "#efefef",
+    "selectedBg": "#e5e5e5",
+    "statusGreen": "#15803d",
+    "statusRed": "#dc2626",
+    "statusYellow": "#a16207",
+    "surface1": "#ffffff",
+    "surface2": "#fafafa",
+    "surface3": "#fafafa",
+    "text": "#171717",
+    "textMuted": "#525252"
+  },
+  "themeDark": {
+    "accent": "#a3a3a3",
+    "accentHover": "#d4d4d4",
+    "background": "#0a0a0a",
+    "border": "#333333",
+    "cardBg": "#171717",
+    "contentBg": "#0a0a0a",
+    "detailBg": "#1f1f1f",
+    "inputBg": "#171717",
+    "navBg": "#171717",
+    "navBg2": "#1a1a1a",
+    "navText": "#ffffff",
+    "navTextMuted": "#737373",
+    "rowHover": "#222222",
+    "rowStripe": "#141414",
+    "sectionBg": "#171717",
+    "selectedBg": "#2a2a2a",
+    "statusGreen": "#4ade80",
+    "statusRed": "#f87171",
+    "statusYellow": "#facc15",
+    "surface1": "#171717",
+    "surface2": "#1f1f1f",
+    "surface3": "#222222",
+    "text": "#e5e5e5",
+    "textMuted": "#a3a3a3"
+  },
+  "nodeColors": {
+    "companion": "#2563eb",
+    "observer": "#8b5cf6",
+    "repeater": "#dc2626",
+    "room": "#16a34a",
+    "sensor": "#d97706"
+  },
+  "typeColors": {
+    "ACK": "#6b7280",
+    "ADVERT": "#22c55e",
+    "ANON_REQ": "#f43f5e",
+    "GRP_TXT": "#3b82f6",
+    "PATH": "#14b8a6",
+    "REQ": "#a855f7",
+    "REQUEST": "#a855f7",
+    "RESPONSE": "#06b6d4",
+    "TRACE": "#ec4899",
+    "TXT_MSG": "#f59e0b",
+    "UNKNOWN": "#6b7280"
+  },
+  "home": {
+    "checklist": [],
+    "footerLinks": [
+      {
+        "label": "📦 Packets",
+        "url": "#/packets"
+      },
+      {
+        "label": "🗺️ Network Map",
+        "url": "#/map"
+      },
+      {
+        "label": "Example Mesh Alliance",
+        "url": "https://example.org"
+      }
+    ],
+    "heroSubtitle": "Real-time mesh network analyzer for Example Region",
+    "heroTitle": "Example Mesh Alliance - CoreScope",
+    "steps": [
+      {
+        "description": "Flash **BLE companion** firmware from [MeshCore Flasher](https://flasher.meshcore.io/).\n- Screenless devices: default PIN `123456`\n- Screen devices: random PIN shown on display\n- If pairing fails: forget device, reboot, re-pair",
+        "emoji": "ph:bluetooth",
+        "title": "Connect via Bluetooth"
+      },
+      {
+        "description": "**US Recommended:**\n`910.525 MHz · BW 62.5 kHz · SF 7 · CR 5`\nSelect **\"US Recommended\"** in the app or flasher.",
+        "emoji": "ph:radio",
+        "title": "Set the right frequency preset"
+      },
+      {
+        "description": "Tap the signal icon → **Flood** to broadcast your node to the mesh. Companions only advert when you trigger it manually.",
+        "emoji": "ph:broadcast",
+        "title": "Advertise yourself"
+      },
+      {
+        "description": "- **\"Sent\"** = transmitted, no confirmation\n- **\"Heard 0 repeats\"** = no repeater picked it up\n- **\"Heard 1+ repeats\"** = you're on the mesh!",
+        "emoji": "ph:repeat",
+        "title": "Check \"Heard N repeats\""
+      }
+    ]
+  },
+  "markerStroke": {
+    "color": "rgba(255,255,255,0.85)",
+    "opacity": 1,
+    "width": 1
+  }
+}

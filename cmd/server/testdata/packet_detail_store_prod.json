@@ -1,0 +1,75 @@
+{
+  "observation_count": 1,
+  "observations": [
+    {
+      "direction": "rx",
+      "hash": "a47ebe195c446658",
+      "id": 33466894,
+      "observer_iata": "CVG",
+      "observer_id": "18315E8B1BA6840E5020DA27772B1D40538BD54E000BEC6426B1B8FD65C3E2ED",
+      "observer_name": "Observer-001",
+      "path_json": "[\"CF0702\",\"088C2E\",\"6A3DFF\"]",
+      "raw_hex": "0183cf0702088c2e6a3dffbe46c55e2b4a5457f3a0788677e911cf23ad8bbae6dfbe9073e0410c2d5b5681925bcb5df7db68426a4e5ca3b399528212beb1b6706de7e1d87d7ebbc91d7e524d364776036b98a121ba7d15f3108e42fe83fccd7e77f80aae6f2e7454df9453a8209535fea55662c8145b99b7ee937ceb680ca3c97ef6045dd623521c8e229340e28d35",
+      "resolved_path": [
+        null,
+        null,
+        "6a3dff69bffe4612fb6e8c152a543dddaaac964d453ebec2ffa9ff7e18c1d853"
+      ],
+      "rssi": -56,
+      "snr": 12.5,
+      "timestamp": "2026-11-13T13:19:25.000Z"
+    }
+  ],
+  "packet": {
+    "_parsedPath": [
+      "CF0702",
+      "088C2E",
+      "6A3DFF"
+    ],
+    "decoded_json": "{\"type\":\"REQ\",\"destHash\":\"be\",\"srcHash\":\"46\",\"mac\":\"c55e\",\"encryptedData\":\"2b4a5457f3a0788677e911cf23ad8bbae6dfbe9073e0410c2d5b5681925bcb5df7db68426a4e5ca3b399528212beb1b6706de7e1d87d7ebbc91d7e524d364776036b98a121ba7d15f3108e42fe83fccd7e77f80aae6f2e7454df9453a8209535fea55662c8145b99b7ee937ceb680ca3c97ef6045dd623521c8e229340e28d35\"}",
+    "direction": "rx",
+    "first_seen": "2026-11-13T13:19:25Z",
+    "hash": "a47ebe195c446658",
+    "id": 1891450,
+    "observation_count": 1,
+    "observations": [
+      {
+        "direction": "rx",
+        "id": 33466894,
+        "observer_iata": "CVG",
+        "observer_id": "18315E8B1BA6840E5020DA27772B1D40538BD54E000BEC6426B1B8FD65C3E2ED",
+        "observer_name": "Observer-001",
+        "path_json": "[\"CF0702\",\"088C2E\",\"6A3DFF\"]",
+        "resolved_path": [
+          null,
+          null,
+          "6a3dff69bffe4612fb6e8c152a543dddaaac964d453ebec2ffa9ff7e18c1d853"
+        ],
+        "rssi": -56,
+        "snr": 12.5,
+        "timestamp": "2026-11-13T13:19:25.000Z"
+      }
+    ],
+    "observer_iata": "CVG",
+    "observer_id": "18315E8B1BA6840E5020DA27772B1D40538BD54E000BEC6426B1B8FD65C3E2ED",
+    "observer_name": "Observer-001",
+    "path_json": "[\"CF0702\",\"088C2E\",\"6A3DFF\"]",
+    "payload_type": 0,
+    "raw_hex": "0183cf0702088c2e6a3dffbe46c55e2b4a5457f3a0788677e911cf23ad8bbae6dfbe9073e0410c2d5b5681925bcb5df7db68426a4e5ca3b399528212beb1b6706de7e1d87d7ebbc91d7e524d364776036b98a121ba7d15f3108e42fe83fccd7e77f80aae6f2e7454df9453a8209535fea55662c8145b99b7ee937ceb680ca3c97ef6045dd623521c8e229340e28d35",
+    "resolved_path": [
+      null,
+      null,
+      "6a3dff69bffe4612fb6e8c152a543dddaaac964d453ebec2ffa9ff7e18c1d853"
+    ],
+    "route_type": 1,
+    "rssi": -56,
+    "scope_name": null,
+    "snr": 12.5,
+    "timestamp": "2026-11-13T13:19:25Z"
+  },
+  "path": [
+    "CF0702",
+    "088C2E",
+    "6A3DFF"
+  ]
+}

@@ -125,7 +125,7 @@ function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
     // slide-over rather than the clock, the same way #1924 pinned
     // test-slideover-1056-e2e.js. The packets page defaults to
     // `since = now - 15 min` client-side, and the freshened fixture's newest
-    // rows age out of that window ~15 minutes after freshen-fixture.sh runs.
+    // rows age out of that window ~15 minutes after freshen-fixture.sql runs.
     // Must be > 0: packets.js reads the param only under `_urlTimeWindow > 0`,
     // so `timeWindow=0` silently keeps the default.
     await page.goto(BASE + '/#/packets?timeWindow=1440', { waitUntil: 'domcontentloaded' });

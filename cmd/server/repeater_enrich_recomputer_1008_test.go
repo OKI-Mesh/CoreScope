@@ -17,11 +17,13 @@ import (
 // fix the prewarm runs immediately against empty byPathHop and the
 // cache becomes non-nil.
 func TestIssue1008_M1_PrewarmWaitsForIndexes(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// Wait for the background builder to finish so it can't race past
 	// our Store(false) below. Once it's done it won't write the flags
@@ -70,11 +72,13 @@ func TestIssue1008_M1_PrewarmWaitsForIndexes(t *testing.T) {
 // TestIssue1008_M1_PrewarmRunsWhenReady asserts the prewarm still runs
 // (cache populated) when the indexes are already ready.
 func TestIssue1008_M1_PrewarmRunsWhenReady(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatal("indexes never ready")

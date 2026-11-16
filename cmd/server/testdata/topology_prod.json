@@ -1,0 +1,398 @@
+{
+  "avgHops": 5.799573950091297,
+  "bestPathList": [
+    {
+      "hop": "96d2",
+      "minDist": 1,
+      "name": "Node 25",
+      "observer_id": "878e14e01f369cdec8c899a4a18218dee5f1fcbd3613e0bbf666bfc3d2e60803",
+      "observer_name": "Observer 26",
+      "pubkey": "dadc61edb2345b1936ac6f206bf4ab1325c2a891312d4d4d5c4ed8351a9848b8"
+    },
+    {
+      "hop": "eb2c9d",
+      "minDist": 1,
+      "name": "Node 27",
+      "observer_id": "bac33b8ed94043e740bb7a5c53830b28f0c687c0a20c468703d68b2d137a4f18",
+      "observer_name": "Observer 28",
+      "pubkey": "9451f7a07dc90444954eaef65d2b695c99385581a5e66336992e8cd3d29ccd13"
+    },
+    {
+      "hop": "81",
+      "minDist": 1,
+      "name": "Node 29",
+      "observer_id": "d652bd9197b542f52c4adc76d82bedfa65a5f5042105d244ec8f92b3045ec15e",
+      "observer_name": "Observer 30",
+      "pubkey": "832a47654491d3c24d22156dcca0d4b03ab7a5c365895b5b3d7488a74fd49512"
+    },
+    {
+      "hop": "a69a7b",
+      "minDist": 1,
+      "name": "Node 31",
+      "observer_id": "378632564515fc10d8b589255e6bcdeebfe553e115ab81ed75fb0abfc4497acb",
+      "observer_name": "Observer 32",
+      "pubkey": "5d2390446079b5d0da86394d21c7052635bd0c8bfb38c539c54f688dea43dd21"
+    }
+  ],
+  "hopDistribution": [
+    {
+      "count": 6959,
+      "hops": 1
+    },
+    {
+      "count": 7234,
+      "hops": 2
+    },
+    {
+      "count": 14509,
+      "hops": 3
+    },
+    {
+      "count": 5789,
+      "hops": 4
+    },
+    {
+      "count": 5432,
+      "hops": 5
+    },
+    {
+      "count": 4229,
+      "hops": 6
+    }
+  ],
+  "hopsVsSnr": [
+    {
+      "avgSnr": 7.595360824742272,
+      "count": 6499,
+      "hops": 1
+    },
+    {
+      "avgSnr": 8.739621365787695,
+      "count": 5916,
+      "hops": 2
+    },
+    {
+      "avgSnr": 8.091549867217445,
+      "count": 13556,
+      "hops": 3
+    },
+    {
+      "avgSnr": 4.125146255850235,
+      "count": 5128,
+      "hops": 4
+    },
+    {
+      "avgSnr": 4.299378278608901,
+      "count": 5147,
+      "hops": 5
+    },
+    {
+      "avgSnr": 4.301548179341098,
+      "count": 4037,
+      "hops": 6
+    }
+  ],
+  "maxHops": 123,
+  "medianHops": 4,
+  "multiObsNodes": [
+    {
+      "hop": "d751",
+      "name": "Node 01",
+      "observers": [
+        {
+          "count": 41,
+          "minDist": 1,
+          "observer_id": "7c8b4da53ba1b31b40b8a37f103ce1b23c7ba52b26a2953de1b501b851c6f1ea",
+          "observer_name": "Observer 18"
+        },
+        {
+          "count": 97,
+          "minDist": 1,
+          "observer_id": "899b4d573aa78a0b4773cf15b30147b2d9de32268fb1d5b6898758878f83d7c2",
+          "observer_name": "Observer 19"
+        },
+        {
+          "count": 220,
+          "minDist": 1,
+          "observer_id": "6c98ef4783c0996e2cdf7f3694c9ff17a89ea7b315529a3d7f554cb8a2e740bd",
+          "observer_name": "Node 05"
+        }
+      ],
+      "pubkey": "3f82a93b856df3b172c6ee4346013724f24d3aab6fd74d9858af1e527b845c62"
+    },
+    {
+      "hop": "1389",
+      "name": "Node 05",
+      "observers": [
+        {
+          "count": 424,
+          "minDist": 1,
+          "observer_id": "921f39f4bf2425ee7c007041fa685105497d7b0c0aa48921a68c516fd2247644",
+          "observer_name": "Observer 20"
+        },
+        {
+          "count": 379,
+          "minDist": 1,
+          "observer_id": "8b146d100c3999669ab0fe2257ec00aafb555d61b328be13abac514394b57589",
+          "observer_name": "Observer 21"
+        },
+        {
+          "count": 55,
+          "minDist": 1,
+          "observer_id": "033eea807cbde0a9ef72720b2b948d5ee6645e026824a86cc0bcb8c123ed70e7",
+          "observer_name": "Observer 22"
+        }
+      ],
+      "pubkey": "b690482c168e755603f796084c558bb8fb9ad2c13836c7c8e70d20a0019ebe1b"
+    },
+    {
+      "hop": "ed",
+      "name": "Node 23",
+      "observers": [
+        {
+          "count": 13,
+          "minDist": 1,
+          "observer_id": "921f39f4bf2425ee7c007041fa685105497d7b0c0aa48921a68c516fd2247644",
+          "observer_name": "Observer 20"
+        },
+        {
+          "count": 7,
+          "minDist": 1,
+          "observer_id": "8b146d100c3999669ab0fe2257ec00aafb555d61b328be13abac514394b57589",
+          "observer_name": "Observer 21"
+        },
+        {
+          "count": 5,
+          "minDist": 1,
+          "observer_id": "1a918c3b7f7f494d1df285cf94a24c0715800d4b49016a90a1ae10785786ab68",
+          "observer_name": "Observer 24"
+        }
+      ],
+      "pubkey": "f7455fa77926380c4ae67b5b71c93d40fbc6c2a6c0450fc045cefece0fe9c99c"
+    }
+  ],
+  "observers": [
+    {
+      "id": "8371365e66e065ae26a340f43c9091477374332a92e0a09397185f89ba8c152e",
+      "name": "Observer 07"
+    },
+    {
+      "id": "60b559f2bfe9caf6f8535a5d682bbfdbf1d7d87e90e005578409cca95742c6ba",
+      "name": "Observer 08"
+    },
+    {
+      "id": "f68b669ad529263f3aae274c7288d522fdb40a589dbb817f432ce171e8de3fd7",
+      "name": "Observer 09"
+    }
+  ],
+  "perObserverReach": {
+    "d8fc162e0bb0edf483e3205699f47453437663432b7550b28fcf5f441ae5a16f": {
+      "observer_name": "Observer 15",
+      "rings": [
+        {
+          "hops": 1,
+          "nodes": [
+            {
+              "count": 22,
+              "distRange": "1-7",
+              "hop": "a790",
+              "name": "Node 04",
+              "pubkey": "9092fbf8cb17b0725e206a020f1917041177c3b0a5ad066a38565be9dad06c61"
+            },
+            {
+              "count": 1,
+              "distRange": null,
+              "hop": "fd",
+              "name": "Node 10",
+              "pubkey": "b1c7f50f64b8a8bdefaecc19afb0a3310c58ee6c72a4f957436b7c488cdc5acf"
+            }
+          ]
+        },
+        {
+          "hops": 2,
+          "nodes": [
+            {
+              "count": 22,
+              "distRange": "2-6",
+              "hop": "1389",
+              "name": "Node 05",
+              "pubkey": "b690482c168e755603f796084c558bb8fb9ad2c13836c7c8e70d20a0019ebe1b"
+            },
+            {
+              "count": 1,
+              "distRange": null,
+              "hop": "81",
+              "name": "Node 11",
+              "pubkey": "f4a156473896a6b1887b9aedbaecbf2dc58201c3c7c05add72b3ffdbda737f28"
+            }
+          ]
+        },
+        {
+          "hops": 3,
+          "nodes": [
+            {
+              "count": 4,
+              "distRange": "3-5",
+              "hop": "6715",
+              "name": "Node 12",
+              "pubkey": "3223d2239a627663d7d40b67467a5f5c579e487648a6d71d89dc64ed1edd2513"
+            },
+            {
+              "count": 4,
+              "distRange": "3-5",
+              "hop": "2d98",
+              "name": "Node 13",
+              "pubkey": "c6f5f0618b666d2f83796bc40ade91fc69d9759b39c17e4a04a53b15010b60af"
+            },
+            {
+              "count": 2,
+              "distRange": "3-5",
+              "hop": "48f6",
+              "name": "Node 14",
+              "pubkey": "7ea95b8c476b3d6c5a0777fd56714abae64a04e03d104855ddede01101c38c84"
+            }
+          ]
+        }
+      ]
+    },
+    "19bf8f4735eef9094f0e6014be1c1fc8ac09af68a4627ee5cb0d0577368ecf3d": {
+      "observer_name": "Observer 17",
+      "rings": [
+        {
+          "hops": 1,
+          "nodes": [
+            {
+              "count": 31,
+              "distRange": "1-2",
+              "hop": "8f18",
+              "name": null,
+              "pubkey": null
+            },
+            {
+              "count": 31,
+              "distRange": "1-3",
+              "hop": "b361",
+              "name": null,
+              "pubkey": null
+            },
+            {
+              "count": 21,
+              "distRange": "1-2",
+              "hop": "aa77",
+              "name": null,
+              "pubkey": null
+            }
+          ]
+        },
+        {
+          "hops": 2,
+          "nodes": [
+            {
+              "count": 23,
+              "distRange": "2-5",
+              "hop": "0236",
+              "name": null,
+              "pubkey": null
+            },
+            {
+              "count": 15,
+              "distRange": "2-5",
+              "hop": "99fd",
+              "name": null,
+              "pubkey": null
+            },
+            {
+              "count": 8,
+              "distRange": "2-4",
+              "hop": "86d2",
+              "name": null,
+              "pubkey": null
+            }
+          ]
+        },
+        {
+          "hops": 3,
+          "nodes": [
+            {
+              "count": 12,
+              "distRange": "3-6",
+              "hop": "247a",
+              "name": "Node 16",
+              "pubkey": "b0bf3a745416a4a26f28fece9283a4012253c347553d2a53494f890457f79cad"
+            },
+            {
+              "count": 10,
+              "distRange": "3-4",
+              "hop": "1a9056",
+              "name": null,
+              "pubkey": null
+            },
+            {
+              "count": 10,
+              "distRange": "3-5",
+              "hop": "d09e",
+              "name": null,
+              "pubkey": null
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "topPairs": [
+    {
+      "count": 6243,
+      "hopA": "3c398e",
+      "hopB": "6c6189",
+      "nameA": "Node 04",
+      "nameB": "Node 05",
+      "pubkeyA": "9092fbf8cb17b0725e206a020f1917041177c3b0a5ad066a38565be9dad06c61",
+      "pubkeyB": "b690482c168e755603f796084c558bb8fb9ad2c13836c7c8e70d20a0019ebe1b"
+    },
+    {
+      "count": 4768,
+      "hopA": "9e90",
+      "hopB": "6e44",
+      "nameA": null,
+      "nameB": null,
+      "pubkeyA": null,
+      "pubkeyB": null
+    },
+    {
+      "count": 4749,
+      "hopA": "3d0049",
+      "hopB": "3a7c0c",
+      "nameA": "Node 02",
+      "nameB": "Node 06",
+      "pubkeyA": "5f47a28cf6fb8267b8f08b52263be17bc59f455d4baf64bf4fd6eeab3dc5a582",
+      "pubkeyB": "ccc281185d26c3083c460c189133ef7540fa48aead7bdf4e181d87ceca2488b2"
+    }
+  ],
+  "topRepeaters": [
+    {
+      "count": 13526,
+      "hop": "9e90",
+      "name": null,
+      "pubkey": null
+    },
+    {
+      "count": 10020,
+      "hop": "6dd10c",
+      "name": "Node 01",
+      "pubkey": "3f82a93b856df3b172c6ee4346013724f24d3aab6fd74d9858af1e527b845c62"
+    },
+    {
+      "count": 8874,
+      "hop": "3d0049",
+      "name": "Node 02",
+      "pubkey": "5f47a28cf6fb8267b8f08b52263be17bc59f455d4baf64bf4fd6eeab3dc5a582"
+    },
+    {
+      "count": 8391,
+      "hop": "0dbee4",
+      "name": "Node 03",
+      "pubkey": "47c83a859c5186e6296f6220c117d4fe61f608acd3d5281ecbc0e00ff1d6ad8b"
+    }
+  ],
+  "uniqueNodes": 1622
+}

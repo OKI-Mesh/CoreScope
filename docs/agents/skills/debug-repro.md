@@ -16,14 +16,14 @@ Reproduce reported bugs LOCALLY against fixture data, synthesized data, or live 
 
 ## Scope
 - Local reproduction using project fixtures (`test-fixtures/` in repo)
-- SQLite queries against fixture/staging DBs
+- SQL queries (`psql`) against the fixture or staging database (`scripts/e2e-db.sh` loads the fixture)
 - curl against locally-running server
 - Read-only SSH to staging (connection details in MEMORY.md)
 
 ## Process
 1. Identify the EXACT failing assertion/behavior
 2. Find the fixture/DB/state the test uses
-3. Write the literal repro command (sqlite3/curl/node)
+3. Write the literal repro command (psql/curl/node)
 4. Run it locally — observe actual error
 5. Only THEN form a hypothesis
 6. Fix → re-run repro → confirm fixed → push

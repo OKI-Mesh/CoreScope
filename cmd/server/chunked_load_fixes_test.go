@@ -15,20 +15,19 @@ package main
 //       to probes and the load-status middleware.
 
 import (
-	"errors"
 	"testing"
 )
 
 // (A) Indexes must be marked ready by LoadChunked.
 func TestLoadChunked_MarksIndexesReady(t *testing.T) {
+	ctx := t.Context()
 	store := openChunkedTestStore(t, 100)
-	defer store.db.conn.Close()
 
 	if store.SubpathIndexReady() || store.PathHopIndexReady() {
 		t.Fatal("indexes must start NOT ready")
 	}
 
-	if err := store.LoadChunked(50); err != nil {
+	if err := store.LoadChunked(ctx, 50); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 
@@ -42,19 +41,14 @@ func TestLoadChunked_MarksIndexesReady(t *testing.T) {
 
 // (B) LoadChunked errors must not flip LoadComplete=true.
 func TestLoadChunked_ErrorDoesNotMarkComplete(t *testing.T) {
+	ctx := t.Context()
 	store := openChunkedTestStore(t, 100)
 
-	// Close the underlying DB so the very first chunk query fails.
-	if err := store.db.conn.Close(); err != nil {
-		t.Fatalf("close DB: %v", err)
-	}
+	// Close the pool so the very first chunk query fails.
+	store.db.Close()
 
-	err := store.LoadChunked(50)
-	if err == nil {
+	if err := store.LoadChunked(ctx, 50); err == nil {
 		t.Fatal("LoadChunked must return an error when the DB query fails")
-	}
-	if !errors.Is(err, err) { // satisfy linters; the assertion below is what matters
-		t.Fatalf("unexpected error shape: %v", err)
 	}
 
 	if store.LoadComplete() {

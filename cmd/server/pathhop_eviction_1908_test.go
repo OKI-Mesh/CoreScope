@@ -13,6 +13,7 @@ func TestPathHopEviction1908(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			now := time.Now().UTC()
 			store := makeTestStore(8, now.Add(-30*time.Minute), 0)
+			store.db = setupTestDB(t)
 			store.byPayloadType[5] = store.byPayloadType[4]
 			delete(store.byPayloadType, 4)
 			store.byPathHop = make(map[string][]*StoreTx)
@@ -24,7 +25,7 @@ func TestPathHopEviction1908(t *testing.T) {
 				store.trackedBytes = 8 * 1048576 // The 25% cap evicts the first two.
 			} else {
 				for _, tx := range store.packets[:2] {
-					tx.FirstSeen = now.Add(-2 * time.Hour).Format(time.RFC3339)
+					tx.FirstSeen = now.Add(-2 * time.Hour)
 				}
 			}
 
@@ -62,7 +63,7 @@ func TestPathHopEviction1908(t *testing.T) {
 
 			var evicted int
 			if mode == "time-run" {
-				evicted = store.RunEviction() // No DB: cleanup cannot depend on SQL.
+				evicted = runEviction(t, store) // No DB: cleanup cannot depend on SQL.
 			} else {
 				store.mu.Lock()
 				if strings.HasPrefix(mode, "memory-") {
@@ -116,9 +117,9 @@ func TestPathHopEviction1908(t *testing.T) {
 
 			// A later sweep that removes every survivor must also remove every key.
 			for _, tx := range store.packets {
-				tx.FirstSeen = now.Add(-2 * time.Hour).Format(time.RFC3339)
+				tx.FirstSeen = now.Add(-2 * time.Hour)
 			}
-			if got := store.RunEviction(); got != 6 {
+			if got := runEviction(t, store); got != 6 {
 				t.Fatalf("final eviction removed %d transmissions, want 6", got)
 			}
 			if len(store.byPathHop) != 0 {
@@ -145,8 +146,8 @@ func BenchmarkPathHopEviction1908(b *testing.B) {
 				for i := 0; i < b.N; i++ {
 					b.StopTimer()
 					now := time.Now().UTC()
-					old := now.Add(-2 * time.Hour).Format(time.RFC3339)
-					recent := now.Add(-30 * time.Minute).Format(time.RFC3339)
+					old := now.Add(-2 * time.Hour)
+					recent := now.Add(-30 * time.Minute)
 					store := &PacketStore{
 						packets:        make([]*StoreTx, count),
 						byPathHop:      make(map[string][]*StoreTx, len(pubkeys)+256),

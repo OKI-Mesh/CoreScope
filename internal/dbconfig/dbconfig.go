@@ -1,12 +1,12 @@
 // Package dbconfig provides the shared DBConfig struct used by both the server
-// and ingestor binaries for SQLite vacuum and maintenance settings (#919, #921).
+// and ingestor binaries for the Postgres connection and startup-load settings.
 package dbconfig
 
-// DBConfig controls SQLite vacuum and maintenance behavior (#919).
+import "os"
+
+// DBConfig holds the database settings shared by the server and ingestor.
 type DBConfig struct {
-	VacuumOnStartup        bool `json:"vacuumOnStartup"`        // one-time full VACUUM on startup if auto_vacuum is not INCREMENTAL
-	IncrementalVacuumPages int  `json:"incrementalVacuumPages"` // pages returned to OS per reaper cycle (default 1024)
-	AnalysisLimit          int  `json:"analysisLimit"`          // index rows ANALYZE visits per index (default 10000); negative disables the planner stats refresh (#2058)
+	ConnectionString string `json:"connectionString"` // Postgres DSN; $DATABASE_URL is the fallback
 
 	// Load controls chunked startup loading (#1009).
 	Load *LoadConfig `json:"load,omitempty"`
@@ -19,12 +19,14 @@ type LoadConfig struct {
 	ChunkSize int `json:"chunkSize"`
 }
 
-// GetIncrementalVacuumPages returns the configured pages or 1024 default.
-func (c *DBConfig) GetIncrementalVacuumPages() int {
-	if c != nil && c.IncrementalVacuumPages > 0 {
-		return c.IncrementalVacuumPages
+// DSN returns the Postgres connection string: connectionString from config.json,
+// else $DATABASE_URL. It is empty when neither is set. It is safe to call on a
+// nil *DBConfig, which is what a config.json without a "db" block produces.
+func (c *DBConfig) DSN() string {
+	if c != nil && c.ConnectionString != "" {
+		return c.ConnectionString
 	}
-	return 1024
+	return os.Getenv("DATABASE_URL")
 }
 
 // GetLoadChunkSize returns the configured chunk size or 10000 default (#1009).

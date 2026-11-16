@@ -18,33 +18,22 @@ import (
 	"time"
 )
 
-// TestIssue1008_SubpathIndexReadyFalseImmediatelyAfterLoad asserts the
-// subpath ready flag is false the instant Load() returns. Red commit: the
-// stub returns true → assertion fires. Green commit: the flag is owned by
-// the background goroutine, which has not yet run, so the assertion holds.
-func TestIssue1008_SubpathIndexReadyFalseImmediatelyAfterLoad(t *testing.T) {
-	db := setupRichTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-	if store.SubpathIndexReady() {
-		t.Fatal("expected SubpathIndexReady()==false immediately after Load(); want background-deferred build (#1008)")
-	}
-}
+func TestLoadChunkedMarksIndexesReady(t *testing.T) {
+	ctx := t.Context()
 
-// TestIssue1008_PathHopIndexReadyFalseImmediatelyAfterLoad: same contract
-// for the path-hop index.
-func TestIssue1008_PathHopIndexReadyFalseImmediatelyAfterLoad(t *testing.T) {
 	db := setupRichTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load() error: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
-	if store.PathHopIndexReady() {
-		t.Fatal("expected PathHopIndexReady()==false immediately after Load(); want background-deferred build (#1008)")
+	if !store.SubpathIndexReady() {
+		t.Error("SubpathIndexReady() must be true as soon as LoadChunked returns")
+	}
+	if !store.PathHopIndexReady() {
+		t.Error("PathHopIndexReady() must be true as soon as LoadChunked returns")
+	}
+	if !store.WaitIndexesReady(0) {
+		t.Error("WaitIndexesReady must not block after LoadChunked")
 	}
 }
 
@@ -52,11 +41,13 @@ func TestIssue1008_PathHopIndexReadyFalseImmediatelyAfterLoad(t *testing.T) {
 // analytics/subpaths handler returns 503 + Retry-After: 5 + a JSON body
 // matching the triage spec while the subpath index is still building.
 func TestIssue1008_HandlerReturns503WhileSubpathIndexLoading(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load() error: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// Finish the background build before simulating not-ready, so it cannot
 	// flip the flag back to true before the handler checks it.
@@ -90,11 +81,13 @@ func TestIssue1008_HandlerReturns503WhileSubpathIndexLoading(t *testing.T) {
 // TestIssue1008_HandlerRecoversAfterIndexReady asserts that, once the
 // background build completes, the handler returns 200.
 func TestIssue1008_HandlerRecoversAfterIndexReady(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load() error: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 
 	// Wait up to 5s for both background builds to finish on this small
@@ -130,11 +123,13 @@ func TestIssue1008_HandlerRecoversAfterIndexReady(t *testing.T) {
 // goroutine wins the race to s.mu.Lock(). Sanity check that breaking
 // the two builds apart didn't drop the pathHop flag flip.
 func TestIssue1008_m7_BothFlagsSetAfterParallelStart(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	if !store.WaitIndexesReady(5 * time.Second) {
 		t.Fatal("indexes never ready after parallel start (#1008 m7)")

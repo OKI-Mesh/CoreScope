@@ -2,20 +2,22 @@ package dbconfig
 
 import "testing"
 
-func TestGetIncrementalVacuumPages_Default(t *testing.T) {
-	var c *DBConfig
-	if got := c.GetIncrementalVacuumPages(); got != 1024 {
-		t.Fatalf("nil DBConfig: got %d, want 1024", got)
-	}
-	c = &DBConfig{}
-	if got := c.GetIncrementalVacuumPages(); got != 1024 {
-		t.Fatalf("zero DBConfig: got %d, want 1024", got)
-	}
-}
+func TestDSN(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://env/db")
 
-func TestGetIncrementalVacuumPages_Configured(t *testing.T) {
-	c := &DBConfig{IncrementalVacuumPages: 512}
-	if got := c.GetIncrementalVacuumPages(); got != 512 {
-		t.Fatalf("got %d, want 512", got)
+	var missing *DBConfig
+	if got := missing.DSN(); got != "postgres://env/db" {
+		t.Errorf("nil config DSN = %q, want the DATABASE_URL value", got)
+	}
+	if got := (&DBConfig{}).DSN(); got != "postgres://env/db" {
+		t.Errorf("empty config DSN = %q, want the DATABASE_URL value", got)
+	}
+	if got := (&DBConfig{ConnectionString: "postgres://cfg/db"}).DSN(); got != "postgres://cfg/db" {
+		t.Errorf("configured DSN = %q, want the connectionString value", got)
+	}
+
+	t.Setenv("DATABASE_URL", "")
+	if got := missing.DSN(); got != "" {
+		t.Errorf("nil config with no env DSN = %q, want empty", got)
 	}
 }

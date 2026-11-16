@@ -4,6 +4,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestObserverAnalyticsBucketDur pins the bucket-size table copied from the
@@ -44,12 +47,10 @@ func TestObserverAnalyticsFormatLabel(t *testing.T) {
 func buildObsForTest(txID int, ts time.Time, snr *float64, pathJSON string) *StoreObs {
 	o := &StoreObs{
 		TransmissionID: txID,
-		Timestamp:      ts.UTC().Format(time.RFC3339Nano),
+		Timestamp:      ts.UTC(),
 		SNR:            snr,
 		PathJSON:       pathJSON,
 	}
-	// Prime the cache by calling ParsedTime once.
-	o.ParsedTime()
 	return o
 }
 
@@ -64,11 +65,10 @@ func newStoreForAnalyticsTest() *PacketStore {
 // from store.byTxID, and skips obs whose tx or tx.PayloadType is missing.
 func TestBuildPacketTypesDirectRead(t *testing.T) {
 	store := newStoreForAnalyticsTest()
-	pt3, pt5 := 3, 5
+	pt3, pt5 := types.PayloadType(3), types.PayloadType(5)
 	store.byTxID[1] = &StoreTx{ID: 1, PayloadType: &pt3}
 	store.byTxID[2] = &StoreTx{ID: 2, PayloadType: &pt5}
-	store.byTxID[3] = &StoreTx{ID: 3, PayloadType: nil} // no type → skip
-	// tx=4 not in map → skip
+	store.byTxID[3] = &StoreTx{ID: 3, PayloadType: nil}
 
 	now := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
 	filtered := []*StoreObs{
@@ -79,13 +79,13 @@ func TestBuildPacketTypesDirectRead(t *testing.T) {
 		buildObsForTest(4, now, nil, "[]"),
 	}
 	got := buildPacketTypes(filtered, store.byTxID)
-	if got["3"] != 2 {
-		t.Errorf("packetTypes[3] = %d, want 2", got["3"])
+	if got[pt3] != 2 {
+		t.Errorf("packetTypes[3] = %d, want 2", got[pt3])
 	}
-	if got["5"] != 1 {
-		t.Errorf("packetTypes[5] = %d, want 1", got["5"])
+	if got[pt5] != 1 {
+		t.Errorf("packetTypes[5] = %d, want 1", got[pt5])
 	}
-	if _, ok := got["0"]; ok {
+	if _, ok := got[types.PayloadType(0)]; ok {
 		t.Errorf("packetTypes should not contain missing-type entries: %v", got)
 	}
 	if len(got) != 2 {
@@ -137,57 +137,50 @@ func TestBuildSnrDistribution(t *testing.T) {
 
 // TestBuildRecentPacketsLimit asserts that recentPackets returns at most
 // `limit` entries taken from the head of `filtered`.
-func TestBuildRecentPacketsLimit(t *testing.T) {
+func TestBuildRecentPacketsOneEntryPerSelectedObservation(t *testing.T) {
 	store := newStoreForAnalyticsTest()
-	pt := 3
+	pt := types.PayloadType(3)
 	store.byTxID[1] = &StoreTx{ID: 1, PayloadType: &pt}
 	base := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
-	filtered := make([]*StoreObs, 0, 25)
-	for i := 0; i < 25; i++ {
-		filtered = append(filtered, buildObsForTest(1, base.Add(-time.Duration(i)*time.Minute), nil, "[]"))
+	selected := make([]*StoreObs, 0, 20)
+	for i := 0; i < 20; i++ {
+		selected = append(selected, buildObsForTest(1, base.Add(-time.Duration(i)*time.Minute), nil, "[]"))
 	}
-	got := buildRecentPackets(store, filtered, 20, store.byTxID)
+	got := buildRecentPackets(store, selected, store.byTxID, database.ResolvedPaths{})
 	if len(got) != 20 {
 		t.Errorf("recentPackets len = %d, want 20", len(got))
 	}
 }
 
-// TestBuildRecentPacketsSkipsUnparseableTimestamp asserts obs with an
-// unparseable Timestamp are dropped BEFORE the top-N slice — matching the
-// legacy pre-refactor loop (routes.go pre-#1828: `if !ok { continue }` sits
-// above the `i < 20` gate). Regression guard for #1839 MAJOR.
-func TestBuildRecentPacketsSkipsUnparseableTimestamp(t *testing.T) {
+// TestBuildRecentPacketsSkipsZeroTimestamp asserts observations with a zero
+// Timestamp never become entries. The top-N selection lives in the caller now,
+// so this only pins the per-observation skip (regression guard for #1839).
+func TestBuildRecentPacketsSkipsZeroTimestamp(t *testing.T) {
 	store := newStoreForAnalyticsTest()
-	pt := 3
+	pt := types.PayloadType(3)
 	store.byTxID[1] = &StoreTx{ID: 1, PayloadType: &pt}
 	base := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
 
-	filtered := make([]*StoreObs, 0, 23)
-	// 3 head observations with an unparseable timestamp — legacy skipped them
-	// before the index-gate, so they must NOT consume slots in the top-20.
+	selected := make([]*StoreObs, 0, 23)
 	for i := 0; i < 3; i++ {
-		filtered = append(filtered, &StoreObs{
+		selected = append(selected, &StoreObs{
 			TransmissionID: 1,
-			Timestamp:      "not-a-timestamp",
+			Timestamp:      time.Time{},
 			PathJSON:       "[]",
 		})
 	}
-	// 20 good observations after them.
 	for i := 0; i < 20; i++ {
-		filtered = append(filtered, buildObsForTest(1, base.Add(-time.Duration(i)*time.Minute), nil, "[]"))
+		selected = append(selected, buildObsForTest(1, base.Add(-time.Duration(i)*time.Minute), nil, "[]"))
 	}
 
-	got := buildRecentPackets(store, filtered, 20, store.byTxID)
+	got := buildRecentPackets(store, selected, store.byTxID, database.ResolvedPaths{})
 
-	// Legacy loop: index 0-2 skipped (bad ts), index 3-19 appended under the
-	// i<20 gate (17 entries), index 20-22 dropped (i>=20). Result len = 17.
-	if len(got) != 17 {
-		t.Errorf("recentPackets len = %d, want 17 (unparseable-ts obs at head must be skipped before top-N gate)", len(got))
+	if len(got) != 20 {
+		t.Errorf("recentPackets len = %d, want 20 (the 3 zero-time observations must be skipped)", len(got))
 	}
-	// Sanity: no entry should carry the bad Timestamp string.
 	for i, e := range got {
-		if ts, _ := e["timestamp"].(string); ts == "not-a-timestamp" {
-			t.Errorf("recentPackets[%d] contains unparseable-ts obs (timestamp=%q)", i, ts)
+		if e.Timestamp.IsZero() {
+			t.Errorf("recentPackets[%d] contains a zero-time observation (timestamp=%v)", i, e.Timestamp)
 		}
 	}
 }
@@ -196,7 +189,7 @@ func TestBuildRecentPacketsSkipsUnparseableTimestamp(t *testing.T) {
 // nodes per bucket (path hops + decoded pubKey/srcHash/destHash).
 func TestBuildNodesTimelineDistinct(t *testing.T) {
 	store := newStoreForAnalyticsTest()
-	pt := 4
+	pt := types.PayloadType(4)
 	// tx=1 has decoded_json with a pubKey
 	store.byTxID[1] = &StoreTx{
 		ID:          1,

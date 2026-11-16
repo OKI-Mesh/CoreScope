@@ -16,6 +16,7 @@ import (
 //
 // A bare `log.Printf("... observer=%s ...", obs)` would leak the full ID.
 func TestHandleMessageDecodeErrorLog_PII_Issue1211(t *testing.T) {
+	ctx := t.Context()
 	store, source := newTestContext(t)
 
 	// Use a 64-char observer ID; the prefix MUST be capped at 8 chars in logs.
@@ -32,7 +33,7 @@ func TestHandleMessageDecodeErrorLog_PII_Issue1211(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(orig)
 
-	handleMessage(store, "test", source, msg, nil, nil, &Config{})
+	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	out := buf.String()
 	if !strings.Contains(out, "decode error") {

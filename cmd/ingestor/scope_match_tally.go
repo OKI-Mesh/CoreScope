@@ -1,9 +1,10 @@
 package main
 
 import (
-	"database/sql"
-	"errors"
+	"context"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // The scope-match tally lives in scopeMatchCounters, four atomics in this
@@ -19,44 +20,32 @@ import (
 //
 // scope_match_totals is one row. The ingestor reads it into the counters at
 // startup and writes them back periodically and on shutdown, which makes the
-// tally cumulative since `since_unix` instead of since boot. It is deliberately
-// NOT in internal/dbschema: the server neither reads this table nor detects it,
-// and putting it in AssertReady would make an old DB without the table fail the
-// server's startup check for data the server never looks at.
-
-const scopeMatchTotalsSchema = `
-	CREATE TABLE IF NOT EXISTS scope_match_totals (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		since_unix INTEGER NOT NULL,
-		unique_matches INTEGER NOT NULL,
-		explicit_over_derived INTEGER NOT NULL,
-		ambiguous INTEGER NOT NULL,
-		none_matches INTEGER NOT NULL,
-		updated_unix INTEGER NOT NULL
-	)`
+// tally cumulative since counting_since instead of since boot. The server
+// neither reads nor needs this table.
+//
+// The final save on shutdown must use a fresh, bounded context, not the root
+// one: by the time shutdown runs the root context is already cancelled, so a
+// save with it fails and loses everything since the last periodic save.
 
 // LoadScopeMatchTotals seeds the in-process counters from the stored row so
 // counting continues where the previous process stopped. On a DB that has no
 // row yet it anchors `since` at now and stores the zeroes, so the very first
 // window has a start time too — without it, a tally read after one restart
 // would have no honest denominator.
-func (s *Store) LoadScopeMatchTotals() error {
-	var since, uniq, explicit, ambiguous, none int64
-	err := s.db.QueryRow(`
-		SELECT since_unix, unique_matches, explicit_over_derived, ambiguous, none_matches
-		FROM scope_match_totals WHERE id = 1`).Scan(&since, &uniq, &explicit, &ambiguous, &none)
-	if errors.Is(err, sql.ErrNoRows) {
-		scopeMatchCounters.sinceUnix.Store(time.Now().Unix())
-		return s.SaveScopeMatchTotals()
-	}
+func (s *Store) LoadScopeMatchTotals(ctx context.Context) error {
+	t, err := s.db.GetScopeMatchTotals(ctx)
 	if err != nil {
 		return err
 	}
-	scopeMatchCounters.sinceUnix.Store(since)
-	scopeMatchCounters.unique.Store(uniq)
-	scopeMatchCounters.explicitOverDerived.Store(explicit)
-	scopeMatchCounters.ambiguous.Store(ambiguous)
-	scopeMatchCounters.none.Store(none)
+	if t == nil {
+		scopeMatchCounters.sinceUnix.Store(time.Now().Unix())
+		return s.SaveScopeMatchTotals(ctx)
+	}
+	scopeMatchCounters.sinceUnix.Store(t.Since.Unix())
+	scopeMatchCounters.unique.Store(t.Unique)
+	scopeMatchCounters.explicitOverDerived.Store(t.ExplicitOverDerived)
+	scopeMatchCounters.ambiguous.Store(t.Ambiguous)
+	scopeMatchCounters.none.Store(t.None)
 	return nil
 }
 
@@ -64,23 +53,12 @@ func (s *Store) LoadScopeMatchTotals() error {
 // atomic is loaded independently, so a save taken under live traffic can miss
 // a match that lands mid-write; the next save picks it up. The tally is a
 // long-window ratio, not an audit trail.
-func (s *Store) SaveScopeMatchTotals() error {
-	_, err := s.db.Exec(`
-		INSERT INTO scope_match_totals
-			(id, since_unix, unique_matches, explicit_over_derived, ambiguous, none_matches, updated_unix)
-		VALUES (1, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			since_unix = excluded.since_unix,
-			unique_matches = excluded.unique_matches,
-			explicit_over_derived = excluded.explicit_over_derived,
-			ambiguous = excluded.ambiguous,
-			none_matches = excluded.none_matches,
-			updated_unix = excluded.updated_unix`,
-		scopeMatchCounters.sinceUnix.Load(),
-		scopeMatchCounters.unique.Load(),
-		scopeMatchCounters.explicitOverDerived.Load(),
-		scopeMatchCounters.ambiguous.Load(),
-		scopeMatchCounters.none.Load(),
-		time.Now().Unix())
-	return err
+func (s *Store) SaveScopeMatchTotals(ctx context.Context) error {
+	return s.db.SaveScopeMatchTotals(ctx, database.ScopeMatchTotals{
+		Since:               time.Unix(scopeMatchCounters.sinceUnix.Load(), 0).UTC(),
+		Unique:              scopeMatchCounters.unique.Load(),
+		ExplicitOverDerived: scopeMatchCounters.explicitOverDerived.Load(),
+		Ambiguous:           scopeMatchCounters.ambiguous.Load(),
+		None:                scopeMatchCounters.none.Load(),
+	}, time.Now().UTC())
 }

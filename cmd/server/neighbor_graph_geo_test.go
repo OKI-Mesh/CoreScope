@@ -23,9 +23,9 @@ func TestBuildNeighborGraph_RejectsGeoFarEdge(t *testing.T) {
 	// ADVERT originated by A, path=["bbbb"] → builder creates edge A↔B
 	// (originator ↔ path[0]). With geo sanity ON this edge must be dropped.
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["bbbb"]`, nowStr, ngFloatPtr(-10)),
+		ngMakeObs("obs00001", `["bbbb"]`, now, ngFloatPtr(-10)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	for _, e := range g.AllEdges() {
@@ -45,9 +45,9 @@ func TestBuildNeighborGraph_AcceptsLocalEdge(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer", Lat: 37.77, Lon: -122.41, HasGPS: true},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["cccc"]`, nowStr, ngFloatPtr(-10)),
+		ngMakeObs("obs00001", `["cccc"]`, now, ngFloatPtr(-10)),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	found := false
@@ -73,9 +73,9 @@ func TestBuildNeighborGraph_AcceptsEdgeWhenNoGPS(t *testing.T) {
 		{Role: "repeater", PublicKey: "obs00001", Name: "Observer"},
 	}
 	tx := ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-		ngMakeObs("obs00001", `["dddd"]`, nowStr, nil),
+		ngMakeObs("obs00001", `["dddd"]`, now, nil),
 	})
-	store := ngTestStore(nodes, []*StoreTx{tx})
+	store := ngTestStore(t, nodes, []*StoreTx{tx})
 	g := BuildFromStore(store)
 
 	found := false
@@ -101,13 +101,13 @@ func TestBuildNeighborGraph_RejectedCounterIncrements(t *testing.T) {
 	// Two adverts each producing the far A↔B edge attempt → counter ≥ 2.
 	txs := []*StoreTx{
 		ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("obs00001", `["bbbb"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["bbbb"]`, now, nil),
 		}),
 		ngMakeTx(2, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
-			ngMakeObs("obs00001", `["bbbb"]`, nowStr, nil),
+			ngMakeObs("obs00001", `["bbbb"]`, now, nil),
 		}),
 	}
-	store := ngTestStore(nodes, txs)
+	store := ngTestStore(t, nodes, txs)
 	g := BuildFromStore(store)
 	got := atomic.LoadUint64(&g.RejectedEdgesGeoFar)
 	if got < 2 {

@@ -1,0 +1,84 @@
+{
+  "firstSeen": "2026-11-05T15:15:42Z",
+  "hops": [
+    "e70b",
+    "9e90"
+  ],
+  "hourDistribution": [
+    162,
+    115,
+    101,
+    186,
+    288,
+    179,
+    184,
+    163,
+    202,
+    171,
+    144,
+    176,
+    203,
+    164,
+    112,
+    224,
+    281,
+    253,
+    258,
+    235,
+    317,
+    213,
+    244,
+    192
+  ],
+  "lastSeen": "2026-11-09T05:12:39Z",
+  "nodes": [
+    {
+      "hop": "e70b",
+      "lat": null,
+      "lon": null,
+      "name": "Node 41",
+      "pubkey": null
+    },
+    {
+      "hop": "9e90",
+      "lat": null,
+      "lon": null,
+      "name": "Node 42",
+      "pubkey": null
+    }
+  ],
+  "observers": [
+    {
+      "count": 4767,
+      "name": "Observer 43"
+    }
+  ],
+  "parentPaths": [
+    {
+      "count": 370,
+      "path": "b693 → 6e44 → 9e90"
+    },
+    {
+      "count": 189,
+      "path": "33ce → 9a98 → 4a02 → 6e44 → 9e90"
+    },
+    {
+      "count": 149,
+      "path": "6e44 → 9e90"
+    },
+    {
+      "count": 142,
+      "path": "9a98 → 4a02 → 6e44 → 9e90"
+    },
+    {
+      "count": 60,
+      "path": "33ce → 9a98 → 1c2b → 4a02 → 6e44 → 9e90"
+    }
+  ],
+  "signal": {
+    "avgRssi": -99.99454583595553,
+    "avgSnr": -0.07314873085798197,
+    "samples": 4767
+  },
+  "totalMatches": 4767
+}

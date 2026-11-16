@@ -3,6 +3,10 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestQueryPacketsOrdersByIngestID is the regression test for issue #1345.
@@ -20,39 +24,37 @@ import (
 // This test inserts two rows where row order by id and order by
 // first_seen DISAGREE, then asserts the result is ordered by id DESC.
 func TestQueryPacketsOrdersByIngestID(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
 	// Row A: ingested FIRST (lower id), rxTime "newer" (fresher first_seen)
-	freshFirstSeen := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	freshFirstSeen := now.Add(-1 * time.Hour)
 	// Row B: ingested SECOND (higher id), rxTime "older" — simulating a
 	// buffered observer upload that arrived after row A but contains a
 	// packet the radio received hours earlier.
-	bufferedFirstSeen := now.Add(-6 * time.Hour).Format(time.RFC3339)
+	bufferedFirstSeen := now.Add(-6 * time.Hour)
 
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type)
-		VALUES ('AA', 'hashfresh00000001', ?, 4)`, freshFirstSeen); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type)
-		VALUES ('BB', 'hashbuffered00002', ?, 4)`, bufferedFirstSeen); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AA", "hashfresh00000001", "", types.RouteFlood, types.PayloadADVERT, "",
+	), freshFirstSeen)
+	mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"BB", "hashbuffered00002", "", types.RouteFlood, types.PayloadADVERT, "",
+	), bufferedFirstSeen)
 
-	result, err := db.QueryPackets(PacketQuery{Limit: 50, Order: "DESC"})
+	result, _, err := db.QueryPackets(ctx, database.PacketQuery{Limit: 50, Order: "DESC"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Packets) != 2 {
-		t.Fatalf("expected 2 packets, got %d", len(result.Packets))
+	if len(result) != 2 {
+		t.Fatalf("expected 2 packets, got %d", len(result))
 	}
 	// With first_seen DESC (the bug), the order would be [fresh, buffered]
 	// because the fresh row has the newer rxTime. With the fix (id DESC),
 	// order is [buffered, fresh] because the buffered row was ingested
 	// second and has the higher id.
-	first, _ := result.Packets[0]["hash"].(string)
-	second, _ := result.Packets[1]["hash"].(string)
+	first := result[0].Hash
+	second := result[1].Hash
 	if first != "hashbuffered00002" || second != "hashfresh00000001" {
 		t.Errorf("expected order [buffered, fresh] by ingest id DESC, got [%s, %s]",
 			first, second)
@@ -67,47 +69,34 @@ func TestQueryPacketsOrdersByIngestID(t *testing.T) {
 // they were ingested in the last 15 minutes. Display order is by ingest
 // id (issue #1345 fix); filter semantic is unchanged.
 func TestQueryPacketsSinceFilterUsesFirstSeen(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
 
 	now := time.Now().UTC()
-	recent := now.Add(-30 * time.Minute).Format(time.RFC3339)
-	old := now.Add(-6 * time.Hour).Format(time.RFC3339)
-	sinceCutoff := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-30 * time.Minute).Unix()
-	oldEpoch := now.Add(-6 * time.Hour).Unix()
+	recent := now.Add(-30 * time.Minute)
+	old := now.Add(-6 * time.Hour)
+	sinceCutoff := now.Add(-1 * time.Hour)
 
-	if _, err := db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen, packet_count)
-		VALUES ('obs1', 'Obs1', ?, ?, 1)`, recent, recent); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type)
-		VALUES ('AA', 'recentrx00000001', ?, 4)`, recent); err != nil {
-		t.Fatal(err)
-	}
+	observerID := mustCreateTestObserver(t, ctx, db, "obs1", "Obs1", "", recent)
+	recentTx := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"AA", "recentrx00000001", "", types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
 	// Buffered upload — ingested SECOND, but rxTime is 6h ago.
-	if _, err := db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, payload_type)
-		VALUES ('BB', 'oldrxbuffered001', ?, 4)`, old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10, -90, '[]', ?)`, recentEpoch); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 10, -90, '[]', ?)`, oldEpoch); err != nil {
-		t.Fatal(err)
-	}
+	oldTx := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"BB", "oldrxbuffered001", "", types.RouteFlood, types.PayloadADVERT, "",
+	), old)
+	dbtest.Observation(t, db, recentTx, observerID, recent, 10, -90, nil...)
+	dbtest.Observation(t, db, oldTx, observerID, old, 10, -90, nil...)
 
-	result, err := db.QueryPackets(PacketQuery{Limit: 50, Order: "DESC", Since: sinceCutoff})
+	result, _, err := db.QueryPackets(ctx, database.PacketQuery{Limit: 50, Order: "DESC", FirstSeenAfter: &sinceCutoff})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Packets) != 1 {
+	if len(result) != 1 {
 		t.Fatalf("since= should filter by first_seen (rxTime); expected 1 packet, got %d",
-			len(result.Packets))
+			len(result))
 	}
-	h, _ := result.Packets[0]["hash"].(string)
+	h := result[0].Hash
 	if h != "recentrx00000001" {
 		t.Errorf("expected the rxTime-recent packet, got %s", h)
 	}

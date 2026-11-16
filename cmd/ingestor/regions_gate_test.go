@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+)
 
 // clientRegionsMsg builds a valid region-discovery answer on the dedicated
 // topic meshcore/client/<pubkey>/regions.
@@ -39,10 +43,11 @@ func TestClientRegionsEnabledDefault(t *testing.T) {
 // /regions topic message must be dispatched and write exactly one row.
 func TestClientRegionsGateOn(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{ClientRegions: &ClientRegionsConfig{Enabled: true}}
 
-	handleMessage(store, "test", source, clientRegionsMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientRegionsMsg(), nil, nil, cfg)
 
 	if n := declaredRegionsCount(t, store); n != 1 {
 		t.Fatalf("feature ON: expected 1 node_declared_regions row, got %d", n)
@@ -58,32 +63,24 @@ func TestClientRegionsGateOn(t *testing.T) {
 // as an observer id.
 func TestClientRegionsGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{} // ClientRegions nil ⇒ disabled
 
-	handleMessage(store, "test", source, clientRegionsMsgWithRaw(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientRegionsMsgWithRaw(), nil, nil, cfg)
 
 	if n := declaredRegionsCount(t, store); n != 0 {
 		t.Fatalf("feature OFF: expected 0 node_declared_regions rows, got %d", n)
 	}
-	var observerRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE id = ?`, testCompanionPK).Scan(&observerRows); err != nil {
-		t.Fatal(err)
-	}
+	observerRows := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", testCompanionPK)
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}
-	var clientRegionRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM observers WHERE iata = 'client'`).Scan(&clientRegionRows); err != nil {
-		t.Fatal(err)
-	}
+	clientRegionRows := dbtest.CountWhere(t, store.db, "observers", "iata = $1", "client")
 	if clientRegionRows != 0 {
 		t.Fatalf("feature OFF: no observer should be registered under a bogus 'client' region, got %d rows", clientRegionRows)
 	}
-	var txRows int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM transmissions`).Scan(&txRows); err != nil {
-		t.Fatal(err)
-	}
+	txRows := dbtest.CountWhere(t, store.db, "transmissions", "1 = 1")
 	if txRows != 0 {
 		t.Fatalf("feature OFF: the client-topic message must not be ingested as an ordinary observer packet, got %d transmissions rows", txRows)
 	}
@@ -94,13 +91,14 @@ func TestClientRegionsGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 // TestClientRfSamplesBlacklistedDropped.
 func TestClientRegionsBlacklistedDropped(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{
 		ClientRegions:     &ClientRegionsConfig{Enabled: true},
 		ObserverBlacklist: []string{testCompanionPK},
 	}
 
-	handleMessage(store, "test", source, clientRegionsMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientRegionsMsg(), nil, nil, cfg)
 
 	if n := declaredRegionsCount(t, store); n != 0 {
 		t.Fatalf("blacklisted companion: expected 0 node_declared_regions rows, got %d", n)
@@ -112,13 +110,14 @@ func TestClientRegionsBlacklistedDropped(t *testing.T) {
 // clientRxCoverage is enabled.
 func TestClientOtherGatesUnaffectedByRegionsGate(t *testing.T) {
 	store := newTestStore(t)
+	ctx := t.Context()
 	source := MQTTSource{Name: "test"}
 	cfg := &Config{
 		ClientRxCoverage: &ClientRxCoverageConfig{Enabled: true},
 		ClientRegions:    &ClientRegionsConfig{Enabled: false},
 	}
 
-	handleMessage(store, "test", source, clientCoverageMsg(), nil, nil, cfg)
+	handleMessage(ctx, store, "test", source, clientCoverageMsg(), nil, nil, cfg)
 
 	if n := clientReceptionCount(t, store); n != 1 {
 		t.Fatalf("expected 1 client_receptions row with clientRxCoverage on / clientRegions off, got %d", n)

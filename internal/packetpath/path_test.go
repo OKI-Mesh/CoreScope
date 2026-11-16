@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 func TestDecodePathFromRawHex_Basic(t *testing.T) {
@@ -140,7 +142,7 @@ func TestDecodeHopsForPayload_NonTrace(t *testing.T) {
 
 func TestDecodeHopsForPayload_TraceReturnsError(t *testing.T) {
 	raw := "010205F00100"
-	hops, err := DecodeHopsForPayload(raw, PayloadTRACE)
+	hops, err := DecodeHopsForPayload(raw, types.PayloadTRACE)
 	if err != ErrPayloadHasNoHeaderHops {
 		t.Errorf("expected ErrPayloadHasNoHeaderHops, got %v", err)
 	}

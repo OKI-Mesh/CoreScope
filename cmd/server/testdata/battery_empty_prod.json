@@ -1,0 +1,12 @@
+{
+  "days": 1,
+  "latest_mv": null,
+  "latest_ts": null,
+  "public_key": "79e5b294354436c8ad8b79765e8232ec8a222fba12e88fd1b69b52649d716501",
+  "samples": [],
+  "status": "unknown",
+  "thresholds": {
+    "critical_mv": 3000,
+    "low_mv": 3300
+  }
+}

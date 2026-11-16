@@ -1,0 +1,35 @@
+{
+  "catStats": {
+    "C↔C": {
+      "avg": 0,
+      "count": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    "C↔R": {
+      "avg": 0,
+      "count": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    "R↔R": {
+      "avg": 0,
+      "count": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    }
+  },
+  "distHistogram": [],
+  "distOverTime": [],
+  "summary": {
+    "avgDist": 0,
+    "maxDist": 0,
+    "totalHops": 0,
+    "totalPaths": 0
+  },
+  "topHops": [],
+  "topPaths": []
+}

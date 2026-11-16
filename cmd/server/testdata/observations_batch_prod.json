@@ -1,0 +1,38 @@
+{
+  "results": {
+    "46b600e1c61b6ae7": [
+      {
+        "direction": "rx",
+        "hash": "46b600e1c61b6ae7",
+        "id": 44048878,
+        "observer_iata": "BBB",
+        "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+        "observer_name": "Fixture Observer B",
+        "path_json": "[\"8605\"]",
+        "raw_hex": "11418605045AAFBBFD1BA2EF",
+        "resolved_path": [
+          "005a50a9efff83da43bdbcfec06bc7e5ca95f153a3341168c5c776f9fa5f523e"
+        ],
+        "rssi": -99,
+        "snr": 1.8,
+        "timestamp": "2026-11-09T02:42:00.000Z"
+      },
+      {
+        "direction": "rx",
+        "hash": "46b600e1c61b6ae7",
+        "id": 44048822,
+        "observer_iata": "BBB",
+        "observer_id": "B39CA76EE58EECBD261373DE9197F6F829062CE80322ED715A36E48B63475896",
+        "observer_name": "Fixture Observer B",
+        "path_json": "[\"2E8F\"]",
+        "raw_hex": "11412E8F045AAFBBFD1BA2EF",
+        "resolved_path": [
+          "1dec6fa84f378fdad489caa0369e6131260faef8f5013a275a91e0caca3702b5"
+        ],
+        "rssi": -9,
+        "snr": 11.8,
+        "timestamp": "2026-11-09T02:41:59.000Z"
+      }
+    ]
+  }
+}

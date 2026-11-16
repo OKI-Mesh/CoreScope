@@ -19,32 +19,18 @@ import (
 // non-zero composite from its structural axes, and the composite must be
 // >= the traffic axis — proving the composite isn't just the traffic share.
 func TestTrafficShareScore_HandleNodesSurface(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
-	if _, err := db.conn.Exec(`ALTER TABLE nodes ADD COLUMN foreign_advert INTEGER DEFAULT 0`); err != nil {
-		t.Fatal(err)
-	}
+	db := setupTestDB(t)
+	now := time.Now().UTC()
 
-	// Three repeaters on a line L-pk-R so the middle node `pk` is a cut
-	// vertex: bridge/coverage/redundancy all > 0 while it relays no traffic.
 	pk := "aaaa000000000000000000000000000000000000000000000000000000000000"
 	left := "bbbb000000000000000000000000000000000000000000000000000000000000"
 	right := "cccc000000000000000000000000000000000000000000000000000000000000"
-	recent := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	for _, p := range []string{pk, left, right} {
-		if _, err := db.conn.Exec(`INSERT INTO nodes
-			(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-			VALUES (?, 'rpt', 'repeater', 37.5, -122.0, ?, ?, 10)`,
-			p, recent, recent); err != nil {
-			t.Fatal(err)
-		}
+		seedNode(t, db, p, "rpt", "repeater", fptr(37.5), fptr(-122.0), now)
 	}
 
-	store := NewPacketStore(db, nil)
-	// Wire a neighbor graph (left-pk-right) and compute the structural axes
-	// so pk carries non-zero bridge/coverage/redundancy in the response.
+	store := loadedStore(t, db)
 	g := NewNeighborGraph()
-	now := time.Now()
 	snr := 5.0
 	for i := 0; i < 10; i++ {
 		g.upsertEdge(left, pk, "lp", "obs-test", &snr, now)
@@ -68,46 +54,47 @@ func TestTrafficShareScore_HandleNodesSurface(t *testing.T) {
 		t.Fatalf("/api/nodes status: want 200, got %d body=%s", rr.Code, rr.Body.String())
 	}
 
+	type nodeScores struct {
+		PublicKey         string   `json:"public_key"`
+		UsefulnessScore   *float64 `json:"usefulness_score"`
+		TrafficShareScore *float64 `json:"traffic_share_score"`
+	}
 	var resp struct {
-		Nodes []map[string]interface{} `json:"nodes"`
+		Nodes []nodeScores `json:"nodes"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
 	}
-	var got map[string]interface{}
-	for _, n := range resp.Nodes {
-		if k, _ := n["public_key"].(string); k == pk {
-			got = n
+	var got *nodeScores
+	for i := range resp.Nodes {
+		if resp.Nodes[i].PublicKey == pk {
+			got = &resp.Nodes[i]
 			break
 		}
 	}
 	if got == nil {
 		t.Fatalf("repeater node missing from /api/nodes response")
 	}
-	useful, hasU := got["usefulness_score"]
-	share, hasS := got["traffic_share_score"]
-	if !hasU {
+	if got.UsefulnessScore == nil {
 		t.Fatalf("usefulness_score absent (must remain for API compat)")
 	}
-	if !hasS {
+	if got.TrafficShareScore == nil {
 		t.Fatalf("traffic_share_score absent (new field per #1456)")
 	}
-	uf, _ := useful.(float64)
-	sf, _ := share.(float64)
+	uf := *got.UsefulnessScore
+	sf := *got.TrafficShareScore
 	if uf < 0 || uf > 1 {
 		t.Errorf("usefulness_score (composite) out of [0,1]: %v", uf)
 	}
 	if sf < 0 || sf > 1 {
 		t.Errorf("traffic_share_score out of [0,1]: %v", sf)
 	}
-	// Positive contract: pk relays nothing yet is a structural cut vertex.
 	if sf != 0 {
 		t.Errorf("traffic_share_score should be 0 (no relayed traffic), got %v", sf)
 	}
 	if uf <= 0 {
 		t.Errorf("composite must be > 0 from structural axes despite zero traffic, got %v", uf)
 	}
-	// The composite reflects more than the traffic axis: it must be >= it.
 	if uf < sf {
 		t.Errorf("composite usefulness_score (%v) must be >= traffic_share_score (%v)", uf, sf)
 	}
@@ -116,22 +103,13 @@ func TestTrafficShareScore_HandleNodesSurface(t *testing.T) {
 // TestTrafficShareScore_NodeDetail pins the same dual-field shape on
 // the per-node detail endpoint /api/nodes/{pubkey}.
 func TestTrafficShareScore_NodeDetail(t *testing.T) {
-	db := setupCapabilityTestDB(t)
-	defer db.conn.Close()
-	if _, err := db.conn.Exec(`ALTER TABLE nodes ADD COLUMN foreign_advert INTEGER DEFAULT 0`); err != nil {
-		t.Fatal(err)
-	}
+	db := setupTestDB(t)
+	now := time.Now().UTC()
 
 	pk := "bbbb000000000000000000000000000000000000000000000000000000000000"
-	recent := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, 'rpt', 'repeater', 37.5, -122.0, ?, ?, 10)`,
-		pk, recent, recent); err != nil {
-		t.Fatal(err)
-	}
+	seedNode(t, db, pk, "rpt", "repeater", fptr(37.5), fptr(-122.0), now)
 
-	store := NewPacketStore(db, nil)
+	store := loadedStore(t, db)
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
@@ -148,7 +126,10 @@ func TestTrafficShareScore_NodeDetail(t *testing.T) {
 	}
 
 	var resp struct {
-		Node map[string]interface{} `json:"node"`
+		Node *struct {
+			UsefulnessScore   *float64 `json:"usefulness_score"`
+			TrafficShareScore *float64 `json:"traffic_share_score"`
+		} `json:"node"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
@@ -156,16 +137,14 @@ func TestTrafficShareScore_NodeDetail(t *testing.T) {
 	if resp.Node == nil {
 		t.Fatalf("node missing in response: %s", rr.Body.String())
 	}
-	if _, ok := resp.Node["usefulness_score"]; !ok {
-		t.Errorf("usefulness_score absent on node detail (must remain for API compat)")
+	if resp.Node.UsefulnessScore == nil {
+		t.Fatalf("usefulness_score absent on node detail (must remain for API compat)")
 	}
-	if _, ok := resp.Node["traffic_share_score"]; !ok {
-		t.Errorf("traffic_share_score absent on node detail (new field per #1456)")
+	if resp.Node.TrafficShareScore == nil {
+		t.Fatalf("traffic_share_score absent on node detail (new field per #1456)")
 	}
-	uf, _ := resp.Node["usefulness_score"].(float64)
-	sf, _ := resp.Node["traffic_share_score"].(float64)
-	// #672: usefulness_score is the composite (not a mirror of Traffic);
-	// both must be valid scores in [0,1].
+	uf := *resp.Node.UsefulnessScore
+	sf := *resp.Node.TrafficShareScore
 	if uf < 0 || uf > 1 {
 		t.Errorf("usefulness_score (composite) out of [0,1]: %v", uf)
 	}

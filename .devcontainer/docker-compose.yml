@@ -1,0 +1,23 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspaces/CoreScope:cached
+    command: sleep infinity
+    environment:
+      E2E_PG_URL: postgres://postgres:postgres@postgres:5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: imresamu/postgis:18-3.6
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

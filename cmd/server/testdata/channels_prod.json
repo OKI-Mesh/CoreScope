@@ -1,0 +1,142 @@
+{
+  "activeChannels": 208,
+  "channelTimeline": [
+    {
+      "channel": "ch67",
+      "count": 4,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "Channel 01",
+      "count": 7,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "ch3",
+      "count": 3,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "ch147",
+      "count": 2,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "Channel 05",
+      "count": 7,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "ch109",
+      "count": 10,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "Channel 02",
+      "count": 10,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "ch237",
+      "count": 3,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "ch17",
+      "count": 2,
+      "hour": "2026-11-05T15"
+    },
+    {
+      "channel": "Public",
+      "count": 7,
+      "hour": "2026-11-05T15"
+    }
+  ],
+  "channels": [
+    {
+      "encrypted": false,
+      "hash": "129",
+      "lastActivity": "2026-11-09T05:10:55Z",
+      "messages": 2971,
+      "name": "Channel 01",
+      "senders": 80
+    },
+    {
+      "encrypted": false,
+      "hash": "17",
+      "lastActivity": "2026-11-09T04:59:36Z",
+      "messages": 1485,
+      "name": "Public",
+      "senders": 313
+    },
+    {
+      "encrypted": false,
+      "hash": "217",
+      "lastActivity": "2026-11-09T04:08:19Z",
+      "messages": 1174,
+      "name": "Channel 02",
+      "senders": 284
+    },
+    {
+      "encrypted": true,
+      "hash": "67",
+      "lastActivity": "2026-11-09T05:02:02Z",
+      "messages": 962,
+      "name": "Channel 03",
+      "senders": 0
+    },
+    {
+      "encrypted": false,
+      "hash": "3",
+      "lastActivity": "2026-11-09T04:55:34Z",
+      "messages": 380,
+      "name": "Channel 04",
+      "senders": 33
+    }
+  ],
+  "decryptable": 24,
+  "msgLengths": [
+    38,
+    82,
+    24,
+    14,
+    59,
+    20,
+    62,
+    48,
+    92,
+    16,
+    66,
+    23,
+    20,
+    107,
+    57,
+    112,
+    42,
+    75,
+    82,
+    54
+  ],
+  "topSenders": [
+    {
+      "name": "Sender 33",
+      "count": 507
+    },
+    {
+      "name": "Sender 34",
+      "count": 231
+    },
+    {
+      "name": "Sender 35",
+      "count": 138
+    },
+    {
+      "name": "Sender 36",
+      "count": 138
+    },
+    {
+      "name": "Sender 37",
+      "count": 127
+    }
+  ]
+}

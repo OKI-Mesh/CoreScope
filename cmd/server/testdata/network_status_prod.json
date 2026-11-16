@@ -1,0 +1,12 @@
+{
+  "active": 872,
+  "degraded": 312,
+  "roleCounts": {
+    "companion": 304,
+    "repeater": 1621,
+    "room": 57,
+    "type-7": 5
+  },
+  "silent": 803,
+  "total": 1987
+}

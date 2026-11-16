@@ -1,0 +1,28 @@
+{
+  "totalPackets": 118929,
+  "totalTransmissions": 118929,
+  "totalObservations": 1170097,
+  "totalNodes": 1641,
+  "totalNodesAllTime": 1642,
+  "totalObservers": 143,
+  "packetsLastHour": 30422,
+  "packetsLast24h": 412712,
+  "engine": "go",
+  "version": "v0.3.6",
+  "commit": "1a2b3c4",
+  "buildTime": "2026-11-05T08:26:58Z",
+  "counts": {
+    "repeaters": 1304,
+    "rooms": 45,
+    "companions": 292,
+    "sensors": 0
+  },
+  "signatureDrops": 1507,
+  "hashMigrationComplete": true,
+  "trackedMB": 1015.8,
+  "storeDataMB": 1015.8,
+  "processRSSMB": 3882.9,
+  "goHeapInuseMB": 3618.6,
+  "goSysMB": 4514.2,
+  "neighborGraphCacheRebuildFailures": 0
+}

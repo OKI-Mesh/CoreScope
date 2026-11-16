@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/ingeststats"
 )
 
 // heartbeatInterval is how often the watchdog re-emits a still-stalled
@@ -449,15 +451,15 @@ func markReceiptForTag(tag string, now time.Time) {
 // SnapshotLivenessClocks returns the per-source receipt vs write-path
 // liveness pair for every registered source. Read-only; safe to call
 // from the stats-file writer. PR #1609 M1.
-func SnapshotLivenessClocks() map[string]SourceLivenessSnapshot {
+func SnapshotLivenessClocks() map[string]ingeststats.SourceLiveness {
 	livenessRegistryMu.RLock()
 	defer livenessRegistryMu.RUnlock()
 	if len(livenessRegistry) == 0 {
 		return nil
 	}
-	out := make(map[string]SourceLivenessSnapshot, len(livenessRegistry))
+	out := make(map[string]ingeststats.SourceLiveness, len(livenessRegistry))
 	for tag, s := range livenessRegistry {
-		out[tag] = SourceLivenessSnapshot{
+		out[tag] = ingeststats.SourceLiveness{
 			LastReceiptUnix: atomic.LoadInt64(&s.LastReceiptUnix),
 			LastMessageUnix: atomic.LoadInt64(&s.LastMessageUnix),
 		}

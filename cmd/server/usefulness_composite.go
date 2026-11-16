@@ -130,27 +130,17 @@ func maxFloat(m map[string]float64) float64 {
 	return largest
 }
 
-// enrichNodeUsefulness writes the four #672 axes + composite + grade onto a
-// node map (shared by the node-list and node-detail handlers). trafficRaw is
-// the Traffic-axis share exposed verbatim as traffic_share_score; ax holds the
-// composite inputs — its Traffic is the max-normalized share (across the
-// repeater population) so all four axes contribute on a comparable [0,1]
-// scale. axesComputed reports whether the structural-axis recomputers have
-// produced a snapshot yet; it only matters for the all-zero node, where it
-// distinguishes cold start (grade withheld) from a genuinely isolated repeater
-// (real "F") — see compositeUsefulness. The usefulness_grade field is omitted
-// only when the grade is empty (cold start).
-func enrichNodeUsefulness(node map[string]interface{}, trafficRaw float64, ax usefulnessAxes, axesComputed bool) {
-	if node == nil {
-		return
-	}
-	node["traffic_share_score"] = trafficRaw
-	node["bridge_score"] = ax.Bridge
-	node["coverage_score"] = ax.Coverage
-	node["redundancy_score"] = ax.Redundancy
+// computeNodeUsefulness is the logic enrichNodeUsefulness had, returning a value
+// instead of writing into a map. trafficRaw is exposed verbatim as traffic_share_score;
+// ax carries the composite inputs (see compositeUsefulness for the cold-start rule).
+func computeNodeUsefulness(trafficRaw float64, ax usefulnessAxes, axesComputed bool) NodeUsefulness {
 	composite, grade := compositeUsefulness(ax, axesComputed)
-	node["usefulness_score"] = composite
-	if grade != "" {
-		node["usefulness_grade"] = grade
+	return NodeUsefulness{
+		TrafficShareScore: trafficRaw,
+		BridgeScore:       ax.Bridge,
+		CoverageScore:     ax.Coverage,
+		RedundancyScore:   ax.Redundancy,
+		UsefulnessScore:   composite,
+		UsefulnessGrade:   grade,
 	}
 }

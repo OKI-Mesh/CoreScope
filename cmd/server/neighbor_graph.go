@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -301,8 +301,8 @@ func BuildFromStoreWithOptions(store *PacketStore, opts BuildOptions) *NeighborG
 
 	// Phase 1: Extract edges from every transmission + observation.
 	for _, tx := range packets {
-		isAdvert := tx.PayloadType != nil && *tx.PayloadType == PayloadADVERT
-		isAnonReq := tx.PayloadType != nil && *tx.PayloadType == PayloadANON_REQ
+		isAdvert := tx.PayloadType != nil && *tx.PayloadType == types.PayloadADVERT
+		isAnonReq := tx.PayloadType != nil && *tx.PayloadType == types.PayloadANON_REQ
 		// #1777: ANON_REQ's ephemeralPubKey is a full Ed25519 pubkey — the
 		// same trust level as ADVERT's pubKey — so it can seed an
 		// originator↔path[0] edge exactly like ADVERT. Other non-ADVERT
@@ -325,7 +325,7 @@ func BuildFromStoreWithOptions(store *PacketStore, opts BuildOptions) *NeighborG
 				// Zero-hop
 				if hasFullOriginator && fromLower != "" {
 					if fromLower != observerPK { // self-edge guard
-						g.upsertEdge(fromLower, observerPK, "", observerPK, obs.SNR, parseTimestamp(obs.Timestamp))
+						g.upsertEdge(fromLower, observerPK, "", observerPK, obs.SNR, obs.Timestamp)
 					}
 				}
 				continue
@@ -337,7 +337,7 @@ func BuildFromStoreWithOptions(store *PacketStore, opts BuildOptions) *NeighborG
 				if fromLower != firstHop { // self-edge guard (shouldn't happen but spec says check)
 					if packetpath.MeetsPathTrust(len(path[0])/2, opts.PathTrust) {
 						candidates := pm.m[firstHop]
-						g.upsertEdgeWithCandidates(fromLower, firstHop, candidates, observerPK, obs.SNR, parseTimestamp(obs.Timestamp), lowerCache)
+						g.upsertEdgeWithCandidates(fromLower, firstHop, candidates, observerPK, obs.SNR, obs.Timestamp, lowerCache)
 					}
 				}
 			}
@@ -347,7 +347,7 @@ func BuildFromStoreWithOptions(store *PacketStore, opts BuildOptions) *NeighborG
 			if observerPK != lastHop { // self-edge guard
 				if packetpath.MeetsPathTrust(len(path[len(path)-1])/2, opts.PathTrust) {
 					candidates := pm.m[lastHop]
-					g.upsertEdgeWithCandidates(observerPK, lastHop, candidates, observerPK, obs.SNR, parseTimestamp(obs.Timestamp), lowerCache)
+					g.upsertEdgeWithCandidates(observerPK, lastHop, candidates, observerPK, obs.SNR, obs.Timestamp, lowerCache)
 				}
 			}
 		}
@@ -383,7 +383,7 @@ func extractFromNode(tx *StoreTx) string {
 	// different, non-originator field on some other payload type — the
 	// field name alone would no longer be a safe signal, but the payload
 	// type check still is.
-	if tx.PayloadType != nil && *tx.PayloadType == PayloadANON_REQ {
+	if tx.PayloadType != nil && *tx.PayloadType == types.PayloadANON_REQ {
 		if v, ok := decoded["ephemeralPubKey"]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return s
@@ -398,11 +398,6 @@ func extractFromNode(tx *StoreTx) string {
 		}
 	}
 	return ""
-}
-
-// jsonUnmarshalFast is a thin wrapper; could be optimized later.
-func jsonUnmarshalFast(data string, v interface{}) error {
-	return json.Unmarshal([]byte(data), v)
 }
 
 // upsertEdge adds/updates an edge between two fully-known pubkeys.
@@ -762,22 +757,6 @@ func jaccardSimilarity(a, b map[string]bool) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
-}
-
-// parseTimestamp parses a timestamp string into time.Time.
-func parseTimestamp(s string) time.Time {
-	// Try common formats.
-	for _, fmt := range []string{
-		time.RFC3339,
-		"2006-01-02T15:04:05Z",
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05.000Z",
-	} {
-		if t, err := time.Parse(fmt, s); err == nil {
-			return t
-		}
-	}
-	return time.Time{}
 }
 
 // minLen returns the smaller of n and len(s).

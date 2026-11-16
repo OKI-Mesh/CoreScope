@@ -2,12 +2,13 @@
 // server (cmd/server) to ask the writer-owning ingestor (cmd/ingestor) to
 // delete nodes outside the configured geo_filter.
 //
-// Rationale: after #1283/#1289 the server opens SQLite with mode=ro, so it
-// cannot execute DELETE statements. The one-click geo-prune feature still
+// Rationale: after #1283/#1289 the server's database pool is read-only
+// (OpenReadOnly sets default_transaction_read_only), so it cannot execute
+// DELETE statements. The one-click geo-prune feature still
 // presents its HTTP API on the server (#669 M4), but the actual write is
 // performed by the ingestor's maintenance loop. Communication uses small
-// JSON marker files written into a directory next to the SQLite database
-// (so it inherits the same backup/permissions story).
+// JSON marker files written into a directory next to the shared queue path
+// (pruneQueuePath in config), which both processes can reach.
 //
 // Layout (under <dir(dbPath)>/prune-requests/):
 //
@@ -32,7 +33,7 @@ import (
 	"time"
 )
 
-// QueueDirName is the subdirectory (under the SQLite data dir) holding
+// QueueDirName is the subdirectory (next to the shared queue path) holding
 // request/result marker files.
 const QueueDirName = "prune-requests"
 
@@ -72,7 +73,7 @@ func NewID() string {
 }
 
 // QueueDir returns the absolute path of the queue directory, given the
-// SQLite database path the ingestor and server share.
+// queue path the ingestor and server share (the directory part is used).
 func QueueDir(dbPath string) string {
 	return filepath.Join(filepath.Dir(dbPath), QueueDirName)
 }
@@ -118,14 +119,14 @@ func ResultPath(dbPath, id string) (string, error) {
 }
 
 // WriteRequest atomically writes a request file (temp file + rename).
-func WriteRequest(dbPath string, req Request) error {
+func WriteRequest(path string, req Request) error {
 	if !validID(req.ID) {
 		return errors.New("invalid prune request id")
 	}
-	if _, err := EnsureDir(dbPath); err != nil {
+	if _, err := EnsureDir(path); err != nil {
 		return err
 	}
-	p, _ := RequestPath(dbPath, req.ID)
+	p, _ := RequestPath(path, req.ID)
 	b, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
 		return err

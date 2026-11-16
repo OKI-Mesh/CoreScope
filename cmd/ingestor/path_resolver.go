@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"strings"
 	"sync/atomic"
 )
@@ -105,26 +104,6 @@ func (h *neighborGraphHolder) store(g *NeighborGraph) {
 	h.v.Store(g)
 }
 
-// loadNeighborGraph reads neighbor_edges and returns an in-memory
-// adjacency snapshot. Safe to call against a fresh DB (returns an
-// empty graph).
-func loadNeighborGraph(db *sql.DB) (*NeighborGraph, error) {
-	rows, err := db.Query(`SELECT node_a, node_b FROM neighbor_edges`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	g := NewNeighborGraph()
-	for rows.Next() {
-		var a, b string
-		if err := rows.Scan(&a, &b); err != nil {
-			continue
-		}
-		g.AddEdge(a, b)
-	}
-	return g, nil
-}
-
 // resolveHopWithContext resolves a single hop using NeighborGraph
 // adjacency to the anchor. Returns nil when the hop cannot be
 // disambiguated.
@@ -184,8 +163,8 @@ func resolveHopWithContext(hop string, anchor string, graph *NeighborGraph, idx 
 // fromPubkey (for ADVERTs) and each subsequent hop on the previous
 // resolved hop. Previously-resolved pubkeys (plus the originator) are
 // excluded from later candidate pools so the walk doesn't revisit a
-// node. Returns a `[]*string` shape compatible with
-// marshalResolvedPath (and the all-nil clobber-guard from PR #1548).
+// node. Returns the same `[]*string` shape as resolvePath, with nil at
+// every unresolved position.
 func resolvePathWithContext(hops []string, fromPubkey string, graph *NeighborGraph, idx prefixIndex) []*string {
 	if len(hops) == 0 {
 		return nil
@@ -211,16 +190,4 @@ func resolvePathWithContext(hops []string, fromPubkey string, graph *NeighborGra
 		}
 	}
 	return out
-}
-
-// RefreshNeighborGraph loads the latest neighbor_edges snapshot and
-// publishes it atomically. Called on startup and once per neighbor-
-// edges builder tick (60s) alongside RefreshPrefixIndex.
-func (s *Store) RefreshNeighborGraph() error {
-	g, err := loadNeighborGraph(s.db)
-	if err != nil {
-		return err
-	}
-	s.neighborGraph.store(g)
-	return nil
 }

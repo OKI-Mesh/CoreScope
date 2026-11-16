@@ -61,6 +61,11 @@ func TestHealthzReady(t *testing.T) {
 	if _, ok := resp["loadedObs"]; !ok {
 		t.Fatal("missing loadedObs field")
 	}
+	// The warm-up banner waits for done == true; the backfill is an ETL step now.
+	backfill, ok := resp["from_pubkey_backfill"].(map[string]interface{})
+	if !ok || backfill["done"] != true || backfill["total"] != float64(0) || backfill["processed"] != float64(0) {
+		t.Fatalf("from_pubkey_backfill = %v, want done=true with zero counters", resp["from_pubkey_backfill"])
+	}
 }
 
 func TestHealthzAntiTautology(t *testing.T) {

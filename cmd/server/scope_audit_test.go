@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/gorilla/mux"
 )
 
@@ -24,50 +26,13 @@ var (
 	testFullPubkeyB = "bbbb" + strings.Repeat("22", 30) // 64 hex chars
 )
 
-// setupScopeConformanceDB builds an in-memory transmissions/observations pair
-// carrying exactly the columns ScopeConformance reads: code1/scope_name/
-// first_seen/route_type on transmissions, path_json on observations. Mirrors
-// the live ingestor schema (cmd/ingestor/db.go) rather than a convenient
-// fiction, so the join behaves the way it does against a real database.
-func setupScopeConformanceDB(t *testing.T) *DB {
-	t.Helper()
-	conn, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.SetMaxOpenConns(1)
-	schema := `
-		CREATE TABLE transmissions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			raw_hex TEXT NOT NULL,
-			hash TEXT NOT NULL UNIQUE,
-			first_seen TEXT NOT NULL,
-			route_type INTEGER,
-			payload_type INTEGER,
-			code1 TEXT,
-			code2 TEXT,
-			scope_name TEXT
-		);
-		CREATE TABLE observations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			transmission_id INTEGER NOT NULL REFERENCES transmissions(id),
-			path_json TEXT,
-			timestamp INTEGER NOT NULL
-		);
-	`
-	if _, err := conn.Exec(schema); err != nil {
-		t.Fatal(err)
-	}
-	return &DB{conn: conn}
-}
-
 // newScopeTestStore wires a *PacketStore to a freshly seeded scope-conformance
 // schema. ScopeConformance is a pure SQL read against s.db, so no other
 // PacketStore field needs to be populated.
 func newScopeTestStore(t *testing.T) *PacketStore {
 	t.Helper()
-	db := setupScopeConformanceDB(t)
-	return newTestStoreWithDB(t, db, &Config{})
+	db := setupTestDB(t)
+	return newBareStore(db)
 }
 
 // scopeSeed carries the code1/scope_name pair for one of the three states a
@@ -96,69 +61,50 @@ func scopeUnscoped() scopeSeed {
 
 var scopeSeedCounter int
 
-// seedTransmissionRoute inserts one transmission plus a single observation
-// attributing it to forwarder, built the way the ingestor would build it: the
-// path_json hop is uppercase (packetpath.DecodePathFromRawHex does
-// strings.ToUpper on every hop), so the seed exercises the same case the
-// live join has to cope with rather than a lowercase convenience fiction.
-func seedTransmissionRoute(t *testing.T, s *PacketStore, forwarder string, seed scopeSeed, routeType int) {
-	t.Helper()
-	seedTransmissionRouteAt(t, s, forwarder, seed, routeType, "2026-01-15T12:00:00Z")
-}
-
 // seedTransmissionRouteAt is seedTransmissionRoute with an explicit
 // first_seen, for tests (e.g. the handler tests below) that need a
 // transmission to fall inside a real-wall-clock ?window= lookback rather
 // than the fixed date the ScopeConformance unit tests above use.
-func seedTransmissionRouteAt(t *testing.T, s *PacketStore, forwarder string, seed scopeSeed, routeType int, firstSeen string) {
+func seedTransmissionRouteAt(t *testing.T, s *PacketStore, forwarder string, seed scopeSeed, routeType types.RouteType, firstSeen time.Time) {
 	t.Helper()
+	ctx := t.Context()
 	scopeSeedCounter++
-	hash := fmt.Sprintf("scopehash%d", scopeSeedCounter)
 
-	res, err := s.db.conn.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, code1, code2, scope_name)
-		 VALUES ('AA', ?, ?, ?, 1, ?, '00', ?)`,
-		hash, firstSeen, routeType, seed.code1, seed.scopeName,
-	)
+	txID, _, err := s.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        fmt.Sprintf("%016x", scopeSeedCounter),
+		RawHex:      "AA",
+		RouteType:   routeType,
+		PayloadType: types.PayloadType(1),
+		DecodedJSON: "{}",
+		ScopeName:   seed.scopeName,
+	}, firstSeen)
 	if err != nil {
 		t.Fatalf("seed transmission: %v", err)
 	}
-	txID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("seed transmission id: %v", err)
-	}
 
-	pathJSON := fmt.Sprintf(`["%s"]`, strings.ToUpper(forwarder))
-	if _, err := s.db.conn.Exec(
-		`INSERT INTO observations (transmission_id, path_json, timestamp) VALUES (?, ?, ?)`,
-		txID, pathJSON, time.Now().Unix(),
-	); err != nil {
+	_, inserted, err := s.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    nil,
+		SNR:            nil,
+		RSSI:           nil,
+		Timestamp:      firstSeen,
+	}, []string{strings.ToLower(forwarder)}, []*string{nil})
+	if err != nil {
 		t.Fatalf("seed observation: %v", err)
 	}
-}
-
-// seedTransmission seeds a FLOOD packet (route_type=1) — path[last] is the
-// actual transmitter, so forwarder is attributable.
-func seedTransmission(t *testing.T, s *PacketStore, forwarder string, seed scopeSeed) {
-	t.Helper()
-	seedTransmissionRoute(t, s, forwarder, seed, RouteFlood)
-}
-
-// seedDirectTransmission seeds a DIRECT packet (route_type=2) — path[last] is
-// the route's far end, never the transmitter, so forwarder must NOT be
-// attributed even though it appears in path_json.
-func seedDirectTransmission(t *testing.T, s *PacketStore, forwarder string, seed scopeSeed) {
-	t.Helper()
-	seedTransmissionRoute(t, s, forwarder, seed, RouteDirect)
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
+	}
 }
 
 func TestScopeAuditForwardingAttributesUnambiguousHop(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
 	hop := testFullPubkeyA[:4]
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, s, hop, scopeMatched("#be"), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, s, hop, scopeMatched("#be"), types.RouteTransportFlood, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,15 +125,16 @@ func TestScopeAuditForwardingAttributesUnambiguousHop(t *testing.T) {
 // the row can surface the caveat regardless of which candidate is being
 // looked at).
 func TestScopeAuditForwardingAmbiguousHopCreditsNeitherTarget(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
 	pkA := "1a2b" + strings.Repeat("11", 30)
 	pkB := "1a2b" + strings.Repeat("22", 30) // shares pkA's first 4 hex chars
 	hop := pkA[:4]
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, s, hop, scopeMatched("#be"), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, s, hop, scopeMatched("#be"), types.RouteTransportFlood, recent)
 
 	targets := []string{pkA, pkB}
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", targets)
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), targets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,22 +165,12 @@ func TestScopeAuditForwardingAmbiguousHopCreditsNeitherTarget(t *testing.T) {
 // vacuously.
 func setupScopeAuditServer(t *testing.T) (*Server, *mux.Router) {
 	t.Helper()
-	db := setupTestDB(t) // real migration path: OpenReadWrite → AssertBaselined → goose Up → ... → AssertReady
-
-	if err := db.detectSchema(context.Background(), db.conn); err != nil {
-		t.Fatal(err)
-	}
-	if !db.hasConfiguredScope {
-		t.Fatal("hasConfiguredScope is false on a migrated schema: fixture assumption broke")
-	}
-	if !db.hasDeclaredRegionsTable {
-		t.Fatal("hasDeclaredRegionsTable is false on a migrated schema: fixture assumption broke")
-	}
+	db := setupTestDB(t)
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	srv.store = newTestStoreWithDB(t, db, cfg)
+	srv.store = newBareStore(db)
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 	return srv, router
@@ -249,19 +186,27 @@ func setupScopeAuditServer(t *testing.T) (*Server, *mux.Router) {
 // fired, so the audit cannot claim either way and the page omits the caveat
 // rather than showing a wrong one. Kept in the signature so the ported tests
 // still document which fixtures meant "this answer was incomplete".
-func insertDeclared(t *testing.T, srv *Server, target, observedAt, regionsCSV string, truncated int) {
+func insertDeclared(t *testing.T, srv *Server, target string, observedAt time.Time, regionsCSV string, truncated int) {
 	t.Helper()
 	_ = truncated
-	if _, err := srv.db.conn.Exec(
-		`INSERT INTO nodes (public_key, configured_scope, configured_scope_at) VALUES (?, ?, ?)
-		 ON CONFLICT(public_key) DO UPDATE SET configured_scope = excluded.configured_scope,
-		                                       configured_scope_at = excluded.configured_scope_at`,
-		target, regionsCSV, observedAt); err != nil {
+	ctx := t.Context()
+	if err := srv.db.CreateOrUpdateNode(ctx, database.NodeInput{
+		PublicKey: target,
+		Name:      "",
+		Role:      "repeater",
+		Lat:       nil,
+		Lon:       nil,
+		RxTime:    observedAt,
+		IngestNow: observedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.db.UpdateNodeConfiguredScope(ctx, target, regionsCSV, &observedAt); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func getScopeAudit(t *testing.T, router *mux.Router, query string) ScopeAuditResponse {
+func getScopeAudit(t *testing.T, router *mux.Router, query string) api.ScopeAuditResponse {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/scope-audit"+query, nil)
 	w := httptest.NewRecorder()
@@ -269,7 +214,7 @@ func getScopeAudit(t *testing.T, router *mux.Router, query string) ScopeAuditRes
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	var got ScopeAuditResponse
+	var got api.ScopeAuditResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -284,9 +229,9 @@ func TestHandleScopeAuditNormalisesHashPrefix(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
 	hop := pk[:4]
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "be-van", 0)
-	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#be-van"), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "be-van", 0)
+	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#be-van"), types.RouteTransportFlood, recent)
 
 	// FIX 2: the DECLARED side must be normalised too, not just observed.
 	// regions_csv is not guaranteed to arrive with '#' already stripped (a
@@ -303,8 +248,8 @@ func TestHandleScopeAuditNormalisesHashPrefix(t *testing.T) {
 	// is masked by the 30s response cache.
 	pk2 := testFullPubkeyB
 	hop2 := pk2[:4]
-	insertDeclared(t, srv, pk2, time.Now().UTC().Format(time.RFC3339), "#be-van", 0)
-	seedTransmissionRouteAt(t, srv.store, hop2, scopeMatched("#be-van"), RouteFlood, recent)
+	insertDeclared(t, srv, pk2, time.Now().UTC(), "#be-van", 0)
+	seedTransmissionRouteAt(t, srv.store, hop2, scopeMatched("#be-van"), types.RouteTransportFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 2 {
@@ -334,7 +279,7 @@ func TestHandleScopeAuditNormalisesHashPrefix(t *testing.T) {
 // findScopeAuditRow locates the row for pk, failing the test if absent —
 // used wherever more than one repeater is seeded in the same response, since
 // sort order is not by pubkey and cannot be relied on to pick the right row.
-func findScopeAuditRow(t *testing.T, rows []ScopeAuditRow, pk string) ScopeAuditRow {
+func findScopeAuditRow(t *testing.T, rows []api.ScopeAuditRow, pk string) api.ScopeAuditRow {
 	t.Helper()
 	for _, r := range rows {
 		if r.PublicKey == pk {
@@ -342,7 +287,7 @@ func findScopeAuditRow(t *testing.T, rows []ScopeAuditRow, pk string) ScopeAudit
 		}
 	}
 	t.Fatalf("no row for pubkey %s in %+v", pk, rows)
-	return ScopeAuditRow{}
+	return api.ScopeAuditRow{}
 }
 
 // TestHandleScopeAuditExcludesWildcardFromComparison pins trap 2: '*' is the
@@ -351,7 +296,7 @@ func findScopeAuditRow(t *testing.T, rows []ScopeAuditRow, pk string) ScopeAudit
 func TestHandleScopeAuditExcludesWildcardFromComparison(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "*,be", 0)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "*,be", 0)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 1 {
@@ -376,12 +321,11 @@ func TestHandleScopeAuditExcludesWildcardFromComparison(t *testing.T) {
 // not shown as a row declaring nothing, which is a distinct, meaningful fact.
 func TestHandleScopeAuditOmitsRepeaterWithNoDeclaredRow(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
+	now := time.Now().UTC()
 	declaredPk := testFullPubkeyA
 	neverAskedPk := testFullPubkeyB
-	insertDeclared(t, srv, declaredPk, time.Now().UTC().Format(time.RFC3339), "be", 0)
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes (public_key, name, role) VALUES (?, 'never-asked', 'repeater')`, neverAskedPk); err != nil {
-		t.Fatal(err)
-	}
+	insertDeclared(t, srv, declaredPk, now, "be", 0)
+	seedNode(t, srv.db, neverAskedPk, "never-asked", "repeater", nil, nil, now)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 1 || got.Repeaters[0].PublicKey != declaredPk {
@@ -397,7 +341,7 @@ func TestHandleScopeAuditOmitsRepeaterWithNoDeclaredRow(t *testing.T) {
 func TestHandleScopeAuditUnknownNodeNameIsNullNotEmpty(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "be", 0)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "be", 0)
 	// deliberately NO nodes row for pk
 
 	req := httptest.NewRequest("GET", "/api/scope-audit", nil)
@@ -414,7 +358,7 @@ func TestHandleScopeAuditUnknownNodeNameIsNullNotEmpty(t *testing.T) {
 		t.Error(`"name":"" collapses "unknown node" into "node with no name"`)
 	}
 
-	var got ScopeAuditResponse
+	var got api.ScopeAuditResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -434,9 +378,9 @@ func TestHandleScopeAuditWildcardContradiction(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
 	hop := pk[:4]
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "be", 0) // no '*'
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, srv.store, hop, scopeUnscoped(), RouteFlood, recent)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "be", 0) // no '*'
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, srv.store, hop, scopeUnscoped(), types.RouteFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 1 {
@@ -458,9 +402,9 @@ func TestHandleScopeAuditWildcardDeclaredIsNotAContradiction(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
 	hop := pk[:4]
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "*,be", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, srv.store, hop, scopeUnscoped(), RouteFlood, recent)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "*,be", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, srv.store, hop, scopeUnscoped(), types.RouteFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	if got.Repeaters[0].WildcardContradiction {
@@ -475,10 +419,10 @@ func TestHandleScopeAuditNotObservedAndUndeclaredObserved(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
 	hop := pk[:4]
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "be,be-vlg", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#be"), RouteFlood, recent)
-	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#de-nw"), RouteFlood, recent)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "be,be-vlg", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#be"), types.RouteTransportFlood, recent)
+	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#de-nw"), types.RouteTransportFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	row := got.Repeaters[0]
@@ -502,10 +446,10 @@ func TestHandleScopeAuditSurfacesAmbiguousHops(t *testing.T) {
 	pkA := "1a2b" + strings.Repeat("11", 30)
 	pkB := "1a2b" + strings.Repeat("22", 30)
 	hop := pkA[:4]
-	insertDeclared(t, srv, pkA, time.Now().UTC().Format(time.RFC3339), "be", 0)
-	insertDeclared(t, srv, pkB, time.Now().UTC().Format(time.RFC3339), "be", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#be"), RouteFlood, recent)
+	insertDeclared(t, srv, pkA, time.Now().UTC(), "be", 0)
+	insertDeclared(t, srv, pkB, time.Now().UTC(), "be", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, srv.store, hop, scopeMatched("#be"), types.RouteTransportFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 2 {
@@ -530,11 +474,11 @@ func TestHandleScopeAuditSortsMissingRegionsFirst(t *testing.T) {
 	missingPk := testFullPubkeyB
 	agreeHop := agreePk[:4]
 	missingHop := missingPk[:4]
-	insertDeclared(t, srv, agreePk, time.Now().UTC().Format(time.RFC3339), "be", 0)
-	insertDeclared(t, srv, missingPk, time.Now().UTC().Format(time.RFC3339), "be,be-vlg", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, srv.store, agreeHop, scopeMatched("#be"), RouteFlood, recent)
-	seedTransmissionRouteAt(t, srv.store, missingHop, scopeMatched("#be"), RouteFlood, recent)
+	insertDeclared(t, srv, agreePk, time.Now().UTC(), "be", 0)
+	insertDeclared(t, srv, missingPk, time.Now().UTC(), "be,be-vlg", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, srv.store, agreeHop, scopeMatched("#be"), types.RouteTransportFlood, recent)
+	seedTransmissionRouteAt(t, srv.store, missingHop, scopeMatched("#be"), types.RouteTransportFlood, recent)
 	// missingPk never forwards be-vlg -> 1 missing declared region; agreePk has 0.
 
 	got := getScopeAudit(t, router, "")
@@ -565,7 +509,7 @@ func TestHandleScopeAuditWindowVocabulary(t *testing.T) {
 func TestHandleScopeAuditFiltersBlacklistedNode(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "be", 0)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "be", 0)
 	srv.cfg.NodeBlacklist = []string{pk}
 
 	got := getScopeAudit(t, router, "")
@@ -584,50 +528,23 @@ func TestHandleScopeAuditFiltersBlacklistedNode(t *testing.T) {
 // grounds for hiding.
 func TestHandleScopeAuditFiltersHiddenNamePrefix(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
+	now := time.Now().UTC()
 	hiddenPk := testFullPubkeyA
 	unknownPk := testFullPubkeyB
-	insertDeclared(t, srv, hiddenPk, time.Now().UTC().Format(time.RFC3339), "be", 0)
-	insertDeclared(t, srv, unknownPk, time.Now().UTC().Format(time.RFC3339), "be", 0)
-	// Upsert, not insert: upstream the declared list lives ON the nodes row
-	// (configured_scope), so insertDeclared has already created it. The fork
-	// kept them in separate tables and a plain INSERT was safe there.
-	if _, err := srv.db.conn.Exec(
-		`INSERT INTO nodes (public_key, name, role) VALUES (?, ?, 'repeater')
-		 ON CONFLICT(public_key) DO UPDATE SET name = excluded.name, role = excluded.role`,
-		hiddenPk, "🚫 ban me"); err != nil {
-		t.Fatal(err)
-	}
-	// unknownPk deliberately gets NO name. On the fork that meant no nodes row
-	// at all; here the row exists (configured_scope lives on it) but name stays
-	// NULL. The property under test is unchanged: a node whose name we do not
-	// know must never be hidden by a name-prefix rule.
+	insertDeclared(t, srv, hiddenPk, now, "be", 0)
+	insertDeclared(t, srv, unknownPk, now, "be", 0)
+	// The declared list lives ON the nodes row (configured_scope), so
+	// insertDeclared has already created it. The name is set afterwards so
+	// insertDeclared's empty name cannot overwrite it.
+	seedNode(t, srv.db, hiddenPk, "🚫 ban me", "repeater", nil, nil, now)
+	// unknownPk deliberately gets NO name: the row exists but its name stays
+	// empty. A node whose name we do not know must never be hidden by a
+	// name-prefix rule.
 	srv.cfg.SetHiddenNamePrefixes([]string{"🚫"})
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 1 || got.Repeaters[0].PublicKey != unknownPk {
 		t.Fatalf("repeaters = %+v, want exactly the unknown-name target — the hidden-name-prefixed repeater must be excluded, and the nameless one must NOT be excluded merely for having no name", got.Repeaters)
-	}
-}
-
-// TestHandleScopeAuditNoDeclaredRegionsTable covers the missing-table
-// degrade path (mirrors TestHandleNodeScopesNoDeclaredRegionsTable): an
-// older database predating the configured_scope column must not fail the
-// request: the audit simply has no declared side to report.
-func TestHandleScopeAuditWithoutConfiguredScopeColumn(t *testing.T) {
-	// setupScopeConformanceDB creates no nodes table, so detectSchema leaves
-	// hasConfiguredScope false: exactly an instance that has not yet ingested a
-	// /neighbors report or is on a schema predating #1971.
-	db := setupScopeConformanceDB(t)
-	cfg := &Config{Port: 3000}
-	hub := NewHub()
-	srv := NewServer(db, cfg, hub)
-	srv.store = newTestStoreWithDB(t, db, cfg)
-	router := mux.NewRouter()
-	srv.RegisterRoutes(router)
-
-	got := getScopeAudit(t, router, "")
-	if len(got.Repeaters) != 0 {
-		t.Errorf("repeaters = %+v, want empty when configured_scope does not exist", got.Repeaters)
 	}
 }
 
@@ -671,7 +588,7 @@ func TestScopeAuditConfigStateClassification(t *testing.T) {
 // response no longer matches what was seeded here, and the test fails.
 func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 
 	fullPk := strings.Repeat("11", 32)
 	noScopesPk := strings.Repeat("22", 32)
@@ -688,7 +605,7 @@ func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 		t.Fatalf("repeaters = %+v, want exactly 4", got.Repeaters)
 	}
 
-	want := map[string]string{
+	want := map[string]api.ScopeConfigState{
 		fullPk:       ScopeConfigFull,
 		noScopesPk:   ScopeConfigNoScopes,
 		noUnscopedPk: ScopeConfigNoUnscoped,
@@ -701,11 +618,11 @@ func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 		}
 	}
 
-	counts := map[string]int{}
+	counts := map[api.ScopeConfigState]int{}
 	for _, row := range got.Repeaters {
 		counts[row.ConfigState]++
 	}
-	for _, state := range []string{ScopeConfigFull, ScopeConfigNoScopes, ScopeConfigNoUnscoped, ScopeConfigNoFlood} {
+	for _, state := range []api.ScopeConfigState{ScopeConfigFull, ScopeConfigNoScopes, ScopeConfigNoUnscoped, ScopeConfigNoFlood} {
 		if counts[state] != 1 {
 			t.Errorf("count of state %q across repeaters = %d, want 1 (summary tally must match the seeded rows)", state, counts[state])
 		}
@@ -718,19 +635,9 @@ func TestHandleScopeAuditConfigStateAllFourShapes(t *testing.T) {
 
 // --- Merging confirmed-scope sources (#1975) ---
 
-func seedSecondSource(t *testing.T, srv *Server, target, observedAt, regionsCSV string, truncated int) {
+func declaredFor(t *testing.T, srv *Server, target string) (database.DeclaredRegions, bool) {
 	t.Helper()
-	if _, err := srv.db.conn.Exec(
-		`INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)
-		 VALUES (?, 'rxpubkeyhex', ?, ?, ?, ?)`,
-		target, observedAt, observedAt, regionsCSV, truncated); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func declaredFor(t *testing.T, srv *Server, target string) (DeclaredRegionsRow, bool) {
-	t.Helper()
-	rows, err := srv.db.AllCurrentDeclaredRegions()
+	rows, err := srv.db.AllCurrentDeclaredRegions(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,80 +646,37 @@ func declaredFor(t *testing.T, srv *Server, target string) (DeclaredRegionsRow, 
 			return r, true
 		}
 	}
-	return DeclaredRegionsRow{}, false
+	return database.DeclaredRegions{}, false
 }
 
 func TestDeclaredRegionsMergeUsesConfiguredScopeAlone(t *testing.T) {
 	srv, _ := setupScopeAuditServer(t)
-	insertDeclared(t, srv, testFullPubkeyA, "2026-09-01T00:00:00Z", "#be,#eu", 0)
+	insertDeclared(t, srv, testFullPubkeyA, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "#be,#eu", 0)
 	got, ok := declaredFor(t, srv, testFullPubkeyA)
 	if !ok || got.RegionsCSV != "#be,#eu" {
 		t.Fatalf("got %+v (found=%v), want the configured_scope answer", got, ok)
 	}
 }
 
-func TestDeclaredRegionsMergeUsesSecondSourceAlone(t *testing.T) {
-	// The case that made this merge necessary: an instance collecting confirmed
-	// scopes by another route, with no configured_scope written yet. Reading
-	// only configured_scope would render an empty page on real data.
+func TestDeclaredRegionsOlderReportDoesNotOverwriteNewer(t *testing.T) {
 	srv, _ := setupScopeAuditServer(t)
-	seedSecondSource(t, srv, testFullPubkeyA, "2026-09-01T00:00:00Z", "be,eu", 0)
+
+	insertDeclared(t, srv, testFullPubkeyA, time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), "#newer", 0)
+	insertDeclared(t, srv, testFullPubkeyA, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), "#old", 0)
 	got, ok := declaredFor(t, srv, testFullPubkeyA)
-	if !ok || got.RegionsCSV != "be,eu" {
-		t.Fatalf("got %+v (found=%v), want the second source's answer", got, ok)
+	if !ok || got.RegionsCSV != "#newer" {
+		t.Fatalf("got %+v (found=%v), want the newer report to survive an out-of-order older one", got, ok)
+	}
+
+	insertDeclared(t, srv, testFullPubkeyA, time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), "#latest", 0)
+	got, _ = declaredFor(t, srv, testFullPubkeyA)
+	if got.RegionsCSV != "#latest" {
+		t.Errorf("regions = %q, want a later report to replace the stored one", got.RegionsCSV)
 	}
 }
-
-func TestDeclaredRegionsMergeNewestAnswerWins(t *testing.T) {
-	srv, _ := setupScopeAuditServer(t)
-	insertDeclared(t, srv, testFullPubkeyA, "2026-09-01T00:00:00Z", "#old", 0)
-	seedSecondSource(t, srv, testFullPubkeyA, "2026-09-02T00:00:00Z", "newer", 0)
-	got, _ := declaredFor(t, srv, testFullPubkeyA)
-	if got.RegionsCSV != "newer" {
-		t.Errorf("regions = %q, want the later answer regardless of which source it came from", got.RegionsCSV)
-	}
-
-	// And the other way round, so the rule is "newest wins" and not "one source
-	// always beats the other".
-	insertDeclared(t, srv, testFullPubkeyB, "2026-09-03T00:00:00Z", "#newer", 0)
-	seedSecondSource(t, srv, testFullPubkeyB, "2026-09-02T00:00:00Z", "old", 0)
-	gotB, _ := declaredFor(t, srv, testFullPubkeyB)
-	if gotB.RegionsCSV != "#newer" {
-		t.Errorf("regions = %q, want the later answer from the other source", gotB.RegionsCSV)
-	}
-}
-
-func TestDeclaredRegionsMergeAnswerWithAnInstantBeatsOneWithout(t *testing.T) {
-	// An empty instant means "we do not know when this was answered". It must
-	// not outrank a dated answer, but it must still be used when it is all we
-	// have.
-	srv, _ := setupScopeAuditServer(t)
-	insertDeclared(t, srv, testFullPubkeyA, "", "#undated", 0)
-	seedSecondSource(t, srv, testFullPubkeyA, "2026-09-01T00:00:00Z", "dated", 0)
-	got, _ := declaredFor(t, srv, testFullPubkeyA)
-	if got.RegionsCSV != "dated" {
-		t.Errorf("regions = %q, want the dated answer to win", got.RegionsCSV)
-	}
-
-	insertDeclared(t, srv, testFullPubkeyB, "", "#undated", 0)
-	gotB, ok := declaredFor(t, srv, testFullPubkeyB)
-	if !ok || gotB.RegionsCSV != "#undated" {
-		t.Errorf("got %+v (found=%v), want an undated answer to be used when it is the only one", gotB, ok)
-	}
-}
-
-func TestDeclaredRegionsMergeCarriesTruncatedFromTheSourceThatHasIt(t *testing.T) {
-	srv, _ := setupScopeAuditServer(t)
-	seedSecondSource(t, srv, testFullPubkeyA, "2026-09-01T00:00:00Z", "be", 1)
-	got, _ := declaredFor(t, srv, testFullPubkeyA)
-	if !got.Truncated {
-		t.Error("truncated must survive the merge from a source that records it")
-	}
-}
-
 func TestDeclaredRegionsMergeWithNoSourcesIsEmptyNotAnError(t *testing.T) {
-	db := setupScopeConformanceDB(t)
-	rows, err := db.AllCurrentDeclaredRegions()
+	db := dbtest.New(t)
+	rows, err := db.AllCurrentDeclaredRegions(t.Context())
 	if err != nil {
 		t.Fatalf("no sources must not be an error: %v", err)
 	}
@@ -835,34 +699,40 @@ func TestDeclaredRegionsMergeWithNoSourcesIsEmptyNotAnError(t *testing.T) {
 // Hops are upper-cased for the same reason seedTransmissionRoute does it: the
 // decoder writes them that way (packetpath.DecodePathFromRawHex), and the join
 // has to cope with that rather than with a lowercase convenience fiction.
-func seedTransmissionPathAt(t *testing.T, s *PacketStore, hops []string, seed scopeSeed, routeType int, firstSeen string) {
+func seedTransmissionPathAt(t *testing.T, s *PacketStore, hops []string, seed scopeSeed, routeType types.RouteType, firstSeen time.Time) {
 	t.Helper()
+	ctx := t.Context()
 	scopeSeedCounter++
-	hash := fmt.Sprintf("scopehash%d", scopeSeedCounter)
 
-	res, err := s.db.conn.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, code1, code2, scope_name)
-		 VALUES ('AA', ?, ?, ?, 1, ?, '00', ?)`,
-		hash, firstSeen, routeType, seed.code1, seed.scopeName,
-	)
+	txID, _, err := s.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        fmt.Sprintf("%016x", scopeSeedCounter),
+		RawHex:      "AA",
+		RouteType:   routeType,
+		PayloadType: types.PayloadType(1),
+		ScopeName:   seed.scopeName,
+	}, firstSeen)
 	if err != nil {
 		t.Fatalf("seed transmission: %v", err)
 	}
-	txID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("seed transmission id: %v", err)
+
+	lowered := make([]string, len(hops))
+	resolved := make([]*string, len(hops))
+	for i, h := range hops {
+		lowered[i] = strings.ToLower(h)
 	}
 
-	quoted := make([]string, len(hops))
-	for i, h := range hops {
-		quoted[i] = `"` + strings.ToUpper(h) + `"`
-	}
-	pathJSON := "[" + strings.Join(quoted, ",") + "]"
-	if _, err := s.db.conn.Exec(
-		`INSERT INTO observations (transmission_id, path_json, timestamp) VALUES (?, ?, ?)`,
-		txID, pathJSON, time.Now().Unix(),
-	); err != nil {
+	_, inserted, err := s.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    nil,
+		SNR:            nil,
+		RSSI:           nil,
+		Timestamp:      time.Now().UTC(),
+	}, lowered, resolved)
+	if err != nil {
 		t.Fatalf("seed observation: %v", err)
+	}
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
 	}
 }
 
@@ -878,11 +748,12 @@ func seedTransmissionPathAt(t *testing.T, s *PacketStore, hops []string, seed sc
 // forwards steadily but is never the hop an observer hears directly had every
 // region it declares reported as notObserved.
 func TestScopeAuditForwardingAttributesMidPathHop(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionPathAt(t, s, []string{testFullPubkeyA[:4], "AAAA", "BBBB"}, scopeMatched("#be"), RouteFlood, recent)
+	recent := time.Now().UTC()
+	seedTransmissionPathAt(t, s, []string{testFullPubkeyA[:4], "AAAA", "BBBB"}, scopeMatched("#be"), types.RouteTransportFlood, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -905,12 +776,13 @@ func TestScopeAuditForwardingAttributesMidPathHop(t *testing.T) {
 // against crediting a DIRECT route's remaining path plan as forwarding — and a
 // DIRECT packet's hops are frequently the declared targets this audit judges.
 func TestScopeAuditForwardingIgnoresDirectRoutes(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionPathAt(t, s, []string{"AAAA", testFullPubkeyA[:4], "BBBB"}, scopeMatched("#be"), RouteDirect, recent)
-	seedTransmissionPathAt(t, s, []string{"AAAA", "BBBB", testFullPubkeyA[:4]}, scopeMatched("#be"), RouteTransportDirect, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionPathAt(t, s, []string{"AAAA", testFullPubkeyA[:4], "BBBB"}, scopeMatched("#be"), types.RouteTransportDirect, recent)
+	seedTransmissionPathAt(t, s, []string{"AAAA", "BBBB", testFullPubkeyA[:4]}, scopeUnscoped(), types.RouteDirect, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -933,11 +805,12 @@ func TestScopeAuditForwardingIgnoresDirectRoutes(t *testing.T) {
 // same truncated prefix). Without it a looping packet would inflate a target's
 // packet count and quietly make a quiet region look busy.
 func TestScopeAuditForwardingCountsOneTransmissionOncePerTarget(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionPathAt(t, s, []string{testFullPubkeyA[:4], "AAAA", testFullPubkeyA[:4]}, scopeMatched("#be"), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionPathAt(t, s, []string{testFullPubkeyA[:4], "AAAA", testFullPubkeyA[:4]}, scopeMatched("#be"), types.RouteTransportFlood, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -970,13 +843,14 @@ func TestScopeAuditForwardingCountsOneTransmissionOncePerTarget(t *testing.T) {
 // have two. Attribution must therefore key on the hop's OWN length: at 8 chars
 // this is an unambiguous attribution, not an ambiguousHops row.
 func TestScopeAuditForwardingAttributesLongerHopByItsOwnLength(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
 	pkOther := testFullPubkeyA[:4] + strings.Repeat("33", 30)
 	hop := testFullPubkeyA[:8]
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionPathAt(t, s, []string{hop, "AAAA"}, scopeMatched("#be"), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionPathAt(t, s, []string{hop, "AAAA"}, scopeMatched("#be"), types.RouteTransportFlood, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA, pkOther})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA, pkOther})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1032,7 +906,7 @@ func TestScopeAuditTTLForSevenDayWindow(t *testing.T) {
 // the response was recomputed and the cache is not being consulted.
 func TestHandleScopeAuditServesSecondRequestFromCache(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	insertDeclared(t, srv, testFullPubkeyA, now, "be", 0)
 
 	first := getScopeAudit(t, router, "")
@@ -1063,12 +937,13 @@ func TestHandleScopeAuditServesSecondRequestFromCache(t *testing.T) {
 // observed", which reads as a finding about the repeater when it is really a
 // gap in this instance's own hashRegions.
 func TestScopeAuditForwardingCountsUnmatchedPackets(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
 	hop := testFullPubkeyA[:4]
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, s, hop, scopeUnmatched(), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, s, hop, scopeUnmatched(), types.RouteTransportFlood, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1094,12 +969,13 @@ func TestScopeAuditForwardingCountsUnmatchedPackets(t *testing.T) {
 // named-scope tally must protect this one — a target appearing twice in one
 // path is still one packet, not two.
 func TestScopeAuditForwardingCountsUnmatchedOnMidPathHop(t *testing.T) {
+	ctx := t.Context()
 	s := newScopeTestStore(t)
 	hop := testFullPubkeyA[:4]
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionPathAt(t, s, []string{"AAAA", hop, "BBBB", hop}, scopeUnmatched(), RouteFlood, recent)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionPathAt(t, s, []string{"AAAA", hop, "BBBB", hop}, scopeUnmatched(), types.RouteTransportFlood, recent)
 
-	got, err := s.ScopeAuditForwarding("2026-01-01T00:00:00Z", []string{testFullPubkeyA})
+	got, err := s.ScopeAuditForwarding(ctx, time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), []string{testFullPubkeyA})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1121,9 +997,9 @@ func TestScopeAuditForwardingCountsUnmatchedOnMidPathHop(t *testing.T) {
 func TestHandleScopeAuditSurfacesUnmatchedPackets(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "behss", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedTransmissionRouteAt(t, srv.store, pk[:4], scopeUnmatched(), RouteFlood, recent)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "behss", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedTransmissionRouteAt(t, srv.store, pk[:4], scopeUnmatched(), types.RouteTransportFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 1 {
@@ -1165,14 +1041,14 @@ func transportFloodPacketFor(region string, payload []byte) string {
 func TestHandleScopeAuditVerifiesDeclaredRegion(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "fm-112,behss", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "fm-112,behss", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
 	// Two DIFFERENT payloads, each deriving to #fm-112 on its own. The first is
 	// the real packet captured from a live instance; the second is built for
 	// this test. Seeding the same packet twice would prove only that the
 	// verifier counts rows.
-	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, RouteTransportFlood, recent)
-	seedUnmatchedRawAt(t, srv.store, pk[:4], transportFloodPacketFor("fm-112", []byte{0x51, 0x52, 0x53, 0x54, 0x55}), RouteTransportFlood, recent)
+	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, types.RouteTransportFlood, recent)
+	seedUnmatchedRawAt(t, srv.store, pk[:4], transportFloodPacketFor("fm-112", []byte{0x51, 0x52, 0x53, 0x54, 0x55}), types.RouteTransportFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	if len(got.Repeaters) != 1 {
@@ -1204,9 +1080,9 @@ func TestHandleScopeAuditVerifiesDeclaredRegion(t *testing.T) {
 func TestHandleScopeAuditDoesNotVerifyOnOnePacket(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "fm-112", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, RouteTransportFlood, recent)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "fm-112", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, types.RouteTransportFlood, recent)
 
 	got := getScopeAudit(t, router, "")
 	row := got.Repeaters[0]
@@ -1231,10 +1107,10 @@ func TestHandleScopeAuditDoesNotVerifyOnOnePacket(t *testing.T) {
 func TestHandleScopeAuditReportsTheVerificationSampleSize(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "fm-112", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, RouteTransportFlood, recent)
-	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, RouteTransportFlood, recent)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "fm-112", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
+	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, types.RouteTransportFlood, recent)
+	seedUnmatchedRawAt(t, srv.store, pk[:4], realTransportFloodPacket, types.RouteTransportFlood, recent)
 
 	row := getScopeAudit(t, router, "").Repeaters[0]
 	if row.ObservedUnmatchedPackets != 2 {
@@ -1253,25 +1129,36 @@ func TestHandleScopeAuditReportsTheVerificationSampleSize(t *testing.T) {
 // seedUnmatchedRawAt seeds one unmatched transmission carrying a real raw_hex,
 // attributed to forwarder. Distinct from seedTransmissionRouteAt, which seeds
 // raw_hex 'AA' - fine for tests that never parse it, useless here.
-func seedUnmatchedRawAt(t *testing.T, s *PacketStore, forwarder, rawHex string, routeType int, firstSeen string) {
+func seedUnmatchedRawAt(t *testing.T, s *PacketStore, forwarder, rawHex string, routeType types.RouteType, firstSeen time.Time) {
 	t.Helper()
+	ctx := t.Context()
 	scopeSeedCounter++
-	hash := fmt.Sprintf("scoperaw%d", scopeSeedCounter)
-	res, err := s.db.conn.Exec(
-		`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, code1, code2, scope_name)
-		 VALUES (?, ?, ?, ?, 5, '9209', '0000', '')`,
-		rawHex, hash, firstSeen, routeType)
+
+	unmatched := ""
+	txID, _, err := s.db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        fmt.Sprintf("%016x", scopeSeedCounter),
+		RawHex:      rawHex,
+		RouteType:   routeType,
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: "{}",
+		ScopeName:   &unmatched,
+	}, firstSeen)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("seed unmatched transmission: %v", err)
 	}
-	txID, err := res.LastInsertId()
+
+	_, inserted, err := s.db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    nil,
+		SNR:            nil,
+		RSSI:           nil,
+		Timestamp:      firstSeen,
+	}, []string{strings.ToLower(forwarder)}, []*string{nil})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("seed unmatched observation: %v", err)
 	}
-	if _, err := s.db.conn.Exec(
-		`INSERT INTO observations (transmission_id, path_json, timestamp) VALUES (?, ?, 0)`,
-		txID, `["`+strings.ToUpper(forwarder)+`"]`); err != nil {
-		t.Fatal(err)
+	if !inserted {
+		t.Fatalf("expected observation to be inserted for tx %d", txID)
 	}
 }
 
@@ -1295,11 +1182,11 @@ func seedUnmatchedRawAt(t *testing.T, s *PacketStore, forwarder, rawHex string, 
 func TestHandleScopeAuditNamedRegionNeedsNoVerification(t *testing.T) {
 	srv, router := setupScopeAuditServer(t)
 	pk := testFullPubkeyA
-	insertDeclared(t, srv, pk, time.Now().UTC().Format(time.RFC3339), "fm-112", 0)
-	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	insertDeclared(t, srv, pk, time.Now().UTC(), "fm-112", 0)
+	recent := time.Now().UTC().Add(-time.Minute)
 	// scopeMatched is the state the ingestor writes once it holds a key for
 	// the region, whether that key was configured by hand or derived.
-	seedTransmissionRouteAt(t, srv.store, pk[:4], scopeMatched("#fm-112"), RouteTransportFlood, recent)
+	seedTransmissionRouteAt(t, srv.store, pk[:4], scopeMatched("#fm-112"), types.RouteTransportFlood, recent)
 
 	row := getScopeAudit(t, router, "").Repeaters[0]
 	for _, rgn := range row.NotObserved {

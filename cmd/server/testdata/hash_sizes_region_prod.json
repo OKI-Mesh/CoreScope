@@ -1,0 +1,113 @@
+{
+  "attributionMethod": "repeater",
+  "distribution": {
+    "1": 1104,
+    "2": 5912,
+    "3": 184
+  },
+  "distributionByRepeaters": {
+    "0": 6,
+    "1": 48,
+    "2": 208,
+    "3": 11
+  },
+  "hourly": [
+    {
+      "1": 32,
+      "2": 106,
+      "3": 19,
+      "hour": "2026-11-11T13"
+    },
+    {
+      "1": 40,
+      "2": 132,
+      "3": 12,
+      "hour": "2026-11-11T14"
+    },
+    {
+      "1": 13,
+      "2": 127,
+      "3": 1,
+      "hour": "2026-11-11T15"
+    }
+  ],
+  "multiByteCapability": [
+    {
+      "evidence": "advert",
+      "lastSeen": "2026-11-13T13:02:02Z",
+      "maxHashSize": 2,
+      "name": "Node-001",
+      "pubkey": "f26018f3e797fc8a60eb71dd2a70eb61979ced69942d87d7360205382a9f0a5e",
+      "role": "repeater",
+      "status": "confirmed"
+    },
+    {
+      "evidence": "advert",
+      "lastSeen": "2026-11-13T13:07:32Z",
+      "maxHashSize": 2,
+      "name": "Node-002",
+      "pubkey": "052399e9293b67ca0861845e345f557a82d4cc9b08311498f3c69c182c366d56",
+      "role": "repeater",
+      "status": "confirmed"
+    },
+    {
+      "evidence": "advert",
+      "lastSeen": "2026-11-11T22:34:54Z",
+      "maxHashSize": 3,
+      "name": "Node-003",
+      "pubkey": "0bf5865e87015fb5e77dfa01dd2bca2ee0a80f89dd55c656e214e07d320e0c36",
+      "role": "repeater",
+      "status": "confirmed"
+    }
+  ],
+  "multiByteNodes": [
+    {
+      "hashSize": 2,
+      "lastSeen": "2026-11-13T12:31:35Z",
+      "name": "Node-004",
+      "packets": 61,
+      "pubkey": "7221eec186cd20c31a41530264ea2812014f691f807ef0ab3bfe1df0f0172953",
+      "role": "repeater"
+    },
+    {
+      "hashSize": 2,
+      "lastSeen": "2026-11-13T12:58:41Z",
+      "name": "Node-006",
+      "packets": 49,
+      "pubkey": "6224f26cc802cb1fadc29f2f5cd2609b891b214a1c1b4b27bfaf2fa38931c9cb",
+      "role": "repeater"
+    },
+    {
+      "hashSize": 3,
+      "lastSeen": "2026-11-13T13:02:44Z",
+      "name": "Node-008",
+      "packets": 49,
+      "pubkey": "ac010fe80fd3c2442e94be9d419d03c07c86d4da9719bc1f489cfa7cad125b2e",
+      "role": "repeater"
+    }
+  ],
+  "topHops": [
+    {
+      "count": 4219,
+      "hex": "AC01",
+      "name": "Node-008",
+      "pubkey": "ac010fe80fd3c2442e94be9d419d03c07c86d4da9719bc1f489cfa7cad125b2e",
+      "size": 2
+    },
+    {
+      "count": 1670,
+      "hex": "F3C3",
+      "name": "Node-010",
+      "pubkey": "f3c3068b960409c6c6996c63a75d44e996c7dff59429ed2e6aff8764f75de89f",
+      "size": 2
+    },
+    {
+      "count": 1594,
+      "hex": "8AC7",
+      "name": "Node-011",
+      "pubkey": "8ac7c2f73b4d2016f1c0a179fa20db80f5829fb37619b4263e14f9d9361fa8e7",
+      "size": 2
+    }
+  ],
+  "total": 7200
+}

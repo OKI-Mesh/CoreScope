@@ -4,6 +4,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // TestPerfStatsConcurrentAccess verifies that concurrent writes and reads
@@ -44,10 +47,10 @@ func TestPerfStatsConcurrentAccess(t *testing.T) {
 					ep.Recent = ep.Recent[1:]
 				}
 				if ms > 50 {
-					ps.SlowQueries = append(ps.SlowQueries, SlowQuery{
+					ps.SlowQueries = append(ps.SlowQueries, api.SlowQuery{
 						Path: key,
 						Ms:   ms,
-						Time: time.Now().UTC().Format(time.RFC3339),
+						Time: types.WireTimeSeconds{Time: time.Now().UTC()},
 					})
 					if len(ps.SlowQueries) > 50 {
 						ps.SlowQueries = ps.SlowQueries[1:]
@@ -73,7 +76,7 @@ func TestPerfStatsConcurrentAccess(t *testing.T) {
 					c := make([]float64, len(ep.Recent))
 					copy(c, ep.Recent)
 				}
-				s := make([]SlowQuery, len(ps.SlowQueries))
+				s := make([]api.SlowQuery, len(ps.SlowQueries))
 				copy(s, ps.SlowQueries)
 				ps.mu.Unlock()
 			}

@@ -3,30 +3,10 @@ package main
 import (
 	"encoding/json"
 	"testing"
-)
+	"time"
 
-func TestCanAppearInPath(t *testing.T) {
-	cases := []struct {
-		role string
-		want bool
-	}{
-		{"repeater", true},
-		{"Repeater", true},
-		{"REPEATER", true},
-		{"room_server", true},
-		{"Room_Server", true},
-		{"room", true},
-		{"companion", false},
-		{"sensor", false},
-		{"", false},
-		{"unknown", false},
-	}
-	for _, tc := range cases {
-		if got := canAppearInPath(tc.role); got != tc.want {
-			t.Errorf("canAppearInPath(%q) = %v, want %v", tc.role, got, tc.want)
-		}
-	}
-}
+	"github.com/OKI-Mesh/CoreScope/internal/types"
+)
 
 func TestBuildPrefixMap_ExcludesCompanions(t *testing.T) {
 	nodes := []nodeInfo{
@@ -87,8 +67,8 @@ func TestResolveWithContext_PrefersRepeaterOverCompanionAtSamePrefix(t *testing.
 
 func TestResolveWithContext_PrefersRoomServerOverCompanionAtSamePrefix(t *testing.T) {
 	nodes := []nodeInfo{
-		{PublicKey: "ab1234abcdef", Role: "companion", Name: "MyCompanion"},
-		{PublicKey: "ab5678901234", Role: "room_server", Name: "MyRoom"},
+		{PublicKey: "ab1234abcdef", Role: types.RoleCompanion, Name: "MyCompanion"},
+		{PublicKey: "ab5678901234", Role: types.RoleRoom, Name: "MyRoom"},
 	}
 	pm := buildPrefixMap(nodes)
 	r, _, _ := pm.resolveWithContext("ab", nil, nil)
@@ -170,7 +150,7 @@ func TestComputeDistancesForTx_CompanionNeverInResolvedChain(t *testing.T) {
 	tx := &StoreTx{
 		PathJSON:    string(pathJSON),
 		DecodedJSON: string(decoded),
-		FirstSeen:   "2026-04-30T12:00",
+		FirstSeen:   time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC),
 	}
 
 	resolveHop := func(hop string) *nodeInfo {

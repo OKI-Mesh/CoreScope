@@ -1,0 +1,102 @@
+{
+  "results": [
+    {
+      "subpaths": [
+        {
+          "count": 4766,
+          "hops": 2,
+          "path": "e70b → 9e90",
+          "pct": 4.1,
+          "rawHops": [
+            "e70b",
+            "9e90"
+          ]
+        },
+        {
+          "count": 4061,
+          "hops": 2,
+          "path": "Node 06 → Node 02",
+          "pct": 3.5,
+          "rawHops": [
+            "1b85",
+            "a3a7"
+          ]
+        },
+        {
+          "count": 3404,
+          "hops": 2,
+          "path": "Node 04 → Node 05",
+          "pct": 2.9,
+          "rawHops": [
+            "2710",
+            "5531"
+          ]
+        },
+        {
+          "count": 3279,
+          "hops": 2,
+          "path": "Node 02 → Node 38",
+          "pct": 2.8,
+          "rawHops": [
+            "a3a7",
+            "35c5"
+          ]
+        }
+      ],
+      "totalPaths": 116316
+    },
+    {
+      "subpaths": [
+        {
+          "count": 457,
+          "hops": 4,
+          "path": "9e9b → 4822 → e70b → 9e90",
+          "pct": 0.4,
+          "rawHops": [
+            "9e9b",
+            "4822",
+            "e70b",
+            "9e90"
+          ]
+        },
+        {
+          "count": 381,
+          "hops": 4,
+          "path": "725d → 4822 → e70b → 9e90",
+          "pct": 0.3,
+          "rawHops": [
+            "725d",
+            "4822",
+            "e70b",
+            "9e90"
+          ]
+        },
+        {
+          "count": 325,
+          "hops": 4,
+          "path": "Node 01 → Node 40 → Node 39 → Node 40",
+          "pct": 0.3,
+          "rawHops": [
+            "fcba",
+            "841c",
+            "5904",
+            "841c"
+          ]
+        },
+        {
+          "count": 281,
+          "hops": 4,
+          "path": "b87c → cea5 → e70b → 9e90",
+          "pct": 0.2,
+          "rawHops": [
+            "b87c",
+            "cea5",
+            "e70b",
+            "9e90"
+          ]
+        }
+      ],
+      "totalPaths": 116316
+    }
+  ]
+}

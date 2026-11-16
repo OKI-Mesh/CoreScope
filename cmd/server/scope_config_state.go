@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"strings"
 	"sync/atomic"
@@ -50,6 +51,13 @@ func isScopeWildcard(region string) bool {
 	return region == "*" || region == "#*"
 }
 
+func declaredRegionsPtr(named []string) *[]string {
+	if named == nil {
+		named = []string{}
+	}
+	return &named
+}
+
 // splitDeclaredRegions reads one declared regions_csv into its named regions
 // and whether the flood wildcard was present. It is the single reading of a
 // declared list: the Scope Audit's declaredRegions, /api/nodes'
@@ -69,31 +77,6 @@ func splitDeclaredRegions(csv string) (named []string, wildcard bool) {
 		named = append(named, normScope(rgn))
 	}
 	return named, wildcard
-}
-
-// enrichNodeDeclaredScope sets the two declared-regions fields on a
-// repeater/room node: scope_config_state (#2001) and declared_regions
-// (#1862). Shared by the list and detail handlers so the node page and the
-// map read one repeater the same way.
-//
-// declared_regions is set only when the node has a declared answer. An empty
-// list means it answered and named no region; an absent field means it was
-// never asked. The map's region filter treats neither as evidence that the
-// repeater lacks a region.
-//
-// declared_regions_truncated is set, to true, only when that answer was
-// flagged as cut off: the list is then partial, which the Scope Audit also
-// shows. Omitted otherwise, since a source that does not record truncation
-// cannot vouch for a complete list either.
-func enrichNodeDeclaredScope(node map[string]interface{}, answer declaredAnswer, hasDeclared bool, transportedScopes []string) {
-	node["scope_config_state"] = nodeScopeConfigState(answer.RegionsCSV, hasDeclared, transportedScopes)
-	if hasDeclared {
-		named, _ := splitDeclaredRegions(answer.RegionsCSV)
-		node["declared_regions"] = named
-		if answer.Truncated {
-			node["declared_regions_truncated"] = true
-		}
-	}
 }
 
 // nodeScopeConfigState classifies one node for the scope_config_state field.
@@ -154,10 +137,7 @@ type declaredAnswer struct {
 // repeater has answered" is a statement the schema cannot support. An empty map
 // with ok=true means the sources exist and nobody has answered yet, which IS a
 // finding and is what ScopeConfigNone reports.
-func (s *Server) declaredRegionsCSV() (map[string]declaredAnswer, bool) {
-	if !s.db.hasConfiguredScope && !s.db.declaredRegionsTablePresent() {
-		return nil, false
-	}
+func (s *Server) declaredRegionsCSV(ctx context.Context) (map[string]declaredAnswer, bool) {
 
 	s.declaredRegionsMu.Lock()
 	cached, at := s.declaredRegionsCache, s.declaredRegionsAt
@@ -185,7 +165,7 @@ func (s *Server) declaredRegionsCSV() (map[string]declaredAnswer, bool) {
 			return fresh, nil
 		}
 
-		rows, qerr := s.db.AllCurrentDeclaredRegions()
+		rows, qerr := s.db.AllCurrentDeclaredRegions(context.WithoutCancel(ctx))
 		if qerr != nil {
 			return nil, qerr
 		}

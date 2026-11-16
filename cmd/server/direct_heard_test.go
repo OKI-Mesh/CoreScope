@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Coverage for the direct-RF attribution rule behind the node detail
@@ -43,12 +45,14 @@ const (
 	dhUnique   = "bb11220000000000000000000000000000000000000000000000000000000003"
 )
 
-func dhRoute(rt int) *int { return &rt }
+func dhRoute(rt types.RouteType) *types.RouteType { return &rt }
 
-func dhTx(routeType int, payloadType int, decoded string) *StoreTx {
+func dhPayload(pt types.PayloadType) *types.PayloadType { return &pt }
+
+func dhTx(routeType types.RouteType, payloadType types.PayloadType, decoded string) *StoreTx {
 	return &StoreTx{
 		RouteType:   dhRoute(routeType),
-		PayloadType: dhRoute(payloadType),
+		PayloadType: dhPayload(payloadType),
 		DecodedJSON: decoded,
 	}
 }
@@ -87,43 +91,43 @@ func TestDirectHeardNode(t *testing.T) {
 	}{
 		{
 			name:     "flood, unique two-byte last hop, credits that node",
-			tx:       dhTx(RouteFlood, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteFlood, types.PayloadTXT_MSG, ""),
 			pathJSON: `["A433","BB11"]`,
 			want:     dhUnique,
 		},
 		{
 			name:     "transport flood counts as flood",
-			tx:       dhTx(RouteTransportFlood, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteTransportFlood, types.PayloadTXT_MSG, ""),
 			pathJSON: `["BB11"]`,
 			want:     dhUnique,
 		},
 		{
 			name:     "flood, node is an earlier hop, not the last one, credits nobody here",
-			tx:       dhTx(RouteFlood, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteFlood, types.PayloadTXT_MSG, ""),
 			pathJSON: `["BB11","A433"]`,
 			want:     dhCollideA,
 		},
 		{
 			name:     "ambiguous one-byte last hop credits nobody",
-			tx:       dhTx(RouteFlood, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteFlood, types.PayloadTXT_MSG, ""),
 			pathJSON: `["66","E8","A4"]`,
 			want:     "",
 		},
 		{
 			name:     "unknown last hop credits nobody",
-			tx:       dhTx(RouteFlood, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteFlood, types.PayloadTXT_MSG, ""),
 			pathJSON: `["9999"]`,
 			want:     "",
 		},
 		{
 			name:     "direct route never credits, even when the node is the last entry",
-			tx:       dhTx(RouteDirect, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteDirect, types.PayloadTXT_MSG, ""),
 			pathJSON: `["A433","BB11"]`,
 			want:     "",
 		},
 		{
 			name:     "transport direct never credits",
-			tx:       dhTx(RouteTransportDirect, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteTransportDirect, types.PayloadTXT_MSG, ""),
 			pathJSON: `["BB11"]`,
 			want:     "",
 		},
@@ -133,13 +137,13 @@ func TestDirectHeardNode(t *testing.T) {
 			// arriving direct with an empty path cannot have been forwarded,
 			// so the observer heard the advertiser itself.
 			name:     "zero-hop advert on a direct route credits the advertiser",
-			tx:       dhTx(RouteDirect, PayloadADVERT, advert),
+			tx:       dhTx(types.RouteDirect, types.PayloadADVERT, advert),
 			pathJSON: "",
 			want:     dhUnique,
 		},
 		{
 			name:     "zero-hop advert on a transport-direct route credits the advertiser",
-			tx:       dhTx(RouteTransportDirect, PayloadADVERT, advert),
+			tx:       dhTx(types.RouteTransportDirect, types.PayloadADVERT, advert),
 			pathJSON: `[]`,
 			want:     dhUnique,
 		},
@@ -147,7 +151,7 @@ func TestDirectHeardNode(t *testing.T) {
 			// The zero-hop exception is only about adverts. Any other payload
 			// arriving direct with an empty path still identifies nobody.
 			name:     "direct route, empty path, not an advert, credits nobody",
-			tx:       dhTx(RouteDirect, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteDirect, types.PayloadTXT_MSG, ""),
 			pathJSON: "",
 			want:     "",
 		},
@@ -155,25 +159,25 @@ func TestDirectHeardNode(t *testing.T) {
 			// A direct route with a path is the REMAINING route, so the last
 			// entry is where the packet is going, not who transmitted it.
 			name:     "direct advert with a non-empty path credits nobody",
-			tx:       dhTx(RouteDirect, PayloadADVERT, advert),
+			tx:       dhTx(types.RouteDirect, types.PayloadADVERT, advert),
 			pathJSON: `["A433","BB11"]`,
 			want:     "",
 		},
 		{
 			name:     "flood advert with empty path credits the originator",
-			tx:       dhTx(RouteFlood, PayloadADVERT, advert),
+			tx:       dhTx(types.RouteFlood, types.PayloadADVERT, advert),
 			pathJSON: `[]`,
 			want:     dhUnique,
 		},
 		{
 			name:     "flood non-advert with empty path credits nobody: originator unknown",
-			tx:       dhTx(RouteFlood, PayloadTXT_MSG, ""),
+			tx:       dhTx(types.RouteFlood, types.PayloadTXT_MSG, ""),
 			pathJSON: `[]`,
 			want:     "",
 		},
 		{
 			name:     "missing route type credits nobody",
-			tx:       &StoreTx{PayloadType: dhRoute(PayloadTXT_MSG)},
+			tx:       &StoreTx{PayloadType: dhPayload(types.PayloadTXT_MSG)},
 			pathJSON: `["BB11"]`,
 			want:     "",
 		},
@@ -195,7 +199,7 @@ func TestDirectHeardNode(t *testing.T) {
 // resolveWithContext would find one.
 func TestDirectHeardNode_AmbiguousPrefixRegression(t *testing.T) {
 	pm := buildPrefixMap(directHeardNodes)
-	tx := dhTx(RouteFlood, PayloadTXT_MSG, "")
+	tx := dhTx(types.RouteFlood, types.PayloadTXT_MSG, "")
 	obs := &StoreObs{
 		ObserverID: "obs868",
 		PathJSON:   `["A4","F1","AE","6A","77","5C","29","ED","4D","3F","6A","E7","6A","C2","68"]`,
@@ -212,7 +216,7 @@ func TestDirectHeardNode_AmbiguousPrefixRegression(t *testing.T) {
 func TestDirectHeardNode_ListenerNeverCredited(t *testing.T) {
 	pm := buildPrefixMap(directHeardNodes)
 	pm.markNonRelay([]string{dhUnique})
-	tx := dhTx(RouteFlood, PayloadTXT_MSG, "")
+	tx := dhTx(types.RouteFlood, types.PayloadTXT_MSG, "")
 	obs := &StoreObs{ObserverID: "obs1", PathJSON: `["BB11"]`}
 	if got := directHeardNode(tx, obs, pm); got != "" {
 		t.Fatalf("listener-only node credited as last hop: %q", got)
@@ -221,7 +225,7 @@ func TestDirectHeardNode_ListenerNeverCredited(t *testing.T) {
 
 func TestComputeDirectHeardAggregates(t *testing.T) {
 	snr := func(v float64) *float64 { return &v }
-	tx := dhTx(RouteFlood, PayloadTXT_MSG, "")
+	tx := dhTx(types.RouteFlood, types.PayloadTXT_MSG, "")
 	tx.Observations = []*StoreObs{
 		{ObserverID: "obsA", ObserverName: "A", PathJSON: `["BB11"]`, SNR: snr(10), RSSI: snr(-50)},
 		{ObserverID: "obsA", ObserverName: "A", PathJSON: `["BB11"]`, SNR: snr(20), RSSI: snr(-70)},
@@ -267,16 +271,16 @@ func TestBuildDirectObserverRowsSortedAndAveraged(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	if rows[0].ObserverID != "high" || rows[1].ObserverID != "none" || rows[2].ObserverID != "low" {
+	if rows[0].ObserverId != "high" || rows[1].ObserverId != "none" || rows[2].ObserverId != "low" {
 		t.Fatalf("rows not sorted by packet count desc: %#v", rows)
 	}
-	if rows[0].AvgSNR == nil || *rows[0].AvgSNR != 9 {
-		t.Fatalf("avgSnr = %v, want 9", rows[0].AvgSNR)
+	if rows[0].AvgSnr == nil || *rows[0].AvgSnr != 9 {
+		t.Fatalf("avgSnr = %v, want 9", rows[0].AvgSnr)
 	}
-	if rows[0].AvgRSSI == nil || *rows[0].AvgRSSI != -50 {
-		t.Fatalf("avgRssi = %v, want -50", rows[0].AvgRSSI)
+	if rows[0].AvgRssi == nil || *rows[0].AvgRssi != -50 {
+		t.Fatalf("avgRssi = %v, want -50", rows[0].AvgRssi)
 	}
-	if rows[1].AvgSNR != nil || rows[1].AvgRSSI != nil {
+	if rows[1].AvgSnr != nil || rows[1].AvgRssi != nil {
 		t.Fatalf("observer with no signal samples must report null, got %#v", rows[1])
 	}
 }
@@ -296,7 +300,7 @@ func TestBuildDirectObserverRows_CanRelayTriState(t *testing.T) {
 
 	got := map[string]*bool{}
 	for _, r := range rows {
-		got[r.ObserverID] = r.CanRelay
+		got[r.ObserverId] = r.CanRelay
 	}
 	if got["unknown"] != nil {
 		t.Fatalf("unknown observer must report nil can_relay, got %v", *got["unknown"])

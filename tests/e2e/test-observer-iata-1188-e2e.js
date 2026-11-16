@@ -3,7 +3,7 @@
  * on packets rows and in the detail pane. Plus, the wireshark-style
  * filter grammar must accept `observer_iata` / `iata` expressions.
  *
- * Runs against the e2e fixture (see test-fixtures/e2e-fixture.db).
+ * Runs against the e2e fixture (see test-fixtures/e2e-fixture.sql).
  * Observers in the fixture carry IATA codes (e.g. SJC, OAK, MRY),
  * so once the UI changes land, at least one rendered packet row must
  * carry one of those codes next to its observer name.

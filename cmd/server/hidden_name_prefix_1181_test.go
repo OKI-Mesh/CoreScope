@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // TestHiddenNamePrefix_1181 verifies operator-configurable name-prefix hiding
@@ -17,13 +20,10 @@ func TestHiddenNamePrefix_1181_NodesList(t *testing.T) {
 	srv, router := setupTestServer(t)
 
 	// Insert a node whose name starts with the configured 🚫 prefix.
-	_, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		"deadbeef00001181", "🚫 ban me", "companion")
-	if err != nil {
-		t.Fatalf("insert hidden node: %v", err)
-	}
+	now := time.Now().UTC()
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: "deadbeef00001181", Name: "🚫 ban me", Role: "companion", RxTime: now, IngestNow: now,
+	})
 
 	get := func() []map[string]interface{} {
 		req := httptest.NewRequest("GET", "/api/nodes?limit=2000", nil)
@@ -68,12 +68,10 @@ func TestHiddenNamePrefix_1181_NodesList(t *testing.T) {
 func TestHiddenNamePrefix_1181_Search(t *testing.T) {
 	srv, router := setupTestServer(t)
 
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		"deadbeef00001182", "🚫 search me", "companion"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	now := time.Now().UTC()
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: "deadbeef00001182", Name: "🚫 search me", Role: "companion", RxTime: now, IngestNow: now,
+	})
 
 	srv.cfg.SetHiddenNamePrefixes([]string{"🚫"})
 
@@ -103,12 +101,10 @@ func TestHiddenNamePrefix_1181_Detail(t *testing.T) {
 	srv, router := setupTestServer(t)
 
 	pk := "deadbeef00001183"
-	if _, err := srv.db.conn.Exec(`INSERT INTO nodes
-		(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
-		VALUES (?, ?, ?, 0, 0, '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', 1)`,
-		pk, "🚫 detail me", "companion"); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	now := time.Now().UTC()
+	mustCreateTestNode(t, t.Context(), srv.db, database.NodeInput{
+		PublicKey: pk, Name: "🚫 detail me", Role: "companion", RxTime: now, IngestNow: now,
+	})
 
 	get := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/api/nodes/"+pk, nil)

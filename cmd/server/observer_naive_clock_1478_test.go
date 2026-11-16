@@ -12,31 +12,24 @@ package main
 // has no clock_* keys) → red commit.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 )
 
 // recentNaiveObserver inserts an observer row with a recent clock-naive
 // skew event already recorded. The handler should report clock_naive=true.
 func TestHandleObservers_Issue1478_SurfacesRecentNaiveSkew(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 	_ = srv
 
 	now := time.Now().UTC()
-	recent := now.Add(-2 * time.Hour).Format(time.RFC3339)
-	// Seed an observer whose ingestor has recorded a -8h naive clamp 2h ago.
-	_, err := srv.db.conn.Exec(`INSERT INTO observers
-		(id, name, iata, last_seen, first_seen, packet_count,
-		 clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"naive-obs-1", "California Pi", "SFO",
-		now.Format(time.RFC3339), now.Add(-7*24*time.Hour).Format(time.RFC3339),
-		42, -28800, 17, recent)
-	if err != nil {
-		t.Fatalf("seed observer: %v", err)
-	}
+	seedNaiveObserver(t, ctx, srv.db, "naive-obs-1", "California Pi", "SFO", now, -28800, 17, now.Add(-2*time.Hour))
 
 	req := httptest.NewRequest("GET", "/api/observers", nil)
 	w := httptest.NewRecorder()
@@ -84,20 +77,11 @@ func TestHandleObservers_Issue1478_SurfacesRecentNaiveSkew(t *testing.T) {
 }
 
 func TestHandleObservers_Issue1478_DecaysAfter24h(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 	now := time.Now().UTC()
 	// 30h ago — past the 24h window. clock_naive must be false.
-	stale := now.Add(-30 * time.Hour).Format(time.RFC3339)
-	_, err := srv.db.conn.Exec(`INSERT INTO observers
-		(id, name, iata, last_seen, first_seen, packet_count,
-		 clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"naive-obs-old", "Fixed Pi", "LAX",
-		now.Format(time.RFC3339), now.Add(-30*24*time.Hour).Format(time.RFC3339),
-		99, -28800, 5, stale)
-	if err != nil {
-		t.Fatalf("seed observer: %v", err)
-	}
+	seedNaiveObserver(t, ctx, srv.db, "naive-obs-old", "Fixed Pi", "LAX", now, -28800, 5, now.Add(-30*time.Hour))
 
 	req := httptest.NewRequest("GET", "/api/observers", nil)
 	w := httptest.NewRecorder()
@@ -130,19 +114,10 @@ func TestHandleObservers_Issue1478_DecaysAfter24h(t *testing.T) {
 }
 
 func TestHandleObserverDetail_Issue1478_IncludesClockNaiveFields(t *testing.T) {
+	ctx := t.Context()
 	srv, router := setupTestServer(t)
 	now := time.Now().UTC()
-	recent := now.Add(-5 * time.Minute).Format(time.RFC3339)
-	_, err := srv.db.conn.Exec(`INSERT INTO observers
-		(id, name, iata, last_seen, first_seen, packet_count,
-		 clock_skew_seconds, clock_skew_count_24h, clock_last_naive_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"naive-obs-detail", "Detail Pi", "SJC",
-		now.Format(time.RFC3339), now.Add(-2*24*time.Hour).Format(time.RFC3339),
-		7, 25200, 3, recent)
-	if err != nil {
-		t.Fatalf("seed observer: %v", err)
-	}
+	seedNaiveObserver(t, ctx, srv.db, "naive-obs-detail", "Detail Pi", "SJC", now, 25200, 3, now.Add(-5*time.Minute))
 
 	req := httptest.NewRequest("GET", "/api/observers/naive-obs-detail", nil)
 	w := httptest.NewRecorder()
@@ -150,6 +125,7 @@ func TestHandleObserverDetail_Issue1478_IncludesClockNaiveFields(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
+
 	var got map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v body=%s", err, w.Body.String())
@@ -159,6 +135,16 @@ func TestHandleObserverDetail_Issue1478_IncludesClockNaiveFields(t *testing.T) {
 	}
 	if v, _ := got["clock_skew_seconds"]; v == nil {
 		t.Errorf("expected clock_skew_seconds set")
+	}
+}
+
+func seedNaiveObserver(t *testing.T, ctx context.Context, db *database.DB, id, name, iata string, now time.Time, skew int32, count int, lastNaive time.Time) {
+	t.Helper()
+	mustCreateTestObserver(t, ctx, db, id, name, iata, now)
+	for i := 0; i < count; i++ {
+		if err := db.RecordNaiveSkew(ctx, id, skew, lastNaive); err != nil {
+			t.Fatalf("RecordNaiveSkew(%q): %v", id, err)
+		}
 	}
 }
 

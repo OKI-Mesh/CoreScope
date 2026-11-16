@@ -1,0 +1,47 @@
+{
+  "roles": null,
+  "healthThresholds": {
+    "infraDegradedMs": 201600000,
+    "infraSilentMs": 374400000,
+    "nodeDegradedMs": 3600000,
+    "nodeSilentMs": 86400000,
+    "observerOnlineMs": 3600000,
+    "observerStaleMs": 86400000
+  },
+  "map": {
+    "tiles": {
+      "providers": {
+        "carto": {
+          "enabled": true,
+          "key": "cb1_25o5_1_fa53b76246ea251139bd0b8e",
+          "token": "cb1_25o5_1_fa53b76246ea251139bd0b8e"
+        }
+      }
+    }
+  },
+  "tiles": null,
+  "snrThresholds": null,
+  "distThresholds": null,
+  "maxHopDist": null,
+  "limits": null,
+  "perfSlowMs": null,
+  "wsReconnectMs": null,
+  "cacheInvalidateMs": null,
+  "externalUrls": null,
+  "propagationBufferMs": 5000,
+  "liveMapMaxNodes": 2000,
+  "timestamps": {
+    "defaultMode": "ago",
+    "timezone": "local",
+    "formatPreset": "iso",
+    "customFormat": "",
+    "allowCustomFormat": false
+  },
+  "customizer": {
+    "disabledTabs": []
+  },
+  "clientRxCoverage": false,
+  "pathTrust": {
+    "minHashBytesForMapping": 1
+  }
+}

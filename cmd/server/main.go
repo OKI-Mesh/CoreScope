@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"log"
@@ -72,6 +71,8 @@ func resolveBuildTime() string {
 
 func main() {
 	// pprof profiling — off by default, enable with ENABLE_PPROF=true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if os.Getenv("ENABLE_PPROF") == "true" {
 		pprofPort := os.Getenv("PPROF_PORT")
 		if pprofPort == "" {
@@ -88,16 +89,16 @@ func main() {
 	var (
 		configDir string
 		port      int
-		dbPath    string
+		flagDSN   string
 		publicDir string
 		pollMs    int
 	)
 
 	flag.StringVar(&configDir, "config-dir", ".", "Directory containing config.json")
 	flag.IntVar(&port, "port", 0, "HTTP port (overrides config)")
-	flag.StringVar(&dbPath, "db", "", "SQLite database path (overrides config/env)")
+	flag.StringVar(&flagDSN, "dsn", "", "Postgres DSN (overrides config and DATABASE_URL)")
 	flag.StringVar(&publicDir, "public", "public", "Directory to serve static files from")
-	flag.IntVar(&pollMs, "poll-ms", 1000, "SQLite poll interval for WebSocket broadcast (ms)")
+	flag.IntVar(&pollMs, "poll-ms", 1000, "database poll interval for WebSocket broadcast (ms)")
 	flag.Parse()
 
 	// Load config
@@ -112,9 +113,6 @@ func main() {
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 3000
-	}
-	if dbPath != "" {
-		cfg.DBPath = dbPath
 	}
 	if cfg.APIKey == "" {
 		log.Printf("[security] WARNING: no apiKey configured — write endpoints are BLOCKED (set apiKey in config.json to enable them)")
@@ -157,9 +155,21 @@ func main() {
 		warnIfMemlimitUnderprovisioned(limit)
 	}
 
-	// Resolve DB path
-	resolvedDB := cfg.ResolveDBPath(configDir)
-	log.Printf("[config] port=%d db=%s public=%s", cfg.Port, resolvedDB, publicDir)
+	// Resolve the Postgres DSN: -dsn flag, then config db.connectionString, then
+	// DATABASE_URL. The DSN carries the password, so it is never logged; only the
+	// user, host and database name are.
+	dsn := flagDSN
+	if dsn == "" {
+		dsn = cfg.DB.DSN()
+	}
+	if dsn == "" {
+		log.Fatalf("[config] no database DSN: set -dsn, db.connectionString in config.json, or DATABASE_URL")
+	}
+	target, err := database.ParseConnectionTarget(dsn)
+	if err != nil {
+		log.Fatalf("[config] invalid database DSN: %v", err)
+	}
+	log.Printf("[config] port=%d db=%s@%s/%s public=%s", cfg.Port, target.User, target.Host, target.Database, publicDir)
 	if len(cfg.NodeBlacklist) > 0 {
 		log.Printf("[config] nodeBlacklist: %d node(s) will be hidden from API", len(cfg.NodeBlacklist))
 		for _, pk := range cfg.NodeBlacklist {
@@ -169,48 +179,35 @@ func main() {
 		}
 	}
 
-	// Open database
-	db, err := OpenDB(resolvedDB)
+	// Open the read-only pool. OpenDB also asserts that every migration the
+	// ingestor owns has already run (AssertReady); the server never migrates.
+
+	db, err := OpenDB(ctx, dsn)
 	if err != nil {
-		log.Fatalf("[db] failed to open %s: %v", resolvedDB, err)
+		log.Fatalf("[db] failed to open %s@%s/%s: %v", target.User, target.Host, target.Database, err)
 	}
 	var dbCloseOnce sync.Once
 	dbClose := func() error {
 		var err error
-		dbCloseOnce.Do(func() { err = db.Close() })
+		dbCloseOnce.Do(func() { db.Close() })
 		return err
 	}
 	defer dbClose()
 
-	// Verify DB has expected tables
-	var tableName string
-	err = db.conn.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='transmissions'").Scan(&tableName)
-	if err == sql.ErrNoRows {
-		log.Fatalf("[db] table 'transmissions' not found — is this a CoreScope database?")
-	}
-
-	stats, err := db.GetStats()
+	stats, err := db.GetStats(ctx, time.Now())
 	if err != nil {
 		log.Printf("[db] warning: could not read stats: %v", err)
 	} else {
 		log.Printf("[db] transmissions=%d observations=%d nodes=%d observers=%d",
-			stats.TotalTransmissions, stats.TotalObservations, stats.TotalNodes, stats.TotalObservers)
-	}
-
-	// auto_vacuum is checked + migrated by the ingestor (#1283). The
-	// server is read-only and must not race the writer for the lock.
-
-	// Assert all schema migrations the ingestor owns have already run
-	// (#1287). The server NEVER migrates — it only reads. If a required
-	// column/index/table is missing, the operator must restart the
-	// ingestor (which owns dbschema.Apply) before this server can start.
-	if err := database.AssertReady(db.conn); err != nil {
-		log.Fatalf("[db] schema not ready (ingestor must run migrations first): %v", err)
+			stats.TotalTransmissions, stats.TotalObservations, stats.TotalNodes, stats.TotalNodesAllTime)
 	}
 
 	// In-memory packet store
 	store := NewPacketStore(db, cfg.PacketStore, cfg.CacheTTL)
 	store.config = cfg
+	if err := store.StartNodeCache(ctx); err != nil {
+		log.Fatalf("[store] %v", err)
+	}
 
 	// Load the persisted neighbor graph BEFORE the packet load so the
 	// chunked loader can resolve relay-hop pubkeys from path_json. Since
@@ -219,14 +216,17 @@ func main() {
 	// without an available graph at load time a relay node's analytics
 	// history would rebuild only from post-restart live traffic (the
 	// "timeline empty after every restart" bug). neighbor_edges is small,
-	// so this adds negligible latency before the HTTP listener binds. The
-	// fresh-DB branch (no snapshot) still builds in-memory AFTER the load
-	// below, because BuildFromStore needs the loaded packets.
-	neighborEdgesPersisted := neighborEdgesTableExists(db.conn)
-	if neighborEdgesPersisted {
-		store.graph.Store(loadNeighborEdgesFromDB(db.conn))
-		log.Printf("[neighbor] loaded persisted neighbor graph")
+	// so this adds negligible latency before the HTTP listener binds.
+	// neighbor_edges always exists once the schema is migrated, so there is no
+	// "no snapshot" branch: a fresh database just loads an empty graph until the
+	// ingestor's first edge-build cycle (GUESS: loadNeighborEdgesFromDB(ctx, db)
+	// is the converted loader and returns (*NeighborGraph, error)).
+	graph, err := loadNeighborEdgesFromDB(ctx, db)
+	if err != nil {
+		log.Fatalf("[neighbor] load persisted neighbor graph: %v", err)
 	}
+	store.graph.Store(graph)
+	log.Printf("[neighbor] loaded persisted neighbor graph")
 
 	// #1009: chunked Load with early HTTP readiness. RunStartupLoad runs
 	// asynchronously and signals FirstChunkReady after the first chunk
@@ -251,7 +251,7 @@ func main() {
 	// the channel. See PR #1811 adv #1.
 	loadErrCh := make(chan error, 1)
 	go func() {
-		loadErrCh <- store.RunStartupLoad(chunkSize)
+		loadErrCh <- store.RunStartupLoad(ctx, chunkSize)
 	}()
 	firstChunkPath := false
 	select {
@@ -285,34 +285,8 @@ func main() {
 	// loaded above, before the packet load. Per #1287 schema migrations
 	// all live in the ingestor; the server only reads the snapshot and
 	// then refreshes it via the recompNeighborGraph slot every 60s.
-	dbPath = db.path
-	db.hasResolvedPath = true // dbschema.AssertReady above already verified observations.resolved_path exists
-
 	// WaitGroup for background init steps that gate /api/healthz readiness.
 	var initWg sync.WaitGroup
-
-	if !neighborEdgesPersisted {
-		// No persisted snapshot yet (e.g. fresh DB before the ingestor
-		// has run its first edge-build cycle). Build an in-memory graph
-		// from the packets we already have so reads aren't empty. We
-		// do NOT persist — the ingestor owns neighbor_edges writes per
-		// #1287; the recompNeighborGraph recomputer will pick up the
-		// real snapshot as soon as the ingestor populates it.
-		log.Printf("[neighbor] no persisted edges found, will build in-memory in background...")
-		store.graph.Store(NewNeighborGraph())
-		initWg.Add(1)
-		go func() {
-			defer initWg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[neighbor] graph build panic recovered: %v", r)
-				}
-			}()
-			built := BuildFromStore(store)
-			store.graph.Store(built)
-			log.Printf("[neighbor] in-memory graph build complete")
-		}()
-	}
 
 	// Initial pickBestObservation runs in background — doesn't need to block HTTP.
 	// API serves best-effort data until this completes (~10s for 100K txs).
@@ -356,18 +330,6 @@ func main() {
 		log.Printf("[server] readiness: ready=true (background init complete)")
 	}()
 
-	// Region node index (#214). Region-filtered /api/nodes reads a background
-	// snapshot instead of joining every advert per request. Its first build
-	// takes tens of seconds on a large database, so it starts only after
-	// readiness and never lands inside the startup or deploy health window;
-	// until it finishes, GetNodes uses the gated fallback query.
-	regionIdx := db.newRegionNodeIndex(regionNodeIndexInterval)
-	go func() {
-		initWg.Wait()
-		regionIdx.Start()
-	}()
-	defer regionIdx.Stop()
-
 	// WebSocket hub
 	hub := NewHub()
 	hub.SetAllowedOrigins(cfg.CORSAllowedOrigins)
@@ -379,11 +341,6 @@ func main() {
 	srv := NewServer(db, cfg, hub)
 	srv.configDir = configDir
 	srv.store = store
-
-	// All Regions channel list kept warm in the background (#225). Started
-	// just before the listener binds, below; stopped in shutdown.
-	chRefresh := srv.newChannelsRefresher(channelsRefreshInterval)
-	defer chRefresh.Stop()
 	router := mux.NewRouter()
 	srv.RegisterRoutes(router)
 
@@ -404,20 +361,20 @@ func main() {
 		})
 	}
 
-	// Start SQLite poller for WebSocket broadcast
-	poller := NewPoller(db, hub, time.Duration(pollMs)*time.Millisecond)
+	// Start the database poller for WebSocket broadcast
+	poller := NewPoller(db, store, hub, time.Duration(pollMs)*time.Millisecond)
 	poller.store = store
-	go poller.Start()
+	go poller.Start(ctx)
 
 	// Start periodic eviction
-	stopEviction := store.StartEvictionTicker()
+	stopEviction := store.StartEvictionTicker(ctx)
 	defer stopEviction()
 
 	// Steady-state analytics recomputers (issue #1240). Replaces the
 	// on-request compute-then-cache pattern for the default (region="",
 	// zero-window) analytics queries with a background refresh loop so
 	// reads always hit cache in <1ms.
-	stopAnalyticsRecomp := store.StartAnalyticsRecomputers(
+	stopAnalyticsRecomp := store.StartAnalyticsRecomputers(ctx,
 		cfg.AnalyticsDefaultRecomputeInterval(),
 		cfg.AnalyticsRecomputeIntervals(),
 	)
@@ -433,7 +390,7 @@ func main() {
 	if cfg.NeighborGraph != nil && cfg.NeighborGraph.CacheRecomputeIntervalSeconds > 0 {
 		ngInterval = time.Duration(cfg.NeighborGraph.CacheRecomputeIntervalSeconds) * time.Second
 	}
-	srv.startNeighborGraphRecomputer(ngInterval, stopNeighborGraphCache)
+	srv.startNeighborGraphRecomputer(ctx, ngInterval, stopNeighborGraphCache)
 	defer close(stopNeighborGraphCache)
 	log.Printf("[neighbor-graph-cache] background recompute enabled (interval=%s)", ngInterval)
 
@@ -498,7 +455,7 @@ func main() {
 	// Per Option 4: the ingestor owns neighbor_edges; the server
 	// READS the snapshot every 60s and atomic-swaps it into s.graph.
 	// This is the ONLY path that updates s.graph at steady state.
-	stopNeighborRecomp := store.StartNeighborGraphRecomputer(NeighborGraphRecomputerDefaultInterval)
+	stopNeighborRecomp := store.StartNeighborGraphRecomputer(ctx, NeighborGraphRecomputerDefaultInterval)
 	defer stopNeighborRecomp()
 	log.Printf("[neighbor-recompute] snapshot reload enabled (interval=%s)",
 		NeighborGraphRecomputerDefaultInterval)
@@ -508,8 +465,6 @@ func main() {
 	// pruning moved to the ingestor in #1287 for the same reason. The
 	// server no longer schedules any of these; the ingestor's tickers
 	// handle them.
-	_ = cfg.IncrementalVacuumPages() // kept reachable for config validation; not used here
-	_ = cfg.NeighborMaxAgeDays()     // ditto — owned by ingestor now
 
 	// Graceful shutdown
 	var handler http.Handler = router
@@ -546,30 +501,22 @@ func main() {
 
 		// 1c. Stop steady-state analytics recomputers (issue #1240).
 		// Must happen before dbClose so any in-flight compute that
-		// reaches into SQLite has finished.
+		// reaches into the database has finished.
 		if stopAnalyticsRecomp != nil {
 			stopAnalyticsRecomp()
 		}
-		// Same reason for the region node index (#214): Stop cancels its
-		// background build and waits for it to return. A request already in
-		// its fallback query is an HTTP request like any other and is drained
-		// by httpServer.Shutdown below.
-		regionIdx.Stop()
-		// And the channel list refresher (#225). Stop waits up to 5 s for a
-		// rebuild in progress, the same bound as the analytics recomputers.
-		chRefresh.Stop()
 
 		// 2. Gracefully drain HTTP connections (up to 15s)
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(ctx); err != nil {
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[server] HTTP shutdown error: %v", err)
 		}
 
 		// 3. Close WebSocket hub
 		hub.Close()
 
-		// 4. Close database (release SQLite WAL lock)
+		// 4. Close the database pool
 		if err := dbClose(); err != nil {
 			log.Printf("[server] DB close error: %v", err)
 		}
@@ -581,15 +528,7 @@ func main() {
 	// Backfills (resolved_path, from_pubkey) moved to the ingestor in
 	// #1287 — they are write operations and belong on the writer
 	// process. The server reads the results via the periodic
-	// recompNeighborGraph / fetchResolvedPathForObs paths.
-
-	// Migrate old content hashes in background (one-time, idempotent).
-	go migrateContentHashesAsync(store, 5000, 100*time.Millisecond)
-
-	// #225: first channel-list rebuild here, after the startup warm-ups and
-	// as the listener binds, so it never lengthens the window in which the
-	// server is not yet accepting connections (#223).
-	chRefresh.Start()
+	// recompNeighborGraph paths
 
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("[server] %v", err)

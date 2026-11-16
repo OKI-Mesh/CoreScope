@@ -34,7 +34,6 @@ reps.txt
 cmd/server/server.exe
 cmd/ingestor/ingestor.exe
 # CI trigger
-!test-fixtures/e2e-fixture.db
 corescope-server
 cmd/server/server
 # Local-only planning and design files
@@ -49,3 +48,6 @@ deploy-staging.sh
 #geojson files. Only allow the example ones.
 public/region-layers/*
 !public/region-layers/*.example
+
+# Built ETL binary
+/cmd/etl/etl

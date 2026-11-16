@@ -2042,8 +2042,8 @@
       _gfPruneNodes = [];
       var resultEl = container.querySelector('#cv2-gf-prune-result');
       if (resultEl) resultEl.style.display = 'none';
-      var n = data.deleted;
-      _gfPruneMsg(container, 'Deleted ' + n + ' node' + (n !== 1 ? 's' : '') + '.', true);
+      var n = data.count;
+      _gfPruneMsg(container, 'Queued ' + n + ' node' + (n !== 1 ? 's' : '') + ' for deletion.', true);
     }).catch(function (e) { _gfPruneMsg(container, 'Error: ' + e.message, false); });
   }
 

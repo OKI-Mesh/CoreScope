@@ -1,0 +1,348 @@
+{
+ "candidates": [
+  {
+   "path": [
+    "aa0e388797ae93cf55567ff73afa6a93e185cdc02e58a7f949801c8dd0fcf2bb",
+    "bb3ab3828ba211c11a9cfc05457924f709125f3d144f674ce7bf5513d46a4669",
+    "cc6004b146bc38b8a37469ef7727d0f1da05f9ca1c921c60d46a133eaa371627"
+   ],
+   "names": [
+    "Repeater 1",
+    "Repeater 2",
+    "Repeater 3"
+   ],
+   "score": 0.339,
+   "speculative": true,
+   "evidence": {
+    "perHop": [
+     {
+      "prefix": "aa",
+      "candidatesConsidered": 8,
+      "chosen": "aa0e388797ae93cf55567ff73afa6a93e185cdc02e58a7f949801c8dd0fcf2bb",
+      "edgeWeight": 0.7375,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "aa05ce6c64328bdd6f653257579144268f20751021e2a16d374b8fb65b20ee0a",
+        "name": "Repeater 4",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aae08ca7ea5a1dfc41a66319a9235f77d7ea442d0b11b4af395455ef9bebcf0d",
+        "name": "Repeater 5",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa176ef04209e6959232dc293a2bc9f025eb8f0b1d7079f8f0b362811ebd757e",
+        "name": "Repeater 6",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa454540b619aaecbab5884ad7443097036d53248d401231a2fa29e01bd730ad",
+        "name": "Repeater 7",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa76e441e23a3e466098b9b3e91f8ddcf9ed8cd546c221fd4ca2e71cf3b892a3",
+        "name": "Repeater 8",
+        "score": 0.738
+       }
+      ]
+     },
+     {
+      "prefix": "bb",
+      "candidatesConsidered": 5,
+      "chosen": "bb3ab3828ba211c11a9cfc05457924f709125f3d144f674ce7bf5513d46a4669",
+      "edgeWeight": 0.26,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "bbc5a15ced36dc8e182e2d111054fe582bc0afcc724e8ddd3835389e0b7d1c5e",
+        "name": "Repeater 9",
+        "score": 0.26
+       },
+       {
+        "publicKey": "bb4084bd3fe30703490675c5451bd7e9903d2e11f770009a23aaf8529fac83f0",
+        "name": "Repeater 10",
+        "score": 0.126
+       },
+       {
+        "publicKey": "bb1ca2ae1224e1ca4a26386df4654b7f8e6bbcdc0a7d9d55bc28dec496db1d61",
+        "name": "Repeater 11",
+        "score": 0.12
+       },
+       {
+        "publicKey": "bb0a1b5df6bf9abc8510217b3fe62a4638eac54b9e9701c31c6047024652b602",
+        "name": "Repeater 12",
+        "score": 0.084
+       }
+      ]
+     },
+     {
+      "prefix": "cc",
+      "candidatesConsidered": 5,
+      "chosen": "cc6004b146bc38b8a37469ef7727d0f1da05f9ca1c921c60d46a133eaa371627",
+      "edgeWeight": 0.20241609007246236,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "cceeba61177f08b058c730df1b2f52b9579051d390b6bea68868fb3af0149598",
+        "name": "Repeater 13",
+        "score": 0.156
+       },
+       {
+        "publicKey": "cc526cec5d4599fd95b397787ddaff449831dc6dce938a0727bace9539e181a0",
+        "name": "Repeater 14",
+        "score": 0.099
+       },
+       {
+        "publicKey": "ccecee8907fdb889a2ecaa32ce7f7105d93df7f351a42c1764f7299b343675f2",
+        "name": "Repeater 15",
+        "score": 0.089
+       },
+       {
+        "publicKey": "cccdc6d7f981ccdf71c357c58674d2b652b615af58ef84a57e5182ce89566bdd",
+        "name": "Repeater 16",
+        "score": 0.081
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "path": [
+    "aa9cd15b5d996055efcab1e6022e031fb13b717a1d81c0f0325376448a4f34c5",
+    "bb3ab3828ba211c11a9cfc05457924f709125f3d144f674ce7bf5513d46a4669",
+    "cc6004b146bc38b8a37469ef7727d0f1da05f9ca1c921c60d46a133eaa371627"
+   ],
+   "names": [
+    "Repeater 17",
+    "Repeater 2",
+    "Repeater 3"
+   ],
+   "score": 0.339,
+   "speculative": true,
+   "evidence": {
+    "perHop": [
+     {
+      "prefix": "aa",
+      "candidatesConsidered": 8,
+      "chosen": "aa9cd15b5d996055efcab1e6022e031fb13b717a1d81c0f0325376448a4f34c5",
+      "edgeWeight": 0.7375,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "aa05ce6c64328bdd6f653257579144268f20751021e2a16d374b8fb65b20ee0a",
+        "name": "Repeater 4",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa0e388797ae93cf55567ff73afa6a93e185cdc02e58a7f949801c8dd0fcf2bb",
+        "name": "Repeater 1",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aae08ca7ea5a1dfc41a66319a9235f77d7ea442d0b11b4af395455ef9bebcf0d",
+        "name": "Repeater 5",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa176ef04209e6959232dc293a2bc9f025eb8f0b1d7079f8f0b362811ebd757e",
+        "name": "Repeater 6",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa454540b619aaecbab5884ad7443097036d53248d401231a2fa29e01bd730ad",
+        "name": "Repeater 7",
+        "score": 0.738
+       }
+      ]
+     },
+     {
+      "prefix": "bb",
+      "candidatesConsidered": 5,
+      "chosen": "bb3ab3828ba211c11a9cfc05457924f709125f3d144f674ce7bf5513d46a4669",
+      "edgeWeight": 0.26,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "bbc5a15ced36dc8e182e2d111054fe582bc0afcc724e8ddd3835389e0b7d1c5e",
+        "name": "Repeater 9",
+        "score": 0.26
+       },
+       {
+        "publicKey": "bb1ca2ae1224e1ca4a26386df4654b7f8e6bbcdc0a7d9d55bc28dec496db1d61",
+        "name": "Repeater 11",
+        "score": 0.123
+       },
+       {
+        "publicKey": "bb4084bd3fe30703490675c5451bd7e9903d2e11f770009a23aaf8529fac83f0",
+        "name": "Repeater 10",
+        "score": 0.117
+       },
+       {
+        "publicKey": "bb0a1b5df6bf9abc8510217b3fe62a4638eac54b9e9701c31c6047024652b602",
+        "name": "Repeater 12",
+        "score": 0.083
+       }
+      ]
+     },
+     {
+      "prefix": "cc",
+      "candidatesConsidered": 5,
+      "chosen": "cc6004b146bc38b8a37469ef7727d0f1da05f9ca1c921c60d46a133eaa371627",
+      "edgeWeight": 0.20241609007246236,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "cceeba61177f08b058c730df1b2f52b9579051d390b6bea68868fb3af0149598",
+        "name": "Repeater 13",
+        "score": 0.156
+       },
+       {
+        "publicKey": "cc526cec5d4599fd95b397787ddaff449831dc6dce938a0727bace9539e181a0",
+        "name": "Repeater 14",
+        "score": 0.099
+       },
+       {
+        "publicKey": "ccecee8907fdb889a2ecaa32ce7f7105d93df7f351a42c1764f7299b343675f2",
+        "name": "Repeater 15",
+        "score": 0.089
+       },
+       {
+        "publicKey": "cccdc6d7f981ccdf71c357c58674d2b652b615af58ef84a57e5182ce89566bdd",
+        "name": "Repeater 16",
+        "score": 0.081
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "path": [
+    "aa9cd15b5d996055efcab1e6022e031fb13b717a1d81c0f0325376448a4f34c5",
+    "bbc5a15ced36dc8e182e2d111054fe582bc0afcc724e8ddd3835389e0b7d1c5e",
+    "cc6004b146bc38b8a37469ef7727d0f1da05f9ca1c921c60d46a133eaa371627"
+   ],
+   "names": [
+    "Repeater 17",
+    "Repeater 9",
+    "Repeater 3"
+   ],
+   "score": 0.32,
+   "speculative": true,
+   "evidence": {
+    "perHop": [
+     {
+      "prefix": "aa",
+      "candidatesConsidered": 8,
+      "chosen": "aa9cd15b5d996055efcab1e6022e031fb13b717a1d81c0f0325376448a4f34c5",
+      "edgeWeight": 0.7375,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "aa05ce6c64328bdd6f653257579144268f20751021e2a16d374b8fb65b20ee0a",
+        "name": "Repeater 4",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa0e388797ae93cf55567ff73afa6a93e185cdc02e58a7f949801c8dd0fcf2bb",
+        "name": "Repeater 1",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aae08ca7ea5a1dfc41a66319a9235f77d7ea442d0b11b4af395455ef9bebcf0d",
+        "name": "Repeater 5",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa176ef04209e6959232dc293a2bc9f025eb8f0b1d7079f8f0b362811ebd757e",
+        "name": "Repeater 6",
+        "score": 0.738
+       },
+       {
+        "publicKey": "aa454540b619aaecbab5884ad7443097036d53248d401231a2fa29e01bd730ad",
+        "name": "Repeater 7",
+        "score": 0.738
+       }
+      ]
+     },
+     {
+      "prefix": "bb",
+      "candidatesConsidered": 5,
+      "chosen": "bbc5a15ced36dc8e182e2d111054fe582bc0afcc724e8ddd3835389e0b7d1c5e",
+      "edgeWeight": 0.26,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "bb3ab3828ba211c11a9cfc05457924f709125f3d144f674ce7bf5513d46a4669",
+        "name": "Repeater 2",
+        "score": 0.26
+       },
+       {
+        "publicKey": "bb1ca2ae1224e1ca4a26386df4654b7f8e6bbcdc0a7d9d55bc28dec496db1d61",
+        "name": "Repeater 11",
+        "score": 0.123
+       },
+       {
+        "publicKey": "bb4084bd3fe30703490675c5451bd7e9903d2e11f770009a23aaf8529fac83f0",
+        "name": "Repeater 10",
+        "score": 0.117
+       },
+       {
+        "publicKey": "bb0a1b5df6bf9abc8510217b3fe62a4638eac54b9e9701c31c6047024652b602",
+        "name": "Repeater 12",
+        "score": 0.083
+       }
+      ]
+     },
+     {
+      "prefix": "cc",
+      "candidatesConsidered": 5,
+      "chosen": "cc6004b146bc38b8a37469ef7727d0f1da05f9ca1c921c60d46a133eaa371627",
+      "edgeWeight": 0.17017919358744765,
+      "trusted": true,
+      "alternatives": [
+       {
+        "publicKey": "cceeba61177f08b058c730df1b2f52b9579051d390b6bea68868fb3af0149598",
+        "name": "Repeater 13",
+        "score": 0.139
+       },
+       {
+        "publicKey": "cc526cec5d4599fd95b397787ddaff449831dc6dce938a0727bace9539e181a0",
+        "name": "Repeater 14",
+        "score": 0.103
+       },
+       {
+        "publicKey": "ccecee8907fdb889a2ecaa32ce7f7105d93df7f351a42c1764f7299b343675f2",
+        "name": "Repeater 15",
+        "score": 0.09
+       },
+       {
+        "publicKey": "cccdc6d7f981ccdf71c357c58674d2b652b615af58ef84a57e5182ce89566bdd",
+        "name": "Repeater 16",
+        "score": 0.082
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "input": {
+  "hops": 3,
+  "prefixes": [
+   "aa",
+   "bb",
+   "cc"
+  ]
+ },
+ "stats": {
+  "beamWidth": 20,
+  "elapsedMs": 0,
+  "expansionsRun": 60,
+  "minHashBytesForMapping": 1
+ }
+}

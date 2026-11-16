@@ -1,0 +1,75 @@
+{
+  "status": "ok",
+  "engine": "go",
+  "version": "v0.3.6",
+  "commit": "1a2b3c4",
+  "buildTime": "2026-11-05T08:26:58Z",
+  "uptime": 361924,
+  "uptimeHuman": "100h 32m",
+  "memory": {
+    "rss": 4514,
+    "heapUsed": 2990,
+    "heapTotal": 4380,
+    "external": 0
+  },
+  "eventLoop": {
+    "currentLagMs": 3.7,
+    "maxLagMs": 26.7,
+    "p50Ms": 1.7,
+    "p95Ms": 8.2,
+    "p99Ms": 22
+  },
+  "cache": {
+    "entries": 0,
+    "hits": 144,
+    "misses": 108,
+    "staleHits": 0,
+    "recomputes": 108,
+    "hitRate": 57.1
+  },
+  "websocket": {
+    "clients": 43
+  },
+  "packetStore": {
+    "packets": 118929,
+    "estimatedMB": 2990.3,
+    "trackedMB": 1015.8
+  },
+  "perf": {
+    "totalRequests": 2358914,
+    "avgMs": 322.1,
+    "slowQueries": 50,
+    "recentSlow": [
+      {
+        "path": "/api/packets/timestamps",
+        "ms": 1916.7,
+        "time": "2026-11-09T13:02:20Z",
+        "status": 200
+      },
+      {
+        "path": "/api/packets/timestamps",
+        "ms": 7541.5,
+        "time": "2026-11-09T13:02:20Z",
+        "status": 200
+      },
+      {
+        "path": "/api/packets",
+        "ms": 636.6,
+        "time": "2026-11-09T13:02:44Z",
+        "status": 200
+      },
+      {
+        "path": "/api/nodes",
+        "ms": 300,
+        "time": "2026-11-09T13:02:56Z",
+        "status": 200
+      },
+      {
+        "path": "/api/nodes",
+        "ms": 373.1,
+        "time": "2026-11-09T13:03:58Z",
+        "status": 200
+      }
+    ]
+  }
+}

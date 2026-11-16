@@ -22,11 +22,13 @@ import (
 // TestDistanceIndexNotBuiltOnLoad: Load() must complete without
 // populating distHops / distPaths. Eager build is gone.
 func TestDistanceIndexNotBuiltOnLoad(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load(): %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	store.mu.RLock()
 	nHops := len(store.distHops)
@@ -44,14 +46,16 @@ func TestDistanceIndexNotBuiltOnLoad(t *testing.T) {
 // must trigger async build and return 202 + Retry-After. The handler must
 // NOT block for the full build.
 func TestDistanceFirstRequestReturns202(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load(): %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 	r := mux.NewRouter()
@@ -79,14 +83,16 @@ func TestDistanceFirstRequestReturns202(t *testing.T) {
 // in close succession while the build is in flight must all receive 202;
 // exactly one build runs.
 func TestDistanceConcurrentRequestsDuringBuildReturn202(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupRichTestDB(t)
 	defer db.Close()
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("Load(): %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// Hold the lazy build open until every concurrent request has been served,
 	// so the "requests during the build window -> 202" guarantee is exercised

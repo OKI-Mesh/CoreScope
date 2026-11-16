@@ -1,108 +1,71 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"flag"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
-	_ "modernc.org/sqlite"
 )
 
 func main() {
-	dbPath := flag.String("db", "", "path to SQLite database (required)")
-	baseline := flag.Bool("baseline", false,
-		"report which migrations can be proven already applied; makes no changes to the database")
-	baselineAndStamp := flag.Bool("baseline-and-stamp", false,
-		"detect and stamp already-applied migrations; does not run any migrations")
-	baselineStampMigrate := flag.Bool("baseline-stamp-migrate", false,
-		"detect and stamp already-applied migrations, then run all remaining migrations")
-	flag.Parse()
-
-	if *dbPath == "" {
-		log.Fatalf("[migrate] -db is required")
-	}
-
-	count := 0
-	for _, b := range []bool{*baseline, *baselineAndStamp, *baselineStampMigrate} {
-		if b {
-			count++
-		}
-	}
-	if count != 1 {
-		log.Fatalf("[migrate] exactly one of -baseline, -baseline-and-stamp, or -baseline-stamp-migrate is required")
-	}
-
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[migrate] ")
 
-	// Same DSN as the ingestor. A bare path here would mean synchronous=NORMAL
-	// under mattn, quietly weakening durability for a process that writes — and
-	// this one runs dbschema.Apply, which now also deletes duplicate rows.
-	db, err := database.OpenReadWrite(*dbPath)
+	// The DSN carries a password, so the default comes from the environment and
+	// the flag exists only for local use (it shows up in `ps`).
+	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "Postgres connection string (default: $DATABASE_URL)")
+	status := flag.Bool("status", false, "print the current and latest schema version and exit; makes no changes")
+	flag.Parse()
+
+	if *dsn == "" {
+		log.Fatalf("a connection string is required (-dsn or $DATABASE_URL)")
+	}
+
+	// Ctrl-C / SIGTERM cancels a long migration cleanly. There is deliberately
+	// no timeout: index builds on large tables can run for minutes.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	db, err := database.OpenReadWrite(ctx, *dsn)
 	if err != nil {
-		log.Fatalf("open %s: %v", *dbPath, err)
+		log.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 
-	if err := db.Ping(); err != nil {
-		log.Fatalf("ping %s: %v", *dbPath, err)
-	}
+	sqlDB := db.SQL() // database/sql handle over the same pool, for the migrate calls
+	defer sqlDB.Close()
 
-	switch {
-	case *baseline:
-		runBaseline(db, *dbPath)
-	case *baselineAndStamp:
-		runBaselineAndStamp(db, *dbPath)
-	case *baselineStampMigrate:
-		runBaselineStampMigrate(db, *dbPath)
-	}
-}
-
-// runBaseline reports what's detectable without changing anything —
-// dry-run mode.
-func runBaseline(db *sql.DB, dbPath string) {
-	result, err := database.Baseline(db, log.Printf)
+	current, err := database.CurrentSchemaVersion(ctx, sqlDB)
 	if err != nil {
-		log.Fatalf("baseline %s: %v", dbPath, err)
+		log.Fatalf("current version: %v", err)
 	}
-	printBaselineResult(dbPath, result)
-	log.Printf("dry run only — nothing was written to %s", dbPath)
-}
-
-// runBaselineAndStamp detects and stamps whichever individual
-// migrations can be proven already applied. Does not run migrations —
-// the database is not expected to be fully migrated afterward. The
-// ingestor finishes that at its own startup.
-func runBaselineAndStamp(db *sql.DB, dbPath string) {
-	result, err := database.BaselineAndStamp(db, log.Printf)
+	latest, err := database.LatestSchemaVersion(ctx, sqlDB)
 	if err != nil {
-		log.Fatalf("baseline-and-stamp %s: %v", dbPath, err)
+		log.Fatalf("latest version: %v", err)
 	}
-	printBaselineResult(dbPath, result)
-}
+	log.Printf("schema version: current=%d latest=%d", current, latest)
 
-// runBaselineStampMigrate stamps whatever's detectable, then runs the
-// remaining migrations for real, leaving db fully at head.
-func runBaselineStampMigrate(db *sql.DB, dbPath string) {
-	result, err := database.BaselineStampMigrate(db, log.Printf)
+	if *status {
+		if current != latest {
+			os.Exit(1) // lets CI and the compose healthcheck test "is it migrated"
+		}
+		return
+	}
+
+	if err := database.Migrate(ctx, *dsn); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+
+	after, err := database.CurrentSchemaVersion(ctx, sqlDB)
 	if err != nil {
-		log.Fatalf("baseline-stamp-migrate %s: %v", dbPath, err)
+		log.Fatalf("version after migrate: %v", err)
 	}
-	printBaselineResult(dbPath, result)
-
-	if err := database.NormalizePublicKeyCasing(db); err != nil {
-		log.Fatalf("normalize public_key casing: %v", err)
+	if after != latest {
+		log.Fatalf("migrated, but version is %d, want %d", after, latest)
 	}
-	if err := database.AssertBaselined(db); err != nil {
-		log.Fatalf("database not baselined: %v", err)
-	}
-	log.Printf("OK: %s is migrated and ready", dbPath)
-}
-
-func printBaselineResult(dbPath string, r database.BaselineResult) {
-	log.Printf("%s:", dbPath)
-	log.Printf("  already tracked (%d): %v", len(r.AlreadyTracked), r.AlreadyTracked)
-	log.Printf("  newly stamped   (%d): %v", len(r.NewlyStamped), r.NewlyStamped)
-	log.Printf("  still pending   (%d): %v", len(r.StillPending), r.StillPending)
+	log.Printf("OK: schema at version %d", after)
 }

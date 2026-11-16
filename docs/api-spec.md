@@ -232,7 +232,7 @@ Detailed performance metrics per endpoint.
     "inserts":           number,
     "queries":           number,
     "inMemory":          number,
-    "sqliteOnly":        boolean,
+    "sqliteOnly":        boolean,   // always false; kept for older consumers
     "maxPackets":        number,
     "estimatedMB":       number,
     "maxMB":             number,
@@ -243,11 +243,11 @@ Detailed performance metrics per endpoint.
       "advertByObserver":  number
     }
   },
-  "sqlite": {
+  "dbStats": {
     "dbSizeMB":    number,
-    "walSizeMB":   number,
-    "freelistMB":  number,
-    "walPages":    { "total": number, "checkpointed": number, "busy": number } | null,
+    "walSizeMB":   number,          // 0 when the role cannot read the WAL directory
+    "deadTuples":  number,          // dead rows waiting for autovacuum
+    "checkpoints": { "timed": number, "requested": number, "buffersWritten": number },
     "rows": {
       "transmissions": number,
       "observations":  number,

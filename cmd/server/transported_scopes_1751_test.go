@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // Issue #1751: repeater/room nodes should expose the deduplicated, sorted
@@ -24,14 +26,14 @@ const scope1751Key = "aabbccdd11223344"
 
 // scopeTx builds a path-hop StoreTx with the given payload type, scope name,
 // and an in-window FirstSeen.
-func scopeTx(id int, payloadType int, scope string) *StoreTx {
+func scopeTx(id int, payloadType types.PayloadType, scope string) *StoreTx {
 	pt := payloadType
 	return &StoreTx{
 		ID:          id,
 		Hash:        "scope-tx-" + scope + "-" + strconv.Itoa(id),
 		PayloadType: &pt,
 		ScopeName:   &scope,
-		FirstSeen:   time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano),
+		FirstSeen:   time.Now().UTC().Add(-10 * time.Minute),
 	}
 }
 

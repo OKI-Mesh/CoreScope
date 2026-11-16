@@ -1,0 +1,32 @@
+[
+  {
+    "key": "CVG",
+    "label": "Cincinnati",
+    "polygon": [
+      [
+        39.45,
+        -85
+      ],
+      [
+        39.45,
+        -84
+      ],
+      [
+        38.8,
+        -84
+      ],
+      [
+        38.8,
+        -85
+      ]
+    ]
+  },
+  {
+    "key": "IND",
+    "label": "Indianapolis",
+    "latMax": 40,
+    "latMin": 39.6,
+    "lonMax": -85.9,
+    "lonMin": -86.4
+  }
+]

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database"
 	"github.com/gorilla/mux"
 )
 
@@ -14,29 +16,36 @@ import (
 // can pull a node's battery_mv time-series from observer_metrics, joining
 // observers.id (uppercase hex pubkey) to nodes.public_key (lowercase hex).
 func TestGetNodeBatteryHistory_FromObserverMetrics(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
 	now := time.Now().UTC()
 
 	// node + observer with matching pubkey (cases differ on purpose)
 	pkLower := "deadbeefcafef00d11223344"
 	idUpper := strings.ToUpper(pkLower)
-	db.conn.Exec(`INSERT INTO nodes (public_key, name, role, last_seen, first_seen) VALUES (?, 'BatNode', 'repeater', ?, ?)`,
-		pkLower, now.Format(time.RFC3339), now.Add(-72*time.Hour).Format(time.RFC3339))
-	db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen) VALUES (?, 'BatNode', ?, ?)`,
-		idUpper, now.Format(time.RFC3339), now.Add(-72*time.Hour).Format(time.RFC3339))
+	mustCreateTestNode(t, ctx, db, database.NodeInput{PublicKey: pkLower, Name: "BatNode", Role: "repeater", RxTime: now, IngestNow: now})
+	mustCreateTestObserver(t, ctx, db, idUpper, "BatNode", "", now)
 
 	// 3 metrics samples: 3700, 3500, 3200 mV
 	for i, mv := range []int{3700, 3500, 3200} {
-		ts := now.Add(time.Duration(-2+i) * time.Hour).Format(time.RFC3339)
-		db.conn.Exec(`INSERT INTO observer_metrics (observer_id, timestamp, battery_mv) VALUES (?, ?, ?)`,
-			idUpper, ts, mv)
+		ts := now.Add(time.Duration(-2+i) * time.Hour)
+		if err := db.CreateOrUpdateObserverMetrics(ctx, database.ObserverMetricsInput{
+			ObserverID: strings.ToLower(idUpper),
+			Timestamp:  ts,
+			BatteryMv:  &mv,
+		}); err != nil {
+			t.Fatalf("CreateOrUpdateObserverMetrics: %v", err)
+		}
 	}
 	// One sample with NULL battery should be skipped
-	db.conn.Exec(`INSERT INTO observer_metrics (observer_id, timestamp) VALUES (?, ?)`,
-		idUpper, now.Add(-3*time.Hour).Format(time.RFC3339))
+	if err := db.CreateOrUpdateObserverMetrics(ctx, database.ObserverMetricsInput{
+		ObserverID: strings.ToLower(idUpper),
+		Timestamp:  now.Add(-3 * time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateOrUpdateObserverMetrics(null battery): %v", err)
+	}
 
-	since := now.Add(-24 * time.Hour).Format(time.RFC3339)
-	samples, err := db.GetNodeBatteryHistory(pkLower, since)
+	samples, err := db.GetNodeBatteryHistory(ctx, pkLower, now.Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("GetNodeBatteryHistory: %v", err)
 	}
@@ -51,26 +60,32 @@ func TestGetNodeBatteryHistory_FromObserverMetrics(t *testing.T) {
 // TestNodeBatteryEndpoint validates the /api/nodes/{pubkey}/battery endpoint
 // returns time-series data plus configured thresholds and a status flag.
 func TestNodeBatteryEndpoint(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupTestDB(t)
 	seedTestData(t, db)
 
 	now := time.Now().UTC()
 	pkLower := "aabbccdd11223344"
 	idUpper := strings.ToUpper(pkLower)
-	db.conn.Exec(`INSERT INTO observers (id, name, last_seen, first_seen) VALUES (?, 'TestRepeater', ?, ?)`,
-		idUpper, now.Format(time.RFC3339), now.Add(-72*time.Hour).Format(time.RFC3339))
+	mustCreateTestObserver(t, ctx, db, idUpper, "TestRepeater", "", now)
 	for i, mv := range []int{3800, 3600, 3200} {
-		ts := now.Add(time.Duration(-2+i) * time.Hour).Format(time.RFC3339)
-		db.conn.Exec(`INSERT INTO observer_metrics (observer_id, timestamp, battery_mv) VALUES (?, ?, ?)`,
-			idUpper, ts, mv)
+		ts := now.Add(time.Duration(-2+i) * time.Hour)
+		if err := db.CreateOrUpdateObserverMetrics(ctx, database.ObserverMetricsInput{
+			ObserverID: strings.ToLower(idUpper),
+			Timestamp:  ts,
+			BatteryMv:  &mv,
+		}); err != nil {
+			t.Fatalf("CreateOrUpdateObserverMetrics: %v", err)
+		}
 	}
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	srv.store = store
 	router := mux.NewRouter()
@@ -82,33 +97,28 @@ func TestNodeBatteryEndpoint(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
-	var body map[string]interface{}
+	var body api.NodeBatteryResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	samples, ok := body["samples"].([]interface{})
-	if !ok {
-		t.Fatalf("samples missing: %+v", body)
+	if len(body.Samples) != 3 {
+		t.Errorf("expected 3 samples, got %d", len(body.Samples))
 	}
-	if len(samples) != 3 {
-		t.Errorf("expected 3 samples, got %d", len(samples))
+	if body.Thresholds.LowMv != 3300 {
+		t.Errorf("default low_mv expected 3300, got %d", body.Thresholds.LowMv)
 	}
-	thr, ok := body["thresholds"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("thresholds missing: %+v", body)
-	}
-	if int(thr["low_mv"].(float64)) != 3300 {
-		t.Errorf("default low_mv expected 3300, got %v", thr["low_mv"])
-	}
-	if int(thr["critical_mv"].(float64)) != 3000 {
-		t.Errorf("default critical_mv expected 3000, got %v", thr["critical_mv"])
+	if body.Thresholds.CriticalMv != 3000 {
+		t.Errorf("default critical_mv expected 3000, got %d", body.Thresholds.CriticalMv)
 	}
 	// latest 3200 -> "low" (below 3300, above 3000)
-	if body["status"] != "low" {
-		t.Errorf("expected status=low, got %v", body["status"])
+	if body.Status != api.BatteryStatus("low") {
+		t.Errorf("expected status=low, got %v", body.Status)
 	}
-	if int(body["latest_mv"].(float64)) != 3200 {
-		t.Errorf("latest_mv expected 3200, got %v", body["latest_mv"])
+	if body.LatestMv == nil || *body.LatestMv != 3200 {
+		t.Errorf("latest_mv expected 3200, got %v", body.LatestMv)
+	}
+	if body.LatestTs == nil || !body.LatestTs.Equal(body.Samples[2].Timestamp.Time) {
+		t.Errorf("latest_ts must be the newest sample's timestamp, got %v", body.LatestTs)
 	}
 }
 
@@ -121,10 +131,18 @@ func TestNodeBatteryEndpoint_NoData(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
-	if body["status"] != "unknown" {
-		t.Errorf("expected unknown when no samples, got %v", body["status"])
+	var body api.NodeBatteryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != api.BatteryStatus("unknown") {
+		t.Errorf("expected unknown when no samples, got %v", body.Status)
+	}
+	if body.LatestMv != nil || body.LatestTs != nil {
+		t.Errorf("latest_mv/latest_ts must be null with no samples: %+v", body)
+	}
+	if body.Samples == nil || len(body.Samples) != 0 {
+		t.Errorf("samples must be an empty list, got %#v", body.Samples)
 	}
 }
 
@@ -135,7 +153,7 @@ func TestNodeBatteryEndpoint_404(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != 404 {
-		t.Errorf("expected 404, got %d", w.Code)
+		t.Errorf("expected 404, got %d, body: %s", w.Code, w.Body.String())
 	}
 }
 

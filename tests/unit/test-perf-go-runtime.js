@@ -58,7 +58,7 @@ function stubFetch(sb, perfData, healthData) {
 
 const basePerf = {
   totalRequests: 100, avgMs: 5, uptime: 3600,
-  slowQueries: [], endpoints: {}, cache: null, packetStore: null, sqlite: null
+  slowQueries: [], endpoints: {}, cache: null, packetStore: null, dbStats: null
 };
 
 const nodeHealth = {

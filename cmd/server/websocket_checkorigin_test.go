@@ -78,7 +78,7 @@ func TestCheckOriginAllowsSameHost(t *testing.T) {
 	if !strings.HasPrefix(srv.URL, "http://") {
 		t.Fatalf("unexpected srv URL: %s", srv.URL)
 	}
-	sameOrigin := hostURL[:len(hostURL)] // same scheme+host as the dial target
+	sameOrigin := hostURL[:] // same scheme+host as the dial target
 	status, err := dialWS(t, srv, sameOrigin)
 	if err != nil {
 		t.Fatalf("expected upgrade success for same-host origin %s, got status=%d err=%v", sameOrigin, status, err)

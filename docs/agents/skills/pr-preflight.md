@@ -30,7 +30,6 @@ Fast, scriptable gate that runs immediately before `gh pr create` (or `gh pr rea
 | 5 | CSS self-fallback | `scripts/check-css-self-fallback.sh` | Tautological `var(--X, var(--X, ...))` (P-2) |
 | 6 | LIKE-on-JSON attribution | `scripts/check-decoded-json-like.sh` | `decoded_json LIKE '%X%'` for attribution (P-4) |
 | 7 | Sync migration | `scripts/check-async-migration.sh` | Sync `ALTER`/backfill on >1K-row table (P-5) |
-| 7b | Async-migration annotation | `scripts/check-async-migrations.sh` | New `CREATE INDEX`/`ALTER TABLE` in a migration file without `// PREFLIGHT: async=true reason="..."` annotation, `RunAsyncMigration` wrapper, or `PREFLIGHT-MIGRATION-SCALE:` PR-body opt-out (#791, #1483 regression class) |
 
 ## Warnings (log but allow; require ack in PR body if present)
 

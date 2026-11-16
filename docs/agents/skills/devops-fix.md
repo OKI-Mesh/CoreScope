@@ -1,6 +1,6 @@
 ---
 name: devops-fix
-description: Live operational fixes — SSH, docker, sqlite, log triage, container health on staging/prod.
+description: Live operational fixes — SSH, docker, postgres, log triage, container health on staging/prod.
 triggers:
   - "staging is down"
   - "prod 502"
@@ -14,11 +14,11 @@ triggers:
 # devops-fix — Live Operational Fixes
 
 ## Purpose
-Diagnose and fix live operational issues on staging/prod infrastructure. SSH, docker exec/restart, sqlite operations, log triage, container health.
+Diagnose and fix live operational issues on staging/prod infrastructure. SSH, docker exec/restart, Postgres operations, log triage, container health.
 
 ## Scope
 - Container management (docker restart, logs, exec)
-- SQLite operations on live DBs (backup first!)
+- Postgres operations on live DBs (dump first!)
 - Log triage and error identification
 - MQTT connectivity diagnosis
 - Service health checks
@@ -35,8 +35,8 @@ Read from MEMORY.md — do NOT hardcode IPs/credentials in this file.
 6. Verify fix (curl endpoint, check logs)
 
 ## Safety rules
-- **BACKUP before any destructive operation**: `cp db.sqlite db.sqlite.bak-$(date +%s)`
-- **Stop container before raw SQL on its DB**: `docker stop <c> && sqlite3 ... && docker start <c>`
+- **BACKUP before any destructive operation**: `docker exec <postgres-container> pg_dump -U corescope --format=custom corescope > bak-$(date +%s).dump`
+- **Stop the app before raw writes**: `docker stop <app-container>`, run the statement with `docker exec -i <postgres-container> psql -U corescope -d corescope`, then `docker start <app-container>`. Read-only queries need no stop.
 - **Never `--force` destructive commands** without explicit user confirmation
 - **Never DELETE without WHERE** on a live DB
 - **Log every action** — write to daily memory file what you did

@@ -1,0 +1,20 @@
+{
+  "from_pubkey_backfill": {
+    "done": true,
+    "processed": 0,
+    "total": 0
+  },
+  "ingest_liveness": {
+    "Broker 1": {
+      "lastReceiptUnix": 1794229439,
+      "lastMessageUnix": 1794229439
+    },
+    "Broker 2": {
+      "lastReceiptUnix": 1794229439,
+      "lastMessageUnix": 1794229439
+    }
+  },
+  "loadedObs": 1170097,
+  "loadedTx": 118929,
+  "ready": true
+}

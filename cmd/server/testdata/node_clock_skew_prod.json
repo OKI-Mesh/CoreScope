@@ -1,0 +1,53 @@
+{
+    "pubkey": "b8270e6b98b64b5c5edeb288ec55bcd31842d2b8de747124d8680ecbae1f613d",
+    "meanSkewSec": 0,
+    "medianSkewSec": 0,
+    "lastSkewSec": 1,
+    "recentMedianSkewSec": -0.8,
+    "driftPerDaySec": 0,
+    "severity": "ok",
+    "sampleCount": 411,
+    "calibrated": true,
+    "lastAdvertTS": 1794186062,
+    "lastObservedTS": 1794186064,
+    "samples": [
+        {
+            "ts": 1793600513,
+            "skew": 2
+        },
+        {
+            "ts": 1793604113,
+            "skew": 1
+        },
+        {
+            "ts": 1793607713,
+            "skew": 1
+        }
+    ],
+    "goodFraction": 1,
+    "recentBadSampleCount": 0,
+    "recentSampleCount": 3,
+    "recentHashEvidence": [
+        {
+            "hash": "204850b4bee8dcb6",
+            "observers": [
+                {
+                    "observerID": "AC9A8B79B7CB61ECD8DE91EE22E34F8E38D2DA24B643C7E3C11296AC39444219",
+                    "observerName": "Observer One",
+                    "rawSkewSec": -1.9,
+                    "correctedSkewSec": 1,
+                    "observerOffsetSec": 3,
+                    "calibrated": true
+                }
+            ],
+            "medianCorrectedSkewSec": 1,
+            "timestamp": 1794186064
+        }
+    ],
+    "calibrationSummary": {
+        "totalSamples": 13,
+        "calibratedSamples": 13,
+        "uncalibratedSamples": 0
+    },
+    "recentBadSamples": null
+}

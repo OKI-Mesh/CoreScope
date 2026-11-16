@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,15 +37,15 @@ import (
 //
 // This is the core acceptance criterion (c) from #1659.
 func TestAnalyticsRF_WarmupReturns503(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	// Register recomputers but DO NOT let them complete a first pass.
 	// We install a compute func that blocks until we release it, so the
 	// recomputer's firstPassDoneAt stays zero.
 	block := make(chan struct{})
 	defer close(block)
-	store.installWarmupBlocker_1659(block) // helper added in GREEN
+	store.installWarmupBlocker_1659(ctx, block) // helper added in GREEN
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
@@ -79,9 +80,9 @@ func TestAnalyticsRF_WarmupReturns503(t *testing.T) {
 // happy path: once the recomputer's first full-range compute completes,
 // the handler serves the cached snapshot as 200.
 func TestAnalyticsRF_AfterFirstPassReturns200(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	// #1688 r1: the warmup gate ALSO requires the startup load (hot
 	// window and background fill) to be done before first-pass-done
 	// flips (munger #5). Tests that don't exercise the loader must
@@ -89,7 +90,7 @@ func TestAnalyticsRF_AfterFirstPassReturns200(t *testing.T) {
 	// finished cold-loading.
 	store.signalStartupLoadDone()
 
-	stop := store.StartAnalyticsRecomputers(50 * time.Millisecond)
+	stop := store.StartAnalyticsRecomputers(ctx, 50*time.Millisecond)
 	defer stop()
 
 	// Wait for the synchronous first-pass to complete. Start() runs
@@ -140,12 +141,12 @@ func TestAnalyticsRF_AfterFirstPassReturns200(t *testing.T) {
 // bypass the recomputer entirely and hit the legacy compute-then-cache
 // path, which is unaffected by the first-pass bug.
 func TestAnalyticsRF_WindowedRequestNotGated(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	block := make(chan struct{})
 	defer close(block)
-	store.installWarmupBlocker_1659(block)
+	store.installWarmupBlocker_1659(ctx, block)
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
@@ -169,12 +170,12 @@ func TestAnalyticsRF_WindowedRequestNotGated(t *testing.T) {
 // TestAnalyticsTopology_WarmupReturns503 — kent-beck #1: topology
 // gate is symmetric with RF; assert the same 503 contract.
 func TestAnalyticsTopology_WarmupReturns503(t *testing.T) {
+	ctx := t.Context()
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	store := newPacketStoreForTest(t, db)
 	block := make(chan struct{})
 	defer close(block)
-	store.installWarmupBlocker_1659(block)
+	store.installWarmupBlocker_1659(ctx, block)
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
@@ -199,11 +200,11 @@ func TestAnalyticsTopology_WarmupReturns503(t *testing.T) {
 // gate is symmetric with RF; assert the same 503 contract.
 func TestAnalyticsChannels_WarmupReturns503(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	ctx := t.Context()
+	store := newPacketStoreForTest(t, db)
 	block := make(chan struct{})
 	defer close(block)
-	store.installWarmupBlocker_1659(block)
+	store.installWarmupBlocker_1659(ctx, block)
 
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
@@ -230,17 +231,17 @@ func TestAnalyticsChannels_WarmupReturns503(t *testing.T) {
 // gate; a SUBSEQUENT pass after LoadComplete() flips true must lift it.
 func TestWarmup_GateBlockedUntilLoadComplete(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
-	store := NewPacketStore(db, nil)
+	ctx := t.Context()
+	store := newPacketStoreForTest(t, db)
 	// LoadComplete starts false — chunked loader still running.
 
 	called := make(chan struct{}, 16)
-	rc := newAnalyticsRecomputer("test-rf", time.Hour, func() interface{} {
+	rc := newAnalyticsRecomputer(ctx, "test-rf", time.Hour, func(context.Context) interface{} {
 		called <- struct{}{}
 		return map[string]int{"x": 1}
 	})
 	rc.setWarmupReadyGate_1659(store.LoadComplete)
-	rc.Start()
+	rc.Start(ctx)
 	defer rc.Stop()
 
 	// First pass already ran synchronously in Start(). Gate must still
@@ -255,7 +256,7 @@ func TestWarmup_GateBlockedUntilLoadComplete(t *testing.T) {
 
 	// Now flip the loader and trigger another pass.
 	store.loadComplete.Store(true)
-	rc.runOnce()
+	rc.runOnce(ctx)
 	if rc.IsWarmingUp_1659() {
 		t.Fatalf("expected gate to lift after LoadComplete()=true + another pass")
 	}
@@ -265,10 +266,11 @@ func TestWarmup_GateBlockedUntilLoadComplete(t *testing.T) {
 // a compute that returns nil but doesn't panic must still flip the
 // gate (the cache stays empty but the banner does NOT get stuck).
 func TestWarmup_NilResultStillLiftsGate(t *testing.T) {
-	rc := newAnalyticsRecomputer("test-nil", time.Hour, func() interface{} {
+	ctx := t.Context()
+	rc := newAnalyticsRecomputer(ctx, "test-nil", time.Hour, func(context.Context) interface{} {
 		return nil
 	})
-	rc.Start()
+	rc.Start(ctx)
 	defer rc.Stop()
 
 	if rc.IsWarmingUp_1659() {
@@ -280,14 +282,15 @@ func TestWarmup_NilResultStillLiftsGate(t *testing.T) {
 // a compute that ALWAYS panics must not leave the gate stuck forever.
 // The fallback timeout (warmupForceTimeout) is the safety net.
 func TestWarmup_PanicEventuallyLiftsGate(t *testing.T) {
+	ctx := t.Context()
 	prev := warmupForceTimeout
 	warmupForceTimeout = 50 * time.Millisecond
 	defer func() { warmupForceTimeout = prev }()
 
-	rc := newAnalyticsRecomputer("test-panic", time.Hour, func() interface{} {
+	rc := newAnalyticsRecomputer(ctx, "test-panic", time.Hour, func(context.Context) interface{} {
 		panic("compute boom")
 	})
-	rc.Start()
+	rc.Start(ctx)
 	defer rc.Stop()
 
 	// Panic was recovered inside runOnce; firstPassDoneNs is still 0.
@@ -305,13 +308,14 @@ func TestWarmup_PanicEventuallyLiftsGate(t *testing.T) {
 // hung compute (blocks indefinitely on a channel) must not result in
 // permanent 503. Fallback timeout lifts it.
 func TestWarmup_TimeoutLiftsHangingCompute(t *testing.T) {
+	ctx := t.Context()
 	prev := warmupForceTimeout
 	warmupForceTimeout = 50 * time.Millisecond
 	defer func() { warmupForceTimeout = prev }()
 
 	block := make(chan struct{})
 	defer close(block)
-	rc := newAnalyticsRecomputer("test-hang", time.Hour, func() interface{} {
+	rc := newAnalyticsRecomputer(ctx, "test-hang", time.Hour, func(context.Context) interface{} {
 		<-block
 		return nil
 	})
@@ -319,7 +323,7 @@ func TestWarmup_TimeoutLiftsHangingCompute(t *testing.T) {
 	// compute). Just simulate "we noted warmup start, compute is
 	// hanging in another goroutine".
 	rc.noteWarmupStart_1659()
-	go rc.runOnce()
+	go rc.runOnce(ctx)
 
 	if !rc.IsWarmingUp_1659() {
 		t.Fatalf("expected initial state to be warming-up")

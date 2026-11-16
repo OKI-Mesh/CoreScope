@@ -2,7 +2,6 @@ package main
 
 import (
 	"net/http"
-	"time"
 )
 
 // handleKnownChannels — GET /api/known-channels?region=XX
@@ -23,16 +22,12 @@ func (s *Server) handleKnownChannels(w http.ResponseWriter, r *http.Request) {
 		// max-age so a slow first fetch (or disabled feature) doesn't
 		// freeze the UI for the whole page lifetime.
 		w.Header().Set("Cache-Control", "public, max-age=30")
-		writeJSON(w, &KnownChannelsSnapshot{
-			FetchedAt: time.Time{},
-			Source:    "",
-			Entries:   []KnownChannelEntry{},
-		})
+		writeJSON(w, (&KnownChannelsSnapshot{}).response())
 		return
 	}
 	// Catalogue refreshes every 24h upstream; 5 min browser cache is
 	// well under that and avoids hammering the endpoint when the UI
 	// re-renders the sidebar.
 	w.Header().Set("Cache-Control", "public, max-age=300")
-	writeJSON(w, filterSnapshotByRegion(snap, region))
+	writeJSON(w, filterSnapshotByRegion(snap, region).response())
 }

@@ -1,0 +1,62 @@
+{
+  "limit": 1,
+  "offset": 0,
+  "packets": [
+    {
+      "_parsedPath": [
+        "65",
+        "85",
+        "A9",
+        "AB",
+        "1F",
+        "62",
+        "BE",
+        "89",
+        "A4",
+        "66"
+      ],
+      "decoded_json": "{\"type\":\"CHAN\",\"channelHash\":129,\"channelHashHex\":\"81\",\"decryptionStatus\":\"decrypted\",\"channel\":\"#fixture\",\"text\":\"Fixture Sender: hello\",\"sender\":\"Fixture Sender\",\"sender_timestamp\":1794192124}",
+      "direction": "rx",
+      "first_seen": "2026-11-09T02:46:04Z",
+      "hash": "b4865897ece2cf6b",
+      "id": 2984002,
+      "observation_count": 2,
+      "observations": [
+        {
+          "direction": "rx",
+          "id": 44051071,
+          "observer_iata": "CCC",
+          "observer_id": "EFC0BDF3BA3319F9C5B0458819CBE3B973007688E1C6B9F4325B0F0C9D57C63D",
+          "observer_name": "Fixture Observer C",
+          "path_json": "[\"65\",\"85\",\"A9\",\"AB\",\"1F\",\"62\",\"BE\",\"89\",\"A4\",\"66\"]",
+          "rssi": -106,
+          "snr": 7.5,
+          "timestamp": "2026-11-09T02:46:04.000Z"
+        },
+        {
+          "direction": "rx",
+          "id": 44051072,
+          "observer_iata": "CCC",
+          "observer_id": "EFC0BDF3BA3319F9C5B0458819CBE3B973007688E1C6B9F4325B0F0C9D57C63D",
+          "observer_name": "Fixture Observer C",
+          "path_json": "[\"65\",\"85\",\"A9\",\"AB\",\"1F\",\"62\",\"BE\",\"89\",\"A4\",\"DC\"]",
+          "rssi": -88,
+          "snr": 12.75,
+          "timestamp": "2026-11-09T02:46:04.000Z"
+        }
+      ],
+      "observer_iata": "CCC",
+      "observer_id": "EFC0BDF3BA3319F9C5B0458819CBE3B973007688E1C6B9F4325B0F0C9D57C63D",
+      "observer_name": "Fixture Observer C",
+      "path_json": "[\"65\",\"85\",\"A9\",\"AB\",\"1F\",\"62\",\"BE\",\"89\",\"A4\",\"66\"]",
+      "payload_type": 5,
+      "raw_hex": "150A6585A9AB1F62BE89A466",
+      "route_type": 1,
+      "rssi": -106,
+      "scope_name": null,
+      "snr": 7.5,
+      "timestamp": "2026-11-09T02:46:04Z"
+    }
+  ],
+  "total": 11508
+}

@@ -1,0 +1,58 @@
+{
+  "observers": [
+    {
+      "avg_noise_floor_24h": -117.4773519163763,
+      "battery_mv": 0,
+      "current_noise_floor": -115,
+      "iata": "LAF",
+      "max_noise_floor_24h": 0,
+      "observer_id": "345200EADDE8FEE9F6D0801A90C5DE5AE2A71B38625A428D399918954F848164",
+      "observer_name": "Observer-010",
+      "sample_count": 287,
+      "sparkline": [
+        -120,
+        -120,
+        -116,
+        -120,
+        -117,
+        -114
+      ]
+    },
+    {
+      "avg_noise_floor_24h": -99.91666666666667,
+      "battery_mv": 4122,
+      "current_noise_floor": -103,
+      "iata": "CVG",
+      "max_noise_floor_24h": 0,
+      "observer_id": "848466975E2A8A0511D3AF8C21D8E2151EBEFD29877A300230D91F35E9D55BDE",
+      "observer_name": "Observer-014",
+      "sample_count": 288,
+      "sparkline": [
+        -99,
+        -99,
+        -100,
+        -99,
+        -100,
+        -98
+      ]
+    },
+    {
+      "avg_noise_floor_24h": -106.13541666666667,
+      "battery_mv": 0,
+      "current_noise_floor": -103,
+      "iata": "LAF",
+      "max_noise_floor_24h": 0,
+      "observer_id": "9D012E06906121A47BC1BCD8E5FFF4763B4244B3587A153588E69EACAC6A0ADA",
+      "observer_name": "Observer-012",
+      "sample_count": 288,
+      "sparkline": [
+        -118,
+        -115,
+        -118,
+        -104,
+        -114,
+        -115
+      ]
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "nodesTimeline": [
+    {
+      "count": 559,
+      "label": "Wed 12:00"
+    },
+    {
+      "count": 479,
+      "label": "Wed 16:00"
+    },
+    {
+      "count": 468,
+      "label": "Wed 20:00"
+    }
+  ],
+  "packetTypes": {
+    "0": 1258,
+    "1": 308,
+    "11": 299,
+    "2": 998,
+    "3": 20,
+    "4": 2311,
+    "5": 4662,
+    "6": 8,
+    "7": 1461,
+    "8": 521,
+    "9": 25
+  },
+  "recentPackets": [
+    {
+      "decoded_json": "{\"type\":\"GRP_TXT\",\"mac\":\"88f0\",\"encryptedData\":\"e2651d244fdc7f8e5954b18451dffa7e\",\"channelHash\":217,\"channelHashHex\":\"D9\",\"decryptionStatus\":\"decryption_failed\"}",
+      "direction": "rx",
+      "hash": "1d04468b85477199",
+      "id": 33466999,
+      "observer_iata": "CVG",
+      "observer_id": "8F5D01D2E7F4AE4467BC0EE996DBF360E9DF3692A99F97542F869B7A3A73A0D9",
+      "observer_name": "Observer-015",
+      "path_json": "[\"AC05\",\"AC01\",\"4C9C\",\"8896\",\"4C9C\",\"F3C3\",\"8AC7\"]",
+      "payload_type": 5,
+      "raw_hex": "1546AC05AC014C9C88964C9C8896D988F0E2651D244FDC7F8E5954B18451DFFA7E",
+      "resolved_path": [
+        "ac05a3ad1d5c1fd43c8edd124a4ec42f623eb5913ba294f731e7d2177686f97b",
+        "ac010fe80fd3c2442e94be9d419d03c07c86d4da9719bc1f489cfa7cad125b2e",
+        "4c9c167039bdd0767d051d210c9ca1ad0aaaf8efb53cdbca883ad50399c9e50f",
+        "88964d821d41d1eb8d67ae892b42a3d17ae718f9b70ee84180ddaeb3fea70ab5",
+        "4c9cd52ca9d304950c53ce901ecc7ec5d5f3612540074659eeeed504a7c0ef80",
+        "f3c3068b960409c6c6996c63a75d44e996c7dff59429ed2e6aff8764f75de89f",
+        "8ac7c2f73b4d2016f1c0a179fa20db80f5829fb37619b4263e14f9d9361fa8e7"
+      ],
+      "route_type": 1,
+      "rssi": -110,
+      "score": 669,
+      "snr": 0.2,
+      "timestamp": "2026-11-13T13:19:28.000Z"
+    },
+    {
+      "decoded_json": "{\"type\":\"CHAN\",\"channelHash\":217,\"channelHashHex\":\"D9\",\"decryptionStatus\":\"decrypted\",\"channel\":\"#test\",\"text\":\"Treez: Test\",\"sender\":\"Treez\",\"sender_timestamp\":1794575958}",
+      "direction": "rx",
+      "hash": "f3cb109097786932",
+      "id": 33466968,
+      "observer_iata": "CVG",
+      "observer_id": "8F5D01D2E7F4AE4467BC0EE996DBF360E9DF3692A99F97542F869B7A3A73A0D9",
+      "observer_name": "Observer-015",
+      "path_json": "[\"AC05\",\"AC01\",\"4C9C\",\"8AC7\"]",
+      "payload_type": 5,
+      "raw_hex": "1543ac05ac03f476d988f0e2651d244fdc7f8e5954b18451dffa74",
+      "resolved_path": [
+        "ac05a3ad1d5c1fd43c8edd124a4ec42f623eb5913ba294f731e7d2177686f97b",
+        "ac010fe80fd3c2442e94be9d419d03c07c86d4da9719bc1f489cfa7cad125b2e",
+        "4c9c167039bdd0767d051d210c9ca1ad0aaaf8efb53cdbca883ad50399c9e50f",
+        "8ac7c2f73b4d2016f1c0a179fa20db80f5829fb37619b4263e14f9d9361fa8e7"
+      ],
+      "route_type": 1,
+      "rssi": -110,
+      "score": 665,
+      "snr": 0,
+      "timestamp": "2026-11-13T13:19:27.000Z"
+    }
+  ],
+  "snrDistribution": [
+    {
+      "count": 123,
+      "range": "-10 to -8"
+    },
+    {
+      "count": 730,
+      "range": "-8 to -6"
+    },
+    {
+      "count": 652,
+      "range": "-6 to -4"
+    }
+  ],
+  "timeline": [
+    {
+      "count": 1015,
+      "label": "Wed 12:00"
+    },
+    {
+      "count": 1295,
+      "label": "Wed 16:00"
+    },
+    {
+      "count": 1666,
+      "label": "Wed 20:00"
+    }
+  ]
+}

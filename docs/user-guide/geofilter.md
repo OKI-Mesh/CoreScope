@@ -127,26 +127,23 @@ If `writeEnabled` is true (server has a write-capable `apiKey`), the GeoFilter t
 
 Nodes without GPS coordinates are always kept.
 
-### CLI alternative (Python script)
+### API alternative
 
-**File:** `scripts/prune-nodes-outside-geo-filter.py`
+The Customizer buttons call the admin prune endpoint, which you can also call directly with the server's write-capable `apiKey`:
 
 ```bash
-# Dry run — shows what would be deleted without making changes
-python3 scripts/prune-nodes-outside-geo-filter.py --dry-run
+# 1. Preview (dry run, the default): lists the nodes outside the filter, deletes nothing
+curl -s -X POST -H "X-API-Key: $API_KEY" https://your-host/api/admin/prune-geo-filter
 
-# Default paths: /app/data/meshcore.db and /app/config.json
-python3 scripts/prune-nodes-outside-geo-filter.py
+# 2. Confirm: send the pubkeys from the preview that you want removed
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"pubkeys":["<pubkey from the preview>"]}' \
+  "https://your-host/api/admin/prune-geo-filter?confirm=true"
 
-# Custom paths
-python3 scripts/prune-nodes-outside-geo-filter.py /path/to/meshcore.db \
-  --config /path/to/config.json
-
-# In Docker
-docker exec -it meshcore-analyzer \
-  python3 /app/scripts/prune-nodes-outside-geo-filter.py --dry-run
+# 3. Poll the job with the requestId the confirm call returned
+curl -s -H "X-API-Key: $API_KEY" "https://your-host/api/admin/prune-geo-filter/status?id=<requestId>"
 ```
 
-The script reads `geo_filter.polygon` and `geo_filter.bufferKm` from config, lists nodes that fall outside, then asks for `yes` confirmation before deleting. Nodes without coordinates are always kept.
+The preview reads `geo_filter.polygon` and `geo_filter.bufferKm` from config. Nodes without coordinates are always kept.
 
-Both the UI button and the script are **one-time migration tools** — run once after first configuring `geo_filter` to clean up pre-filter data. The ingestor handles all subsequent filtering automatically.
+Both the UI button and the API are **one-time cleanup tools**: run once after first configuring `geo_filter` to remove pre-filter data. The ingestor handles all subsequent filtering automatically.

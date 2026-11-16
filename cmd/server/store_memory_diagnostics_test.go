@@ -1,14 +1,13 @@
 package main
 
 import (
-	"database/sql"
 	"math"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // decodedJSONFixtureBytes is the size of the synthetic decoded_json payload used
@@ -20,7 +19,7 @@ const decodedJSONFixtureBytes = 300_000
 // flood-forward (route_type 0/1) share and the per-component byte breakdown,
 // over a hand-built store.
 func TestStoreMemoryBreakdown(t *testing.T) {
-	rt0, rt1, rt2 := 0, 1, 2
+	rt0, rt1, rt2 := types.RouteType(0), types.RouteType(1), types.RouteType(2)
 	obs := func(id, pj string) *StoreObs {
 		return &StoreObs{ObserverID: id, ObserverName: "obs-" + id, PathJSON: pj}
 	}
@@ -90,74 +89,44 @@ func TestStoreMemoryBreakdown_Empty(t *testing.T) {
 // parent tx.RawHex), and the read/enrich path must still serve raw_hex by
 // falling back to the parent transmission. If this regresses, obs raw_hex would
 // be silently lost — so this is the safety gate for dropping obs.RawHex.
-func TestObsRawHexNotRetainedOnLoad(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "obsrawhex.db")
+func TestEnrichObsRawHexComesFromTransmission(t *testing.T) {
+	ctx := t.Context()
+	db := setupTestDB(t)
 
-	const txHex = "deadbeefcafe"
-	const obsHex = "c0ffee0102" // distinct from txHex: proves we DON'T keep it
-
-	// Bring the database fully under goose's control before inserting
-	// data — OpenDB now asserts readiness via database.AssertReady.
-	migrateConn, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.BaselineStampMigrate(migrateConn, nil); err != nil {
-		t.Fatalf("migrating test db: %v", err)
-	}
-	migrateConn.Close()
-
-	conn, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Real observers row so the LEFT JOIN observers ON obs.rowid =
-	// o.observer_idx resolves.
-	res, err := conn.Exec(`INSERT INTO observers (id, name) VALUES ('obs1', 'Obs1')`)
-	if err != nil {
-		t.Fatalf("insert observer: %v", err)
-	}
-	observerRowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("observer rowid: %v", err)
-	}
+	const txHex = "DEADBEEFCAFE"
+	const hash = "0123456789abcdef"
 
 	now := time.Now().UTC().Truncate(time.Second)
 	txTime := now.Add(-time.Minute)
-	if _, err := conn.Exec(
-		`INSERT INTO transmissions
-			(id, raw_hex, hash, first_seen, route_type, payload_type, payload_version, decoded_json, last_seen)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		1, txHex, "hashobs", txTime.Format(time.RFC3339), 1, 5, 0, `{"type":"CHAN"}`, txTime.Unix()); err != nil {
+
+	observerIdx := seedObserver(t, db, padKey("0b51"), "BRU", txTime)
+
+	txID, _, err := db.CreateOrUpdateTransmission(ctx, database.TransmissionInput{
+		Hash:        hash,
+		RawHex:      txHex,
+		RouteType:   types.RouteFlood,
+		PayloadType: types.PayloadType(5),
+		DecodedJSON: `{"type":"CHAN"}`,
+	}, txTime)
+	if err != nil {
 		t.Fatalf("insert tx: %v", err)
 	}
-	// Observation carries its OWN non-empty raw_hex in the DB.
-	if _, err := conn.Exec(
-		`INSERT INTO observations
-			(id, transmission_id, observer_idx, direction, snr, rssi, score, path_json, timestamp, raw_hex)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		1, 1, observerRowID, "rx", 5.0, -95.0, 0, `["AA"]`, txTime.Unix(), obsHex); err != nil {
+	if _, _, err := db.InsertObservationWithHops(ctx, database.ObservationInput{
+		TransmissionID: txID,
+		ObserverIdx:    &observerIdx,
+		SNR:            fptr(5.0),
+		RSSI:           fptr(-95.0),
+		Timestamp:      txTime,
+	}, []string{"aa"}, []*string{nil}); err != nil {
 		t.Fatalf("insert obs: %v", err)
 	}
-	conn.Close()
 
-	db, err := OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	if !db.hasObsRawHex {
-		t.Fatal("fixture precondition: observations.raw_hex must be detected (hasObsRawHex)")
-	}
-	store := NewPacketStore(db, &PacketStoreConfig{})
-	defer store.db.conn.Close()
-
-	if err := store.LoadChunked(5); err != nil {
+	store := newBareStore(db)
+	if err := store.LoadChunked(ctx, 5); err != nil {
 		t.Fatalf("LoadChunked: %v", err)
 	}
 
-	tx := store.byHash["hashobs"]
+	tx := store.byHash[hash]
 	if tx == nil {
 		t.Fatal("transmission not loaded")
 	}
@@ -166,17 +135,19 @@ func TestObsRawHexNotRetainedOnLoad(t *testing.T) {
 	}
 	obs := tx.Observations[0]
 
-	// The dup must NOT be retained, even though the DB column held obsHex.
 	if obs.RawHex != "" {
-		t.Errorf("obs.RawHex should be empty after load (dropped as redundant dup), got %q", obs.RawHex)
+		t.Errorf("obs.RawHex should be empty after load, got %q", obs.RawHex)
 	}
 
-	// The read path must still serve raw_hex via the parent-tx fallback.
-	store.mu.RLock()
-	m := store.enrichObs(obs)
-	store.mu.RUnlock()
-	rh, _ := m["raw_hex"].(string)
+	out, err := store.observationDetails(ctx, []*StoreObs{obs})
+	if err != nil {
+		t.Fatalf("observationDetails: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 enriched observation, got %d", len(out))
+	}
+	rh := deref(out[0].RawHex)
 	if rh != txHex {
-		t.Errorf("enrichObs raw_hex: want parent tx fallback %q, got %q", txHex, rh)
+		t.Errorf("observationDetails raw_hex: want parent tx fallback %q, got %q", txHex, rh)
 	}
 }

@@ -20,35 +20,37 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // setupSubpathWindowDB seeds a DB with one recent and one old multi-hop
 // transmission, each with a distinct path so they produce distinct subpaths.
-func setupSubpathWindowDB(t *testing.T) *DB {
+func setupSubpathWindowDB(t *testing.T) *database.DB {
 	t.Helper()
+	ctx := t.Context()
 	db := setupTestDB(t)
 
 	now := time.Now().UTC()
-	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
-	old := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
-	recentEpoch := now.Add(-1 * time.Hour).Unix()
-	oldEpoch := now.Add(-30 * 24 * time.Hour).Unix()
+	recent := now.Add(-1 * time.Hour)
+	old := now.Add(-30 * 24 * time.Hour)
 
 	// Observer
-	db.conn.Exec(`INSERT INTO observers (id, name, iata, last_seen, first_seen, packet_count)
-		VALUES ('obs1', 'Observer One', 'SJC', ?, '2025-01-01T00:00:00Z', 100)`, recent)
+	observerID := mustCreateTestObserver(t, ctx, db, "obs1", "Observer One", "SJC", now)
 
 	// Recent transmission with path ["aa","bb"]
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('01', 'recent_hash_window_001', ?, 1, 4, '{}')`, recent)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (1, 1, 10.0, -90, '["aa","bb"]', ?)`, recentEpoch)
+	recentTx := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"01", "recent_hash_window_001", "{}", types.RouteFlood, types.PayloadADVERT, "",
+	), recent)
+	dbtest.Observation(t, db, recentTx, observerID, recent, 10, -90, []string{"aa", "bb"}...)
 
 	// Old transmission (30d ago) with disjoint path ["cc","dd"]
-	db.conn.Exec(`INSERT INTO transmissions (raw_hex, hash, first_seen, route_type, payload_type, decoded_json)
-		VALUES ('02', 'old_hash_window_002', ?, 1, 4, '{}')`, old)
-	db.conn.Exec(`INSERT INTO observations (transmission_id, observer_idx, snr, rssi, path_json, timestamp)
-		VALUES (2, 1, 10.0, -90, '["cc","dd"]', ?)`, oldEpoch)
+	oldTx := mustCreateTestTransmission(t, ctx, db, testTransmission(
+		"02", "old_hash_window_002", "{}", types.RouteFlood, types.PayloadADVERT, "",
+	), old)
+	dbtest.Observation(t, db, oldTx, observerID, old, 10, -90, []string{"cc", "dd"}...)
 
 	return db
 }
@@ -56,11 +58,13 @@ func setupSubpathWindowDB(t *testing.T) *DB {
 // TestSubpathsHonorsTimeWindow_StoreLevel asserts that the store-level
 // API exposes a window-aware variant and that it filters by first_seen.
 func TestSubpathsHonorsTimeWindow_StoreLevel(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupSubpathWindowDB(t)
 	defer db.Close()
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// #1008: indexes build in the background after Load(); tests that
 	// read s.spIndex / s.spTxIndex must wait for the ready flag.
@@ -69,27 +73,23 @@ func TestSubpathsHonorsTimeWindow_StoreLevel(t *testing.T) {
 	}
 
 	// Unbounded: should see both transmissions and their subpaths.
-	all := store.GetAnalyticsSubpathsWithWindow("", 2, 8, 100, TimeWindow{})
-	allTotal, _ := all["totalPaths"].(int)
-	if allTotal != 2 {
-		t.Fatalf("unbounded: expected totalPaths=2, got %d (subpaths=%v)", allTotal, all["subpaths"])
+	all := store.GetAnalyticsSubpathsWithWindow(ctx, "", 2, 8, 100, TimeWindow{})
+	if all.TotalPaths != 2 {
+		t.Fatalf("unbounded: expected totalPaths=2, got %d (subpaths=%v)", all.TotalPaths, all.Subpaths)
 	}
 
 	// 24h window: should exclude the 30d-old transmission.
-	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	since := time.Now().UTC().Add(-24 * time.Hour)
 	w := TimeWindow{Since: since, Label: "24h"}
-	windowed := store.GetAnalyticsSubpathsWithWindow("", 2, 8, 100, w)
-	winTotal, _ := windowed["totalPaths"].(int)
-	if winTotal != 1 {
-		t.Errorf("windowed (24h): expected totalPaths=1, got %d (subpaths=%v)", winTotal, windowed["subpaths"])
+	windowed := store.GetAnalyticsSubpathsWithWindow(ctx, "", 2, 8, 100, w)
+	if windowed.TotalPaths != 1 {
+		t.Errorf("windowed (24h): expected totalPaths=1, got %d (subpaths=%v)", windowed.TotalPaths, windowed.Subpaths)
 	}
 
 	// And the old path "cc → dd" must NOT appear in the windowed response.
-	if subs, ok := windowed["subpaths"].([]map[string]interface{}); ok {
-		for _, s := range subs {
-			if p, _ := s["path"].(string); p == "cc → dd" {
-				t.Errorf("windowed (24h) leaked the old path %q", p)
-			}
+	for _, sp := range windowed.Subpaths {
+		if sp.Path == "cc → dd" {
+			t.Errorf("windowed (24h) leaked the old path %q", sp.Path)
 		}
 	}
 }
@@ -97,14 +97,16 @@ func TestSubpathsHonorsTimeWindow_StoreLevel(t *testing.T) {
 // TestSubpathsHandlerHonorsTimeWindow asserts that the HTTP handler reads
 // `?window=` and forwards it to the store.
 func TestSubpathsHandlerHonorsTimeWindow(t *testing.T) {
+	ctx := t.Context()
+
 	db := setupSubpathWindowDB(t)
 	defer db.Close()
 	cfg := &Config{Port: 3000}
 	hub := NewHub()
 	srv := NewServer(db, cfg, hub)
-	store := NewPacketStore(db, nil)
-	if err := store.Load(); err != nil {
-		t.Fatalf("store.Load failed: %v", err)
+	store := newPacketStoreForTest(t, db)
+	if err := store.LoadChunked(ctx, 1000); err != nil {
+		t.Fatalf("LoadChunked(): %v", err)
 	}
 	// #1008: handler is hard-gated behind SubpathIndexReady() and returns
 	// 503 until the background build completes. Wait for ready before

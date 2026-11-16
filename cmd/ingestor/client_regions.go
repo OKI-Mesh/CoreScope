@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // targetPubkeyRe validates the `target` field of a /regions payload: the
@@ -33,7 +36,7 @@ var targetPubkeyRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // GPS is optional here, unlike client coverage: a declared-regions answer is
 // meaningful without a position, so a missing/invalid fix stores NULL
 // lat/lon instead of dropping the row.
-func handleClientRegions(store *Store, cfg *Config, tag, rxPubkey string, msg map[string]interface{}) {
+func handleClientRegions(ctx context.Context, store *Store, cfg *Config, tag, rxPubkey string, msg map[string]interface{}) {
 	rxPubkey = strings.ToLower(strings.TrimSpace(rxPubkey))
 	if !clientPubkeyRe.MatchString(rxPubkey) {
 		log.Printf("MQTT [%s] regions: invalid pubkey %.8q, dropping", tag, rxPubkey)
@@ -74,7 +77,7 @@ func handleClientRegions(store *Store, cfg *Config, tag, rxPubkey string, msg ma
 	truncated, _ := msg["truncated"].(bool)
 
 	rxTime, _ := resolveRxTimeCore(msg, tag)
-	observedAt := rxTime.Format(rxTimeMillisLayout)
+	observedAt := rxTime
 
 	var latPtr, lonPtr, posAccPtr *float64
 	if gps, ok := msg["gps"].(map[string]interface{}); ok {
@@ -88,11 +91,11 @@ func handleClientRegions(store *Store, cfg *Config, tag, rxPubkey string, msg ma
 		}
 	}
 
-	o := &ClientDeclaredRegions{
+	o := &types.ClientDeclaredRegions{
 		Target:        target,
 		RxPubkey:      rxPubkey,
 		ObservedAt:    observedAt,
-		IngestedAt:    time.Now().UTC().Format(time.RFC3339),
+		IngestedAt:    time.Now().UTC(),
 		RegionsCSV:    strings.Join(regions, ","),
 		Truncated:     truncated,
 		Lat:           latPtr,
@@ -100,7 +103,7 @@ func handleClientRegions(store *Store, cfg *Config, tag, rxPubkey string, msg ma
 		PosAccM:       posAccPtr,
 		RepeaterClock: optInt64(msg, "repeater_clock"),
 	}
-	if _, err := store.InsertClientDeclaredRegions(o); err != nil {
+	if _, err := store.InsertClientDeclaredRegions(ctx, o); err != nil {
 		log.Printf("MQTT [%s] node_declared_regions insert: %v", tag, err)
 	}
 }

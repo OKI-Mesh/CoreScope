@@ -1,0 +1,7 @@
+# Adds the bundled Mosquitto MQTT broker.
+services:
+  prod:
+    ports:
+      - "${PROD_MQTT_PORT:-1883}:1883"
+    environment:
+      DISABLE_MOSQUITTO: "false"
