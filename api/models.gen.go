@@ -3341,10 +3341,12 @@ type StatsResponse struct {
 	Counts RoleCounts `json:"counts"`
 
 	// Engine Always go.
-	Engine                string  `json:"engine"`
-	GoHeapInuseMB         float64 `json:"goHeapInuseMB"`
-	GoSysMB               float64 `json:"goSysMB"`
-	HashMigrationComplete bool    `json:"hashMigrationComplete"`
+	Engine        string  `json:"engine"`
+	GoHeapInuseMB float64 `json:"goHeapInuseMB"`
+	GoSysMB       float64 `json:"goSysMB"`
+
+	// HashMigrationComplete Always true. Kept for older consumers.
+	HashMigrationComplete bool `json:"hashMigrationComplete"`
 
 	// NeighborGraphCacheRebuildFailures Failed rebuilds of the neighbor-graph cache. Non-zero means a stale snapshot is being served.
 	NeighborGraphCacheRebuildFailures int64   `json:"neighborGraphCacheRebuildFailures"`

@@ -3214,7 +3214,7 @@ components:
         buildTime: { type: string }
         counts: { $ref: '#/components/schemas/RoleCounts' }
         signatureDrops: { type: integer, format: int64, description: Packets dropped for a bad signature. }
-        hashMigrationComplete: { type: boolean }
+        hashMigrationComplete: { type: boolean, description: Always true. Kept for older consumers. }
         trackedMB: { type: number, format: double, deprecated: true, description: Same value as storeDataMB. Kept for older consumers. }
         storeDataMB: { type: number, format: double, description: Packet bytes held in the store. A subset of the Go heap. }
         processRSSMB: { type: number, format: double }

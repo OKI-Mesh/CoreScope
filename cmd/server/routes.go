@@ -808,7 +808,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			BuildTime:             s.buildTime,
 			Counts:                roleCountsToResponse(counts),
 			SignatureDrops:        dropCount,
-			HashMigrationComplete: s.store.hashMigrationComplete.Load(),
+			HashMigrationComplete: true,
 
 			TrackedMB:     mem.StoreDataMB, // deprecated alias
 			StoreDataMB:   mem.StoreDataMB,

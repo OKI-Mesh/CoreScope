@@ -53,6 +53,10 @@ func TestSystemResponsesDecodeAsSpecTypes(t *testing.T) {
 	if stats.TrackedMB != stats.StoreDataMB {
 		t.Errorf("trackedMB %v != storeDataMB %v", stats.TrackedMB, stats.StoreDataMB)
 	}
+	// Production sends true; the content-hash migration it used to report on is an ETL step now.
+	if !stats.HashMigrationComplete {
+		t.Error("hashMigrationComplete = false, want true")
+	}
 
 	var health api.HealthResponse
 	decodeInto(t, checker.checkStatus(t, router, "/api/health", http.StatusOK).Body.Bytes(), &health)
