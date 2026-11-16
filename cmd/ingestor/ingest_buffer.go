@@ -9,12 +9,13 @@ import (
 
 // IngestBuffer decouples MQTT message receipt from DB writes (#1608).
 //
-// On boot the ingestor must subscribe to MQTT immediately, but the write path
-// can be busy for minutes with a startup migration (e.g. a large CREATE INDEX)
-// or prune. Without buffering, every QoS-0 packet received in that window is
-// lost. IngestBuffer holds received work in a bounded FIFO and a single
-// consumer goroutine drains it once Ready() is called — i.e. once startup
-// maintenance has finished.
+// On boot the ingestor must subscribe to MQTT immediately, but startup
+// maintenance (prunes, observer cleanup) can hold the write path for minutes.
+// Without buffering, every QoS-0 packet received in that window is lost.
+// IngestBuffer holds received work in a bounded FIFO and a single consumer
+// goroutine drains it once Ready() is called — i.e. once startup maintenance
+// has finished. Schema migrations run before the subscription exists, so the
+// buffer does not cover them (see MIGRATIONS.md).
 //
 // A single consumer keeps ingest ordered: jobs run one at a time, exactly as
 // paho's in-order handler did before. Submit never blocks the

@@ -11,8 +11,8 @@ import (
 //
 // History: the server had touchRelayLastSeen (cmd/server/store.go), which
 // called TouchNodeLastSeen → UPDATE nodes SET last_seen. Since #1283/#1289
-// the server opens SQLite with mode=ro, so that UPDATE has failed with
-// "attempt to write a readonly database" on every call, and the error was
+// the server's pool is read-only, so that UPDATE has failed with
+// "cannot execute UPDATE in a read-only transaction" on every call, and the error was
 // discarded at the call site. Net effect: nodes.last_seen has tracked
 // ADVERT arrivals only, and relay participation has never refreshed it.
 //

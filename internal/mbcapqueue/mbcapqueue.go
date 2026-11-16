@@ -5,8 +5,8 @@
 //
 // Rationale: PR #903 originally added a server-side persistMultibyteCapability
 // that executed UPDATEs on nodes/inactive_nodes — a hard violation of the
-// read-only-server invariant established in #1283/#1287/#1289 (the server
-// opens SQLite with mode=ro). The capability computation is heavy and lives
+// read-only-server invariant established in #1283/#1287/#1289 (the server's
+// pool is read-only: OpenReadOnly sets default_transaction_read_only). The capability computation is heavy and lives
 // in the server's analytics cycle; rather than duplicate it in the ingestor,
 // the server writes a snapshot file under <dataDir>/mbcap-snapshot/ and the
 // ingestor's maintenance loop picks it up and writes to the DB.
@@ -32,7 +32,7 @@ import (
 	"time"
 )
 
-// QueueDirName is the subdirectory (under the SQLite data dir) holding
+// QueueDirName is the subdirectory (next to the shared queue path) holding
 // the snapshot file.
 const QueueDirName = "mbcap-snapshot"
 
@@ -59,7 +59,7 @@ type Snapshot struct {
 }
 
 // QueueDir returns the absolute path of the snapshot directory, given
-// the SQLite database path the ingestor and server share.
+// the queue path the ingestor and server share (the directory part is used).
 func QueueDir(dbPath string) string {
 	return filepath.Join(filepath.Dir(dbPath), QueueDirName)
 }

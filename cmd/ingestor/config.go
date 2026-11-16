@@ -106,7 +106,7 @@ type Config struct {
 	NeighborEdgesMaxAgeDays int `json:"neighborEdgesMaxAgeDays,omitempty"`
 
 	// IngestBufferSize caps the in-memory queue (number of MQTT messages) held
-	// while startup migrations and prunes hold the write path (#1608).
+	// while startup maintenance (prunes) holds the write path (#1608).
 	// Received messages are drained once the write path is ready.
 	// 0 / unset => default. Bounded memory.
 	IngestBufferSize int `json:"ingestBufferSize,omitempty"`

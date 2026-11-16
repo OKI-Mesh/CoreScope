@@ -10,7 +10,7 @@ MQTT Broker(s)  →  Go Ingestor  →  Postgres  ←  Go Web Server
 ```
 
 - **Single static binary** — no runtime dependencies, no CGO
-- **Postgres** via `github.com/jackc/pgx/v5`; the schema is owned by the goose migrations in `internal/database/postgres/migrations`, applied by `cmd/migrate`
+- **Postgres** via `github.com/jackc/pgx/v5`; the schema is owned by the goose migrations in `internal/database/postgres/migrations`, which the ingestor applies on start
 - **MQTT** via `github.com/eclipse/paho.mqtt.golang`
 - Runs **alongside** the Go server; they share the database
 - Does NOT serve HTTP/WebSocket — that stays in the server
@@ -112,7 +112,7 @@ go test -v ./...
 
 ## Schema
 
-The tables are defined by the goose migrations in `internal/database/postgres/migrations`; run `bin/migrate` (or the compose `migrate` step) before starting the ingestor. The main ones:
+The tables are defined by the goose migrations in `internal/database/postgres/migrations`. The ingestor applies pending migrations when it starts, before it subscribes to MQTT; `corescope-migrate` (`cmd/migrate`) runs them by hand. The main tables:
 
 - `transmissions` — deduplicated by content hash
 - `observations` — per-observer sightings, referencing `observers(id)`

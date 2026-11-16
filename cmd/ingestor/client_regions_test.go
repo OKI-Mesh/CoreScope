@@ -381,7 +381,7 @@ func TestDeclaredRegionsCurrentIsLatestObservation(t *testing.T) {
 			t.Fatalf("insert %s: %v", at, err)
 		}
 	}
-	// Deliberately inserted newest-first, so a query ordering by rowid or by
+	// Deliberately inserted newest-first, so a query ordering by id or by
 	// ingest order would pick the wrong one.
 	ins(time.Now().UTC().Add(-24*time.Hour), "be,be-vlg,be-van")
 	ins(time.Now().UTC().Add(-48*time.Hour), "be,be-vlg")

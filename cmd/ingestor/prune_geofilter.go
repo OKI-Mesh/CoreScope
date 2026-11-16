@@ -1,7 +1,7 @@
 // Package main: ingestor-side processor for prune-request marker files
 // written by the read-only server (see internal/prunequeue).
 //
-// The server cannot DELETE because it opens SQLite mode=ro (#1283/#1289).
+// The server cannot DELETE because its database pool is read-only (#1283/#1289).
 // Instead, the server writes request-<id>.json under <dataDir>/prune-requests/
 // and the ingestor consumes it here.
 package main
@@ -58,7 +58,7 @@ func (s *Store) DeleteNodesByPubkeys(ctx context.Context, pubkeys []string) (int
 }
 
 // RunPendingPruneRequests scans the prune-requests/ directory next to the
-// SQLite database and processes any request-<id>.json markers written by
+// shared queue path and processes any request-<id>.json markers written by
 // the server. Each request is honored verbatim — the server is responsible
 // for the TOCTOU snapshot (only pubkeys that were still outside the
 // geofilter at confirm time). After running DELETE, the ingestor writes

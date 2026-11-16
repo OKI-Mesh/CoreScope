@@ -46,9 +46,10 @@ func TestPurgeStaleObserversDeletesUnreferencedRow(t *testing.T) {
 	}
 }
 
-// Regression: an observer whose rowid is still referenced by observations must
-// survive the purge — deleting it orphans observations.observer_idx, which
-// breaks the packets_v join and mis-attributes historical packets.
+// Regression: an observer whose id is still referenced by observations must
+// survive the purge. The observations.observer_idx foreign key would reject the
+// delete anyway; the NOT EXISTS guards make the purge skip the row instead of
+// failing the whole statement.
 func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()

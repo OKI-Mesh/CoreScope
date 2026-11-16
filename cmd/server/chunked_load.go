@@ -22,7 +22,7 @@ package main
 //     logging / tests.
 //
 // Concurrency: each chunk acquires s.mu.Lock() ONLY while merging the
-// chunk's rows into store-shared maps. SQLite reads run lock-free so
+// chunk's rows into store-shared maps. reads hold no store lock, so
 // HTTP handlers (which take s.mu.RLock) stay responsive.
 
 import (
@@ -107,7 +107,7 @@ func (s *PacketStore) chunkedLoadInit() {
 
 // StartupLoadDone returns a channel closed once RunStartupLoad has
 // returned: LoadChunked AND the background fill loader are finished,
-// whether they succeeded or not. Nothing more is loaded from SQLite
+// whether they succeeded or not. Nothing more is loaded from the database
 // after it closes. LoadComplete() is not a substitute: it flips at the
 // end of the hot window, before the background fill starts.
 func (s *PacketStore) StartupLoadDone() <-chan struct{} {
@@ -276,7 +276,7 @@ func (s *PacketStore) RunStartupLoad(ctx context.Context, chunkSize int) error {
 	return nil
 }
 
-// LoadChunked streams transmissions + observations from SQLite into
+// LoadChunked streams transmissions + observations from the database into
 // the in-memory store in id-ordered chunks of `chunkSize` rows. Pass
 // 0 to use the default (10000).
 //

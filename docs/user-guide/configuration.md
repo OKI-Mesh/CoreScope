@@ -8,7 +8,7 @@ CoreScope is configured via `config.json` in the server's working directory. Cop
 |-------|---------|-------------|
 | `port` | `3000` | HTTP server port |
 | `apiKey` | — | Secret key for admin API endpoints (POST/PUT routes) |
-| `dbPath` | — | Path to SQLite database file (optional, defaults to `meshcore.db`) |
+| `db.connectionString` | — | Postgres connection string. When empty, `$DATABASE_URL` is used (see [Database](database.md)) |
 
 ## MQTT
 

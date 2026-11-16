@@ -289,7 +289,7 @@ func (c *Client) writePump(pingInterval time.Duration) {
 	}
 }
 
-// Poller watches for new transmissions in SQLite and broadcasts them.
+// Poller watches for new transmissions in the database and broadcasts them.
 type Poller struct {
 	db       *database.DB
 	hub      *Hub

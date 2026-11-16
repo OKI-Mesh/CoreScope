@@ -116,8 +116,8 @@ func main() {
 	}
 
 	// Subscribe-early + buffer (#1608): the MQTT subscription is brought up
-	// before startup maintenance so no packets are missed while the single
-	// write path is busy (e.g. a large CREATE INDEX migration). Received
+	// before startup maintenance so no packets are missed while it holds
+	// the write path (prunes, observer cleanup). Received
 	// messages are buffered here and drained once Ready() is called below.
 	ingestBuffer := NewIngestBuffer(cfg.IngestBufferSizeOrDefault())
 	ingestBuffer.Start()

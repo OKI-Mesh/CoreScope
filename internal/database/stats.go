@@ -39,7 +39,7 @@ type TableRowCounts struct {
 type DBSizeStats struct {
 	DBSizeBytes  int64
 	WALSizeBytes *int64           // nil when the role cannot call pg_ls_waldir()
-	DeadTuples   int64            // closest analogue to the SQLite freelist
+	DeadTuples   int64            // n_dead_tup summed over all user tables: space waiting for vacuum
 	Checkpoints  *CheckpointStats // always set on Postgres 17 and later
 	Rows         TableRowCounts   // transmissions, observations, nodes, observers
 }

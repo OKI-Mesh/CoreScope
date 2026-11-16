@@ -344,10 +344,9 @@ func TestDeclaredRegionSourcesIgnoresWildcard(t *testing.T) {
 	}
 }
 
-// insertDeclaredRegions seeds one node_declared_regions answer, creating
-// the table first. That table is optional: this ingestor never creates it, and
-// declaredRegionSources probes sqlite_master before reading it. A test that
-// wants the optional source has to bring it.
+// insertDeclaredRegions seeds one node_declared_regions answer. The table is
+// part of the schema but empty by default, so a test that wants the source has
+// to fill it.
 func insertDeclaredRegions(t *testing.T, s *Store, target, observedAt, regionsCSV string) {
 	t.Helper()
 	count := dbtest.Exec(t, s.db, `INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)

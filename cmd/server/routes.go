@@ -1956,7 +1956,7 @@ func (s *Server) handleScopeStats(w http.ResponseWriter, r *http.Request) {
 // geo_filter. Nodes with no GPS fix are always kept. Requires geo_filter to be
 // configured.
 //
-// Since #1283/#1289 the server opens SQLite read-only, so the actual DELETE is
+// Since #1283/#1289 the server's pool is read-only, so the actual DELETE is
 // performed by the ingestor. The server writes a request marker file (see
 // internal/prunequeue); the ingestor's maintenance loop consumes it and writes a
 // result marker. The confirm response is 202 Accepted with a request id;

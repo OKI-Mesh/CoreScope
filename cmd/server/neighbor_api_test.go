@@ -533,8 +533,8 @@ func TestBuildNodeInfoMap_ObserverEnrichment(t *testing.T) {
 // already-30s-cached getCachedNodesAndPM path, not from a fresh uncached
 // `SELECT … FROM nodes` scan on every call.
 //
-// Method (no DB-driver wrapper needed): mutate the underlying SQLite file's
-// first_seen via a separate rw connection between two consecutive calls to
+// Method (no DB-driver wrapper needed): mutate nodes.first_seen directly
+// through the pool between two consecutive calls to
 // buildNodeInfoMap(). If first_seen is read fresh on every call (the
 // regression), the second call sees the new value. If folded into the
 // existing 30s node cache, both calls return the original value — same as

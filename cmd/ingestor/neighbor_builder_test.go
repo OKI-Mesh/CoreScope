@@ -73,7 +73,7 @@ func trustAllPrefixes() *packetpath.TrustConfig {
 
 // ---- Pure tests: no database ----
 
-// TestExtractEdges replaces the SQLite-seeded shape tests (builder upserts,
+// TestExtractEdges replaces the earlier database-seeded shape tests (builder upserts,
 // ANON_REQ #1777, other types excluded, path trust #1784). Edge extraction is
 // a pure function now, so each rule is one table row.
 func TestExtractEdges(t *testing.T) {
@@ -404,7 +404,7 @@ func TestWarmUpScansRowsSharingATimestampAcrossBatchesExactlyOnce(t *testing.T) 
 }
 
 // TestNeighborBuilderDeltaScan replaces the 100k-row timing test (#1339). Wall
-// clock pinned SQLite lock behavior and is flaky; what matters is how many rows
+// clock pinned lock behavior and is flaky; what matters is how many rows
 // each tick SCANS, which is deterministic.
 func TestNeighborBuilderDeltaScan(t *testing.T) {
 	s := newTestStore(t)

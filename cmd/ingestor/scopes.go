@@ -31,10 +31,9 @@ type declaredRegionStat struct {
 //
 //   - nodes.configured_scope, written by the observer /neighbors ingestion
 //     (#1865). Always present; the column is part of the schema.
-//   - node_declared_regions, an optional table a deployment may fill by other
-//     means. Absent on a stock install, so its absence is not an error: the
-//     probe below asks sqlite_master first rather than letting "no such table"
-//     abort a refresh that the first source could still answer.
+//   - node_declared_regions, which a deployment may fill by other means. It
+//     is part of the schema but empty on a stock install, so an empty result
+//     is not an error.
 //
 // A node counts once per name however many times it declares it, so the
 // ranking below reflects how widely a region is claimed rather than how

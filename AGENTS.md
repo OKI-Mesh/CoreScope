@@ -15,10 +15,10 @@ Go backend + static frontend. No build step. No framework. No bundler.
 cmd/server/        — Go API server (REST + WebSocket broadcast + static file serving)
   main.go          — Entry point, flags, SPA handler
   routes.go        — All /api/* endpoints
-  store.go         — In-memory packet store + analytics + SQLite queries
+  store.go         — In-memory packet store + analytics + database queries
   config.go        — Configuration loading
   decoder.go       — MeshCore packet decoder
-cmd/ingestor/      — Go MQTT ingestor (separate binary, writes to shared SQLite DB)
+cmd/ingestor/      — Go MQTT ingestor (separate binary, writes to the shared Postgres database)
 public/            — Frontend (vanilla JS, one file per page) — ACTIVE, NOT DEPRECATED
   app.js           — SPA router, shared globals, theme loading
   roles.js         — ROLE_COLORS, TYPE_COLORS, health thresholds, shared helpers
@@ -36,24 +36,25 @@ public/            — Frontend (vanilla JS, one file per page) — ACTIVE, NOT 
   live.css         — Live page styles
   home.css         — Home page styles
   index.html       — SPA shell, script/style tags with __BUST__ placeholder (auto-replaced at server startup)
-test-fixtures/     — Real data SQLite fixture from staging (used for E2E tests)
+test-fixtures/     — Real data Postgres fixture from staging, as SQL (`e2e-fixture.sql`, loaded by `scripts/e2e-db.sh` for E2E tests)
 scripts/           — Tooling (coverage collector, fixture capture, frontend instrumentation)
 ```
 
 ### Data Flow
-1. MQTT brokers → Go ingestor (`cmd/ingestor/`) ingests packets → decodes → writes to SQLite
-2. Go server (`cmd/server/`) polls SQLite for new packets, broadcasts via WebSocket
+1. MQTT brokers → Go ingestor (`cmd/ingestor/`) ingests packets → decodes → writes to Postgres
+2. Go server (`cmd/server/`) polls Postgres for new packets, broadcasts via WebSocket
 3. Frontend fetches via REST API (`/api/*`), filters/sorts client-side
 
 ### Read/Write Separation Invariant (#1283)
 - **All DB writes live in `cmd/ingestor/`.** INSERT / UPDATE / DELETE / VACUUM /
   schema migrations / retention all run in the ingestor process.
-- **`cmd/server/` is read-only.** It opens SQLite with `mode=ro` and must not
-  acquire a write lock. Adding a write-side helper (e.g. a `cachedRW`-style
-  RW connection) regresses this invariant and races the ingestor → SQLITE_BUSY.
-- Enforcement: `cmd/server/readonly_invariant_test.go` reflect-asserts that
-  `PruneOldPackets`, `PruneOldMetrics`, and `RemoveStaleObservers` are NOT
-  methods on the server's `*DB`. If you need a new write, add it to
+- **`cmd/server/` is read-only.** Its pool comes from `database.OpenReadOnly`,
+  which sets `default_transaction_read_only = on`, and it never calls
+  `OpenReadWrite`. Adding a write-side helper to the server regresses this
+  invariant.
+- Enforcement: `cmd/server/readonly_invariant_test.go` scans the server's
+  non-test source for writer call sites (`OpenReadWrite(`, raw DML against the
+  node directory, multibyte-persist helpers). If you need a new write, add it to
   `cmd/ingestor/`.
 
 ### What's Deprecated (DO NOT TOUCH)

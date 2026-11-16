@@ -123,7 +123,7 @@ LIMIT 1;
 -- name: ListNodes :many
 -- Filtered, sorted, paged node list. NULL filter = not applied.
 -- sort: 'name', 'packetCount', anything else = last_seen.
--- NULLS clauses reproduce SQLite's ordering (NULLs smallest).
+-- NULLS clauses keep the long-standing ordering (NULLs smallest).
 SELECT n.*
 FROM nodes n
 WHERE (sqlc.narg(role)::text IS NULL OR n.role = sqlc.narg(role)::text)
@@ -240,7 +240,7 @@ WHERE public_key = ANY(sqlc.arg(pubkeys)::text[]);
 -- Maps each input (a pubkey or a node name) to a node's public key. Inputs that
 -- match nothing are absent from the result. An exact pubkey match wins over a
 -- name match, and among name matches the lowest pubkey wins, so the answer is
--- stable. (SQLite's LIMIT 1 had no ORDER BY, so it was arbitrary.)
+-- stable. (The original LIMIT 1 had no ORDER BY, so it was arbitrary.)
 SELECT DISTINCT ON (i.input) i.input::text AS input, n.public_key
 FROM (SELECT unnest(@inputs::text[]) AS input) AS i
 JOIN nodes n ON n.public_key = lower(i.input) OR n.name = i.input

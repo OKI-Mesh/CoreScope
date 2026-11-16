@@ -201,7 +201,7 @@ type neighborBuilder struct {
 	// observation, so observations that share a timestamp across a batch
 	// boundary are neither skipped nor read twice.
 	//
-	// Trade-off, inherited from the SQLite version: an observation that arrives
+	// Trade-off, inherited from the earlier implementation: an observation that arrives
 	// with a timestamp already behind the cursor is skipped. Acceptable for an
 	// approximate neighbor graph. A periodic full rebuild can close it later.
 	cursor   database.NeighborCursor

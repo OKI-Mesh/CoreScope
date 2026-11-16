@@ -70,7 +70,7 @@ type Node struct {
 	Foreign           bool // foreign_advert: ingestor's geo_filter rejected the advert (#730)
 	DefaultScope      *string
 	ConfiguredScope   *string
-	ConfiguredScopeAt *time.Time // verify the column type (string in SQLite)
+	ConfiguredScopeAt *time.Time // configured_scope_at (TIMESTAMPTZ)
 }
 
 type MultibyteCapNode struct {

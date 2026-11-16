@@ -12,7 +12,7 @@ Self-hosted, open-source MeshCore packet analyzer. Collects MeshCore packets via
 
 ## ⚡ Performance
 
-The Go backend serves all 40+ API endpoints from an in-memory packet store with 5 indexes (hash, txID, obsID, observer, node). SQLite is for persistence only — reads never touch disk.
+The Go backend serves all 40+ API endpoints from an in-memory packet store with 5 indexes (hash, txID, obsID, observer, node). Postgres is for persistence only — reads are served from memory.
 
 | Metric | Value |
 |--------|-------|
@@ -75,50 +75,23 @@ Full experience on your phone — proper touch controls, iOS safe area support, 
 
 ## Quick Start
 
-### Pre-built Image (Recommended)
-
-No build step required — just run:
+### Docker Compose
 
 ```bash
-docker run -d --name corescope \
-  --restart=unless-stopped \
-  -p 80:80 -p 1883:1883 \
-  -v /your/data:/app/data \
-  ghcr.io/kpa-clawbot/corescope:latest
-```
-
-Open `http://localhost` — done. No config file needed; CoreScope starts with sensible defaults.
-
-For HTTPS with a custom domain, add `-p 443:443` and mount your Caddyfile:
-```bash
-docker run -d --name corescope \
-  --restart=unless-stopped \
-  -p 80:80 -p 443:443 -p 1883:1883 \
-  -v /your/data:/app/data \
-  -v /your/Caddyfile:/etc/caddy/Caddyfile:ro \
-  -v /your/caddy-data:/data/caddy \
-  ghcr.io/kpa-clawbot/corescope:latest
-```
-
-Disable built-in services with `-e DISABLE_MOSQUITTO=true` or `-e DISABLE_CADDY=true`, or drop a `.env` file in your data volume. See [docs/deployment.md](docs/deployment.md) for the full reference.
-
-### Build from Source
-
-```bash
-git clone https://github.com/Kpa-clawbot/CoreScope.git
+git clone https://github.com/OKI-Mesh/CoreScope.git
 cd CoreScope
-./manage.sh setup
+cp .env.example .env     # set POSTGRES_PASSWORD (letters and digits only)
+docker compose up -d --build
 ```
 
-The setup wizard walks you through config, domain, HTTPS, build, and run.
+Open `http://localhost:3000`. No config file is needed; CoreScope starts with sensible defaults. Compose runs Postgres 18 with PostGIS (`pgdata` volume) next to the app, and sets `DATABASE_URL` for you. Caddy (HTTPS) and Mosquitto (MQTT) are optional compose overrides; list them in `COMPOSE_FILE` in `.env`. See [docs/deployment.md](docs/deployment.md) for the full reference, and [docs/user-guide/database.md](docs/user-guide/database.md) for connection settings, migrations and backups.
+
+Day-to-day:
 
 ```bash
-./manage.sh status       # Health check + packet/node counts
-./manage.sh logs         # Follow logs
-./manage.sh backup       # Backup database
-./manage.sh update       # Pull latest + rebuild + restart
-./manage.sh mqtt-test    # Check if observer data is flowing
-./manage.sh help         # All commands
+docker compose logs -f prod      # follow logs
+docker compose up -d --build     # pull latest source, rebuild, restart
+docker compose exec -T postgres pg_dump -U corescope --format=custom corescope > backup.dump   # back up
 ```
 
 ### Configure
@@ -156,14 +129,14 @@ Copy `config.example.json` to `config.json` and edit:
 | `mqttSources` | External MQTT broker connections (optional) |
 | `channelKeys` | Channel decryption keys (hex). Hashtag channels auto-derived via SHA256 |
 | `defaultRegion` | Default IATA region code for the UI |
-| `dbPath` | SQLite database path (default: `data/meshcore.db`) |
+| `db.connectionString` | Postgres connection string (falls back to `$DATABASE_URL`) |
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `PORT` | Override config port |
-| `DB_PATH` | Override SQLite database path |
+| `DATABASE_URL` | Postgres connection string, used when `db.connectionString` is empty |
 
 ## Architecture
 
@@ -171,7 +144,7 @@ Copy `config.example.json` to `config.json` and edit:
                            ┌─────────────────────────────────────────────┐
                            │              Docker Container               │
                            │                                             │
-Observer → USB →           │  Mosquitto ──→ Go Ingestor ──→ SQLite DB   │
+Observer → USB →           │  Mosquitto ──→ Go Ingestor ──→ Postgres   │
   meshcoretomqtt → MQTT ──→│                    │                        │
                            │              Go HTTP Server ──→ WebSocket   │
                            │                    │               │        │
@@ -201,14 +174,14 @@ corescope/
 │   │   ├── main.go          # Entry point
 │   │   ├── routes.go        # 40+ API endpoint handlers
 │   │   ├── store.go         # In-memory packet store (5 indexes)
-│   │   ├── db.go            # SQLite persistence layer
+│   │   ├── db.go            # DB response helpers
 │   │   ├── decoder.go       # MeshCore packet decoder
 │   │   ├── websocket.go     # WebSocket broadcast
 │   │   └── *_test.go        # 327 test functions
 │   └── ingestor/            # Go MQTT ingestor
 │       ├── main.go          # MQTT subscription + packet processing
 │       ├── decoder.go       # Packet decoder (shared logic)
-│       ├── db.go            # SQLite write path
+│       ├── store.go         # Postgres write path
 │       └── *_test.go        # 53 test functions
 ├── proto/                   # Protobuf API definitions
 ├── public/                  # Vanilla JS frontend (no build step)
@@ -277,9 +250,9 @@ node tests/e2e/test-e2e-playwright.js
 node tools/generate-packets.js --api --count 200
 ```
 
-### Migrating from Node.js
+### Moving from SQLite
 
-If you're running an existing Node.js deployment, see [docs/go-migration.md](docs/go-migration.md) for a step-by-step guide. The Go engine reads the same SQLite database and `config.json` — no data migration needed.
+An existing SQLite database is converted with `cmd/etl` into an empty, migrated Postgres database. See [docs/user-guide/database.md](docs/user-guide/database.md). The older Node.js-to-Go guide in [docs/go-migration.md](docs/go-migration.md) is kept as history.
 
 ## Contributing
 

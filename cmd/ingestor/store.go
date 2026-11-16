@@ -51,8 +51,8 @@ const relayTouchDebounce = 5 * time.Minute
 // an extra UPDATE, never a missed one.
 const relayTouchedMaxEntries = 50000
 
-// OpenStore opens or creates a SQLite DB at the given path, applying the
-// v3 schema that is compatible with the Node.js server.
+// OpenStore connects to Postgres with the default sample interval. The schema
+// must already be migrated (cmd/migrate).
 func OpenStore(ctx context.Context, connStr string, pruneQueuePath string) (*Store, error) {
 	return OpenStoreWithInterval(ctx, connStr, 300, pruneQueuePath)
 }
@@ -80,7 +80,7 @@ func OpenStoreWithInterval(ctx context.Context, connStr string, sampleIntervalSe
 	return s, nil
 }
 
-// Close checkpoints the WAL and closes the database.
+// Close waits for the backfills to finish and closes the connection pool.
 func (s *Store) Close() error {
 	s.backfillWg.Wait()
 	s.db.Close()

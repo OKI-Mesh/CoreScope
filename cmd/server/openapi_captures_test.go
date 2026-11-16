@@ -21,7 +21,7 @@ import (
 )
 
 // Section 1.6 round-trip tests. The fixtures are anonymized captures of the
-// production (SQLite) responses taken from staging. Two kinds of check:
+// production (pre-Postgres) responses taken from staging. Two kinds of check:
 //
 //   - every capture has to satisfy the spec schema, so the contract accepts
 //     exactly what the live frontend receives today;

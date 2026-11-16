@@ -23,7 +23,7 @@ These are written in a structure we use internally, but the **shape** is portabl
 
 ### Release & ops
 - **[corescope-release](./corescope-release.md)** — release tag + deploy + verification flow.
-- **[devops-fix](./devops-fix.md)** — live operational fixes on staging/prod (SSH, docker, sqlite, log triage).
+- **[devops-fix](./devops-fix.md)** — live operational fixes on staging/prod (SSH, docker, Postgres, log triage).
 - **[qa-suite](./qa-suite.md)** — full QA sweep against a running instance.
 
 ### Language-specific quality gates

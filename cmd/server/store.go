@@ -519,8 +519,8 @@ type PacketStore struct {
 	// #1910: collapses concurrent misses onto one query. Without it every
 	// in-flight request ran the observations scan itself the moment the cache
 	// expired, because the check above releases statsCacheMu before doing the
-	// work. With SetMaxOpenConns(4) and a page that fires five endpoints at
-	// once, that turned one scan into a queue of them.
+	// work. With the old 4-connection SQLite pool and a page that fires five
+	// endpoints at once, that turned one scan into a queue of them.
 	statsSF singleflight.Group
 
 	// Test-only hook fired at the very start of loadBackgroundChunks
@@ -1727,7 +1727,7 @@ func (s *PacketStore) GetStoreStats(ctx context.Context) (*Stats, error) {
 //
 // #1910: wrapped in singleflight. The cache check in GetStoreStats releases
 // statsCacheMu before doing the work, so every request that arrived while the
-// cache was expired used to run this scan itself. With SetMaxOpenConns(4) and a
+// cache was expired used to run this scan itself. With the old 4-connection SQLite pool and a
 // page that fires stats, observers, nodes, channels and clock-skew at once, that
 // turned one scan into a queue of them: /stats was measured at 10-17s under
 // mixed load while staying under 70ms when it was the only endpoint being hit.
@@ -2359,7 +2359,7 @@ func broadcastPacketResponse(tx *StoreTx, obs *StoreObs, rp []*string) LivePacke
 	}
 }
 
-// IngestNewFromDB loads new transmissions from SQLite into memory and returns
+// IngestNewFromDB loads new transmissions from the database into memory and returns
 // broadcast-ready maps plus the new max transmission ID.
 // IngestNewFromDB loads transmissions newer than sinceID into memory and returns
 // the broadcast messages plus the new max transmission id.
@@ -8312,8 +8312,8 @@ func (s *PacketStore) loadMultibyteCapFromDB(ctx context.Context) {
 // RunMultibyteCapPersist consumes the file and writes confirmed /
 // suspected entries to the DB.
 //
-// INVARIANT (#1289/#1324): the server is the read path and opens
-// SQLite mode=ro. It MUST NOT execute any UPDATE on
+// INVARIANT (#1289/#1324): the server is the read path and its pool is
+// read-only (OpenReadOnly). It MUST NOT execute any UPDATE on
 // nodes.multibyte_* — see readonly_invariant_test.go. This helper is
 // the only side-effect path for capability data leaving the server.
 func (s *PacketStore) publishMultibyteCapSnapshot(path string, entries []MultiByteCapEntry) {

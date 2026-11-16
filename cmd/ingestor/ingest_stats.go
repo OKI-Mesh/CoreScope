@@ -17,8 +17,8 @@ type IngestStats struct {
 	// RelayTouches counts nodes.last_seen refreshes driven by relay
 	// participation rather than an ADVERT (#1598).
 	RelayTouches atomic.Int64
-	// WALCommits tracks every successful tx.Commit() that may have flushed
-	// WAL pages.
+	// WALCommits tracks every successful tx.Commit(). The name is kept because
+	// the stats file and /api/perf/io read it under this key.
 	WALCommits atomic.Int64
 	// BackfillUpdates tracks per-named-backfill row write counts so an
 	// infinite-loop backfill (cf #1119) is obvious from the perf page.

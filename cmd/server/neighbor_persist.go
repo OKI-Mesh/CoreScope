@@ -1,7 +1,7 @@
 // Package main: read-only neighbor-edges loader.
 //
 // Per issue #1287 (followup to #1283), cmd/server is the read path: it
-// LOADS the in-memory neighbor graph from the SQLite snapshot the
+// LOADS the in-memory neighbor graph from the neighbor_edges table the
 // ingestor maintains, but never writes to it. The previous write-side
 // helpers in this file (buildAndPersistEdges, asyncPersistResolvedPaths
 // AndEdges, ensure*Column, softDeleteBlacklistedObservers,

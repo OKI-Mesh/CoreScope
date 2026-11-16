@@ -178,7 +178,7 @@ const leaderboardHexRes = 13
 
 // leaderboardScanCap bounds how many rows the leaderboard aggregates in memory.
 // The endpoint is unauthenticated (only requireClientRxCoverage), and the Go-side
-// rarity weighting can't push the GROUP BY into SQLite, so without a cap a wide
+// rarity weighting can't push the GROUP BY into the database, so without a cap a wide
 // window on a busy network would stream the whole table into maps. At the cap we
 // log and return a partial (best-effort) ranking rather than OOM (#review r2).
 const leaderboardScanCap = 500000

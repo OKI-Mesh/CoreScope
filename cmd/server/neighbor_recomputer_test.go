@@ -10,8 +10,8 @@ import (
 )
 
 // TestNeighborGraphRecomputerLoadsSnapshot enforces #1287 Option 4:
-// the server LOADS its in-memory neighbor graph from the SQLite
-// snapshot the ingestor writes. After a write to neighbor_edges (here
+// the server LOADS its in-memory neighbor graph from the
+// neighbor_edges table the ingestor writes. After a write to neighbor_edges (here
 // done synthetically), the recomputer's atomic-swap must reflect it.
 func TestNeighborGraphRecomputerLoadsSnapshot(t *testing.T) {
 	ctx := t.Context()

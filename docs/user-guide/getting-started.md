@@ -8,7 +8,7 @@ Use it to monitor node health, debug connectivity, view decrypted channel messag
 
 ## What you need
 
-- A running CoreScope server (Go binary + SQLite database)
+- A running CoreScope server (Go binary + a PostgreSQL 18 database with PostGIS)
 - An MQTT broker feeding mesh packets into the CoreScope ingestor
 - A modern web browser
 
@@ -33,7 +33,7 @@ See [Configuration](configuration.md) for all options.
 
 ### 2. Run
 
-Start both the ingestor (reads MQTT → writes to SQLite) and the server (serves the UI + API):
+Start both the ingestor (reads MQTT → writes to Postgres) and the server (serves the UI + API):
 
 ```bash
 ./corescope-ingestor &

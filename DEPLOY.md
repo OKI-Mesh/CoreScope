@@ -4,25 +4,14 @@ Pre-built images are published to GHCR for `linux/amd64` and `linux/arm64` (Rasp
 
 ## Quick Start
 
-### Docker run
-
 ```bash
-docker run -d --name corescope \
-  -p 80:80 \
-  -v corescope-data:/app/data \
-  -e DISABLE_CADDY=true \
-  ghcr.io/kpa-clawbot/corescope:latest
+git clone https://github.com/OKI-Mesh/CoreScope.git
+cd CoreScope
+cp .env.example .env     # set POSTGRES_PASSWORD (letters and digits only)
+docker compose up -d --build
 ```
 
-Open `http://localhost` — done.
-
-### Docker Compose
-
-```bash
-curl -sL https://raw.githubusercontent.com/Kpa-clawbot/CoreScope/master/docker-compose.example.yml \
-  -o docker-compose.yml
-docker compose up -d
-```
+Open `http://localhost:3000`. Compose starts two containers: `postgres` (Postgres 18 with PostGIS, data in the `pgdata` volume) and `prod` (the ingestor and server, with `DATABASE_URL` set for you). Caddy (TLS) and Mosquitto (MQTT) are optional: list their override files in `COMPOSE_FILE` in `.env` (see the comments in `.env.example`).
 
 ## Image Tags
 
@@ -50,18 +39,21 @@ For advanced configuration, mount a `config.json` into `/app/data/config.json`. 
 ## Updating
 
 ```bash
-docker compose pull
-docker compose up -d
+git pull
+docker compose up -d --build
 ```
+
+The ingestor applies pending schema migrations when it starts, and the server waits for them. See [MIGRATIONS.md](MIGRATIONS.md) if a release carries a slow one.
 
 ## Data
 
-All persistent data lives in `/app/data`:
-- `meshcore.db` — SQLite database (packets, nodes)
+App files live in `/app/data`:
 - `config.json` — custom config (optional)
 - `theme.json` — custom theme (optional)
 
-**Backup:** `cp data/meshcore.db ~/backup/`
+**Database:** packets and nodes live in Postgres (the `pgdata` volume), not in `/app/data`.
+
+**Backup:** `docker compose exec -T postgres pg_dump -U corescope --format=custom corescope > backup.dump`
 
 ## TLS
 

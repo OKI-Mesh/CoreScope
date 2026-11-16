@@ -592,7 +592,7 @@ type ListNodesParams struct {
 
 // Filtered, sorted, paged node list. NULL filter = not applied.
 // sort: 'name', 'packetCount', anything else = last_seen.
-// NULLS clauses reproduce SQLite's ordering (NULLs smallest).
+// NULLS clauses keep the long-standing ordering (NULLs smallest).
 func (q *Queries) ListNodes(ctx context.Context, arg ListNodesParams) ([]Node, error) {
 	rows, err := q.db.Query(ctx, listNodes,
 		arg.Role,
@@ -771,7 +771,7 @@ type ResolveNodePubkeysRow struct {
 // Maps each input (a pubkey or a node name) to a node's public key. Inputs that
 // match nothing are absent from the result. An exact pubkey match wins over a
 // name match, and among name matches the lowest pubkey wins, so the answer is
-// stable. (SQLite's LIMIT 1 had no ORDER BY, so it was arbitrary.)
+// stable. (The original LIMIT 1 had no ORDER BY, so it was arbitrary.)
 func (q *Queries) ResolveNodePubkeys(ctx context.Context, inputs []string) ([]ResolveNodePubkeysRow, error) {
 	rows, err := q.db.Query(ctx, resolveNodePubkeys, inputs)
 	if err != nil {

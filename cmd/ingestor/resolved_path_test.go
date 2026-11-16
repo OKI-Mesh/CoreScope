@@ -314,7 +314,7 @@ func TestResolvePathWithContext_AllNilContractPreserved(t *testing.T) {
 // all-nil resolution path) and assert the previously stored
 // resolved_path is PRESERVED (NOT overwritten to "[null]" or NULL).
 //
-// Pre-fix behavior (SQLite): an all-nil path was written as "[null]" and
+// Pre-fix behavior: an all-nil path was written as "[null]" and
 // clobbered the original "bbbbbbbbbb" through COALESCE on the upsert.
 func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 	store := newTestStore(t)

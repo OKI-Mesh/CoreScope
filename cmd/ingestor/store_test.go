@@ -1605,7 +1605,7 @@ func TestExtractObserverMetaNewFields(t *testing.T) {
 // received twice — first without SNR, then with SNR — the SNR is filled in
 // rather than silently discarded. The unique dedup index is
 // (transmission_id, observer_idx, COALESCE(path_json, ”)); observer_idx must
-// be non-NULL for the conflict to fire (SQLite treats NULL != NULL).
+// be non-NULL for the conflict to fire (a unique index treats NULLs as distinct).
 //
 // (Blank line above is deliberate: gofmt's Go-1.19+ doc-comment formatter
 // rewrites a doubled straight-quote pair like '' into a single curly “ once

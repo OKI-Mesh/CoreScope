@@ -103,10 +103,12 @@ func (s *Store) RemoveStaleObservers(ctx context.Context, observerDays int) (int
 // the second stage of observer retention: the soft-delete hides the observer,
 // this reclaims the row after its packets have aged out via packetDays.
 //
-// observations.observer_idx is a bare rowid with no foreign key, so deleting a
-// still-referenced observer silently orphans history — packets_v stops resolving
-// the observer and the packets are mis-attributed. The three NOT EXISTS guards
-// are what make the delete safe; they are correctness, not defensive padding.
+// observations.observer_idx references observers(id) with no ON DELETE action, so
+// deleting a still-referenced observer would fail the statement; observer_metrics
+// and dropped_packets key on the observer pubkey with no foreign key, so deleting
+// an observer they still name would silently orphan that history. The three NOT
+// EXISTS guards are what make the delete safe; they are correctness, not
+// defensive padding.
 // Each is an index seek per candidate row (observers is O(100)), so the whole
 // statement stays cheap enough for the daily retention tick.
 //
