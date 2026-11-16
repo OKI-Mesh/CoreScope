@@ -58,20 +58,6 @@ func TestResolvePathEmptyHops(t *testing.T) {
 	}
 }
 
-// TestMarshalResolvedPathRoundtrip asserts the JSON shape matches the
-// server's marshal/unmarshal contract: `[]*string` with nulls for
-// unresolved hops.
-func TestMarshalResolvedPathRoundtrip(t *testing.T) {
-	a := "aaaaaaaaaa"
-	b := "bbbbbbbbbb"
-	in := []*string{&a, nil, &b}
-	s := marshalResolvedPath(in)
-	want := `["aaaaaaaaaa",null,"bbbbbbbbbb"]`
-	if s != want {
-		t.Errorf("marshal: want %s, got %s", want, s)
-	}
-}
-
 // TestInsertTransmissionWritesResolvedPath is the integration test that
 // gates the regression introduced by PR #1289 (issue #1547).
 //
@@ -303,11 +289,9 @@ func TestResolvePathWithContext_RegressionMultiByteStillWorks(t *testing.T) {
 	}
 }
 
-// TestResolvePathWithContext_AllNilContractPreserved asserts the
-// all-nil → empty-string clobber-guard contract from PR #1548 still
-// holds: an unresolvable path through the context resolver, when fed
-// to marshalResolvedPath, MUST yield "" (so nilIfEmpty → SQL NULL
-// → COALESCE preserves existing).
+// TestResolvePathWithContext_AllNilContractPreserved asserts that an
+// unresolvable path through the context resolver yields nil at every hop
+// (never a guessed pubkey).
 func TestResolvePathWithContext_AllNilContractPreserved(t *testing.T) {
 	// Empty index → every hop nil.
 	got := resolvePathWithContext([]string{"5c", "dd"}, "", nil, prefixIndex{})
@@ -318,45 +302,6 @@ func TestResolvePathWithContext_AllNilContractPreserved(t *testing.T) {
 		if p != nil {
 			t.Errorf("hop[%d]: want <nil>, got %s", i, *p)
 		}
-	}
-	if s := marshalResolvedPath(got); s != "" {
-		t.Errorf("all-nil marshal: want \"\", got %q (clobber-guard regression)", s)
-	}
-}
-
-// TestMarshalResolvedPathAllNilReturnsEmpty is a regression gate for
-// the data-loss clobber bug surfaced in PR #1548 review.
-//
-// When resolvePath fails to resolve ANY hop (every element nil),
-// marshalResolvedPath previously emitted "[null,null,...]" — a
-// non-empty string that bypassed nilIfEmpty and then OVERWROTE the
-// existing resolved_path via the COALESCE(excluded, current) UPSERT
-// on re-ingest. The fix returns "" so nilIfEmpty produces SQL NULL and
-// the COALESCE preserves the existing good value.
-func TestMarshalResolvedPathAllNilReturnsEmpty(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []*string
-	}{
-		{"one-nil", []*string{nil}},
-		{"two-nils", []*string{nil, nil}},
-		{"three-nils", []*string{nil, nil, nil}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := marshalResolvedPath(tc.in)
-			if got != "" {
-				t.Errorf("all-nil input must return \"\" (so nilIfEmpty → SQL NULL → COALESCE preserves existing); got %q", got)
-			}
-		})
-	}
-
-	// Mixed (at least one non-nil) MUST still marshal normally so we
-	// don't lose partial resolutions.
-	a := "aaaaaaaaaa"
-	mixed := marshalResolvedPath([]*string{&a, nil})
-	if mixed != `["aaaaaaaaaa",null]` {
-		t.Errorf("partial resolution must still serialize; got %q", mixed)
 	}
 }
 
@@ -369,9 +314,8 @@ func TestMarshalResolvedPathAllNilReturnsEmpty(t *testing.T) {
 // all-nil resolution path) and assert the previously stored
 // resolved_path is PRESERVED (NOT overwritten to "[null]" or NULL).
 //
-// Pre-fix behavior: marshalResolvedPath emitted "[null]", nilIfEmpty
-// kept it non-NULL, and COALESCE(excluded.resolved_path, resolved_path)
-// clobbered the original "bbbbbbbbbb".
+// Pre-fix behavior (SQLite): an all-nil path was written as "[null]" and
+// clobbered the original "bbbbbbbbbb" through COALESCE on the upsert.
 func TestInsertTransmissionDoesNotClobberResolvedPathOnAllNil(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()

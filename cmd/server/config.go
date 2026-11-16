@@ -695,17 +695,6 @@ func (h HealthThresholds) ToClientMs() api.HealthThresholdsMs {
 	}
 }
 
-//TODO: ValidateDSN
-// func (c *Config) ResolveDBPath(baseDir string) string {
-// 	if c.DBPath != "" {
-// 		return c.DBPath
-// 	}
-// 	if v := os.Getenv("DB_PATH"); v != "" {
-// 		return v
-// 	}
-// 	return filepath.Join(baseDir, "data", "meshcore.db")
-// }
-
 func (c *Config) NormalizeTimestampConfig() {
 	defaults := defaultTimestampConfig()
 	if c.Timestamps == nil {

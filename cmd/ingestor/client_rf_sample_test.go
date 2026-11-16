@@ -112,10 +112,10 @@ func TestHandleClientRfSampleRejects(t *testing.T) {
 
 // TestRfDeltaBreaksOnReboot seeds the first two samples through
 // handleClientRfSample (not a direct InsertClientRfSample) so the
-// handler-written rxTimeMillisLayout format is what ClientRfDeltas actually
-// parses back — a regression that reverted the handler to second-resolution
-// resolveRxTime would leave a direct-insert-seeded test green while breaking
-// this round trip for real.
+// handler-resolved receive time is what ClientRfDeltas actually reads back —
+// a regression that reverted the handler to second-resolution resolveRxTime
+// would leave a direct-insert-seeded test green while breaking this round
+// trip for real.
 func TestRfDeltaBreaksOnReboot(t *testing.T) {
 	s := newTestStore(t)
 	ctx := t.Context()

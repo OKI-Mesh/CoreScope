@@ -33,22 +33,18 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		s.store.mu.RUnlock()
 	}
 
-	// #1143 (M2): expose from_pubkey backfill progress so operators can
-	// see whether the legacy ADVERT backfill is still running. NULL rows
-	// produce empty attribution results during the in-flight window.
-	// Cycle-3 m2c: snapshot all three fields under a single read lock so
-	// /api/healthz never observes a torn state (e.g. done=true with
-	// processed<total).
-	bfTotal, bfProcessed, bfDone := fromPubkeyBackfillSnapshot()
 	w.WriteHeader(http.StatusOK)
 	resp := api.HealthzResponse{
 		Ready:     true,
 		LoadedTx:  loadedTx,
 		LoadedObs: loadedObs,
+		// The from_pubkey backfill is an ETL step now, so there is never
+		// progress to report. The field stays on the wire because the
+		// warm-up banner (public/warmup-banner.js) waits for done == true.
 		FromPubkeyBackfill: api.FromPubkeyBackfill{
-			Total:     bfTotal,
-			Processed: bfProcessed,
-			Done:      bfDone,
+			Total:     0,
+			Processed: 0,
+			Done:      true,
 		},
 	}
 	// PR #1609 M1: surface per-MQTT-source receipt vs write-path

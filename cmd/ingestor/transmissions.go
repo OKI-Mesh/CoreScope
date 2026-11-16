@@ -65,7 +65,7 @@ func (s *Store) InsertTransmission(ctx context.Context, data *PacketData) (bool,
 	// the ingestor now. Per #1560: use the context-aware resolver so
 	// 1-byte prefix collisions are disambiguated via NeighborGraph
 	// adjacency (anchored on from_pubkey for ADVERTs, previous hop
-	// otherwise). Empty resolved JSON → NULL via nilIfEmpty.
+	// otherwise). Unresolved hops keep a NULL resolved_pubkey.
 	hops := parsePathArray(data.PathJSON)
 	resolved := resolvePathWithContext(
 		hops,

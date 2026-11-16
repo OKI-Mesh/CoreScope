@@ -1477,18 +1477,6 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// rxTimeMillisLayout is the fixed three-decimal millisecond layout for
-// client_rx_observations.rx_at. UNIQUE(rx_pubkey, pkt_hash, rx_at) on that
-// table relies on sub-second resolution to keep distinct forwarder copies of
-// the same flood as separate rows — RFC3339's second resolution would
-// collapse them and ON CONFLICT DO NOTHING would silently drop all but the
-// first. Deliberately not time.RFC3339Nano, which strips trailing zeros, so
-// this stays a stable uniqueness/sort key. The single definition here is
-// shared by its only production caller (handleClientPacket, which formats a
-// resolveRxTimeCore result with it directly) and by tests that need to
-// derive an rx_at they can query back by.
-// const rxTimeMillisLayout = "2006-01-02T15:04:05.000Z07:00"
-
 // parseEnvelopeTime parses the MQTT envelope timestamp. Two on-wire forms
 // occur: zone-aware ISO8601 (RFC3339), and a naive local-clock ISO string
 // with no zone (python datetime.isoformat()). Zone-aware layouts are tried

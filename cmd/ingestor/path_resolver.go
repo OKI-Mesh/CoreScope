@@ -163,8 +163,8 @@ func resolveHopWithContext(hop string, anchor string, graph *NeighborGraph, idx 
 // fromPubkey (for ADVERTs) and each subsequent hop on the previous
 // resolved hop. Previously-resolved pubkeys (plus the originator) are
 // excluded from later candidate pools so the walk doesn't revisit a
-// node. Returns a `[]*string` shape compatible with
-// marshalResolvedPath (and the all-nil clobber-guard from PR #1548).
+// node. Returns the same `[]*string` shape as resolvePath, with nil at
+// every unresolved position.
 func resolvePathWithContext(hops []string, fromPubkey string, graph *NeighborGraph, idx prefixIndex) []*string {
 	if len(hops) == 0 {
 		return nil

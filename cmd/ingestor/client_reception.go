@@ -383,10 +383,8 @@ func (s *Store) pruneOldClientRxObservationsAt(ctx context.Context, cutoff time.
 // PruneOldClientDeclaredRegions deletes declared-region observation rows
 // (node_declared_regions) older than `days` (by observed_at). Independent of
 // clientRxDays/clientRxObsDays/clientRfDays. 0 disables. Owned by the
-// ingestor writer (#1283). observed_at on this table is stored at
-// millisecond precision via rxTimeMillisLayout, not RFC3339 — the cutoff
-// must be formatted the same way so lexicographic comparison against
-// stored values stays correct.
+// ingestor writer (#1283). observed_at is a timestamptz, so the cutoff is
+// compared as an instant at full sub-second resolution.
 func (s *Store) PruneOldClientDeclaredRegions(ctx context.Context, days int) (int64, error) {
 	if days <= 0 {
 		return 0, nil

@@ -531,13 +531,10 @@ func TestPruneOldClientDeclaredRegions(t *testing.T) {
 	}
 }
 
-// TestPruneOldClientDeclaredRegionsAtMillisecondBoundary proves the pruner's
-// cutoff comparison distinguishes a millisecond-precision stored value from
-// an RFC3339 (whole-second) cutoff: observed_at is written via
-// rxTimeMillisLayout, and SQLite compares it lexicographically as a string,
-// so a cutoff formatted without the ".mmm" component sorts AFTER a
-// chronologically-newer row that has one (since '.' is 0x2E and 'Z' is
-// 0x5A) and would wrongly delete it.
+// TestPruneOldClientDeclaredRegionsAtMillisecondBoundary proves the pruner
+// compares at sub-second resolution: a row 1 ms before the cutoff is pruned
+// and a row 1 ms after it survives. A pruner that truncated the cutoff to
+// whole seconds would delete the second row.
 //
 // It calls the unexported pruneOldClientDeclaredRegionsAt seam with a cutoff
 // instant the test controls, rather than deriving one from time.Now() the
@@ -584,7 +581,7 @@ func TestPruneOldClientDeclaredRegionsAtMillisecondBoundary(t *testing.T) {
 	}
 	boundarySurvived := dbtest.CountWhere(t, s.db, "node_declared_regions", "observed_at = $1", boundary)
 	if boundarySurvived != 1 {
-		t.Fatalf("boundary row (1ms after a cutoff with a non-zero millisecond component) must survive; an RFC3339 (no-ms) cutoff would wrongly delete it because '.' < 'Z' lexicographically — got %d", boundarySurvived)
+		t.Fatalf("boundary row (1ms after a cutoff with a non-zero millisecond component) must survive; a whole-second cutoff would wrongly delete it — got %d", boundarySurvived)
 	}
 }
 
