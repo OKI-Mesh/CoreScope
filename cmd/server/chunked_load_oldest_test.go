@@ -7,7 +7,7 @@ package main
 // the NEWEST first_seen. QueryPackets then mis-routed any
 // `since>=oldestLoaded` query to the SQL fallback, hiding fresh
 // in-memory rows. This shows up in real life on the e2e fixture after
-// tools/freshen-fixture.sh shifts timestamps so id=1 (originally
+// tools/freshen-fixture.sql shifts timestamps so id=1 (originally
 // loaded first) carries the most recent first_seen.
 //
 // The mobile e2e test test-observer-iata-1188-e2e.js fails as a

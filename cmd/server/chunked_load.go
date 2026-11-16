@@ -440,7 +440,7 @@ func (s *PacketStore) LoadChunked(ctx context.Context, chunkSize int) error {
 	// that legacy Load() got for free from "ORDER BY t.first_seen ASC".
 	// LoadChunked walks chunks in id-ASC order so the slice ends up
 	// id-ordered, which only equals first_seen-ordered when ids and
-	// timestamps are correlated. After tools/freshen-fixture.sh (or any
+	// timestamps are correlated. After tools/freshen-fixture.sql (or any
 	// real-world out-of-order ingest) they're not, leaving
 	// s.packets[0].FirstSeen pointing at the newest row — which then
 	// poisons oldestLoaded below and routes legitimate in-memory queries

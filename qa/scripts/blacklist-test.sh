@@ -15,9 +15,10 @@
 #   TARGET_CONFIG_PATH    — absolute path to config.json on the target
 #   TARGET_CONTAINER      — docker container name on the target
 # Optional env:
-#   TARGET_DB_PATH        — sqlite db path on the target (for §10.2 sqlite probe)
-#   ADMIN_API_TOKEN       — if /api/admin/transmissions exists, use it instead of ssh+sqlite
-#                            (read from env, not argv — never appears in ps)
+#   TARGET_DB_CONTAINER   — docker container running Postgres on the target
+#                            (default: corescope-postgres; used by the §10.2 probe)
+#   TARGET_DB_USER        — Postgres role (default: corescope)
+#   TARGET_DB_NAME        — Postgres database (default: corescope)
 #   CURL_TIMEOUT          — per-request curl timeout, seconds (default 60)
 #   RESTART_WAIT_S        — max wait for /api/stats after restart (default 120)
 #
@@ -27,8 +28,8 @@
 #   hide-failed    → blacklisted pubkey still surfaced via API (§10.1 fail)
 #   retain-failed  → no transmissions.from_pubkey rows (ADVERTs) for the
 #                    blacklisted pubkey in the DB (§10.2 fail), or the
-#                    §10.2 probe could not run at all — no sqlite3 on the target
-#                    able to bind a parameter. The message names what is needed;
+#                    §10.2 probe could not run at all — psql in the Postgres
+#                    container did not answer. The message names what is needed;
 #                    there is no fallback to interpolated SQL.
 #   teardown-failed→ post-test removal did not restore listing
 #
@@ -158,91 +159,59 @@ node_visible() {
 # -----------------------------------------------------------------------------
 # §10.2 DB probe — bind the pubkey, do not interpolate it (issue #1977)
 # -----------------------------------------------------------------------------
-# Batch flags, all in service of "the count is parseable and errors are visible":
-#   -bail            stop at the first SQL error instead of running on
-#   -init /dev/null  ignore the operator's ~/.sqliterc — a stray .mode there
-#                    would make the count unparseable
-#   -noheader -list  stdout is exactly the number, nothing else
-SQLITE_ARGS=(-batch -bail -init /dev/null -noheader -list)
+# psql batch flags, all in service of "the count is parseable and errors are
+# visible":
+#   -X                      ignore the operator's ~/.psqlrc
+#   -q -A -t                quiet, unaligned, tuples only: stdout is exactly the number
+#   -v ON_ERROR_STOP=1      a SQL error ends the run with a non-zero exit
+PSQL_ARGS=(-X -q -A -t -v ON_ERROR_STOP=1)
 # Round-trip probe token. The value is arbitrary; it only has to come back intact.
-SQLITE_PROBE_TOKEN="corescope-probe-ok"
-SQLITE_RUNNER=""   # "container" | "host", set by resolve_sqlite_runner
+PSQL_PROBE_TOKEN="corescope-probe-ok"
 RETAIN_COUNT=""    # set by read_retain_count
 
-# Hex-encode a value for embedding in SQL as a blob literal.
+# Hex-encode a value as a single-quoted SQL string of hex digits.
 #
 # Why hex rather than quoting: the output alphabet is [0-9a-f], so no byte the
-# caller passes can terminate a string literal or add a dot-command argument.
-# That holds for arbitrary input, which is the point — the SQL layer stops
-# depending on main()'s hex gate in order to be safe.
+# caller passes can terminate a string literal or change the statement. That
+# holds for arbitrary input, which is the point — the SQL layer stops depending
+# on main()'s hex gate in order to be safe.
 #
 # `od -v` is load-bearing: without it od collapses runs of identical lines to
 # '*' and long repetitive values encode wrongly.
-sql_hex_literal() {
-  printf "x'%s'" "$(printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n')"
+pg_hex_literal() {
+  printf "'%s'" "$(printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n')"
 }
 
-# SQL for the §10.2 count, fed to sqlite3 on stdin. The SELECT text is a
-# constant; the pubkey arrives as a bound parameter.
+# The original value as a text expression, decoded server-side from its hex.
+pg_text_from_hex() {
+  printf "convert_from(decode(%s, 'hex'), 'UTF8')" "$(pg_hex_literal "$1")"
+}
+
+# SQL for the §10.2 count, fed to psql on stdin. The SELECT text is a constant;
+# the pubkey arrives only as hex digits that Postgres decodes.
 #
-# Note the nested cast rather than `.parameter set :pubkey '<value>'`:
-# dot-command arguments are split on whitespace, so a value containing a space
-# (e.g. "' OR 1=1 --") makes sqlite3 print the .parameter help to STDOUT, exit
-# 0, and leave :pubkey unbound. COUNT(*) then returns 0 — which reads exactly
-# like a passing security fix. -bail does not catch it either.
-#
-# The column is transmissions.from_pubkey (cmd/ingestor/db.go CREATE TABLE and
-# the from_pubkey_v1 migration; asserted by internal/dbschema). The ingestor
-# fills it only for ADVERTs, with hex.EncodeToString output — lowercase. The
+# transmissions.from_pubkey is filled only for ADVERTs, with lowercase hex. The
 # script's hex gate and the server's nodeBlacklist both accept any case, so the
-# bound value is lowercased inside SQL; the parameter itself is still bound.
-# There is no from_node column: querying it errors on every real database.
+# value is lowercased inside SQL. There is no from_node column: querying it
+# errors on every real database.
 transmission_count_sql() {
-  printf '.parameter init\n'
-  printf '.parameter set :pubkey "cast(%s as text)"\n' "$(sql_hex_literal "$1")"
-  printf 'SELECT COUNT(*) FROM transmissions WHERE from_pubkey = lower(:pubkey);\n'
+  printf 'SELECT COUNT(*) FROM transmissions WHERE from_pubkey = lower(%s);\n' "$(pg_text_from_hex "$1")"
 }
 
-# Capability probe: bind a known value and read it back. A version number only
-# implies that .parameter works; binding something and getting it back proves it
-# on the binary actually in front of us, which is the operator's, not ours.
-sqlite_probe_sql() {
-  printf '.parameter init\n'
-  printf '.parameter set :probe "cast(%s as text)"\n' "$(sql_hex_literal "$SQLITE_PROBE_TOKEN")"
-  printf 'SELECT :probe;\n'
+# Capability probe: send a known value through the same decode path and read it
+# back. It proves the container, role and database are reachable and that the
+# statement round-trips, before the count is trusted.
+pg_probe_sql() {
+  printf 'SELECT %s;\n' "$(pg_text_from_hex "$PSQL_PROBE_TOKEN")"
 }
 
-# Find a sqlite3 that can bind a parameter — in the container first, then on the
-# host. Sets SQLITE_RUNNER; returns 1 if neither qualifies. There is deliberately
-# no interpolating fallback: that would leave the vulnerable path in place under
-# a nicer name.
-#
-# Probe stderr is collected rather than discarded, but only printed if BOTH
-# probes fail. The container miss is the known-normal case — the app image has
-# no sqlite3 (pure-Go driver, no CGO; Dockerfile:15) — so surfacing it on every
-# run would be noise.
-resolve_sqlite_runner() {
-  local probe out
-  probe=$(sqlite_probe_sql)
-  SQLITE_RUNNER=""
-  out=$(ssh_t "docker exec -i $(printf %q "$TARGET_CONTAINER") sqlite3 ${SQLITE_ARGS[*]} :memory:" \
-    <<<"$probe" 2>>"$TMP/sqlite-probe.err")
-  if [[ "$out" == "$SQLITE_PROBE_TOKEN" ]]; then SQLITE_RUNNER="container"; return 0; fi
-  out=$(ssh_t "sqlite3 ${SQLITE_ARGS[*]} :memory:" <<<"$probe" 2>>"$TMP/sqlite-probe.err")
-  if [[ "$out" == "$SQLITE_PROBE_TOKEN" ]]; then SQLITE_RUNNER="host"; return 0; fi
-  return 1
-}
-
-# Run SQL from stdin against TARGET_DB_PATH via the resolved runner. Stderr is
-# left alone so the caller can capture it, and the exit status is sqlite3's.
-# The SQL crosses on stdin, so only the container name and db path still need
-# printf %q for the remote shell. docker exec needs -i to attach stdin.
-run_sqlite() {
-  case "$SQLITE_RUNNER" in
-    container) ssh_t "docker exec -i $(printf %q "$TARGET_CONTAINER") sqlite3 ${SQLITE_ARGS[*]} $(printf %q "$TARGET_DB_PATH")" ;;
-    host)      ssh_t "sqlite3 ${SQLITE_ARGS[*]} $(printf %q "$TARGET_DB_PATH")" ;;
-    *)         echo "run_sqlite: no runner resolved" >&2; return 127 ;;
-  esac
+# Run SQL from stdin through psql inside the Postgres container. Stderr is left
+# alone so the caller can capture it, and the exit status is psql's. The SQL
+# crosses on stdin, so only the container, role and database names are on the
+# remote command line, and those are validated and printf %q-quoted. docker exec
+# needs -i to attach stdin.
+run_psql() {
+  ssh_t "docker exec -i $(printf %q "$TARGET_DB_CONTAINER") psql ${PSQL_ARGS[*]} -U $(printf %q "$TARGET_DB_USER") -d $(printf %q "$TARGET_DB_NAME")"
 }
 
 # Read the retained-transmission count into RETAIN_COUNT. Prints a classified
@@ -250,33 +219,20 @@ run_sqlite() {
 # that increments $fails.
 read_retain_count() {
   RETAIN_COUNT=""
-  local code
-  if [[ -n "$ADMIN_API_TOKEN" ]]; then
-    # Read auth header from stdin so the token never enters argv (ps-safe).
-    code=$(printf 'header = "Authorization: Bearer %s"\n' "$ADMIN_API_TOKEN" | \
-      curl -s -m "$CURL_TIMEOUT" -K - -o "$TMP/admin.json" -w "%{http_code}" \
-        "$TARGET_URL/api/admin/transmissions?from_node=$TEST_PUBKEY&count=1" 2>/dev/null || echo "000")
-    if [[ "$code" == "200" ]]; then
-      RETAIN_COUNT=$(jq -r '.count // ((.transmissions // []) | length)' "$TMP/admin.json" 2>/dev/null || echo "")
-    fi
-    if [[ -n "$RETAIN_COUNT" ]]; then return 0; fi
-  fi
-
-  if [[ -z "$TARGET_DB_PATH" ]]; then
-    echo "  ❌ retain-failed: TARGET_DB_PATH unset and no ADMIN_API_TOKEN — cannot probe"
+  if [[ -z "$TARGET_DB_CONTAINER" ]]; then
+    echo "  ❌ retain-failed: TARGET_DB_CONTAINER unset — cannot probe"
     return 1
   fi
-  if ! resolve_sqlite_runner; then
-    echo "  ❌ retain-failed: no sqlite3 able to bind a parameter on the target"
-    echo "     tried: docker exec -i $TARGET_CONTAINER sqlite3, then sqlite3 on $TARGET_SSH_HOST"
-    echo "     need:  the sqlite3 CLI reachable over ssh, supporting '.parameter set'"
-    cat "$TMP/sqlite-probe.err" >&2
+  local out
+  if ! out=$(run_psql <<<"$(pg_probe_sql)" 2>"$TMP/psql-probe.err") || [[ "$out" != "$PSQL_PROBE_TOKEN" ]]; then
+    echo "  ❌ retain-failed: psql in container $TARGET_DB_CONTAINER did not answer the probe"
+    echo "     tried: docker exec -i $TARGET_DB_CONTAINER psql -U $TARGET_DB_USER -d $TARGET_DB_NAME over ssh to $TARGET_SSH_HOST"
+    cat "$TMP/psql-probe.err" >&2
     return 1
   fi
-  echo "  sqlite3 runner: $SQLITE_RUNNER"
-  if ! RETAIN_COUNT=$(run_sqlite <<<"$(transmission_count_sql "$TEST_PUBKEY")" 2>"$TMP/sqlite.err"); then
-    echo "  ❌ retain-failed: sqlite3 query failed via $SQLITE_RUNNER"
-    cat "$TMP/sqlite.err" >&2
+  if ! RETAIN_COUNT=$(run_psql <<<"$(transmission_count_sql "$TEST_PUBKEY")" 2>"$TMP/psql.err"); then
+    echo "  ❌ retain-failed: psql query failed in container $TARGET_DB_CONTAINER"
+    cat "$TMP/psql.err" >&2
     RETAIN_COUNT=""
     return 1
   fi
@@ -299,8 +255,9 @@ main() {
   TARGET_SSH_KEY="${TARGET_SSH_KEY:-/root/.ssh/id_ed25519}"
   TARGET_CONFIG_PATH="${TARGET_CONFIG_PATH:-}"
   TARGET_CONTAINER="${TARGET_CONTAINER:-}"
-  TARGET_DB_PATH="${TARGET_DB_PATH:-}"
-  ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-}"
+  TARGET_DB_CONTAINER="${TARGET_DB_CONTAINER:-corescope-postgres}"
+  TARGET_DB_USER="${TARGET_DB_USER:-corescope}"
+  TARGET_DB_NAME="${TARGET_DB_NAME:-corescope}"
 
   if [[ -z "$TEST_PUBKEY" || -z "$TARGET_SSH_HOST" || -z "$TARGET_CONFIG_PATH" || -z "$TARGET_CONTAINER" ]]; then
     echo "error: TEST_NODE_PUBKEY, TARGET_SSH_HOST, TARGET_CONFIG_PATH, TARGET_CONTAINER are required" >&2
@@ -326,8 +283,12 @@ main() {
     echo "error: TARGET_CONFIG_PATH must be a sane absolute path" >&2
     exit 2
   fi
-  if [[ -n "$TARGET_DB_PATH" ]] && ! [[ "$TARGET_DB_PATH" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
-    echo "error: TARGET_DB_PATH must be a sane absolute path" >&2
+  if ! [[ "$TARGET_DB_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "error: TARGET_DB_CONTAINER has illegal chars" >&2
+    exit 2
+  fi
+  if ! [[ "$TARGET_DB_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && "$TARGET_DB_NAME" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    echo "error: TARGET_DB_USER and TARGET_DB_NAME must be plain identifiers" >&2
     exit 2
   fi
 
@@ -378,8 +339,7 @@ main() {
   echo "=== §10.2 verify packets retained in DB ==="
   if ! read_retain_count; then
     # read_retain_count already printed the classified reason. Counting here and
-    # nowhere else: the old code incremented $fails for the "TARGET_DB_PATH
-    # unset" case and then again for the empty count it left behind.
+    # nowhere else, so one failure is never counted twice.
     fails=$((fails+1))
   elif [[ "$RETAIN_COUNT" =~ ^[0-9]+$ ]] && (( RETAIN_COUNT > 0 )); then
     echo "  ✅ DB retains $RETAIN_COUNT packets from $TEST_PUBKEY"

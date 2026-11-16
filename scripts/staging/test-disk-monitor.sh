@@ -82,8 +82,8 @@ assert_eq "prio alert" "user.alert"   "$(severity_priority alert)"
 
 # ----- disk-cleanup.sh /tmp pattern safety ----------------------------------
 # Regression guard for PR #1686 r1 adv #2: cleanup must NOT match a bare
-# `*.db` pattern in /tmp — that would nuke unrelated SQLite session files,
-# sqlite-pkg test outputs, and any debugging artifacts. Only named prefixes
+# `*.db` pattern in /tmp — that would nuke unrelated database files,
+# test outputs, and any debugging artifacts. Only named prefixes
 # (`staging-snap.*`, `cs-*`, `node-compile-cache`) are allowed.
 CLEANUP_SH="$SCRIPT_DIR/disk-cleanup.sh"
 if [ -f "$CLEANUP_SH" ]; then

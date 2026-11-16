@@ -15,7 +15,6 @@
   "license": "ISC",
   "dependencies": {
     "@michaelhart/meshcore-decoder": "^0.2.7",
-    "better-sqlite3": "^12.8.0",
     "express": "^5.2.1",
     "mqtt": "^5.15.0",
     "ws": "^8.19.0"
