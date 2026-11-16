@@ -15,13 +15,6 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func mustExecDB(t *testing.T, db *database.DB, q string, args ...any) {
-	t.Helper()
-	if _, err := db.SQL().ExecContext(t.Context(), q, args...); err != nil {
-		t.Fatalf("exec %q: %v", q, err)
-	}
-}
-
 func TestAreaEntryParsing(t *testing.T) {
 	raw := `{
 		"port": 3000,
@@ -60,10 +53,10 @@ func TestGetNodePubkeysInArea_Polygon(t *testing.T) {
 	db := setupTestDB(t)
 	s := &Server{db: db}
 	t.Cleanup(func() { db.Close() })
-	dbtest.NodeAt(t, db, "pk-inside", 50.85, 4.35)
-	dbtest.NodeAt(t, db, "pk-outside", 48.0, 4.35)
-	dbtest.Node(t, db, "pk-nogps", "", "")
-	dbtest.NodeAt(t, db, "pk-zero", 0.0, 0.0)
+	dbtest.NodeAt(t, db, "pk-inside", 50.85, 4.35, dbtest.Ago(0))
+	dbtest.NodeAt(t, db, "pk-outside", 48.0, 4.35, dbtest.Ago(0))
+	dbtest.Node(t, db, "pk-nogps", "", "", dbtest.Ago(0))
+	dbtest.NodeAt(t, db, "pk-zero", 0.0, 0.0, dbtest.Ago(0))
 
 	entry := AreaEntry{
 		Label:   "Belgium",
@@ -118,7 +111,7 @@ func TestResolveAreaNodes_CacheHit(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('pk1', 50.85, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('pk1', 50.85, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -131,7 +124,7 @@ func TestResolveAreaNodes_CacheHit(t *testing.T) {
 	}
 
 	// Delete node so a live DB query would return nothing — second call must use cache.
-	mustExecDB(t, db, `DELETE FROM nodes WHERE public_key = 'pk1'`)
+	dbtest.Exec(t, db, `DELETE FROM nodes WHERE public_key = 'pk1'`)
 
 	r2 := s.resolveAreaNodes(ctx, "BEL")
 	if !r2["pk1"] {
@@ -159,8 +152,8 @@ func ingestAdvert(t *testing.T, s *PacketStore, hash, decodedJSON string) {
 func TestFilterPacketsByArea(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
-	dbtest.NodeAt(t, db, "inside-node", 50.85, 4.35)
-	dbtest.NodeAt(t, db, "outside-node", 48.0, 4.35)
+	dbtest.NodeAt(t, db, "inside-node", 50.85, 4.35, dbtest.Ago(0))
+	dbtest.NodeAt(t, db, "outside-node", 48.0, 4.35, dbtest.Ago(0))
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -183,8 +176,8 @@ func TestAnalyticsRFAreaFilter(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('inside-node', 50.85, 4.35, now(), now())`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('outside-node', 48.0, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('inside-node', 50.85, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('outside-node', 48.0, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -222,8 +215,8 @@ func TestAnalyticsChannelsAreaFilter(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('inside-node', 50.85, 4.35, now(), now())`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('outside-node', 48.0, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('inside-node', 50.85, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('outside-node', 48.0, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -248,8 +241,8 @@ func TestGetNodePubkeysInArea_BoundingBox(t *testing.T) {
 	db := setupTestDB(t)
 	t.Cleanup(func() { db.Close() })
 	s := &Server{db: db}
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('in', 50.5, 5.0, now(), now())`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('out', 52.0, 5.0, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('in', 50.5, 5.0, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('out', 52.0, 5.0, now(), now())`)
 
 	minLat, maxLat, minLon, maxLon := 50.0, 51.5, 2.5, 6.4
 	entry := AreaEntry{LatMin: &minLat, LatMax: &maxLat, LonMin: &minLon, LonMax: &maxLon}
@@ -329,7 +322,7 @@ func TestResolveAreaNodes_CalledBeforeRLock(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('n1', 50.85, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('n1', 50.85, 4.35, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -352,8 +345,8 @@ func TestResolveAreaNodes_PerKeyTTL(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := t.Context()
 	t.Cleanup(func() { db.Close() })
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('bel-node', 50.85, 4.35, now(), now())`)
-	mustExecDB(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('nl-node', 52.4, 4.9, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('bel-node', 50.85, 4.35, now(), now())`)
+	dbtest.Exec(t, db, `INSERT INTO nodes (public_key, lat, lon, last_seen, first_seen) VALUES ('nl-node', 52.4, 4.9, now(), now())`)
 
 	cfg := &Config{Areas: map[string]AreaEntry{
 		"BEL": {Label: "Belgium", Polygon: [][2]float64{{50.0, 2.5}, {51.5, 2.5}, {51.5, 6.4}, {50.0, 6.4}}},
@@ -372,7 +365,7 @@ func TestResolveAreaNodes_PerKeyTTL(t *testing.T) {
 	}
 
 	// Delete both nodes from DB to prove cache still serves them.
-	mustExecDB(t, db, `DELETE FROM nodes`)
+	dbtest.Exec(t, db, `DELETE FROM nodes`)
 
 	// BEL cache should still be warm (not evicted by NL query).
 	r3 := s.resolveAreaNodes(ctx, "BEL")

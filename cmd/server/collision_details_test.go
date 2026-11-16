@@ -48,8 +48,8 @@ func TestCollisionDetailsIncludeNodePairs(t *testing.T) {
 	recent := time.Now().UTC().Add(-1 * time.Hour)
 
 	// Two repeater nodes with the same 3-byte prefix.
-	dbtest.Node(t, db, "aabb11ccdd001122", "Node Alpha", "repeater")
-	dbtest.Node(t, db, "aabb11eeff334455", "Node Beta", "repeater")
+	dbtest.Node(t, db, "aabb11ccdd001122", "Node Alpha", "repeater", dbtest.Ago(0))
+	dbtest.Node(t, db, "aabb11eeff334455", "Node Beta", "repeater", dbtest.Ago(0))
 	obsIdx := dbtest.Observer(t, db, "obsa", "Obs A", "SEA", recent, recent)
 
 	// Advert transmissions with hash_size=3 path bytes (0x80 = bits 10 → size 3).
@@ -101,7 +101,7 @@ func TestCollisionDetailsEmptyWhenNoCollisions(t *testing.T) {
 	db := setupTestDB(t)
 	recent := time.Now().UTC().Add(-1 * time.Hour)
 
-	dbtest.Node(t, db, "aabb11ccdd001122", "Solo Node", "repeater")
+	dbtest.Node(t, db, "aabb11ccdd001122", "Solo Node", "repeater", dbtest.Ago(0))
 	obsIdx := dbtest.Observer(t, db, "obsa", "Obs A", "SEA", recent, recent)
 	seedCollisionAdvert(t, db, obsIdx, "solo_hash_01", "0180aabb11ccdd",
 		`{"pubKey":"aabb11ccdd001122","name":"Solo Node","type":"ADVERT"}`, 10.0, -91, recent)

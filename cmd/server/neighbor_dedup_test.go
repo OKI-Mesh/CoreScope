@@ -442,7 +442,6 @@ func BenchmarkResolveAmbiguousEdges_500(b *testing.B) {
 	}
 	pm := buildPrefixMap(nodes)
 
-	
 	for b.Loop() {
 		graph := NewNeighborGraph()
 		// Create 500 ambiguous edges.

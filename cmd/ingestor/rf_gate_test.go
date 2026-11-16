@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+)
 
 // clientRfMsg builds a valid RF environment sample message on the dedicated
 // topic meshcore/client/<pubkey>/rf.
@@ -24,7 +28,7 @@ func clientRfMsgWithRaw() *mockMessage {
 func clientRfSampleCount(t *testing.T, s *Store) int {
 	t.Helper()
 	var n int
-	mustScan(t, testRow(t, s, `SELECT COUNT(*) FROM client_rf_samples`), &n)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT COUNT(*) FROM client_rf_samples`), &n)
 	return n
 }
 
@@ -75,17 +79,17 @@ func TestClientRfSamplesGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 		t.Fatalf("feature OFF: expected 0 client_rf_samples rows, got %d", n)
 	}
 	var observerRows int
-	observerRows = countWhere(t, store, "observers", "pubkey = $1", testCompanionPK)
+	observerRows = dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", testCompanionPK)
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}
 	var clientRegionRows int
-	clientRegionRows = countWhere(t, store, "observers", "iata = $1", "client")
+	clientRegionRows = dbtest.CountWhere(t, store.db, "observers", "iata = $1", "client")
 	if clientRegionRows != 0 {
 		t.Fatalf("feature OFF: no observer should be registered under a bogus 'client' region, got %d rows", clientRegionRows)
 	}
 	var txRows int
-	txRows = countWhere(t, store, "transmissions", "1=1")
+	txRows = dbtest.CountWhere(t, store.db, "transmissions", "1=1")
 	if txRows != 0 {
 		t.Fatalf("feature OFF: the client-topic sample must not be ingested as an ordinary observer packet, got %d transmissions rows", txRows)
 	}

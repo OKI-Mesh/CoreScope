@@ -4,13 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 // declaredRegionsCount returns the row count in node_declared_regions.
 func declaredRegionsCount(t *testing.T, s *Store) int {
 	t.Helper()
-	return countRows(t, s, "node_declared_regions")
+	return dbtest.CountRows(t, s.db, "node_declared_regions")
 }
 
 // testTargetPK is a valid, exactly-64-hex-char target pubkey (the repeater
@@ -454,7 +455,7 @@ func TestDeclaredRegionsDifferentReportersPersistBoth(t *testing.T) {
 		}
 	}
 
-	n := countWhere(t, s, "node_declared_regions", "target = $1 AND observed_at = $2", "bb11", at)
+	n := dbtest.CountWhere(t, s.db, "node_declared_regions", "target = $1 AND observed_at = $2", "bb11", at)
 	if n != 2 {
 		t.Errorf("rows = %d, want 2 — two different reporters observing the same target at the same time must both persist", n)
 	}
@@ -581,7 +582,7 @@ func TestPruneOldClientDeclaredRegionsAtMillisecondBoundary(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 row pruned (1ms before the cutoff), got %d", n)
 	}
-	boundarySurvived := countWhere(t, s, "node_declared_regions", "observed_at = $1", boundary)
+	boundarySurvived := dbtest.CountWhere(t, s.db, "node_declared_regions", "observed_at = $1", boundary)
 	if boundarySurvived != 1 {
 		t.Fatalf("boundary row (1ms after a cutoff with a non-zero millisecond component) must survive; an RFC3339 (no-ms) cutoff would wrongly delete it because '.' < 'Z' lexicographically — got %d", boundarySurvived)
 	}

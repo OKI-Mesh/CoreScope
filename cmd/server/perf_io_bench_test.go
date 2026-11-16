@@ -59,7 +59,7 @@ func BenchmarkReadIngestorIOSample_CacheHit(b *testing.B) {
 	_ = readIngestorIOSample()
 
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
 		_ = readIngestorIOSample()
 	}
@@ -81,7 +81,7 @@ func BenchmarkReadIngestorIOSample_CacheMiss(b *testing.B) {
 	resetIngestorIOCache()
 
 	b.ReportAllocs()
-	
+
 	base := time.Now()
 	for i := 0; b.Loop(); i++ {
 		// Force cache invalidation by advancing mtime each iter.

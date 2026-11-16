@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
@@ -40,11 +41,11 @@ func TestInsertTransmission_FromPubkeyPopulatedForAdvert(t *testing.T) {
 	}
 
 	var got *string
-	mustScan(t, testRow(t, store, "SELECT from_pubkey FROM transmissions WHERE hash = $1", data.Hash), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT from_pubkey FROM transmissions WHERE hash = $1", data.Hash), &got)
 	if got == nil || *got != pk {
 		t.Fatalf("from_pubkey = %v, want %q", got, pk)
 	}
-	if n := countWhere(t, store, "nodes", "public_key = $1", pk); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "nodes", "public_key = $1", pk); n != 1 {
 		t.Errorf("nodes with key = %d, want 1 (written in the same transaction)", n)
 	}
 }
@@ -70,7 +71,7 @@ func TestInsertTransmission_FromPubkeyNullForNonAdvert(t *testing.T) {
 	}
 
 	var got sql.NullString
-	mustScan(t, testRow(t, store, "SELECT from_pubkey FROM transmissions WHERE hash = $1", data.Hash), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT from_pubkey FROM transmissions WHERE hash = $1", data.Hash), &got)
 	if got.Valid {
 		t.Fatalf("from_pubkey for non-ADVERT must be NULL, got %q", got.String)
 	}

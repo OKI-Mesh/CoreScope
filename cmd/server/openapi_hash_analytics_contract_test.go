@@ -44,8 +44,8 @@ func TestHashAnalyticsOutputMatchesSpec(t *testing.T) {
 
 	db := setupTestDB(t)
 	recent := time.Now().UTC().Add(-1 * time.Hour)
-	dbtest.Node(t, db, "aabb11ccdd001122", "Node Alpha", "repeater")
-	dbtest.Node(t, db, "aabb11eeff334455", "Node Beta", "repeater")
+	dbtest.Node(t, db, "aabb11ccdd001122", "Node Alpha", "repeater", dbtest.Ago(0))
+	dbtest.Node(t, db, "aabb11eeff334455", "Node Beta", "repeater", dbtest.Ago(0))
 	obsIdx := dbtest.Observer(t, db, "obsa", "Obs A", "SEA", recent, recent)
 	seedCollisionAdvert(t, db, obsIdx, "hashan_01", "0180aabb11ccdd",
 		`{"pubKey":"aabb11ccdd001122","name":"Node Alpha","type":"ADVERT"}`, 10.0, -91, recent)

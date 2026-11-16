@@ -75,7 +75,7 @@ func BenchmarkMergeChunkIntoPackets(b *testing.B) {
 	}
 	existing := mk(200000, 6, 0)
 	chunk := mk(20000, 60, 3)
-	
+
 	for b.Loop() {
 		mergeChunkIntoPackets(chunk, existing)
 	}

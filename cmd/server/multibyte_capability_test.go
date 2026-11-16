@@ -8,14 +8,9 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
-
-// recentTS returns a timestamp string N hours ago, ensuring test data
-// stays within the 7-day advert window used by computeNodeHashSizeInfo.
-func recentTS(hoursAgo int) time.Time {
-	return time.Now().UTC().Add(-time.Duration(hoursAgo) * time.Hour)
-}
 
 // addTestPacket adds a StoreTx to the store's internal structures including
 // the byPathHop index and byPayloadType index.
@@ -67,8 +62,8 @@ func TestMultiByteCapability_Confirmed(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepA",
 		Role:      "repeater",
-		RxTime:    recentTS(24),
-		IngestNow: recentTS(24),
+		RxTime:    dbtest.Ago(24 * time.Hour),
+		IngestNow: dbtest.Ago(24 * time.Hour),
 	}); err != nil {
 		t.Fatalf("seed RepA: %v", err)
 	}
@@ -101,8 +96,8 @@ func TestMultiByteCapability_Suspected(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepA",
 		Role:      "repeater",
-		RxTime:    recentTS(48),
-		IngestNow: recentTS(48),
+		RxTime:    dbtest.Ago(48 * time.Hour),
+		IngestNow: dbtest.Ago(48 * time.Hour),
 	}); err != nil {
 		t.Fatalf("seed RepA: %v", err)
 	}
@@ -145,8 +140,8 @@ func TestMultiByteCapability_Unknown(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepA",
 		Role:      "repeater",
-		RxTime:    recentTS(72),
-		IngestNow: recentTS(72),
+		RxTime:    dbtest.Ago(72 * time.Hour),
+		IngestNow: dbtest.Ago(72 * time.Hour),
 	}); err != nil {
 		t.Fatalf("seed RepA: %v", err)
 	}
@@ -178,8 +173,8 @@ func TestMultiByteCapability_PrefixCollision(t *testing.T) {
 
 	// Two repeaters sharing 1-byte prefix "aa"
 	for _, n := range []database.NodeInput{
-		{PublicKey: "aabb000000000001", Name: "RepConfirmed", Role: "repeater", RxTime: recentTS(24), IngestNow: now},
-		{PublicKey: "aacc000000000002", Name: "RepOther", Role: "repeater", RxTime: recentTS(24), IngestNow: now},
+		{PublicKey: "aabb000000000001", Name: "RepConfirmed", Role: "repeater", RxTime: dbtest.Ago(24 * time.Hour), IngestNow: now},
+		{PublicKey: "aacc000000000002", Name: "RepOther", Role: "repeater", RxTime: dbtest.Ago(24 * time.Hour), IngestNow: now},
 	} {
 		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
 			t.Fatalf("seed %s: %v", n.Name, err)
@@ -230,7 +225,7 @@ func TestMultiByteCapability_TraceExcluded(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepTrace",
 		Role:      "repeater",
-		RxTime:    recentTS(48),
+		RxTime:    dbtest.Ago(48 * time.Hour),
 		IngestNow: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed RepTrace: %v", err)
@@ -269,7 +264,7 @@ func TestMultiByteCapability_NonTraceStillSuspected(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepNonTrace",
 		Role:      "repeater",
-		RxTime:    recentTS(48),
+		RxTime:    dbtest.Ago(48 * time.Hour),
 		IngestNow: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed RepNonTrace: %v", err)
@@ -307,7 +302,7 @@ func TestMultiByteCapability_ConfirmedUnaffectedByTraceExclusion(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepConfirmedTrace",
 		Role:      "repeater",
-		RxTime:    recentTS(24),
+		RxTime:    dbtest.Ago(24 * time.Hour),
 		IngestNow: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed RepConfirmedTrace: %v", err)
@@ -348,7 +343,7 @@ func TestMultiByteCapability_CompanionConfirmed(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "CompA",
 		Role:      "companion",
-		RxTime:    recentTS(24),
+		RxTime:    dbtest.Ago(24 * time.Hour),
 		IngestNow: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed CompA: %v", err)
@@ -379,9 +374,9 @@ func TestMultiByteCapability_RoleColumnPopulated(t *testing.T) {
 	now := time.Now().UTC()
 
 	for _, n := range []database.NodeInput{
-		{PublicKey: "aabb000000000001", Name: "Rep1", Role: "repeater", RxTime: recentTS(24), IngestNow: now},
-		{PublicKey: "ccdd000000000002", Name: "Comp1", Role: "companion", RxTime: recentTS(24), IngestNow: now},
-		{PublicKey: "eeff000000000003", Name: "Room1", Role: "room", RxTime: recentTS(24), IngestNow: now},
+		{PublicKey: "aabb000000000001", Name: "Rep1", Role: "repeater", RxTime: dbtest.Ago(24 * time.Hour), IngestNow: now},
+		{PublicKey: "ccdd000000000002", Name: "Comp1", Role: "companion", RxTime: dbtest.Ago(24 * time.Hour), IngestNow: now},
+		{PublicKey: "eeff000000000003", Name: "Room1", Role: "room", RxTime: dbtest.Ago(24 * time.Hour), IngestNow: now},
 	} {
 		if err := db.CreateOrUpdateNode(ctx, n); err != nil {
 			t.Fatalf("seed %s: %v", n.Name, err)
@@ -422,7 +417,7 @@ func TestMultiByteCapability_AdopterEvidenceTakesPrecedence(t *testing.T) {
 		PublicKey: "aabbccdd11223344",
 		Name:      "RepAdopter",
 		Role:      "repeater",
-		RxTime:    recentTS(24),
+		RxTime:    dbtest.Ago(24 * time.Hour),
 		IngestNow: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("seed RepAdopter: %v", err)

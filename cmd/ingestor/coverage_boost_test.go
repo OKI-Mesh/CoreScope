@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -90,12 +91,12 @@ func TestMoveStaleNodes(t *testing.T) {
 		t.Errorf("moved=%d, want 1", moved)
 	}
 
-	count := countWhere(t, store, "nodes", "inactive=TRUE")
+	count := dbtest.CountWhere(t, store.db, "nodes", "inactive=TRUE")
 	if count != 1 {
 		t.Errorf("inactive_nodes count=%d, want 1", count)
 	}
 
-	count = countWhere(t, store, "nodes", "inactive=FALSE")
+	count = dbtest.CountWhere(t, store.db, "nodes", "inactive=FALSE")
 	if count != 1 {
 		t.Errorf("nodes count=%d, want 1", count)
 	}
@@ -153,14 +154,14 @@ func TestHandleMessageChannelMessage(t *testing.T) {
 
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("transmissions count=%d, want 1", count)
 	}
 
 	// Verify stored transmission values
 	var decodedJSON *string
-	mustScan(t, testRow(t, store, "SELECT decoded_json FROM transmissions ORDER BY id LIMIT 1"), &decodedJSON)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT decoded_json FROM transmissions ORDER BY id LIMIT 1"), &decodedJSON)
 	if decodedJSON == nil {
 		t.Fatal("decoded_json is NULL")
 	}
@@ -185,7 +186,7 @@ func TestHandleMessageChannelMessage(t *testing.T) {
 	var snr, rssi *float64
 	var score *int32
 	var direction *string
-	mustScan(t, testRow(t, store, "SELECT snr, rssi, score, direction FROM observations ORDER BY id LIMIT 1"),
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT snr, rssi, score, direction FROM observations ORDER BY id LIMIT 1"),
 		&snr, &rssi, &score, &direction)
 	if snr == nil || *snr != 5.0 {
 		t.Errorf("snr=%v, want 5.0", snr)
@@ -196,7 +197,7 @@ func TestHandleMessageChannelMessage(t *testing.T) {
 
 	// Sender node should NOT be created (see issue #665: synthetic "sender-" keys
 	// are unreachable from the claiming/health flow)
-	count = countRows(t, store, "nodes")
+	count = dbtest.CountRows(t, store.db, "nodes")
 	if count != 0 {
 		t.Errorf("nodes count=%d, want 0 (no phantom sender node)", count)
 	}
@@ -209,7 +210,7 @@ func TestHandleMessageChannelMessageEmptyText(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/channel/1", payload: []byte(`{"text":""}`)}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("empty text should not insert")
 	}
@@ -222,7 +223,7 @@ func TestHandleMessageChannelNoSender(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/channel/1", payload: []byte(`{"text":"no sender here"}`)}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "nodes")
+	count := dbtest.CountRows(t, store.db, "nodes")
 	if count != 0 {
 		t.Error("no sender should mean no node")
 	}
@@ -237,14 +238,14 @@ func TestHandleMessageDirectMessage(t *testing.T) {
 
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("transmissions count=%d, want 1", count)
 	}
 
 	// Verify stored decoded values
 	var decodedJSON string
-	mustScan(t, testRow(t, store, "select decoded_json from transmissions limit 1"), &decodedJSON)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "select decoded_json from transmissions limit 1"), &decodedJSON)
 	var decoded map[string]interface{}
 	if err := json.Unmarshal([]byte(decodedJSON), &decoded); err != nil {
 		t.Fatalf("decoded_json unmarshal: %v", err)
@@ -259,7 +260,7 @@ func TestHandleMessageDirectMessage(t *testing.T) {
 	// Verify observation score=8 and direction=tx
 	var score *float64
 	var direction *string
-	mustScan(t, testRow(t, store, "SELECT score, direction FROM observations LIMIT 1"), &score, &direction)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT score, direction FROM observations LIMIT 1"), &score, &direction)
 	if score == nil || *score != 8.0 {
 		t.Errorf("score=%v, want 8.0", score)
 	}
@@ -275,7 +276,7 @@ func TestHandleMessageDirectMessageEmptyText(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/direct/abc", payload: []byte(`{"text":""}`)}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("empty text DM should not insert")
 	}
@@ -288,7 +289,7 @@ func TestHandleMessageDirectNoSender(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/direct/xyz", payload: []byte(`{"text":"message with no colon"}`)}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
@@ -307,7 +308,7 @@ func TestHandleMessageUppercaseScoreDirection(t *testing.T) {
 
 	var score *float64
 	var direction *string
-	mustScan(t, testRow(t, store, "SELECT score, direction FROM observations LIMIT 1"), &score, &direction)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT score, direction FROM observations LIMIT 1"), &score, &direction)
 	if score == nil || *score != 9.0 {
 		t.Errorf("score=%v, want 9.0", score)
 	}
@@ -325,7 +326,7 @@ func TestHandleMessageChannelLowercaseFields(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/channel/0", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
@@ -339,7 +340,7 @@ func TestHandleMessageDirectLowercaseFields(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/direct/xyz", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
@@ -362,9 +363,9 @@ func TestHandleMessageAdvertWithTelemetry(t *testing.T) {
 
 	// Should have created transmission, node, and observer
 	var txCount, nodeCount, obsCount int
-	txCount = countRows(t, store, "transmissions")
-	nodeCount = countRows(t, store, "nodes")
-	obsCount = countRows(t, store, "observers")
+	txCount = dbtest.CountRows(t, store.db, "transmissions")
+	nodeCount = dbtest.CountRows(t, store.db, "nodes")
+	obsCount = dbtest.CountRows(t, store.db, "observers")
 	if txCount != 1 {
 		t.Errorf("transmissions=%d, want 1", txCount)
 	}
@@ -403,7 +404,7 @@ func TestHandleMessageAdvertGeoFiltered(t *testing.T) {
 	})
 
 	// Geo-filtered adverts should not create nodes
-	nodeCount := countRows(t, store, "nodes")
+	nodeCount := dbtest.CountRows(t, store.db, "nodes")
 
 	if nodeCount != 0 {
 		t.Errorf("nodes=%d, want 0 (geo-filtered advert in drop mode should not create node)", nodeCount)
@@ -437,7 +438,7 @@ func TestHandleMessageCorruptedAdvertNoNode(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "nodes")
+	count := dbtest.CountRows(t, store.db, "nodes")
 
 	if count != 0 {
 		t.Error("all-zero pubkey advert should not create a node")
@@ -457,13 +458,13 @@ func TestHandleMessageNonAdvertPacket(t *testing.T) {
 	}
 	handleMessage(t.Context(), store, "test", source, msg, nil, nil, &Config{})
 
-	if n := countRows(t, store, "transmissions"); n != 1 {
+	if n := dbtest.CountRows(t, store.db, "transmissions"); n != 1 {
 		t.Fatalf("non-advert should insert transmission, got %d", n)
 	}
 
 	var routeType types.RouteType
 	var payloadType types.PayloadType
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		"SELECT route_type, payload_type FROM transmissions ORDER BY id LIMIT 1"),
 		&routeType, &payloadType)
 	if payloadType != types.PayloadACK {
@@ -473,7 +474,7 @@ func TestHandleMessageNonAdvertPacket(t *testing.T) {
 		t.Errorf("route_type=%v, want %v", routeType, types.RouteDirect)
 	}
 
-	if n := countRows(t, store, "nodes"); n != 0 {
+	if n := dbtest.CountRows(t, store.db, "nodes"); n != 0 {
 		t.Error("non-advert should not create nodes")
 	}
 }
@@ -499,7 +500,7 @@ func TestInsertTransmissionDefaultTimestamp(t *testing.T) {
 	}
 
 	var firstSeen time.Time
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		`SELECT first_seen FROM transmissions WHERE hash = $1`, "default_ts_test1"), &firstSeen)
 	if firstSeen.Before(before) || firstSeen.After(after) {
 		t.Errorf("first_seen = %v, want within [%v, %v] (ingest time)", firstSeen, before, after)
@@ -521,7 +522,7 @@ func TestUpsertNodeDefaultTimestamp(t *testing.T) {
 	after := time.Now().UTC().Add(time.Second)
 
 	var lastSeen, firstSeen *time.Time
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		`SELECT last_seen, first_seen FROM nodes WHERE public_key = $1`, pk), &lastSeen, &firstSeen)
 	if lastSeen == nil || lastSeen.Before(before) || lastSeen.After(after) {
 		t.Errorf("last_seen = %v, want within [%v, %v] (ingest time)", lastSeen, before, after)
@@ -542,7 +543,7 @@ func TestUpsertNodeWithLatLon(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotLat, gotLon float64
-	mustScan(t, testRow(t, store, "SELECT lat, lon from nodes WHERE public_key = 'pk_latlon_0000000000000000000000000000000001'"), &gotLat, &gotLon)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT lat, lon from nodes WHERE public_key = 'pk_latlon_0000000000000000000000000000000001'"), &gotLat, &gotLon)
 	if gotLat != 37.0 || gotLon != -122.0 {
 		t.Errorf("lat=%f lon=%f", gotLat, gotLon)
 	}
@@ -560,7 +561,7 @@ func TestHandleMessageChannelLongSender(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/channel/1", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "nodes")
+	count := dbtest.CountRows(t, store.db, "nodes")
 	if count != 0 {
 		t.Error("long sender should not extract")
 	}
@@ -577,7 +578,7 @@ func TestHandleMessageDirectLongSender(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/direct/abc", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
@@ -592,7 +593,7 @@ func TestHandleMessageDirectUppercaseScoreDirection(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/direct/d1", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
@@ -600,7 +601,7 @@ func TestHandleMessageDirectUppercaseScoreDirection(t *testing.T) {
 	// Verify uppercase Score/Direction were picked up
 	var score *float64
 	var direction *string
-	mustScan(t, testRow(t, store, "select score, direction from observations limit 1"), &score, &direction)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "select score, direction from observations limit 1"), &score, &direction)
 	if score == nil || *score != 6.0 {
 		t.Errorf("score=%v, want 6.0", score)
 	}
@@ -618,7 +619,7 @@ func TestHandleMessageChannelUppercaseScoreDirection(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/message/channel/5", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
@@ -626,7 +627,7 @@ func TestHandleMessageChannelUppercaseScoreDirection(t *testing.T) {
 	// Verify uppercase Score/Direction were picked up
 	var score *float64
 	var direction *string
-	mustScan(t, testRow(t, store, "select score, direction from observations limit 1"), &score, &direction)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "select score, direction from observations limit 1"), &score, &direction)
 	if score == nil || *score != 4.0 {
 		t.Errorf("score=%v, want 4.0", score)
 	}
@@ -646,7 +647,7 @@ func TestHandleMessageRawLowercaseScore(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var score *float64
-	mustScan(t, testRow(t, store, "select score from observations limit 1"), &score)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "select score from observations limit 1"), &score)
 	if score == nil || *score != 3.5 {
 		t.Errorf("score=%v, want 3.5", score)
 	}
@@ -663,7 +664,7 @@ func TestHandleMessageStatusNoOrigin(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	if n := countWhere(t, store, "observers", "pubkey = $1", "obs5"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", "obs5"); n != 1 {
 		t.Errorf("observer count=%d, want 1", n)
 	}
 
@@ -671,7 +672,7 @@ func TestHandleMessageStatusNoOrigin(t *testing.T) {
 	// is stored as NULL (blank means "unknown" and never overwrites a real name),
 	// and IATA should be "LAX".
 	var name, iata *string
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		`SELECT name, iata FROM observers WHERE pubkey = $1`, "obs5"), &name, &iata)
 	if name != nil {
 		t.Errorf("name=%q, want NULL (no origin provided)", *name)
@@ -687,7 +688,7 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 	// newTestStore builds the schema through the real migration path; verify
 	// that it ran to completion and produced the expected objects.
 	store := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 
 	db, err := sql.Open("pgx", store.db.Pool().Config().ConnString()) // import _ "github.com/jackc/pgx/v5/stdlib"
 	if err != nil {
@@ -711,14 +712,14 @@ func TestGooseMigrationsAppliedOnFreshDB(t *testing.T) {
 	}
 
 	for _, tbl := range []string{"nodes", "observers", "transmissions", "observations"} {
-		if n := countWhere(t, store, "pg_tables", "schemaname = 'public' AND tablename = $1", tbl); n != 1 {
+		if n := dbtest.CountWhere(t, store.db, "pg_tables", "schemaname = 'public' AND tablename = $1", tbl); n != 1 {
 			t.Errorf("table %s should exist", tbl)
 		}
 	}
-	if n := countWhere(t, store, "pg_tables", "schemaname = 'public' AND tablename = $1", "inactive_nodes"); n != 0 {
+	if n := dbtest.CountWhere(t, store.db, "pg_tables", "schemaname = 'public' AND tablename = $1", "inactive_nodes"); n != 0 {
 		t.Error("inactive_nodes should not exist; nodes carries an inactive flag")
 	}
-	if n := countWhere(t, store, "pg_views", "schemaname = 'public' AND viewname = $1", "packets_v"); n != 0 {
+	if n := dbtest.CountWhere(t, store.db, "pg_views", "schemaname = 'public' AND viewname = $1", "packets_v"); n != 0 {
 		t.Error("packets_v should not exist; packets are read from transmissions and observations")
 	}
 }
@@ -746,15 +747,15 @@ func TestMoveStaleNodesMarksInactive(t *testing.T) {
 		t.Errorf("moved=%d, want 1", moved)
 	}
 
-	if n := countWhere(t, store, "nodes", "public_key = $1 AND inactive", stale); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "nodes", "public_key = $1 AND inactive", stale); n != 1 {
 		t.Error("stale node should be marked inactive")
 	}
-	if n := countWhere(t, store, "nodes", "public_key = $1 AND NOT inactive", fresh); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "nodes", "public_key = $1 AND NOT inactive", fresh); n != 1 {
 		t.Error("fresh node should stay active")
 	}
 	// Nothing is deleted or copied: both rows are still in nodes. This is what
 	// keeps neighbor_edges and observation_path_hops references valid.
-	if n := countRows(t, store, "nodes"); n != 2 {
+	if n := dbtest.CountRows(t, store.db, "nodes"); n != 2 {
 		t.Errorf("nodes rows = %d, want 2", n)
 	}
 
@@ -781,7 +782,7 @@ func TestRemoveStaleObservers(t *testing.T) {
 	// Metrics rows for both: the prune deletes metrics for observers it deactivates.
 	// observer_metrics.observer_id holds the pubkey text, not the surrogate id.
 	for _, pk := range []string{"obs-old", "obs-new"} {
-		testExec(t, store, `INSERT INTO observer_metrics (observer_id, timestamp) VALUES ($1, $2)`, pk, now)
+		dbtest.Exec(t, store.db, `INSERT INTO observer_metrics (observer_id, timestamp) VALUES ($1, $2)`, pk, now)
 	}
 
 	removed, err := store.RemoveStaleObservers(ctx, 14)
@@ -793,21 +794,21 @@ func TestRemoveStaleObservers(t *testing.T) {
 	}
 
 	// Soft delete: both rows are still there.
-	if n := countRows(t, store, "observers"); n != 2 {
+	if n := dbtest.CountRows(t, store.db, "observers"); n != 2 {
 		t.Errorf("observers count=%d, want 2 (soft-delete preserves row)", n)
 	}
-	if n := countWhere(t, store, "observers", "pubkey = $1 AND inactive", "obs-old"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1 AND inactive", "obs-old"); n != 1 {
 		t.Error("obs-old should be marked inactive")
 	}
-	if n := countWhere(t, store, "observers", "pubkey = $1 AND NOT inactive", "obs-new"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1 AND NOT inactive", "obs-new"); n != 1 {
 		t.Error("obs-new should stay active")
 	}
 
 	// The metrics of the deactivated observer are gone; the active one keeps its own.
-	if n := countWhere(t, store, "observer_metrics", "observer_id = $1", "obs-old"); n != 0 {
+	if n := dbtest.CountWhere(t, store.db, "observer_metrics", "observer_id = $1", "obs-old"); n != 0 {
 		t.Errorf("obs-old metrics = %d, want 0 after deactivation", n)
 	}
-	if n := countWhere(t, store, "observer_metrics", "observer_id = $1", "obs-new"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observer_metrics", "observer_id = $1", "obs-new"); n != 1 {
 		t.Errorf("obs-new metrics = %d, want 1", n)
 	}
 
@@ -848,10 +849,10 @@ func TestRemoveStaleObserversKeepForever(t *testing.T) {
 	if removed != 0 {
 		t.Errorf("removed=%d, want 0 (keep forever)", removed)
 	}
-	if n := countRows(t, store, "observers"); n != 1 {
+	if n := dbtest.CountRows(t, store.db, "observers"); n != 1 {
 		t.Errorf("observers count=%d, want 1 (keep forever)", n)
 	}
-	if n := countWhere(t, store, "observers", "pubkey = $1 AND NOT inactive", "obs-ancient"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1 AND NOT inactive", "obs-ancient"); n != 1 {
 		t.Error("obs-ancient should NOT be marked inactive (keep forever)")
 	}
 
@@ -880,7 +881,7 @@ func TestRemoveStaleObserversReactivation(t *testing.T) {
 	if removed != 1 {
 		t.Errorf("removed=%d, want 1", removed)
 	}
-	if n := countWhere(t, store, "observers", "pubkey = $1 AND inactive", "obs-test"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1 AND inactive", "obs-test"); n != 1 {
 		t.Fatal("obs-test should be inactive after soft-delete; the reactivation check below proves nothing otherwise")
 	}
 
@@ -888,7 +889,7 @@ func TestRemoveStaleObserversReactivation(t *testing.T) {
 	if err := store.UpsertObserver(ctx, "obs-test", ptr("TestObserver"), "LAX", nil); err != nil {
 		t.Fatal(err)
 	}
-	if n := countWhere(t, store, "observers", "pubkey = $1 AND NOT inactive", "obs-test"); n != 1 {
+	if n := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1 AND NOT inactive", "obs-test"); n != 1 {
 		t.Error("obs-test should be active again after a live upsert")
 	}
 }

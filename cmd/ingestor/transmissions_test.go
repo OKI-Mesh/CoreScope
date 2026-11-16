@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -45,10 +46,10 @@ func TestInsertTransmission(t *testing.T) {
 		t.Error("first insert should report a new transmission")
 	}
 
-	if n := countRows(t, s, "transmissions"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "transmissions"); n != 1 {
 		t.Errorf("transmissions count=%d, want 1", n)
 	}
-	if n := countRows(t, s, "observations"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "observations"); n != 1 {
 		t.Errorf("observations count=%d, want 1", n)
 	}
 
@@ -57,7 +58,7 @@ func TestInsertTransmission(t *testing.T) {
 	var routeType types.RouteType
 	var payloadType types.PayloadType
 	var firstSeen time.Time
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT route_type, payload_type, first_seen FROM transmissions WHERE hash = $1`, data.Hash),
 		&routeType, &payloadType, &firstSeen)
 	if routeType != types.RouteDirect || payloadType != types.PayloadTXT_MSG {
@@ -67,7 +68,7 @@ func TestInsertTransmission(t *testing.T) {
 		t.Errorf("first_seen = %v, want %v", firstSeen, rxTime)
 	}
 	var gotSNR, gotRSSI *float64
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT snr, rssi FROM observations
 		 WHERE transmission_id = (SELECT id FROM transmissions WHERE hash = $1)`, data.Hash),
 		&gotSNR, &gotRSSI)
@@ -84,10 +85,10 @@ func TestInsertTransmission(t *testing.T) {
 	if isNew {
 		t.Error("same hash must not report a new transmission")
 	}
-	if n := countRows(t, s, "transmissions"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "transmissions"); n != 1 {
 		t.Errorf("transmissions count after dedup=%d, want 1", n)
 	}
-	if n := countRows(t, s, "observations"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "observations"); n != 1 {
 		t.Errorf("observations count after dedup=%d, want 1", n)
 	}
 	// Counted exactly once (a double increment slipped into this path before).
@@ -128,7 +129,7 @@ func TestIssue1690_LastSeenUpdatedOnObservation(t *testing.T) {
 	}
 
 	var seededLastSeen time.Time
-	mustScan(t, testRow(t, s, "SELECT last_seen FROM transmissions WHERE hash = $1", hash), &seededLastSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT last_seen FROM transmissions WHERE hash = $1", hash), &seededLastSeen)
 	if !seededLastSeen.Equal(weekAgo) {
 		t.Logf("seed last_seen=%v expected %v (allowed for fresh column)", seededLastSeen, weekAgo)
 	}
@@ -152,7 +153,7 @@ func TestIssue1690_LastSeenUpdatedOnObservation(t *testing.T) {
 	}
 
 	var ls time.Time
-	mustScan(t, testRow(t, s, "SELECT last_seen FROM transmissions WHERE hash = $1", hash), &ls)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT last_seen FROM transmissions WHERE hash = $1", hash), &ls)
 	if ls.Before(nowSec.Add(-2 * time.Second)) {
 		t.Errorf("transmissions.last_seen=%v after fresh observation; expected ≥ %v (a recent unix-second). "+
 			"Pre-fix the column is never updated on re-observation — the original cold-load bug (#1690).",

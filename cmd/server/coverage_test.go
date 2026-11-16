@@ -2999,32 +2999,32 @@ func TestGetNodeHashSizeInfoEdgeCases(t *testing.T) {
 	// Adverts with various edge cases
 	// 1. Valid advert with pubKey
 	dbtest.Advert(t, db, obsIdx, "hs_valid_1", "0140aabbccdd", flood,
-		`{"pubKey":"aabbccdd11223344","name":"NodeA","type":"ADVERT"}`, recent)
+		`{"pubKey":"aabbccdd11223344","name":"NodeA","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// 2. Short raw_hex (< 4 chars)
 	dbtest.Advert(t, db, obsIdx, "hs_short_hex", "01", flood,
-		`{"pubKey":"eeff00112233aabb","name":"NodeB","type":"ADVERT"}`, recent)
+		`{"pubKey":"eeff00112233aabb","name":"NodeB","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// 4. Invalid JSON (requires decoded_json to be a text column; see note)
-	dbtest.Advert(t, db, obsIdx, "hs_bad_json", "0140aabb", flood, `not-json`, recent)
+	dbtest.Advert(t, db, obsIdx, "hs_bad_json", "0140aabb", flood, `not-json`, recent, 10.0, -90)
 
 	// 5. JSON with public_key field instead of pubKey
 	dbtest.Advert(t, db, obsIdx, "hs_alt_key", "0180eeff", flood,
-		`{"public_key":"aabbccdd11223344","name":"NodeA","type":"ADVERT"}`, recent)
+		`{"public_key":"aabbccdd11223344","name":"NodeA","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// 6. JSON with no pubKey at all
 	dbtest.Advert(t, db, obsIdx, "hs_no_pk", "01C0ffee", flood,
-		`{"name":"NodeZ","type":"ADVERT"}`, recent)
+		`{"name":"NodeZ","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// 7. Empty decoded_json (see note)
-	dbtest.Advert(t, db, obsIdx, "hs_empty_json", "0140bbcc", flood, ``, recent)
+	dbtest.Advert(t, db, obsIdx, "hs_empty_json", "0140bbcc", flood, ``, recent, 10.0, -90)
 
 	// 8-10. Multiple adverts for same node with different hash sizes (flip-flop test).
 	// Staggered by a minute so the order the code sees them in is deterministic.
 	const flipperJSON = `{"pubKey":"ffff000011112222","name":"Flipper","type":"ADVERT"}`
-	dbtest.Advert(t, db, obsIdx, "hs_flip_1", "0140dd01", flood, flipperJSON, recent)
-	dbtest.Advert(t, db, obsIdx, "hs_flip_2", "0180dd02", flood, flipperJSON, recent.Add(1*time.Minute))
-	dbtest.Advert(t, db, obsIdx, "hs_flip_3", "0140dd03", flood, flipperJSON, recent.Add(2*time.Minute))
+	dbtest.Advert(t, db, obsIdx, "hs_flip_1", "0140dd01", flood, flipperJSON, recent, 10.0, -90)
+	dbtest.Advert(t, db, obsIdx, "hs_flip_2", "0180dd02", flood, flipperJSON, recent.Add(1*time.Minute), 10.0, -90)
+	dbtest.Advert(t, db, obsIdx, "hs_flip_3", "0140dd03", flood, flipperJSON, recent.Add(2*time.Minute), 10.0, -90)
 
 	store := newPacketStoreForTest(t, db)
 	if err := store.LoadChunked(t.Context(), 1000); err != nil {
@@ -3071,19 +3071,19 @@ func TestHashSizeTransportRoutePathByteOffset(t *testing.T) {
 	// If bug is present, code reads byte 1 (0xAA) → hash_size bits = 10 → size 3 (coincidence)
 	// Use path byte 0x40 (hash_size=2) and transport byte 0x01 at offset 1 (hash_size=1 if misread)
 	dbtest.Advert(t, db, obsIdx, "tf_offset", "100102030440aabb", types.RouteType(0),
-		`{"pubKey":"aaaa000000000001","name":"TF-Node","type":"ADVERT"}`, recent)
+		`{"pubKey":"aaaa000000000001","name":"TF-Node","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// Route type 3 (TRANSPORT_DIRECT): header=0x13 (payload_type=4, route_type=3)
 	// 4 transport bytes + path byte at offset 5.
 	// Path byte 0xC1 → hash_size bits = 11 → size 4, hop_count = 1 (not zero-hop)
 	// Byte 1 = 0x05 → hash_size bits = 00 → size 1 if misread
 	dbtest.Advert(t, db, obsIdx, "td_offset", "1305060708C1bbcc", types.RouteType(3),
-		`{"pubKey":"aaaa000000000002","name":"TD-Node","type":"ADVERT"}`, recent)
+		`{"pubKey":"aaaa000000000002","name":"TD-Node","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// Route type 1 (FLOOD): header=0x11 (payload_type=4, route_type=1)
 	// Path byte at offset 1. Path byte 0x80 → hash_size bits = 10 → size 3
 	dbtest.Advert(t, db, obsIdx, "flood_offset", "1180aabbccdd", types.RouteType(1),
-		`{"pubKey":"aaaa000000000003","name":"Flood-Node","type":"ADVERT"}`, recent)
+		`{"pubKey":"aaaa000000000003","name":"Flood-Node","type":"ADVERT"}`, recent, 10.0, -90)
 
 	store := newPacketStoreForTest(t, db)
 	if err := store.LoadChunked(t.Context(), 1000); err != nil {
@@ -3128,17 +3128,17 @@ func TestHashSizeTransportDirectZeroHopSkipped(t *testing.T) {
 	// a deliberate declaration — see TestZeroHopDirectAdvertDeclaredSizeIsEvidence
 	// — so the skip is keyed on the byte's content, not on the route type.)
 	dbtest.Advert(t, db, obsIdx, "direct_zh", "1200aabbccdd", types.RouteType(2),
-		`{"pubKey":"bbbb000000000001","name":"Direct-ZH","type":"ADVERT"}`, recent)
+		`{"pubKey":"bbbb000000000001","name":"Direct-ZH","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// RouteTransportDirect (3) zero-hop: 4 transport bytes + all-zero path byte
 	// Should ALSO be skipped (this was the missing case in #747)
 	dbtest.Advert(t, db, obsIdx, "tdirect_zh", "130102030400aabb", types.RouteType(3),
-		`{"pubKey":"bbbb000000000002","name":"TDirect-ZH","type":"ADVERT"}`, recent)
+		`{"pubKey":"bbbb000000000002","name":"TDirect-ZH","type":"ADVERT"}`, recent, 10.0, -90)
 
 	// RouteDirect (2) non-zero-hop: path byte 0x41 → hop_count=1
 	// Should NOT be skipped
 	dbtest.Advert(t, db, obsIdx, "direct_1h", "1241aabbccdd", types.RouteType(2),
-		`{"pubKey":"bbbb000000000003","name":"Direct-1H","type":"ADVERT"}`, recent)
+		`{"pubKey":"bbbb000000000003","name":"Direct-1H","type":"ADVERT"}`, recent, 10.0, -90)
 
 	store := newPacketStoreForTest(t, db)
 	if err := store.LoadChunked(t.Context(), 1000); err != nil {
@@ -3176,7 +3176,7 @@ func TestAnalyticsHashSizesZeroHopSkip(t *testing.T) {
 	obsIdx := dbtest.Observer(t, db, "obs1", "Obs", "SJC", firstSeen, recent)
 
 	const pk = "cccc000000000001"
-	dbtest.Node(t, db, pk, "ZH-Analytics", "repeater")
+	dbtest.Node(t, db, pk, "ZH-Analytics", "repeater", dbtest.Ago(0))
 
 	decoded := `{"pubKey":"` + pk + `","name":"ZH-Analytics","type":"ADVERT"}`
 
@@ -3193,7 +3193,7 @@ func TestAnalyticsHashSizesZeroHopSkip(t *testing.T) {
 
 	// Second: a direct zero-hop advert with pathByte=0x00 → would give hashSize=1
 	// header 0x12 = route_type 2 (direct), payload_type 4
-	dbtest.Advert(t, db, obsIdx, "az_direct", "1200aabbccdd", types.RouteType(2), decoded, recent)
+	dbtest.Advert(t, db, obsIdx, "az_direct", "1200aabbccdd", types.RouteType(2), decoded, recent, 10.0, -90)
 
 	store := newPacketStoreForTest(t, db)
 	if err := store.LoadChunked(t.Context(), 1000); err != nil {

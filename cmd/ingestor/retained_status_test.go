@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // A retained MQTT status message is a snapshot the broker replays on every
@@ -56,7 +57,7 @@ func TestRetainedStatusDoesNotReactivateInactiveObserver(t *testing.T) {
 		nil, nil, &Config{})
 
 	var inactive int
-	mustScan(t, testRow(t, store, `SELECT inactive::int FROM observers WHERE pubkey = $1`, observerID), &inactive)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT inactive::int FROM observers WHERE pubkey = $1`, observerID), &inactive)
 	if inactive != 1 {
 		t.Errorf("inactive = %d, want 1 (retained replay must not resurrect a soft-deleted observer)", inactive)
 	}
@@ -74,7 +75,7 @@ func TestRetainedStatusDoesNotCreateUnknownObserver(t *testing.T) {
 		retainedStatusMsg(statusTopic(observerID), `{"origin":"Ghost","noise_floor":-95.5}`),
 		nil, nil, &Config{})
 
-	count := countWhere(t, store, "observers", "pubkey = $1", observerID)
+	count := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", observerID)
 	if count != 0 {
 		t.Errorf("observers row count = %d, want 0 (retained-only observer must not be created)", count)
 	}
@@ -92,7 +93,7 @@ func TestRetainedStatusDoesNotInsertMetricsSample(t *testing.T) {
 		retainedStatusMsg(statusTopic(observerID), `{"origin":"`+observerID+`","noise_floor":-95.5,"battery_mv":3900}`),
 		nil, nil, &Config{})
 
-	count := countWhere(t, store, "observer_metrics", "observer_id = $1", observerID)
+	count := dbtest.CountWhere(t, store.db, "observer_metrics", "observer_id = $1", observerID)
 	if count != 0 {
 		t.Errorf("observer_metrics rows = %d, want 0 (retained replay is not a new sample)", count)
 	}
@@ -112,7 +113,7 @@ func TestRetainedStatusStillUpdatesMetadata(t *testing.T) {
 
 	var firmware string
 	var noiseFloor float64
-	mustScan(t, testRow(t, store, `SELECT firmware, noise_floor FROM observers WHERE pubkey = $1`, observerID), &firmware, &noiseFloor)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT firmware, noise_floor FROM observers WHERE pubkey = $1`, observerID), &firmware, &noiseFloor)
 	if firmware != "v1.2.3" {
 		t.Errorf("firmware = %q, want %q", firmware, "v1.2.3")
 	}
@@ -151,7 +152,7 @@ func TestLiveStatusStillCreatesUnknownObserver(t *testing.T) {
 		&mockMessage{topic: statusTopic(observerID), payload: []byte(`{"origin":"Fresh","noise_floor":-95.5}`)},
 		nil, nil, &Config{})
 
-	count := countWhere(t, store, "observers", "pubkey = $1", observerID)
+	count := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", observerID)
 	if count != 1 {
 		t.Errorf("observers row count = %d, want 1 (live status creates the observer)", count)
 	}

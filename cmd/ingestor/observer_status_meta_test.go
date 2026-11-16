@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // Regression test for #1044: observer metadata (model, firmware, battery_mv,
@@ -67,7 +69,7 @@ func TestStatusMessageMetadataPersisted_Issue1044(t *testing.T) {
 		gotUptime                                         int64
 		gotNoise                                          float64
 	)
-	mustScan(t, testRow(t, s, `SELECT model, firmware, client_version, radio,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT model, firmware, client_version, radio,
 	                            battery_mv, uptime_secs, noise_floor
 	                     FROM observers WHERE pubkey = 'aabbccdd'`), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &gotBattery, &gotUptime, &gotNoise)
 	if gotModel != "Heltec V3" {

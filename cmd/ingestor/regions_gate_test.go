@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+)
 
 // clientRegionsMsg builds a valid region-discovery answer on the dedicated
 // topic meshcore/client/<pubkey>/regions.
@@ -68,15 +72,15 @@ func TestClientRegionsGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 	if n := declaredRegionsCount(t, store); n != 0 {
 		t.Fatalf("feature OFF: expected 0 node_declared_regions rows, got %d", n)
 	}
-	observerRows := countWhere(t, store, "observers", "pubkey = $1", testCompanionPK)
+	observerRows := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", testCompanionPK)
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}
-	clientRegionRows := countWhere(t, store, "observers", "iata = $1", "client")
+	clientRegionRows := dbtest.CountWhere(t, store.db, "observers", "iata = $1", "client")
 	if clientRegionRows != 0 {
 		t.Fatalf("feature OFF: no observer should be registered under a bogus 'client' region, got %d rows", clientRegionRows)
 	}
-	txRows := countWhere(t, store, "transmissions", "1 = 1")
+	txRows := dbtest.CountWhere(t, store.db, "transmissions", "1 = 1")
 	if txRows != 0 {
 		t.Fatalf("feature OFF: the client-topic message must not be ingested as an ordinary observer packet, got %d transmissions rows", txRows)
 	}

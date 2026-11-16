@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -55,13 +56,13 @@ func TestHandleClientRfSample(t *testing.T) {
 	}
 	handleClientRfSample(ctx, s, "test", "aa11", msg)
 
-	if n := countRows(t, s, "client_rf_samples"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "client_rf_samples"); n != 1 {
 		t.Fatalf("rows = %d, want 1", n)
 	}
 
 	var sampledAt time.Time
 	var recvErrorsNull bool
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT sampled_at, recv_errors IS NULL FROM client_rf_samples WHERE rx_pubkey = $1`, "aa11"),
 		&sampledAt, &recvErrorsNull)
 
@@ -103,7 +104,7 @@ func TestHandleClientRfSampleRejects(t *testing.T) {
 	delete(noUptime, "uptime_secs")
 	handleClientRfSample(ctx, s, "test", "aa11", noUptime)
 
-	n := countRows(t, s, "client_rf_samples")
+	n := dbtest.CountRows(t, s.db, "client_rf_samples")
 	if n != 0 {
 		t.Errorf("rows = %d, want 0 — all four must be rejected", n)
 	}
@@ -210,7 +211,7 @@ func TestClientRfDeltasNormalizesPubkeyCase(t *testing.T) {
 
 func TestPruneOldClientRfSamples(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	recent, old := now.AddDate(0, 0, -1), now.AddDate(0, 0, -40)
 
@@ -229,7 +230,7 @@ func TestPruneOldClientRfSamples(t *testing.T) {
 	if n, _ := s.PruneOldClientRfSamples(ctx, 0); n != 0 {
 		t.Fatalf("days=0 must be a no-op, got %d", n)
 	}
-	if got := countRows(t, s, "client_rf_samples"); got != 2 {
+	if got := dbtest.CountRows(t, s.db, "client_rf_samples"); got != 2 {
 		t.Fatalf("days=0 deleted rows: %d remain, want 2", got)
 	}
 	n, err := s.PruneOldClientRfSamples(ctx, 7)
@@ -239,7 +240,7 @@ func TestPruneOldClientRfSamples(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 old sample pruned, got %d", n)
 	}
-	if got := countWhere(t, s, "client_rf_samples", "sampled_at = $1", recent); got != 1 {
+	if got := dbtest.CountWhere(t, s.db, "client_rf_samples", "sampled_at = $1", recent); got != 1 {
 		t.Fatalf("the recent sample must survive, got %d", got)
 	}
 }
@@ -250,7 +251,7 @@ func TestPruneOldClientRfSamples(t *testing.T) {
 // millisecond older must go.
 func TestPruneClientRfSamplesCutoffBoundary(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	cutoff := time.Date(2026, 8, 4, 10, 0, 0, 400*int(time.Millisecond), time.UTC)
 	before, boundary := cutoff.Add(-time.Millisecond), cutoff.Add(time.Millisecond)
 
@@ -269,10 +270,10 @@ func TestPruneClientRfSamplesCutoffBoundary(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("pruned %d, want 1 (only the row a millisecond before the cutoff)", n)
 	}
-	if got := countWhere(t, s, "client_rf_samples", "sampled_at = $1", boundary); got != 1 {
+	if got := dbtest.CountWhere(t, s.db, "client_rf_samples", "sampled_at = $1", boundary); got != 1 {
 		t.Fatalf("the row a millisecond after the cutoff must survive, got %d", got)
 	}
-	if got := countWhere(t, s, "client_rf_samples", "sampled_at = $1", before); got != 0 {
+	if got := dbtest.CountWhere(t, s.db, "client_rf_samples", "sampled_at = $1", before); got != 0 {
 		t.Fatalf("the row a millisecond before the cutoff must be deleted, got %d", got)
 	}
 }
@@ -330,7 +331,7 @@ func TestInsertClientRfSample(t *testing.T) {
 	var gotPosAccM, gotLastSNR *float64
 	var gotBatteryMV, gotQueueLen, gotErrors, gotNoiseFloor, gotLastRSSI *int32
 	var gotTxAirSecs, gotRxAirSecs, gotRecv, gotSent, gotFloodRx, gotDirectRx, gotFloodTx, gotDirectTx, gotRecvErrors *int64
-	mustScan(t, testRow(t, s, `
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `
 		SELECT lat, lon, pos_acc_m, stationary, uptime_secs, battery_mv, queue_len,
 		       errors, noise_floor, last_rssi, last_snr, tx_air_secs, rx_air_secs,
 		       recv, sent, flood_rx, direct_rx, flood_tx, direct_tx, recv_errors
@@ -380,7 +381,7 @@ func TestInsertClientRfSample(t *testing.T) {
 		t.Fatalf("insert second sample: ins=%v err=%v", ins, err)
 	}
 	var gotRecvErrors2 *int64
-	mustScan(t, testRow(t, s, `SELECT recv_errors FROM client_rf_samples WHERE sampled_at = $1`, o2.SampledAt), &gotRecvErrors2)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT recv_errors FROM client_rf_samples WHERE sampled_at = $1`, o2.SampledAt), &gotRecvErrors2)
 	wantPtr(t, "recv_errors (second sample)", gotRecvErrors2, 55)
 
 }

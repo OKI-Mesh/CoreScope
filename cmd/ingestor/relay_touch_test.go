@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // Issue #1598 / #1611 — the relay-aware last_seen touch.
@@ -30,7 +32,7 @@ func seedRelayNode(t *testing.T, s *Store, pubkey, name string, lastSeen time.Ti
 func nodeLastSeen(t *testing.T, s *Store, pubkey string) time.Time {
 	t.Helper()
 	var ls time.Time
-	mustScan(t, testRow(t, s, `SELECT last_seen FROM nodes WHERE public_key = $1`, pubkey), &ls)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT last_seen FROM nodes WHERE public_key = $1`, pubkey), &ls)
 	return ls
 }
 
@@ -119,7 +121,7 @@ func TestTouchRelayNodes_IgnoresEmptyAndUnknown(t *testing.T) {
 	store.touchRelayNodes(ctx, []string{"ff99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbb"}, time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
 
 	var count int
-	count = countRows(t, store, "nodes")
+	count = dbtest.CountRows(t, store.db, "nodes")
 	if count != 0 {
 		t.Errorf("nodes count = %d, want 0 — touch must never insert rows", count)
 	}

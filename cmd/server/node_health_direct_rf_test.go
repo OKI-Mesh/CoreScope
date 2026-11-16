@@ -121,7 +121,7 @@ func BenchmarkBuildDirectHeardIndex(b *testing.B) {
 			Observations: obsList,
 		})
 	}
-	
+
 	for b.Loop() {
 		_ = buildDirectHeardIndex(packets, pm)
 	}

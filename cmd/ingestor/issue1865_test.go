@@ -16,19 +16,19 @@ import (
 // seedNode inserts an active node (lowercase key).
 func seedNode(t *testing.T, store *Store, pubkey string) {
 	t.Helper()
-	dbtest.Node(t, store.db, pubkey, "n_"+pubkey[:4], "")
+	dbtest.Node(t, store.db, pubkey, "n_"+pubkey[:4], "", dbtest.Ago(0))
 }
 
 func seedInactiveNode(t *testing.T, store *Store, pubkey string) {
 	t.Helper()
-	testExec(t, store, `INSERT INTO nodes (public_key, name, inactive, last_seen, first_seen) VALUES ($1, $2, TRUE, now(), now())`, pubkey, "n_"+pubkey[:4])
+	dbtest.Exec(t, store.db, `INSERT INTO nodes (public_key, name, inactive, last_seen, first_seen) VALUES ($1, $2, TRUE, now(), now())`, pubkey, "n_"+pubkey[:4])
 }
 
 func configuredScope(t *testing.T, store *Store, pubkey string) (sql.NullString, *time.Time) {
 	t.Helper()
 	var sc sql.NullString
 	var at *time.Time
-	mustScan(t, testRow(t, store, "SELECT configured_scope, configured_scope_at FROM nodes WHERE public_key = $1", pubkey), &sc, &at)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT configured_scope, configured_scope_at FROM nodes WHERE public_key = $1", pubkey), &sc, &at)
 	return sc, at
 }
 
@@ -96,7 +96,7 @@ func TestHandleNeighborsReportUnknownNeighborIsNoop(t *testing.T) {
 		},
 	}
 	handleNeighborsReport(ctx, store, "test", "obs", report)
-	n := countRows(t, store, "nodes")
+	n := dbtest.CountRows(t, store.db, "nodes")
 
 	if n != 0 {
 		t.Errorf("nodes count = %d, want 0 (report must not create nodes)", n)
@@ -140,7 +140,7 @@ func TestUpdateNodeConfiguredScopeAppliesToInactiveNode(t *testing.T) {
 		t.Errorf("configured_scope = %q, want '#de' (inactive nodes still record scope reports)", sc.String)
 	}
 	var inactive bool
-	mustScan(t, testRow(t, store, "SELECT inactive FROM nodes WHERE public_key = $1", pk), &inactive)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT inactive FROM nodes WHERE public_key = $1", pk), &inactive)
 	if !inactive {
 		t.Error("a scope report must not reactivate the node")
 	}

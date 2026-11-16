@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 func TestInsertTransmissionGivenTimestamp(t *testing.T) {
@@ -23,7 +25,7 @@ func TestInsertTransmissionGivenTimestamp(t *testing.T) {
 	}
 
 	var firstSeen, lastSeen time.Time
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		`SELECT first_seen, last_seen FROM transmissions WHERE hash = $1`, "given_ts_test1"), &firstSeen, &lastSeen)
 	if !firstSeen.Equal(given) {
 		t.Errorf("first_seen = %v, want the given %v", firstSeen, given)
@@ -44,7 +46,7 @@ func TestUpsertNodeGivenTimestamp(t *testing.T) {
 	}
 
 	var lastSeen, firstSeen time.Time
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		`SELECT last_seen, first_seen FROM nodes WHERE public_key = $1`, pk), &lastSeen, &firstSeen)
 	if !lastSeen.Equal(given) {
 		t.Errorf("last_seen = %v, want the given %v", lastSeen, given)

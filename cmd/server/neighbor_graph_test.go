@@ -920,7 +920,6 @@ func BenchmarkBuildFromStore(b *testing.B) {
 	}
 	store := ngTestStore(b, nodes, packets)
 
-	
 	for b.Loop() {
 		BuildFromStore(store)
 	}

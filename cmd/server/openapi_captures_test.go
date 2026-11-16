@@ -167,12 +167,12 @@ func TestHashSizesZeroBucketIsKept(t *testing.T) {
 	db := setupTestDB(t)
 	recent := time.Now().UTC().Add(-1 * time.Hour)
 	const pk = "cc01cc02cc03cc04"
-	dbtest.Node(t, db, pk, "Zero Hop Repeater", "repeater")
+	dbtest.Node(t, db, pk, "Zero Hop Repeater", "repeater", dbtest.Ago(0))
 	obsIdx := dbtest.Observer(t, db, "obsz", "Obs Z", "CVG", recent, recent)
 	// Header: ADVERT (4<<2) with the direct route bits; path byte 0x00.
 	rawHex := fmt.Sprintf("%02x00aabbccdd", 0x10|int(types.RouteDirect))
 	dbtest.Advert(t, db, obsIdx, "zerohop_01", rawHex, types.RouteDirect,
-		fmt.Sprintf(`{"pubKey":%q,"name":"Zero Hop Repeater","type":"ADVERT"}`, pk), recent)
+		fmt.Sprintf(`{"pubKey":%q,"name":"Zero Hop Repeater","type":"ADVERT"}`, pk), recent, 10.0, -90)
 
 	store := newPacketStoreForTest(t, db)
 	if err := store.LoadChunked(ctx, 1000); err != nil {

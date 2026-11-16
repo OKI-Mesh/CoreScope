@@ -44,7 +44,7 @@ func createTestDBReverseTime(tb testing.TB, numTx int) string {
 	defer db.Close()
 
 	now := time.Now().UTC().Truncate(time.Second)
-	observerID := dbtest.EnsureObserver(tb, db, "obs1")
+	observerID := dbtest.Observer(tb, db, "obs1", "obs1", "", now, now)
 	for i := 1; i <= numTx; i++ {
 		dbtest.TxWithObservation(tb, db, observerID, database.TransmissionInput{
 			RawHex:         "aabb",

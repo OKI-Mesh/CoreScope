@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // The retain flag alone does not identify a replay. Our live topology puts a
@@ -63,7 +65,7 @@ func TestStaleStatusPayloadDoesNotCreateObserver(t *testing.T) {
 			statusPayload("BE-BGS-RRY120-RES", "offline", time.Now().UTC().AddDate(0, -4, 0))),
 		nil, nil, &Config{})
 
-	count := countWhere(t, store, "observers", "pubkey = $1", observerID)
+	count := dbtest.CountWhere(t, store.db, "observers", "pubkey = $1", observerID)
 	if count != 0 {
 		t.Errorf("observers row count = %d, want 0 (replayed snapshot must not resurrect a purged observer)", count)
 	}
@@ -104,7 +106,7 @@ func TestStaleStatusPayloadDoesNotReactivateInactiveObserver(t *testing.T) {
 		nil, nil, &Config{})
 
 	var inactive int
-	mustScan(t, testRow(t, store, `SELECT inactive::int FROM observers WHERE pubkey = $1`, observerID), &inactive)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT inactive::int FROM observers WHERE pubkey = $1`, observerID), &inactive)
 	if inactive != 1 {
 		t.Errorf("inactive = %d, want 1 (a replay must not undo the soft-delete)", inactive)
 	}
@@ -209,7 +211,7 @@ func TestStaleStatusPayloadStillUpdatesMetadata(t *testing.T) {
 		nil, nil, &Config{})
 
 	var firmware string
-	mustScan(t, testRow(t, store, `SELECT firmware FROM observers WHERE pubkey = $1`, observerID), &firmware)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT firmware FROM observers WHERE pubkey = $1`, observerID), &firmware)
 
 	if firmware != "v1.14.1" {
 		t.Errorf("firmware = %q, want %q (metadata from a replay is still the last known state)", firmware, "v1.14.1")
@@ -228,7 +230,7 @@ func TestStaleStatusPayloadDoesNotInsertMetricsSample(t *testing.T) {
 		nil, nil, &Config{})
 
 	var count int
-	count = countWhere(t, store, "observer_metrics", "observer_id = $1", "obs-zombie")
+	count = dbtest.CountWhere(t, store.db, "observer_metrics", "observer_id = $1", "obs-zombie")
 	if count != 0 {
 		t.Errorf("observer_metrics rows = %d, want 0 (a replayed reading is not a new sample)", count)
 	}

@@ -13,6 +13,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // Status path: envelope timestamp is a well-formed RFC3339 value 3h in the
@@ -32,7 +34,7 @@ func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *te
 	after := time.Now().Unix()
 
 	var lastSeen time.Time
-	mustScan(t, testRow(t, store, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-past"), &lastSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-past"), &lastSeen)
 	if lastSeen.Unix() < before-5 || lastSeen.Unix() > after+5 {
 		t.Errorf("observer.last_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope reported well-formed stale %q (3h ago) — must NOT drag last_seen into the past. Issue #1465.",
@@ -57,7 +59,7 @@ func TestStatusMessage_ObserverLastSeen_AlwaysIngestTime_FutureEnvelope_1465(t *
 	after := time.Now().Unix()
 
 	var lastSeen time.Time
-	mustScan(t, testRow(t, store, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-future"), &lastSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-future"), &lastSeen)
 	if lastSeen.Unix() < before-5 || lastSeen.Unix() > after+5 {
 		t.Errorf("observer.last_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope reported well-formed future %q (5 min ahead) — must NOT drag last_seen into the future. Issue #1465.",
@@ -85,7 +87,7 @@ func TestPacketMessage_ObserverLastSeen_AlwaysIngestTime_PastEnvelope_1465(t *te
 	after := time.Now().Unix()
 
 	var lastSeen time.Time
-	mustScan(t, testRow(t, store, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-pkt"), &lastSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT last_seen FROM observers WHERE pubkey = $1`, "obs-pkt"), &lastSeen)
 	if lastSeen.Unix() < before-5 || lastSeen.Unix() > after+5 {
 		t.Errorf("packet-path observer.last_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope stale = %q. Observer just delivered a packet; last_seen must be NOW. Issue #1465.",

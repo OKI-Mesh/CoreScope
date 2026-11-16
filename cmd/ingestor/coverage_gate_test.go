@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
+)
 
 // testCompanionPK is a valid lowercase-hex companion pubkey for coverage tests.
 // The topic segment must be hex (clientPubkeyRe) or handleClientPacket drops it.
@@ -19,7 +23,7 @@ func clientCoverageMsg() *mockMessage {
 
 func clientReceptionCount(t *testing.T, s *Store) int {
 	t.Helper()
-	return countRows(t, s, "client_receptions")
+	return dbtest.CountRows(t, s.db, "client_receptions")
 }
 
 // TestClientRxCoverageEnabledDefault verifies the gate helper defaults OFF for
@@ -89,15 +93,15 @@ func TestClientRxCoverageGateOffDoesNotFallThroughToObserverPath(t *testing.T) {
 	if n := clientReceptionCount(t, store); n != 0 {
 		t.Fatalf("feature OFF: expected 0 client_receptions rows, got %d", n)
 	}
-	observerRows := countRows(t, store, "observers")
+	observerRows := dbtest.CountRows(t, store.db, "observers")
 	if observerRows != 0 {
 		t.Fatalf("feature OFF: the companion pubkey must not be registered as an observer, got %d rows", observerRows)
 	}
-	clientRegionRows := countWhere(t, store, "observers", "iata = $1", "client")
+	clientRegionRows := dbtest.CountWhere(t, store.db, "observers", "iata = $1", "client")
 	if clientRegionRows != 0 {
 		t.Fatalf("feature OFF: no observer should be registered under a bogus 'client' region, got %d rows", clientRegionRows)
 	}
-	txRows := countRows(t, store, "transmissions")
+	txRows := dbtest.CountRows(t, store.db, "transmissions")
 	if txRows != 0 {
 		t.Fatalf("feature OFF: the client-topic packet must not be ingested as an ordinary observer packet, got %d transmissions rows", txRows)
 	}

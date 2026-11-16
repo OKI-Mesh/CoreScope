@@ -38,7 +38,7 @@ func BenchmarkBuildHopContextPubkeys(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
 		_ = buildHopContextPubkeys(tx, pm)
 	}
@@ -90,7 +90,7 @@ func BenchmarkBuildAggregateHopContextPubkeys(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
 		_ = buildAggregateHopContextPubkeys(txs, pm)
 	}

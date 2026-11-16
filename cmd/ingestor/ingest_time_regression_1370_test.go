@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // Raw packet path: envelope reports timestamp 7h in the past
@@ -45,7 +47,7 @@ func TestHandleMessage_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 
 	// ─── transmissions.first_seen ───────────────────────────────────────
 	var firstSeen time.Time
-	mustScan(t, testRow(t, store, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
 	if firstSeen.Unix() < before-5 || firstSeen.Unix() > after+5 {
 		t.Errorf("transmissions.first_seen = %q (epoch %d); want in [%d, %d] (server wall clock). "+
 			"Envelope reported stale %q (7h ago) — PR #1233's premise that envelope timestamp is trustworthy is FALSE for buggy-clock observers. Issue #1370.",
@@ -54,7 +56,7 @@ func TestHandleMessage_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testing.T) {
 
 	// ─── observations.timestamp (epoch) ─────────────────────────────────
 	var obsTs time.Time
-	mustScan(t, testRow(t, store, `SELECT timestamp FROM observations LIMIT 1`), &obsTs)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT timestamp FROM observations LIMIT 1`), &obsTs)
 	if obsTs.Unix() < before-5 || obsTs.Unix() > after+5 {
 		t.Errorf("observations.timestamp = %q (epoch %d); want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
 			obsTs.Format(time.RFC3339), obsTs.Unix(), before, after, stale)
@@ -78,7 +80,7 @@ func TestHandleMessage_ChannelPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *
 	after := time.Now().Unix()
 
 	var firstSeen time.Time
-	mustScan(t, testRow(t, store, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
 	if firstSeen.Unix() < before-5 || firstSeen.Unix() > after+5 {
 		t.Errorf("channel-path transmissions.first_seen = %q (epoch %d); want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
 			firstSeen.Format(time.RFC3339), firstSeen.Unix(), before, after, stale)
@@ -101,7 +103,7 @@ func TestHandleMessage_DMPath_PacketTimestamp_IgnoresStaleEnvelope_1370(t *testi
 	after := time.Now().Unix()
 
 	var firstSeen time.Time
-	mustScan(t, testRow(t, store, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT first_seen FROM transmissions LIMIT 1`), &firstSeen)
 	if firstSeen.Unix() < before-5 || firstSeen.Unix() > after+5 {
 		t.Errorf("DM-path transmissions.first_seen = %q (epoch %d); want in [%d, %d] (server wall clock). Envelope stale = %q. Issue #1370.",
 			firstSeen.Format(time.RFC3339), firstSeen.Unix(), before, after, stale)

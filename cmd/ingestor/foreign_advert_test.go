@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // TestHandleMessageAdvertForeign_FlagModeStoresWithFlag asserts that when an
@@ -33,13 +35,13 @@ func TestHandleMessageAdvertForeign_FlagModeStoresWithFlag(t *testing.T) {
 	// Default mode (no ForeignAdverts.Mode set) MUST be "flag", per #730 design.
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{GeoFilter: gf})
 
-	nodeCount := countRows(t, store, "nodes")
+	nodeCount := dbtest.CountRows(t, store.db, "nodes")
 	if nodeCount != 1 {
 		t.Fatalf("nodes=%d, want 1 (foreign advert should be stored, not dropped, in flag mode)", nodeCount)
 	}
 
 	var foreign bool
-	mustScan(t, testRow(t, store, "SELECT foreign_advert FROM nodes"), &foreign)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT foreign_advert FROM nodes"), &foreign)
 	if !foreign {
 		t.Errorf("foreign_advert=%v, want true", foreign)
 	}
@@ -70,7 +72,7 @@ func TestHandleMessageAdvertForeign_DropModeStillDrops(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, cfg)
 
-	nodeCount := countRows(t, store, "nodes")
+	nodeCount := dbtest.CountRows(t, store.db, "nodes")
 	if nodeCount != 0 {
 		t.Errorf("nodes=%d, want 0 (drop mode preserves legacy silent-drop behavior)", nodeCount)
 	}
@@ -98,7 +100,7 @@ func TestHandleMessageAdvertInRegion_NotFlaggedForeign(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{GeoFilter: gf})
 
 	var foreign bool
-	mustScan(t, testRow(t, store, "SELECT foreign_advert FROM nodes"), &foreign)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT foreign_advert FROM nodes"), &foreign)
 	if foreign {
 		t.Errorf("foreign_advert=%v, want false (in-region node)", foreign)
 	}

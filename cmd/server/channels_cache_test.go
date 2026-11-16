@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/api"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/gorilla/mux"
 )
 
@@ -188,7 +189,7 @@ func TestChannelsCacheDoesNotCacheOnEncryptedQueryError(t *testing.T) {
 	if _, err := srv.getChannels(t.Context(), ""); err != nil {
 		t.Fatalf("warm channels cache: %v", err)
 	}
-	mustExecDB(t, db, `DROP TABLE transmissions CASCADE`)
+	dbtest.Exec(t, db, `DROP TABLE transmissions CASCADE`)
 
 	req := httptest.NewRequest("GET", "/api/channels?includeEncrypted=true", nil)
 	for i := 0; i < 2; i++ {

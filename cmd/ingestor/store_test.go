@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -15,11 +13,11 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/database/pgtest"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
-	"github.com/jackc/pgx/v5"
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
@@ -84,7 +82,7 @@ func TestUpsertNode(t *testing.T) {
 	}
 
 	var name, role string
-	mustScan(t, testRow(t, s, "SELECT name, role FROM nodes WHERE public_key = 'aabbccdd'"), &name, &role)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT name, role FROM nodes WHERE public_key = 'aabbccdd'"), &name, &role)
 	if name != "TestNode" {
 		t.Errorf("name=%s, want TestNode", name)
 	}
@@ -97,14 +95,14 @@ func TestUpsertNode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mustScan(t, testRow(t, s, "SELECT name FROM nodes WHERE public_key = 'aabbccdd'"), &name)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT name FROM nodes WHERE public_key = 'aabbccdd'"), &name)
 	if name != "UpdatedNode" {
 		t.Errorf("after upsert name=%s, want UpdatedNode", name)
 	}
 
 	// UpsertNode does not modify advert_count (IncrementAdvertCount is separate)
 	var count int
-	mustScan(t, testRow(t, s, "SELECT advert_count FROM nodes WHERE public_key = 'aabbccdd'"), &count)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT advert_count FROM nodes WHERE public_key = 'aabbccdd'"), &count)
 	if count != 0 {
 		t.Errorf("advert_count=%d, want 0 (UpsertNode does not increment)", count)
 	}
@@ -120,7 +118,7 @@ func TestUpsertObserver(t *testing.T) {
 	}
 
 	var name, iata string
-	mustScan(t, testRow(t, s, "SELECT name, iata FROM observers WHERE pubkey = $1", observerID), &name, &iata)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT name, iata FROM observers WHERE pubkey = $1", observerID), &name, &iata)
 	if name != "Observer1" {
 		t.Errorf("name=%s, want Observer1", name)
 	}
@@ -160,7 +158,7 @@ func TestUpsertObserverWithMeta(t *testing.T) {
 	var uptimeSecs int64
 	var noiseFloor float64
 	var gotModel, gotFirmware, gotClientVersion, gotRadio string
-	mustScan(t, testRow(t, s, "SELECT model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor FROM observers WHERE pubkey = $1", observerID), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &uptimeSecs, &noiseFloor)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT model, firmware, client_version, radio, battery_mv, uptime_secs, noise_floor FROM observers WHERE pubkey = $1", observerID), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &uptimeSecs, &noiseFloor)
 	if gotModel != model {
 		t.Errorf("model=%s, want %s", gotModel, model)
 	}
@@ -214,7 +212,7 @@ func TestUpsertObserverMetaPreservesExisting(t *testing.T) {
 	var batteryMv int
 	var noiseFloor float64
 	var gotModel, gotFirmware, gotClientVersion, gotRadio string
-	mustScan(t, testRow(t, s, "SELECT model, firmware, client_version, radio, battery_mv, noise_floor FROM observers WHERE pubkey = $1", observerID), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &noiseFloor)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT model, firmware, client_version, radio, battery_mv, noise_floor FROM observers WHERE pubkey = $1", observerID), &gotModel, &gotFirmware, &gotClientVersion, &gotRadio, &batteryMv, &noiseFloor)
 	if gotModel != model {
 		t.Errorf("model=%s after nil-meta upsert, want %s (preserved)", gotModel, model)
 	}
@@ -346,10 +344,10 @@ func TestInsertTransmissionWithObserver(t *testing.T) {
 
 	// Verify observer_idx was resolved
 	var wantIdx int64
-	mustScan(t, testRow(t, s, `SELECT id FROM observers WHERE pubkey = $1`, "obs1"), &wantIdx)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT id FROM observers WHERE pubkey = $1`, "obs1"), &wantIdx)
 
 	var observerIdx *int64
-	mustScan(t, testRow(t, s, `SELECT observer_idx FROM observations ORDER BY id LIMIT 1`), &observerIdx)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT observer_idx FROM observations ORDER BY id LIMIT 1`), &observerIdx)
 	if observerIdx == nil {
 		t.Fatal("observer_idx should be set when observer exists")
 	}
@@ -403,7 +401,7 @@ func TestInsertTransmissionUpdatesObserverLastSeen(t *testing.T) {
 	after := time.Now().Unix()
 
 	var lastSeenAfter time.Time
-	mustScan(t, testRow(t, s, `SELECT last_seen FROM observers WHERE pubkey = $1`, observerID), &lastSeenAfter)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT last_seen FROM observers WHERE pubkey = $1`, observerID), &lastSeenAfter)
 	if lastSeenAfter.Equal(oldTime) {
 		t.Error("observer last_seen was NOT updated after packet insertion — low-traffic observers will appear offline")
 	}
@@ -426,7 +424,7 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 	}
 
 	var lastPacketAt *time.Time
-	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAt)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAt)
 	if lastPacketAt != nil {
 		t.Fatalf("expected last_packet_at to be NULL after UpsertObserver, got %s", lastPacketAt)
 	}
@@ -447,7 +445,7 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 	}
 	after := time.Now().Unix()
 
-	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAt)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAt)
 	if lastPacketAt == nil {
 		t.Fatal("expected last_packet_at to be non-NULL after InsertTransmission")
 	}
@@ -462,7 +460,7 @@ func TestLastPacketAtUpdatedOnPacketOnly(t *testing.T) {
 	}
 
 	var lastPacketAtAfterStatus *time.Time
-	mustScan(t, testRow(t, s, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAtAfterStatus)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT last_packet_at FROM observers WHERE pubkey = $1`, observerID), &lastPacketAtAfterStatus)
 	if lastPacketAtAfterStatus == nil || !lastPacketAtAfterStatus.Equal(*lastPacketAt) {
 		t.Errorf("UpsertObserver should not change last_packet_at; expected %s, got %v", lastPacketAt, lastPacketAtAfterStatus)
 	}
@@ -493,13 +491,13 @@ func TestEndToEndIngest(t *testing.T) {
 	}
 
 	var nodeName string
-	mustScan(t, testRow(t, s, `SELECT name FROM nodes WHERE public_key = $1`, decoded.Payload.PubKey), &nodeName)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT name FROM nodes WHERE public_key = $1`, decoded.Payload.PubKey), &nodeName)
 	if !strings.Contains(nodeName, "MRR2-R") {
 		t.Errorf("node name=%s, want MRR2-R", nodeName)
 	}
 
 	var fromPubkey string
-	mustScan(t, testRow(t, s, `SELECT from_pubkey FROM transmissions WHERE hash = $1`, pktData.Hash), &fromPubkey)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT from_pubkey FROM transmissions WHERE hash = $1`, pktData.Hash), &fromPubkey)
 	if fromPubkey != strings.ToLower(decoded.Payload.PubKey) {
 		t.Errorf("transmission from_pubkey = %q, want the advert's pubkey %q", fromPubkey, strings.ToLower(decoded.Payload.PubKey))
 	}
@@ -530,19 +528,19 @@ func TestIngestUnknownAdvertTypeStoresPacketWithoutNode(t *testing.T) {
 	}
 
 	var transmissions int
-	mustScan(t, testRow(t, s, `SELECT COUNT(*) FROM transmissions WHERE hash = $1`, pktData.Hash), &transmissions)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT COUNT(*) FROM transmissions WHERE hash = $1`, pktData.Hash), &transmissions)
 	if transmissions != 1 {
 		t.Errorf("transmissions stored = %d, want 1", transmissions)
 	}
 
 	var fromIsNull bool
-	mustScan(t, testRow(t, s, `SELECT from_pubkey IS NULL FROM transmissions WHERE hash = $1`, pktData.Hash), &fromIsNull)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT from_pubkey IS NULL FROM transmissions WHERE hash = $1`, pktData.Hash), &fromIsNull)
 	if !fromIsNull {
 		t.Error("from_pubkey must be NULL when no node was recorded")
 	}
 
 	var nodes int
-	mustScan(t, testRow(t, s, `SELECT COUNT(*) FROM nodes WHERE public_key = $1`, strings.ToLower(decoded.Payload.PubKey)), &nodes)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT COUNT(*) FROM nodes WHERE public_key = $1`, strings.ToLower(decoded.Payload.PubKey)), &nodes)
 	if nodes != 0 {
 		t.Errorf("nodes created = %d, want 0 for an unknown advert type", nodes)
 	}
@@ -563,7 +561,7 @@ func TestInsertTransmissionEmptyHash(t *testing.T) {
 		t.Errorf("empty hash should return nil, got %v", err)
 	}
 
-	count := countRows(t, s, "transmissions")
+	count := dbtest.CountRows(t, s.db, "transmissions")
 	if count != 0 {
 		t.Errorf("no transmission should be inserted for empty hash, got count=%d", count)
 	}
@@ -586,7 +584,7 @@ func TestInsertTransmissionEmptyTimestamp(t *testing.T) {
 	}
 
 	var firstSeen time.Time
-	mustScan(t, testRow(t, s, `SELECT first_seen FROM transmissions WHERE hash = $1`, data.Hash), &firstSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT first_seen FROM transmissions WHERE hash = $1`, data.Hash), &firstSeen)
 	if firstSeen.IsZero() {
 		t.Error("first_seen should be set even with empty timestamp")
 	}
@@ -618,7 +616,7 @@ func TestInsertTransmissionEarlierFirstSeen(t *testing.T) {
 	}
 
 	var firstSeen time.Time
-	mustScan(t, testRow(t, s, `SELECT first_seen FROM transmissions WHERE hash = $1`, data.Hash), &firstSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT first_seen FROM transmissions WHERE hash = $1`, data.Hash), &firstSeen)
 	want := time.Date(2026, 3, 25, 6, 0, 0, 0, time.UTC)
 	if !firstSeen.Equal(want) {
 		t.Errorf("first_seen=%s, want %s (earlier timestamp)", firstSeen, want)
@@ -652,7 +650,7 @@ func TestInsertTransmissionLaterFirstSeenNotUpdated(t *testing.T) {
 	}
 
 	var firstSeen time.Time
-	mustScan(t, testRow(t, s, "SELECT first_seen FROM transmissions WHERE hash = $1", data.Hash), &firstSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT first_seen FROM transmissions WHERE hash = $1", data.Hash), &firstSeen)
 	if !firstSeen.Equal(time.Date(2026, 3, 25, 6, 0, 0, 0, time.UTC)) {
 		t.Errorf("first_seen=%s should not change to later time", firstSeen)
 	}
@@ -677,7 +675,7 @@ func TestInsertTransmissionNilSNRRSSI(t *testing.T) {
 	}
 
 	var snr, rssi *float64
-	mustScan(t, testRow(t, s, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
 	if snr != nil {
 		t.Errorf("snr should be nil, got %v", snr)
 	}
@@ -783,7 +781,7 @@ func TestUpsertNodeEmptyLastSeen(t *testing.T) {
 	}
 
 	var lastSeen time.Time
-	mustScan(t, testRow(t, s, "SELECT last_seen FROM nodes WHERE public_key = $1", nodePK), &lastSeen)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT last_seen FROM nodes WHERE public_key = $1", nodePK), &lastSeen)
 	if lastSeen.IsZero() {
 		t.Error("last_seen should be set even with empty input")
 	}
@@ -793,13 +791,13 @@ func TestRestartAgainstMigratedDatabase(t *testing.T) {
 	// A restart runs Migrate and opens the store again on a database that
 	// already has its schema. Migrate must be a no-op the second time.
 	connStr := newTestDatabase(t) // cloned from the migrated template
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 
 	s1, err := OpenStore(ctx, connStr, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	applied := countRows(t, s1, "goose_db_version")
+	applied := dbtest.CountRows(t, s1.db, "goose_db_version")
 	s1.Close()
 
 	// Second boot.
@@ -812,10 +810,10 @@ func TestRestartAgainstMigratedDatabase(t *testing.T) {
 	}
 	defer s2.Close()
 
-	if got := countRows(t, s2, "goose_db_version"); got != applied {
+	if got := dbtest.CountRows(t, s2.db, "goose_db_version"); got != applied {
 		t.Errorf("goose_db_version rows = %d, was %d: the second Migrate applied or recorded something", got, applied)
 	}
-	if n := countRows(t, s2, "observations"); n != 0 {
+	if n := dbtest.CountRows(t, s2.db, "observations"); n != 0 {
 		t.Errorf("expected 0 observations, got %d", n)
 	}
 }
@@ -844,7 +842,7 @@ func TestInsertTransmissionDedupObservation(t *testing.T) {
 	}
 
 	var count int
-	count = countRows(t, s, "observations")
+	count = dbtest.CountRows(t, s.db, "observations")
 	// Should have 2 observations (no observer_idx means both have NULL)
 	// Actually INSERT OR IGNORE — may be 1 due to dedup index
 	if count < 1 {
@@ -922,7 +920,7 @@ func TestConcurrentWrites(t *testing.T) {
 		"nodes":         expected,
 		"observers":     expected + 1, // plus obs1
 	} {
-		if got := countRows(t, s, table); got != want {
+		if got := dbtest.CountRows(t, s.db, table); got != want {
 			t.Errorf("%s count=%d, want %d", table, got, want)
 		}
 	}
@@ -977,7 +975,7 @@ func TestDBStats(t *testing.T) {
 	if got := s.Stats.ObservationsInserted.Load(); got != 1 {
 		t.Errorf("ObservationsInserted=%d after duplicate, want 1", got)
 	}
-	if n := countRows(t, s, "observations"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "observations"); n != 1 {
 		t.Errorf("observations rows=%d after duplicate, want 1", n)
 	}
 
@@ -1137,7 +1135,7 @@ func TestLoadTestThroughput(t *testing.T) {
 		"nodes":         totalMessages,
 		"observers":     totalMessages + 1, // plus obs1
 	} {
-		if got := countRows(t, s, table); got != want {
+		if got := dbtest.CountRows(t, s.db, table); got != want {
 			t.Errorf("%s=%d, want %d", table, got, want)
 		}
 	}
@@ -1162,7 +1160,7 @@ func TestUpdateNodeTelemetry(t *testing.T) {
 
 	var bv int
 	var tc float64
-	mustScan(t, testRow(t, s, "SELECT battery_mv, temperature_c FROM nodes WHERE public_key = 'telem1'"), &bv, &tc)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT battery_mv, temperature_c FROM nodes WHERE public_key = 'telem1'"), &bv, &tc)
 	if bv != 3700 {
 		t.Errorf("battery_mv=%d, want 3700", bv)
 	}
@@ -1174,7 +1172,7 @@ func TestUpdateNodeTelemetry(t *testing.T) {
 	if err := s.UpdateNodeTelemetry(ctx, "telem1", nil, &newTemp); err != nil {
 		t.Fatal(err)
 	}
-	mustScan(t, testRow(t, s, "SELECT battery_mv, temperature_c FROM nodes WHERE public_key = 'telem1'"), &bv, &tc)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT battery_mv, temperature_c FROM nodes WHERE public_key = 'telem1'"), &bv, &tc)
 	if bv != 3700 {
 		t.Errorf("battery_mv after nil update=%d, want 3700 (preserved)", bv)
 	}
@@ -1344,7 +1342,7 @@ func TestRequiredIndexesExist(t *testing.T) {
 		{"dropped_packets", "idx_dropped_packets_dropped_at"},
 	} {
 		t.Run(c.index, func(t *testing.T) {
-			n := countWhere(t, s, "pg_indexes",
+			n := dbtest.CountWhere(t, s.db, "pg_indexes",
 				"schemaname = 'public' AND tablename = $1 AND indexname = $2", c.table, c.index)
 			if n != 1 {
 				t.Errorf("index %s on %s is missing", c.index, c.table)
@@ -1419,7 +1417,7 @@ func TestInsertTransmissionWithScoreAndDirection(t *testing.T) {
 	// Verify the observation was stored with score and direction
 	var gotDir sql.NullString
 	var gotScore sql.NullFloat64
-	mustScan(t, testRow(t, s, "SELECT direction, score FROM observations LIMIT 1"), &gotDir, &gotScore)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT direction, score FROM observations LIMIT 1"), &gotDir, &gotScore)
 	if !gotDir.Valid || gotDir.String != "outgoing" {
 		t.Errorf("direction=%v, want outgoing", gotDir)
 	}
@@ -1475,14 +1473,14 @@ func TestInsertMetrics(t *testing.T) {
 		t.Fatalf("InsertMetrics: %v", err)
 	}
 
-	count := countWhere(t, s, "observer_metrics", "observer_id = $1", observerID)
+	count := dbtest.CountWhere(t, s.db, "observer_metrics", "observer_id = $1", observerID)
 	if count != 1 {
 		t.Errorf("expected 1 row, got %d", count)
 	}
 
 	var gotNF float64
 	var gotTx, gotRx, gotErr, gotBatt int
-	mustScan(t, testRow(t, s, "SELECT noise_floor, tx_air_secs, rx_air_secs, recv_errors, battery_mv FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF, &gotTx, &gotRx, &gotErr, &gotBatt)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, "SELECT noise_floor, tx_air_secs, rx_air_secs, recv_errors, battery_mv FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF, &gotTx, &gotRx, &gotErr, &gotBatt)
 	if gotNF != -112.5 {
 		t.Errorf("noise_floor = %v, want -112.5", gotNF)
 	}
@@ -1510,13 +1508,13 @@ func TestInsertMetricsIdempotent(t *testing.T) {
 		t.Fatalf("second InsertMetrics: %v", err)
 	}
 
-	count := countWhere(t, store, "observer_metrics", "observer_id = $1", observerID)
+	count := dbtest.CountWhere(t, store.db, "observer_metrics", "observer_id = $1", observerID)
 	if count != 1 {
 		t.Errorf("expected 1 row (idempotent), got %d", count)
 	}
 
 	var gotNF float64
-	mustScan(t, testRow(t, store, "SELECT noise_floor FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT noise_floor FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF)
 	if gotNF != -108.0 {
 		t.Errorf("noise_floor = %v, want -108.0 (replaced)", gotNF)
 	}
@@ -1541,7 +1539,7 @@ func TestInsertMetricsNullFields(t *testing.T) {
 
 	var gotNF sql.NullFloat64
 	var gotTx sql.NullInt64
-	mustScan(t, testRow(t, store, "SELECT noise_floor, tx_air_secs FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF, &gotTx)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT noise_floor, tx_air_secs FROM observer_metrics WHERE observer_id = $1", observerID), &gotNF, &gotTx)
 	if !gotNF.Valid || gotNF.Float64 != -115.0 {
 		t.Errorf("noise_floor = %v, want -115.0", gotNF)
 	}
@@ -1559,8 +1557,8 @@ func TestPruneOldMetrics(t *testing.T) {
 
 	oldTs := time.Now().UTC().AddDate(0, 0, -40)
 	newTs := time.Now().UTC()
-	testExec(t, store, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES ($1, $2, $3)", observerID, oldTs, -110.0)
-	testExec(t, store, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES ($1, $2, $3)", observerID, newTs, -112.0)
+	dbtest.Exec(t, store.db, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES ($1, $2, $3)", observerID, oldTs, -110.0)
+	dbtest.Exec(t, store.db, "INSERT INTO observer_metrics (observer_id, timestamp, noise_floor) VALUES ($1, $2, $3)", observerID, newTs, -112.0)
 
 	n, err := store.PruneOldMetrics(ctx, 30)
 	if err != nil {
@@ -1570,7 +1568,7 @@ func TestPruneOldMetrics(t *testing.T) {
 		t.Errorf("pruned %d rows, want 1", n)
 	}
 
-	count := countRows(t, store, "observer_metrics")
+	count := dbtest.CountRows(t, store.db, "observer_metrics")
 	if count != 1 {
 		t.Errorf("expected 1 row remaining, got %d", count)
 	}
@@ -1641,7 +1639,7 @@ func TestInsertObservationSNRFillIn(t *testing.T) {
 
 	var snr1, rssi1 *float64
 
-	testRow(t, s, "SELECT snr, rssi FROM observations LIMIT 1").Scan(&snr1, &rssi1)
+	dbtest.QueryRow(t, s.db, "SELECT snr, rssi FROM observations LIMIT 1").Scan(&snr1, &rssi1)
 	if snr1 != nil || rssi1 != nil {
 		t.Fatalf("precondition: first insert should have nil SNR/RSSI, got snr=%v rssi=%v", snr1, rssi1)
 	}
@@ -1663,7 +1661,7 @@ func TestInsertObservationSNRFillIn(t *testing.T) {
 	}
 
 	var snr2, rssi2 *float64
-	testRow(t, s, "SELECT snr, rssi FROM observations LIMIT 1").Scan(&snr2, &rssi2)
+	dbtest.QueryRow(t, s.db, "SELECT snr, rssi FROM observations LIMIT 1").Scan(&snr2, &rssi2)
 	if snr2 == nil || *snr2 != snr {
 		t.Errorf("SNR not filled in by second arrival: got %v, want %v", snr2, snr)
 	}
@@ -1686,7 +1684,7 @@ func TestInsertObservationSNRFillIn(t *testing.T) {
 	}
 
 	var snr3, rssi3 *float64
-	testRow(t, s, "SELECT snr, rssi FROM observations LIMIT 1").Scan(&snr3, &rssi3)
+	dbtest.QueryRow(t, s.db, "SELECT snr, rssi FROM observations LIMIT 1").Scan(&snr3, &rssi3)
 	if snr3 == nil || *snr3 != snr {
 		t.Errorf("SNR overwritten by null arrival: got %v, want %v", snr3, snr)
 	}
@@ -1753,7 +1751,7 @@ func TestPerObservationRawHex(t *testing.T) {
 			t.Errorf("obs B raw_hex: got %q, want %q", got, rawB)
 		}
 	}
-	if got := countRows(t, s, "observation_frames"); got != 1 {
+	if got := dbtest.CountRows(t, s.db, "observation_frames"); got != 1 {
 		t.Errorf("observation_frames = %d, want 1 (only the observation whose bytes differ from the transmission's gets a frame)", got)
 	}
 }
@@ -1820,7 +1818,7 @@ func TestBuildPacketData_NonTracePathJSON(t *testing.T) {
 // region: NULL (not scoped), ” (scoped, no region could be named), or a name.
 func TestScopeNameThreeStates(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	sp := func(v string) *string { return &v }
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -1851,7 +1849,7 @@ func TestScopeNameThreeStates(t *testing.T) {
 			}
 
 			var got *string
-			mustScan(t, testRow(t, s, `SELECT scope_name FROM transmissions WHERE hash = $1`, c.hash), &got)
+			dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT scope_name FROM transmissions WHERE hash = $1`, c.hash), &got)
 			switch {
 			case c.want == nil && got != nil:
 				t.Errorf("scope_name = %q, want NULL", *got)
@@ -1902,17 +1900,17 @@ func TestTransportCodesStored(t *testing.T) {
 	}
 
 	var c1, c2 *string
-	mustScan(t, testRow(t, s, `SELECT code1, code2 FROM transmissions WHERE hash = $1`, decoder.ComputeContentHash(rawScoped)), &c1, &c2)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT code1, code2 FROM transmissions WHERE hash = $1`, decoder.ComputeContentHash(rawScoped)), &c1, &c2)
 	if c1 == nil || *c1 != "AABB" || c2 == nil || *c2 != "CCDD" {
 		t.Errorf("scoped codes = %v/%v, want AABB/CCDD", c1, c2)
 	}
 
-	mustScan(t, testRow(t, s, `SELECT code1, code2 FROM transmissions WHERE hash = $1`, decoder.ComputeContentHash(rawUnscoped)), &c1, &c2)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT code1, code2 FROM transmissions WHERE hash = $1`, decoder.ComputeContentHash(rawUnscoped)), &c1, &c2)
 	if c1 != nil || c2 != nil {
 		t.Errorf("unscoped codes = %v/%v, want NULL/NULL", c1, c2)
 	}
 
-	mustScan(t, testRow(t, s, `SELECT code1, code2 FROM transmissions WHERE hash = $1`, decoder.ComputeContentHash(rawZeroCodes)), &c1, &c2)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT code1, code2 FROM transmissions WHERE hash = $1`, decoder.ComputeContentHash(rawZeroCodes)), &c1, &c2)
 	if c1 == nil || *c1 != "0000" || c2 == nil || *c2 != "0000" {
 		t.Errorf("zero-codes codes = %v/%v, want literal \"0000\"/\"0000\" (not NULL)", c1, c2)
 	}
@@ -1962,7 +1960,7 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 		t.Fatalf("UpdateNodeDefaultScope: %v", err)
 	}
 	var got string
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
 	if got != "#belgium" {
 		t.Errorf("active node default_scope = %q, want #belgium", got)
 	}
@@ -1971,7 +1969,7 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 		t.Fatalf("UpdateNodeDefaultScope (inactive): %v", err)
 	}
 	var gotInactive string
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
 	if gotInactive != "#belgium" {
 		t.Errorf("inactive node default_scope = %q, want #belgium", gotInactive)
 	}
@@ -1979,7 +1977,7 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 	if err := store.UpdateNodeDefaultScope(ctx, activePK, "#belgium"); err != nil {
 		t.Fatalf("UpdateNodeDefaultScope short-circuit: %v", err)
 	}
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
 	if got != "#belgium" {
 		t.Errorf("after short-circuit default_scope = %q, want #belgium", got)
 	}
@@ -1987,14 +1985,14 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 	if err := store.UpdateNodeDefaultScope(ctx, activePK, "#eu"); err != nil {
 		t.Fatalf("UpdateNodeDefaultScope update: %v", err)
 	}
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, activePK), &got)
 	if got != "#eu" {
 		t.Errorf("after update default_scope = %q, want #eu", got)
 	}
 	if err := store.UpdateNodeDefaultScope(ctx, inactivePK, "#eu"); err != nil {
 		t.Fatalf("UpdateNodeDefaultScope update (inactive): %v", err)
 	}
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, inactivePK), &gotInactive)
 	if gotInactive != "#eu" {
 		t.Errorf("after update inactive node default_scope = %q, want #eu", gotInactive)
 	}
@@ -2008,11 +2006,11 @@ func TestUpdateNodeDefaultScope(t *testing.T) {
 // dijkstra review (MINOR-2).
 func TestUpdateNodeDefaultScope_EmptyScopeIsNoop(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 
 	scopeOf := func(pk string) *string {
 		var v *string
-		mustScan(t, testRow(t, s, `SELECT default_scope FROM nodes WHERE public_key = $1`, pk), &v)
+		dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, pk), &v)
 		return v
 	}
 
@@ -2026,7 +2024,7 @@ func TestUpdateNodeDefaultScope_EmptyScopeIsNoop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	testExec(t, s, `UPDATE nodes SET inactive = true WHERE public_key = 'pk2'`)
+	dbtest.Exec(t, s.db, `UPDATE nodes SET inactive = true WHERE public_key = 'pk2'`)
 
 	// Positive control: a non-empty scope was written, so the checks below can
 	// only pass because the empty call did nothing.
@@ -2051,18 +2049,18 @@ func TestUpdateNodeDefaultScope_EmptyScopeIsNoop(t *testing.T) {
 // path rewrites the row on every packet.
 func TestUpdateNodeDefaultScope_WritesOnlyWhenChanged(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	if err := upsertNode(ctx, s, "pk1", "Node1", "repeater", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	scope := func() *string {
 		var v *string
-		mustScan(t, testRow(t, s, `SELECT default_scope FROM nodes WHERE public_key = 'pk1'`), &v)
+		dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT default_scope FROM nodes WHERE public_key = 'pk1'`), &v)
 		return v
 	}
 	rowVersion := func() string { // xmin changes whenever the row is rewritten
 		var x string
-		mustScan(t, testRow(t, s, `SELECT xmin::text FROM nodes WHERE public_key = 'pk1'`), &x)
+		dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT xmin::text FROM nodes WHERE public_key = 'pk1'`), &x)
 		return x
 	}
 	update := func(v string) {
@@ -2098,7 +2096,7 @@ func TestUpdateNodeDefaultScope_WritesOnlyWhenChanged(t *testing.T) {
 
 func TestInsertClientRxObservation(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	code1, fwd := "AABB", "1a2b"
 	snr, rssi, posAccM := -7.5, -92, 8.5
 	rxAt := time.Date(2026, 8, 17, 10, 0, 0, 123*int(time.Millisecond), time.UTC)
@@ -2125,7 +2123,7 @@ func TestInsertClientRxObservation(t *testing.T) {
 	var gotHashSize, gotHops int32
 	var gotRxAt time.Time
 	var gotCode1, gotCode2, gotFwd *string
-	mustScan(t, testRow(t, s, `SELECT lat, lon, snr, rssi, pos_acc_m, route_type, payload_type,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT lat, lon, snr, rssi, pos_acc_m, route_type, payload_type,
 			hash_size, hop_count, rx_at, code1, code2, forwarder
 		FROM client_rx_observations WHERE pkt_hash = $1`, o.PktHash),
 		&gotLat, &gotLon, &gotSNR, &gotRSSI, &gotPosAccM, &gotRoute, &gotPayload,
@@ -2177,7 +2175,7 @@ func TestInsertClientRxObservation(t *testing.T) {
 	if ins, err = s.InsertClientRxObservation(ctx, &o2); err != nil || !ins {
 		t.Fatalf("second copy: ins=%v err=%v", ins, err)
 	}
-	if n := countWhere(t, s, "client_rx_observations", "pkt_hash = $1", o.PktHash); n != 2 {
+	if n := dbtest.CountWhere(t, s.db, "client_rx_observations", "pkt_hash = $1", o.PktHash); n != 2 {
 		t.Errorf("rows for pkt_hash = %d, want 2", n)
 	}
 }
@@ -2205,150 +2203,13 @@ func TestPruneDeletesCanUseTheirIndex(t *testing.T) {
 	s := newTestStore(t)
 	for _, c := range cases {
 		t.Run(c.table, func(t *testing.T) {
-			plan := explainPlan(t, s, fmt.Sprintf(
+			plan := dbtest.ExplainPlan(t, s.db, fmt.Sprintf(
 				`DELETE FROM %s WHERE %s < '2026-01-01T00:00:00Z'::timestamptz`, c.table, c.col))
 			if !strings.Contains(plan, c.index) {
 				t.Fatalf("prune DELETE should be able to use %s, plan was:\n%s", c.index, plan)
 			}
 		})
 	}
-}
-
-// Raw SQL for test assertions and seeding. Production queries go through
-// sqlc and internal/database; these helpers exist so tests can look at the
-// tables directly without adding methods to the production query set.
-
-var testIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
-
-// testCtx returns a per-test context that also fails a hung query instead of
-// stalling the whole suite. Use context.Background() inside t.Cleanup funcs,
-// because t.Context() is cancelled before cleanups run.
-func testCtx(t *testing.T) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	t.Cleanup(cancel)
-	return ctx
-}
-
-// countRows returns COUNT(*) for a table.
-func countRows(t *testing.T, s *Store, table string) int {
-	t.Helper()
-	return countWhere(t, s, table, "")
-}
-
-// countWhere returns COUNT(*) for a table with an optional WHERE clause.
-// table and where must be test-authored literals; values go through $N args.
-func countWhere(t *testing.T, s *Store, table, where string, args ...any) int {
-	t.Helper()
-	if !testIdent.MatchString(table) {
-		t.Fatalf("countWhere: bad table name %q", table)
-	}
-	q := "SELECT COUNT(*) FROM " + table
-	if where != "" {
-		q += " WHERE " + where
-	}
-	var n int
-	mustScan(t, testRow(t, s, q, args...), &n)
-	return n
-}
-
-// testRow runs a query expected to return one row. Pair it with mustScan.
-func testRow(t *testing.T, s *Store, query string, args ...any) pgx.Row {
-	t.Helper()
-	return s.db.Pool().QueryRow(testCtx(t), query, args...)
-}
-
-// mustScan scans a row and fails the test on any error, including no rows.
-// The old assertions ignored Scan errors, which turned real failures into
-// zero values.
-func mustScan(t *testing.T, row pgx.Row, dest ...any) {
-	t.Helper()
-	for i, d := range dest {
-		if v := reflect.ValueOf(d); v.Kind() != reflect.Ptr || v.IsNil() {
-			t.Fatalf("mustScan: dest[%d] is %T, want a non-nil pointer (missing &?)", i, d)
-		}
-	}
-	if err := row.Scan(dest...); err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-}
-
-// testExec runs a statement for seeding or cleanup and returns rows affected.
-func testExec(t *testing.T, s *Store, query string, args ...any) int64 {
-	t.Helper()
-	tag, err := s.db.Pool().Exec(testCtx(t), query, args...)
-	if err != nil {
-		t.Fatalf("exec %q: %v", query, err)
-	}
-	return tag.RowsAffected()
-}
-
-// testCollect runs a multi-row query. For a single column use
-// pgx.RowTo[string] (or the matching type) as fn.
-func testCollect[T any](t *testing.T, s *Store, query string, fn pgx.RowToFunc[T], args ...any) []T {
-	t.Helper()
-	rows, err := s.db.Pool().Query(testCtx(t), query, args...)
-	if err != nil {
-		t.Fatalf("query %q: %v", query, err)
-	}
-	out, err := pgx.CollectRows(rows, fn)
-	if err != nil {
-		t.Fatalf("collect %q: %v", query, err)
-	}
-	return out
-}
-
-// explainPlan returns the plan for a statement with sequential scans disabled,
-// so it shows whether an index CAN serve the query. EXPLAIN without ANALYZE
-// executes nothing, and SET LOCAL is scoped to this rolled-back transaction.
-func explainPlan(t *testing.T, s *Store, stmt string) string {
-	t.Helper()
-	ctx := testCtx(t)
-	tx, err := s.db.Pool().Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := tx.Query(ctx, "EXPLAIN "+stmt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// tableColumns returns column name -> data_type for a table in the public schema.
-func tableColumns(t *testing.T, s *Store, table string) map[string]string {
-	t.Helper()
-	rows := testCollect(t, s, `
-		SELECT column_name, data_type
-		FROM information_schema.columns
-		WHERE table_schema = 'public' AND table_name = $1`,
-		func(row pgx.CollectableRow) ([2]string, error) {
-			var kv [2]string
-			err := row.Scan(&kv[0], &kv[1])
-			return kv, err
-		}, table)
-	cols := make(map[string]string, len(rows))
-	for _, kv := range rows {
-		cols[kv[0]] = kv[1]
-	}
-	return cols
-}
-
-// recentTS returns an RFC3339 timestamp `ago` before now. Fixtures that go
-// through resolveRxTimeCore need this: it replaces envelope times older than
-// 30 days with ingest time, so a hardcoded date eventually stops testing
-// what it was written to test.
-func recentTS(ago time.Duration) string {
-	return time.Now().UTC().Add(-ago).Format(time.RFC3339Nano)
 }
 
 func TestIngestEncryptedChannelStoresEncryptedFlagAndBareHash(t *testing.T) {
@@ -2377,7 +2238,7 @@ func TestIngestEncryptedChannelStoresEncryptedFlagAndBareHash(t *testing.T) {
 
 	var encrypted bool
 	var channelHash string
-	mustScan(t, testRow(t, s, `SELECT channel_encrypted, channel_hash FROM transmissions WHERE hash = $1`, pktData.Hash), &encrypted, &channelHash)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT channel_encrypted, channel_hash FROM transmissions WHERE hash = $1`, pktData.Hash), &encrypted, &channelHash)
 	if !encrypted {
 		t.Error("channel_encrypted must be true for an encrypted channel message")
 	}

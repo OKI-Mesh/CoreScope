@@ -134,7 +134,7 @@ func TestHandleMessageRawPacket(t *testing.T) {
 
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("transmissions count=%d, want 1", count)
 	}
@@ -152,13 +152,13 @@ func TestHandleMessageRawPacketAdvert(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	// Should create a node from the ADVERT
-	nodeCount := countRows(t, store, "nodes")
+	nodeCount := dbtest.CountRows(t, store.db, "nodes")
 	if nodeCount != 1 {
 		t.Errorf("nodes count=%d, want 1 (advert should upsert node)", nodeCount)
 	}
 
 	// Should create observer
-	obsCount := countRows(t, store, "observers")
+	obsCount := dbtest.CountRows(t, store.db, "observers")
 	if obsCount != 1 {
 		t.Errorf("observers count=%d, want 1", obsCount)
 	}
@@ -173,7 +173,7 @@ func TestHandleMessageInvalidJSON(t *testing.T) {
 	// Should not panic
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("invalid JSON should not insert")
 	}
@@ -191,7 +191,7 @@ func TestHandleMessageStatusTopic(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var name, iata string
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		"SELECT name, iata FROM observers WHERE pubkey = $1", "obs1"), &name, &iata)
 	if name != "MyObserver" {
 		t.Errorf("name=%s, want MyObserver", name)
@@ -214,7 +214,7 @@ func TestHandleMessageSkipStatusTopics(t *testing.T) {
 	msg2 := &mockMessage{topic: "meshcore/events/connection", payload: []byte(`{"raw":"0A00"}`)}
 	handleMessage(ctx, store, "test", source, msg2, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("status/connection topics should be skipped")
 	}
@@ -233,7 +233,7 @@ func TestHandleMessageIATAFilter(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("IATA filter should skip non-matching regions")
 	}
@@ -245,7 +245,7 @@ func TestHandleMessageIATAFilter(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg2, nil, nil, &Config{})
 
-	count = countRows(t, store, "transmissions")
+	count = dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("IATA filter should allow matching region, got count=%d", count)
 	}
@@ -281,7 +281,7 @@ func TestHandleMessageNoRawHex(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("no raw hex should not insert")
 	}
@@ -299,7 +299,7 @@ func TestHandleMessageBadRawHex(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("bad hex should not insert")
 	}
@@ -317,7 +317,7 @@ func TestHandleMessageWithSNRRSSIAsNumbers(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var snr, rssi *float64
-	mustScan(t, testRow(t, store, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
 	if snr == nil || *snr != 7.2 {
 		t.Errorf("snr=%v, want 7.2", snr)
 	}
@@ -339,7 +339,7 @@ func TestHandleMessageMinimalTopic(t *testing.T) {
 	}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("should insert even with short topic, got count=%d", count)
 	}
@@ -361,13 +361,13 @@ func TestHandleMessageCorruptedAdvert(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	// Transmission should be inserted (even if advert is invalid)
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("transmission should be inserted even with corrupted advert, got %d", count)
 	}
 
 	// But no node should be created
-	count = countRows(t, store, "nodes")
+	count = dbtest.CountRows(t, store.db, "nodes")
 	if count != 0 {
 		t.Error("corrupted advert should not create a node")
 	}
@@ -387,12 +387,12 @@ func TestHandleMessageNoObserverID(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var count int
-	count = countRows(t, store, "transmissions")
+	count = dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Errorf("count=%d, want 1", count)
 	}
 	// No observer should be upserted since observerID is empty
-	count = countRows(t, store, "observers")
+	count = dbtest.CountRows(t, store.db, "observers")
 	if count != 0 {
 		t.Error("no observer should be created when observerID is empty")
 	}
@@ -409,7 +409,7 @@ func TestHandleMessageSNRNotFloat(t *testing.T) {
 	msg := &mockMessage{topic: "meshcore/SJC/obs1/packets", payload: payload}
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 1 {
 		t.Error("should still insert even with bad SNR/RSSI")
 	}
@@ -427,7 +427,7 @@ func TestHandleMessageOriginExtraction(t *testing.T) {
 
 	// Verify origin was extracted to observer name
 	var name string
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		"SELECT name FROM observers WHERE pubkey = $1", "obs1"), &name)
 	if name != "MyOrigin" {
 		t.Errorf("observer name=%s, want MyOrigin", name)
@@ -466,7 +466,7 @@ func TestHandleMessageStatusWithoutOriginStoresNullName(t *testing.T) {
 	// "never sent", not a made-up value. The display fallback to the key belongs
 	// at read time and in the log line, not in stored data.
 	var name *string
-	mustScan(t, testRow(t, store, "SELECT name FROM observers WHERE pubkey = $1", "obs1"), &name)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT name FROM observers WHERE pubkey = $1", "obs1"), &name)
 	if name != nil {
 		t.Errorf("observer name = %q, want NULL when the status has no origin", *name)
 	}
@@ -484,7 +484,7 @@ func TestStatusWithoutOriginDoesNotClearName(t *testing.T) {
 	send(`{"type":"status"}`)
 
 	var name *string
-	mustScan(t, testRow(t, store, "SELECT name FROM observers WHERE pubkey = $1", "obs1"), &name)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT name FROM observers WHERE pubkey = $1", "obs1"), &name)
 	if name == nil || *name != "MyObserver" {
 		t.Errorf("name = %v, want %q (a status without origin must not clear it)", name, "MyObserver")
 	}
@@ -666,7 +666,7 @@ func TestHandleMessageWithLowercaseSNRRSSI(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var snr, rssi *float64
-	mustScan(t, testRow(t, store, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
 	if snr == nil || *snr != 5.5 {
 		t.Errorf("snr=%v, want 5.5 (lowercase key)", snr)
 	}
@@ -688,7 +688,7 @@ func TestHandleMessageSNRRSSIUppercaseWins(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var snr, rssi *float64
-	mustScan(t, testRow(t, store, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
 	if snr == nil || *snr != 7.2 {
 		t.Errorf("snr=%v, want 7.2 (uppercase should take precedence)", snr)
 	}
@@ -709,7 +709,7 @@ func TestHandleMessageNoSNRRSSI(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var snr, rssi *float64
-	mustScan(t, testRow(t, store, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT snr, rssi FROM observations LIMIT 1"), &snr, &rssi)
 	if snr != nil {
 		t.Errorf("snr should be nil when not present, got %v", *snr)
 	}
@@ -782,7 +782,7 @@ func TestIATAFilterDoesNotDropStatusMessages(t *testing.T) {
 
 	var name string
 	var noiseFloor *float64
-	mustScan(t, testRow(t, store, "SELECT name, noise_floor FROM observers WHERE pubkey = 'bfl-obs1'"), &name, &noiseFloor)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT name, noise_floor FROM observers WHERE pubkey = 'bfl-obs1'"), &name, &noiseFloor)
 	if name != "BFLObserver" {
 		t.Errorf("name=%q, want BFLObserver", name)
 	}
@@ -797,7 +797,7 @@ func TestIATAFilterDoesNotDropStatusMessages(t *testing.T) {
 		payload: []byte(`{"raw":"` + rawHex + `"}`),
 	}
 	handleMessage(ctx, store, "test", source, pktMsg, nil, nil, &Config{})
-	count := countRows(t, store, "transmissions")
+	count := dbtest.CountRows(t, store.db, "transmissions")
 	if count != 0 {
 		t.Error("packet from out-of-region BFL should still be filtered by IATA")
 	}
@@ -1019,7 +1019,7 @@ func TestHandleMessageObserverIATAWhitelist(t *testing.T) {
 		payload: []byte(`{"origin":"node1","noise_floor":-110}`),
 	}, nil, nil, cfg)
 
-	count := countWhere(t, store, "observers", "pubkey='obs1'")
+	count := dbtest.CountWhere(t, store.db, "observers", "pubkey='obs1'")
 	if count != 0 {
 		t.Error("observer from non-whitelisted IATA GOT should be dropped")
 	}
@@ -1030,7 +1030,7 @@ func TestHandleMessageObserverIATAWhitelist(t *testing.T) {
 		payload: []byte(`{"origin":"node2","noise_floor":-105}`),
 	}, nil, nil, cfg)
 
-	count = countWhere(t, store, "observers", "pubkey='obs2'")
+	count = dbtest.CountWhere(t, store.db, "observers", "pubkey='obs2'")
 	if count != 1 {
 		t.Errorf("observer from whitelisted IATA ARN should be accepted, got count=%d", count)
 	}
@@ -1095,7 +1095,7 @@ func TestHandleMessageAdvert_EmptyScopeSkipsDefaultScopeUpdate(t *testing.T) {
 
 	// Pre-seed the node with a non-empty default_scope so we can detect an
 	// erroneous overwrite with "".
-	dbtest.Node(t, store.db, pubkey, "Node1", "")
+	dbtest.Node(t, store.db, pubkey, "Node1", "", dbtest.Ago(0))
 	if err := store.db.UpdateNodeDefaultScope(ctx, pubkey, "#belgium"); err != nil {
 		t.Fatalf("seed default_scope: %v", err)
 	}
@@ -1108,7 +1108,7 @@ func TestHandleMessageAdvert_EmptyScopeSkipsDefaultScopeUpdate(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, nil, &Config{})
 
 	var got sql.NullString
-	mustScan(t, testRow(t, store, "SELECT default_scope FROM nodes WHERE public_key = $1", pubkey), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, "SELECT default_scope FROM nodes WHERE public_key = $1", pubkey), &got)
 	if !got.Valid || got.String != "#belgium" {
 		t.Errorf("default_scope after empty-scope advert = %q (valid=%v), want #belgium — call-site guard at main.go:720 is missing or broken (#1534)", got.String, got.Valid)
 	}
@@ -1156,7 +1156,7 @@ func TestHandleMessageAdvert_MatchedScopeUpdatesDefaultScope(t *testing.T) {
 	code1 := fmt.Sprintf("%02X%02X", byte(code&0xFF), byte(code>>8))
 	rawHex := "10" + code1 + "000000" + advertBytes
 
-	dbtest.Node(t, store.db, pubkey, "Node1", "")
+	dbtest.Node(t, store.db, pubkey, "Node1", "", dbtest.Ago(0))
 	if err := store.db.UpdateNodeDefaultScope(ctx, pubkey, "#old"); err != nil {
 		t.Fatalf("seed default_scope: %v", err)
 	}
@@ -1168,7 +1168,7 @@ func TestHandleMessageAdvert_MatchedScopeUpdatesDefaultScope(t *testing.T) {
 	handleMessage(ctx, store, "test", source, msg, nil, regionKeySetFromKeys(map[string][]byte{"#de": regionKey}), &Config{})
 
 	var got sql.NullString
-	mustScan(t, testRow(t, store, `SELECT default_scope FROM nodes WHERE public_key = $1`, pubkey), &got)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT default_scope FROM nodes WHERE public_key = $1`, pubkey), &got)
 	if !got.Valid || got.String != "#de" {
 		t.Errorf("default_scope after matched-scope advert = %q (valid=%v), want #de", got.String, got.Valid)
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // TestIngestorPruneOldPackets enforces #1283: the writer for
@@ -18,7 +20,7 @@ func TestIngestorPruneOldPackets(t *testing.T) {
 	new := time.Now().UTC().Format(time.RFC3339)
 	for i, ts := range []string{old, old, new} {
 
-		rowcount := testExec(t, store,
+		rowcount := dbtest.Exec(t, store.db,
 			`INSERT INTO transmissions (raw_hex, hash, first_seen, last_seen, route_type, payload_type, payload_version, decoded_json)
  VALUES ($1, $2, $3, $3, 0, 1, 1, '{}')`,
 			"AA", "h"+string(rune('a'+i)), ts,
@@ -36,7 +38,7 @@ func TestIngestorPruneOldPackets(t *testing.T) {
 		t.Fatalf("expected 2 pruned, got %d", n)
 	}
 
-	remaining := countRows(t, store, "transmissions")
+	remaining := dbtest.CountRows(t, store.db, "transmissions")
 	if remaining != 1 {
 		t.Fatalf("expected 1 transmission remaining, got %d", remaining)
 	}

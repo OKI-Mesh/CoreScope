@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -26,12 +27,12 @@ func upsertNode(ctx context.Context, s *Store, pubKey, name string, role types.N
 
 func TestDeleteNodesByPubkeysRemovesNodesAndTheirEdges(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	const a, b, c = "aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"
 	for _, pk := range []string{a, b, c} {
 		seedNeighborNode(t, s, pk)
 	}
-	testExec(t, s, `INSERT INTO neighbor_edges (node_a, node_b, count, last_seen)
+	dbtest.Exec(t, s.db, `INSERT INTO neighbor_edges (node_a, node_b, count, last_seen)
 		VALUES ($1, $2, 1, $4), ($2, $3, 1, $4)`, a, b, c, time.Now().UTC())
 
 	// One uppercase key (matched after lowercasing) and one unknown key.
@@ -42,11 +43,11 @@ func TestDeleteNodesByPubkeysRemovesNodesAndTheirEdges(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("deleted %d, want 1 (the unknown key matches nothing)", n)
 	}
-	if countWhere(t, s, "nodes", "public_key = $1", a) != 0 || countRows(t, s, "nodes") != 2 {
+	if dbtest.CountWhere(t, s.db, "nodes", "public_key = $1", a) != 0 || dbtest.CountRows(t, s.db, "nodes") != 2 {
 		t.Error("only node a should be gone")
 	}
 	// a|b went with node a. b|c survives.
-	if got := countRows(t, s, "neighbor_edges"); got != 1 {
+	if got := dbtest.CountRows(t, s.db, "neighbor_edges"); got != 1 {
 		t.Errorf("neighbor_edges = %d, want 1", got)
 	}
 
@@ -60,24 +61,24 @@ func TestDeleteNodesByPubkeysRemovesNodesAndTheirEdges(t *testing.T) {
 // write, the ETL lowercases on load, and a CHECK constraint backs both.
 func TestUpsertNodeStoresLowercaseKey(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	const upper = "AABBCCDDEEFF11223344"
 	lower := strings.ToLower(upper)
 
 	if err := upsertNode(ctx, s, upper, "mixed-case-node", "companion", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if n := countWhere(t, s, "nodes", "public_key = $1", lower); n != 1 {
+	if n := dbtest.CountWhere(t, s.db, "nodes", "public_key = $1", lower); n != 1 {
 		t.Fatalf("lowercase rows = %d, want 1", n)
 	}
-	if n := countWhere(t, s, "nodes", "public_key = $1", upper); n != 0 {
+	if n := dbtest.CountWhere(t, s.db, "nodes", "public_key = $1", upper); n != 0 {
 		t.Fatalf("uppercase rows = %d, want 0", n)
 	}
 	// The same key in the other case is the same node, not a duplicate.
 	if err := upsertNode(ctx, s, lower, "renamed", "companion", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if n := countRows(t, s, "nodes"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "nodes"); n != 1 {
 		t.Fatalf("nodes = %d, want 1", n)
 	}
 }
@@ -86,7 +87,7 @@ func TestNodesRejectUppercasePublicKey(t *testing.T) {
 	s := newTestStore(t)
 	// Bypasses UpsertNode, as the old test did, to prove the schema holds
 	// even when a writer forgets to lowercase.
-	_, err := s.db.Pool().Exec(testCtx(t),
+	_, err := s.db.Pool().Exec(dbtest.TestCtx(t),
 		`INSERT INTO nodes (public_key, name, role, last_seen, first_seen)
 		 VALUES ($1, 'mixed-case-node', 'companion', $2, $2)`,
 		"AABBCCDDEEFF11223344", time.Now().UTC())

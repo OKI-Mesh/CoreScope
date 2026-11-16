@@ -79,7 +79,7 @@ func TestInsertTransmissionMapsEveryPacketDataField(t *testing.T) {
 		fromPubkey              *string
 		firstSeen, lastSeen     time.Time
 	)
-	mustScan(t, testRow(t, store, `SELECT id, encode(raw_hex, 'hex'), hash, route_type, payload_type, payload_version,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT id, encode(raw_hex, 'hex'), hash, route_type, payload_type, payload_version,
 		decoded_json, channel_hash, channel_encrypted, scope_name, code1, code2, from_pubkey, first_seen, last_seen
 		FROM transmissions WHERE hash = $1`, "0123456789abcdef"),
 		&txID, &rawHex, &hash, &route, &payload, &version,
@@ -111,7 +111,7 @@ func TestInsertTransmissionMapsEveryPacketDataField(t *testing.T) {
 	}
 
 	var advertName string
-	mustScan(t, testRow(t, store, `SELECT name FROM nodes WHERE public_key = $1`, advertiser), &advertName)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT name FROM nodes WHERE public_key = $1`, advertiser), &advertName)
 	if advertName != "Advertiser" {
 		t.Errorf("advert node name = %q, want Advertiser", advertName)
 	}
@@ -125,7 +125,7 @@ func TestInsertTransmissionMapsEveryPacketDataField(t *testing.T) {
 		frame                     *string
 		observerPubkey            string
 	)
-	mustScan(t, testRow(t, store, `SELECT o.direction, o.snr, o.rssi, o.score, o.path_hash, o.timestamp, o.hop_prefixes,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT o.direction, o.snr, o.rssi, o.score, o.path_hash, o.timestamp, o.hop_prefixes,
 		encode(f.frame, 'hex'), ob.pubkey
 		FROM observations o
 		LEFT JOIN observation_frames f ON f.observation_id = o.id

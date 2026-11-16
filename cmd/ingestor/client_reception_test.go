@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/decoder"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 	"github.com/jackc/pgx/v5"
@@ -45,7 +46,7 @@ func TestPruneOldClientReceptions(t *testing.T) {
 		Name string
 		Seen time.Time
 	}
-	rows := testCollect(t, s, `SELECT pubkey, name, last_seen FROM client_observers ORDER BY pubkey`,
+	rows := dbtest.Collect(t, s.db, `SELECT pubkey, name, last_seen FROM client_observers ORDER BY pubkey`,
 		func(r pgx.CollectableRow) (obsRow, error) {
 			var x obsRow
 			err := r.Scan(&x.PK, &x.Name, &x.Seen)
@@ -62,8 +63,8 @@ func TestPruneOldClientReceptions(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 old reception pruned, got %d", n)
 	}
-	recN := countRows(t, s, "client_receptions")
-	obsN := countRows(t, s, "client_observers")
+	recN := dbtest.CountRows(t, s.db, "client_receptions")
+	obsN := dbtest.CountRows(t, s.db, "client_observers")
 	if recN != 1 {
 		t.Fatalf("expected 1 reception remaining (recent), got %d", recN)
 	}
@@ -86,7 +87,7 @@ func rxObsFixture(at time.Time, hash string) *types.ClientRxObservation {
 }
 
 func TestPruneOldClientRxObservations(t *testing.T) {
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	s := newTestStore(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
@@ -103,7 +104,7 @@ func TestPruneOldClientRxObservations(t *testing.T) {
 		t.Fatalf("days=0 must be a no-op: n=%d err=%v", n, err)
 	}
 	// Reporting 0 isn't enough: a bug could delete and still say so.
-	if got := countRows(t, s, "client_rx_observations"); got != 2 {
+	if got := dbtest.CountRows(t, s.db, "client_rx_observations"); got != 2 {
 		t.Fatalf("days=0 deleted rows: %d remain, want 2", got)
 	}
 
@@ -114,10 +115,10 @@ func TestPruneOldClientRxObservations(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 old observation pruned, got %d", n)
 	}
-	if got := countWhere(t, s, "client_rx_observations", "pkt_hash = $1", "hash-recent"); got != 1 {
+	if got := dbtest.CountWhere(t, s.db, "client_rx_observations", "pkt_hash = $1", "hash-recent"); got != 1 {
 		t.Errorf("the recent row must survive the prune; got %d", got)
 	}
-	if got := countWhere(t, s, "client_rx_observations", "pkt_hash = $1", "hash-old"); got != 0 {
+	if got := dbtest.CountWhere(t, s.db, "client_rx_observations", "pkt_hash = $1", "hash-old"); got != 0 {
 		t.Errorf("the old row must be deleted; got %d", got)
 	}
 }
@@ -126,7 +127,7 @@ func TestPruneOldClientRxObservations(t *testing.T) {
 // survives, against a fixed instant so it cannot race the clock. The cutoff has
 // a non-zero millisecond part on purpose.
 func TestPruneClientRxObservationsCutoffBoundary(t *testing.T) {
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	s := newTestStore(t)
 	cutoff := time.Date(2026, 8, 4, 10, 0, 0, 400*int(time.Millisecond), time.UTC)
 
@@ -146,17 +147,17 @@ func TestPruneClientRxObservationsCutoffBoundary(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("pruned %d, want 1 (only the row a millisecond before the cutoff)", n)
 	}
-	if got := countWhere(t, s, "client_rx_observations", "pkt_hash = $1", "hash-boundary"); got != 1 {
+	if got := dbtest.CountWhere(t, s.db, "client_rx_observations", "pkt_hash = $1", "hash-boundary"); got != 1 {
 		t.Errorf("the row a millisecond after the cutoff must survive; got %d", got)
 	}
-	if got := countWhere(t, s, "client_rx_observations", "pkt_hash = $1", "hash-before"); got != 0 {
+	if got := dbtest.CountWhere(t, s.db, "client_rx_observations", "pkt_hash = $1", "hash-before"); got != 0 {
 		t.Errorf("the row a millisecond before the cutoff must be deleted; got %d", got)
 	}
 }
 
 func TestClientReceptionsTableExists(t *testing.T) {
 	s := newTestStore(t)
-	cols := tableColumns(t, s, "client_receptions")
+	cols := dbtest.TableColumns(t, s.db, "client_receptions")
 	for _, want := range []string{"id", "rx_pubkey", "heard_key", "heard_keylen", "rssi", "snr", "lat", "lon", "pos_acc_m", "rx_at", "ingested_at", "src"} {
 		if _, ok := cols[want]; !ok {
 			t.Errorf("missing column %q in client_receptions", want)
@@ -174,7 +175,7 @@ func crI(i int) *int         { return &i }
 // is a Seq Scan even with sequential scans disabled.
 func TestClientReceptionsCoverageQueryUsesIndex(t *testing.T) {
 	s := newTestStore(t)
-	plan := explainPlan(t, s, `SELECT lat, lon, snr, rssi, heard_key, rx_at
+	plan := dbtest.ExplainPlan(t, s.db, `SELECT lat, lon, snr, rssi, heard_key, rx_at
 		FROM client_receptions
 		WHERE heard_key IN ('aabbccddeeff00112233', 'aabbcc', 'aabb')
 		  AND lat BETWEEN 50.0 AND 52.0 AND lon BETWEEN 3.0 AND 4.0`)
@@ -267,7 +268,7 @@ func TestInsertClientReceptionRoundTripAndIdempotent(t *testing.T) {
 	if ins, err := s.InsertClientReception(ctx, &rec); err != nil || ins {
 		t.Fatalf("second insert should be a no-op: ins=%v err=%v", ins, err)
 	}
-	if n := countRows(t, s, "client_receptions"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "client_receptions"); n != 1 {
 		t.Fatalf("expected 1 row, got %d", n)
 	}
 }
@@ -279,7 +280,7 @@ func TestHandleClientPacketRelayedAdvertWritesReception(t *testing.T) {
 	msg := map[string]interface{}{
 		"raw":       advertHex,
 		"direction": "rx",
-		"timestamp": recentTS(time.Minute),
+		"timestamp": dbtest.Ago(time.Minute),
 		"origin":    "MyMob",
 		"SNR":       -7.0,
 		"RSSI":      -92.0,
@@ -288,7 +289,7 @@ func TestHandleClientPacketRelayedAdvertWritesReception(t *testing.T) {
 	handleClientPacket(ctx, s, &Config{}, "test", testCompanionPK, msg, nil, nil)
 
 	var obsName string
-	mustScan(t, testRow(t, s, `SELECT name FROM client_observers WHERE pubkey = $1`, testCompanionPK), &obsName)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT name FROM client_observers WHERE pubkey = $1`, testCompanionPK), &obsName)
 	if obsName != "MyMob" {
 		t.Fatalf("expected client_observers name 'MyMob', got %q", obsName)
 	}
@@ -298,7 +299,7 @@ func TestHandleClientPacketRelayedAdvertWritesReception(t *testing.T) {
 	// advert-to-full-pubkey branch is covered by TestDeriveHeardKey.
 	var n, keylen int
 	var src string
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT COUNT(*), COALESCE(MAX(heard_keylen), 0), COALESCE(MAX(src), '')
 		 FROM client_receptions WHERE rx_pubkey = $1`, testCompanionPK), &n, &keylen, &src)
 	if n != 1 || keylen < 2 || src != "rxlog" {
@@ -309,7 +310,7 @@ func TestHandleClientPacketRelayedAdvertWritesReception(t *testing.T) {
 	const companion2 = "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"
 	handleClientPacket(ctx, s, &Config{}, "test", companion2,
 		map[string]interface{}{"raw": advertHex, "direction": "rx"}, nil, nil)
-	if n2 := countWhere(t, s, "client_receptions", "rx_pubkey = $1", companion2); n2 != 0 {
+	if n2 := dbtest.CountWhere(t, s.db, "client_receptions", "rx_pubkey = $1", companion2); n2 != 0 {
 		t.Fatalf("packet without gps must be dropped, got %d rows", n2)
 	}
 }
@@ -330,7 +331,7 @@ func TestHandleClientPacketZeroHopAdvertWritesReception(t *testing.T) {
 	advertPubkey := strings.ToLower(payload[:64])
 
 	msg := map[string]interface{}{
-		"raw": zeroHop, "direction": "rx", "timestamp": recentTS(time.Minute),
+		"raw": zeroHop, "direction": "rx", "timestamp": dbtest.Ago(time.Minute),
 		"origin": "MyMob", "SNR": -7.0, "RSSI": -92.0,
 		"gps": map[string]interface{}{"lat": 51.05, "lon": 3.72, "acc_m": 8.0},
 	}
@@ -340,7 +341,7 @@ func TestHandleClientPacketZeroHopAdvertWritesReception(t *testing.T) {
 	var keylen int32
 	var snr *float64
 	var lat, lon float64
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT heard_key, heard_keylen, src, snr, lat, lon FROM client_receptions WHERE rx_pubkey = $1`,
 		testCompanionPK), &heardKey, &keylen, &src, &snr, &lat, &lon)
 
@@ -376,8 +377,8 @@ func TestClientPacketWritesObservationNotCoverage(t *testing.T) {
 	}
 	handleClientPacket(ctx, s, cfgWithObservations(), "test", "aa11", msg, nil, nil)
 
-	obs := countRows(t, s, "client_rx_observations")
-	cov := countRows(t, s, "client_receptions")
+	obs := dbtest.CountRows(t, s.db, "client_rx_observations")
+	cov := dbtest.CountRows(t, s.db, "client_receptions")
 	if obs != 1 {
 		t.Errorf("observations = %d, want 1", obs)
 	}
@@ -388,7 +389,7 @@ func TestClientPacketWritesObservationNotCoverage(t *testing.T) {
 	var hash string
 	var hopCount, hashSize int32
 	var fwd *string
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT pkt_hash, hop_count, hash_size, forwarder
 		 FROM client_rx_observations WHERE rx_pubkey = $1`, "aa11"),
 		&hash, &hopCount, &hashSize, &fwd)
@@ -418,19 +419,19 @@ func TestClientPacketFloodWritesBoth(t *testing.T) {
 	raw := "15" + "41" + "1a2b" + strings.Repeat("33", 16)
 	msg := map[string]interface{}{
 		"raw": raw, "direction": "rx", "SNR": 4.5, "RSSI": -101.0,
-		"timestamp": recentTS(time.Minute),
+		"timestamp": dbtest.Ago(time.Minute),
 		"gps":       map[string]interface{}{"lat": 51.2, "lon": 4.4},
 	}
 	handleClientPacket(ctx, s, cfgWithObservations(), "test", "aa11", msg, nil, nil)
 
-	obs := countRows(t, s, "client_rx_observations")
-	cov := countRows(t, s, "client_receptions")
+	obs := dbtest.CountRows(t, s.db, "client_rx_observations")
+	cov := dbtest.CountRows(t, s.db, "client_receptions")
 	if obs != 1 || cov != 1 {
 		t.Errorf("observations/coverage = %d/%d, want 1/1", obs, cov)
 	}
 
 	var fwd, pathJSON *string
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT forwarder, path_json FROM client_rx_observations WHERE rx_pubkey = $1`, "aa11"),
 		&fwd, &pathJSON)
 	if fwd == nil || *fwd != "1a2b" {
@@ -452,12 +453,12 @@ func TestClientObservationsGateOff(t *testing.T) {
 	raw := "16" + "41" + "1a2b" + strings.Repeat("33", 16)
 	msg := map[string]interface{}{
 		"raw": raw, "direction": "rx",
-		"timestamp": recentTS(time.Minute),
+		"timestamp": dbtest.Ago(time.Minute),
 		"gps":       map[string]interface{}{"lat": 51.2, "lon": 4.4},
 	}
 	handleClientPacket(ctx, s, &Config{}, "test", "aa11", msg, nil, nil)
 
-	if n := countRows(t, s, "client_rx_observations"); n != 0 {
+	if n := dbtest.CountRows(t, s.db, "client_rx_observations"); n != 0 {
 		t.Errorf("rows = %d, want 0 when the gate is off", n)
 	}
 }
@@ -475,15 +476,15 @@ func TestClientObservationsTxDirectionSkipped(t *testing.T) {
 	raw := "15" + "41" + "1a2b" + strings.Repeat("33", 16)
 	msg := map[string]interface{}{
 		"raw": raw, "direction": "tx",
-		"timestamp": recentTS(time.Minute),
+		"timestamp": dbtest.Ago(time.Minute),
 		"gps":       map[string]interface{}{"lat": 51.2, "lon": 4.4},
 	}
 	handleClientPacket(t.Context(), s, cfgWithObservations(), "test", "aa11", msg, nil, nil)
 
-	if obs := countRows(t, s, "client_rx_observations"); obs != 0 {
+	if obs := dbtest.CountRows(t, s.db, "client_rx_observations"); obs != 0 {
 		t.Errorf("observations = %d, want 0 for a tx (self-transmission) packet", obs)
 	}
-	if cov := countRows(t, s, "client_receptions"); cov != 0 {
+	if cov := dbtest.CountRows(t, s.db, "client_receptions"); cov != 0 {
 		t.Errorf("coverage rows = %d, want 0 for a tx packet", cov)
 	}
 }
@@ -516,10 +517,10 @@ func TestClientObservationsMillisecondPrecisionAllowsDistinctRows(t *testing.T) 
 	handleClientPacket(ctx, s, cfgWithObservations(), "test", "aa11", mk(t1), nil, nil)
 	handleClientPacket(ctx, s, cfgWithObservations(), "test", "aa11", mk(t2), nil, nil)
 
-	if n := countRows(t, s, "client_rx_observations"); n != 2 {
+	if n := dbtest.CountRows(t, s.db, "client_rx_observations"); n != 2 {
 		t.Fatalf("observations = %d, want 2 — sub-second rx_at must keep both forwarder copies distinct", n)
 	}
-	rxAts := testCollect(t, s,
+	rxAts := dbtest.Collect(t, s.db,
 		`SELECT rx_at FROM client_rx_observations ORDER BY rx_at`, pgx.RowTo[time.Time])
 	if len(rxAts) != 2 || !rxAts[0].Equal(t1) || !rxAts[1].Equal(t2) {
 		t.Errorf("rx_at values = %v, want millisecond-distinct %v / %v", rxAts, t1, t2)
@@ -566,7 +567,7 @@ func TestClientObservationScopeNameFromTransportCode(t *testing.T) {
 	// same content dedups across scopes), so raw and raw2 below share one
 	// pkt_hash — distinguish the two inserted rows by rx_at, not pkt_hash.
 	var code1, code2, scopeName *string
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT code1, code2, scope_name FROM client_rx_observations WHERE rx_at = $1`, t1),
 		&code1, &code2, &scopeName)
 	if code1 == nil || *code1 != "2AB5" {
@@ -591,7 +592,7 @@ func TestClientObservationScopeNameFromTransportCode(t *testing.T) {
 	handleClientPacket(ctx, s, cfgWithObservations(), "test", "aa11", msg2, nil, regionKeySetFromKeys(regionKeys))
 
 	var code1b, scopeNameB *string
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT code1, scope_name FROM client_rx_observations WHERE rx_at = $1`, t2),
 		&code1b, &scopeNameB)
 	if code1b == nil || *code1b != "0000" {
@@ -631,20 +632,20 @@ func TestHandleClientPacketFloodTraceWritesNoCoverage(t *testing.T) {
 
 	msg := map[string]interface{}{
 		"raw": raw, "direction": "rx", "SNR": 4.5, "RSSI": -101.0,
-		"timestamp": recentTS(time.Minute),
+		"timestamp": dbtest.Ago(time.Minute),
 		"gps":       map[string]interface{}{"lat": 51.2, "lon": 4.4, "acc_m": 8.0},
 	}
 	handleClientPacket(ctx, s, cfgWithObservations(), "test", "aa11", msg, nil, nil)
 
-	if cov := countRows(t, s, "client_receptions"); cov != 0 {
+	if cov := dbtest.CountRows(t, s.db, "client_receptions"); cov != 0 {
 		t.Fatalf("coverage rows = %d, want 0 — a FLOOD-routed TRACE must never be attributable", cov)
 	}
-	if obs := countRows(t, s, "client_rx_observations"); obs != 1 {
+	if obs := dbtest.CountRows(t, s.db, "client_rx_observations"); obs != 1 {
 		t.Fatalf("observations = %d, want 1 (the packet was genuinely heard; only forwarder/path_json must be NULL)", obs)
 	}
 
 	var fwd, pathJSON *string
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT forwarder, path_json FROM client_rx_observations WHERE rx_pubkey = $1`, "aa11"),
 		&fwd, &pathJSON)
 	if fwd != nil {
@@ -666,7 +667,7 @@ func TestHandleClientPacketRejectsNonHexPubkey(t *testing.T) {
 	advertHex := "11451000D818206D3AAC152C8A91F89957E6D30CA51F36E28790228971C473B755F244F718754CF5EE4A2FD58D944466E42CDED140C66D0CC590183E32BAF40F112BE8F3F2BDF6012B4B2793C52F1D36F69EE054D9A05593286F78453E56C0EC4A3EB95DDA2A7543FCCC00B939CACC009278603902FC12BCF84B706120526F6F6620536F6C6172" // unchanged
 	msgFor := func() map[string]interface{} {
 		return map[string]interface{}{
-			"raw": advertHex, "direction": "rx", "timestamp": recentTS(time.Minute),
+			"raw": advertHex, "direction": "rx", "timestamp": dbtest.Ago(time.Minute),
 			"origin": "Spoof", "SNR": -7.0, "RSSI": -92.0,
 			"gps": map[string]interface{}{"lat": 51.05, "lon": 3.72, "acc_m": 8.0},
 		}
@@ -675,17 +676,17 @@ func TestHandleClientPacketRejectsNonHexPubkey(t *testing.T) {
 	for _, bad := range []string{"!@#$", "companionpk", "", "g0g0", "xyz"} {
 		handleClientPacket(ctx, s, &Config{}, "test", bad, msgFor(), nil, nil)
 	}
-	if n := countRows(t, s, "client_receptions"); n != 0 {
+	if n := dbtest.CountRows(t, s.db, "client_receptions"); n != 0 {
 		t.Fatalf("non-hex pubkey must write nothing, got %d receptions", n)
 	}
-	if n := countRows(t, s, "client_observers"); n != 0 {
+	if n := dbtest.CountRows(t, s.db, "client_observers"); n != 0 {
 		t.Fatalf("non-hex pubkey must write nothing, got %d observers", n)
 	}
 
 	// Positive control: the identical message with a valid pubkey does write,
 	// so the zero counts above can only come from the pubkey check.
 	handleClientPacket(ctx, s, &Config{}, "test", testCompanionPK, msgFor(), nil, nil)
-	if n := countRows(t, s, "client_receptions"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "client_receptions"); n != 1 {
 		t.Fatalf("valid pubkey control wrote %d receptions, want 1 — the fixture is not exercising the check", n)
 	}
 }

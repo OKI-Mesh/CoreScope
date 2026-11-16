@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // TestBridgeScore_HandleNodesSurface verifies that /api/nodes
@@ -29,7 +31,7 @@ func TestBridgeScore_HandleNodesSurface(t *testing.T) {
 	}
 	recent := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	for _, pk := range pks {
-		mustExecDB(t, db, `INSERT INTO nodes
+		dbtest.Exec(t, db, `INSERT INTO nodes
 			(public_key, name, role, lat, lon, last_seen, first_seen, advert_count)
 			VALUES ($1, $2, 'repeater', 37.5, -122.0, $3, $3, 10)`,
 			pk, "node-"+pk[:4], recent)

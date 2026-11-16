@@ -5,20 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
 func clientPtr[T any](v T) *T { return &v }
-
-func countClientRows(tb testing.TB, db *database.DB, table string) int {
-	tb.Helper()
-	var n int
-	if err := db.SQL().QueryRowContext(tb.Context(), "SELECT count(*) FROM "+table).Scan(&n); err != nil {
-		tb.Fatalf("count %s: %v", table, err)
-	}
-	return n
-}
 
 func TestInsertClientReception_DedupesOnKey_DB(t *testing.T) {
 	db := newDB(t)
@@ -62,7 +53,7 @@ func TestInsertClientReception_DedupesOnKey_DB(t *testing.T) {
 	otherRx.RxPubkey = "rxb"
 	insert("other rx_pubkey", otherRx, true)
 
-	if got := countClientRows(t, db, "client_receptions"); got != 4 {
+	if got := dbtest.CountRows(t, db, "client_receptions"); got != 4 {
 		t.Errorf("want 4 rows, got %d", got)
 	}
 
@@ -152,7 +143,7 @@ func TestInsertClientRfSample_DedupesAndKeepsMissingCountersNull_DB(t *testing.T
 		t.Error("later sampled_at: want inserted")
 	}
 
-	if got := countClientRows(t, db, "client_rf_samples"); got != 2 {
+	if got := dbtest.CountRows(t, db, "client_rf_samples"); got != 2 {
 		t.Errorf("want 2 rows, got %d", got)
 	}
 
@@ -230,7 +221,7 @@ func TestCreateOrUpdateClientObserver_DB(t *testing.T) {
 	if _, err := db.CreateOrUpdateClientObserver(ctx, types.ClientObserver{Pubkey: "rxa", Name: "Phone", LastSeen: time.Time{}}); err == nil {
 		t.Error("a zero LastSeen must be rejected")
 	}
-	if got := countClientRows(t, db, "client_observers"); got != 0 {
+	if got := dbtest.CountRows(t, db, "client_observers"); got != 0 {
 		t.Fatalf("a rejected call must not insert, got %d rows", got)
 	}
 
@@ -241,7 +232,7 @@ func TestCreateOrUpdateClientObserver_DB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := countClientRows(t, db, "client_observers"); got != 1 {
+	if got := dbtest.CountRows(t, db, "client_observers"); got != 1 {
 		t.Fatalf("want one row after an update, got %d", got)
 	}
 
@@ -398,10 +389,10 @@ func TestClientPruneMethodsDeleteBeforeCutoff_DB(t *testing.T) {
 	if receptions != 1 {
 		t.Errorf("PruneClientReceptions: want 1 reception deleted, got %d", receptions)
 	}
-	if got := countClientRows(t, db, "client_receptions"); got != 1 {
+	if got := dbtest.CountRows(t, db, "client_receptions"); got != 1 {
 		t.Errorf("want 1 reception left, got %d", got)
 	}
-	if got := countClientRows(t, db, "client_observers"); got != 1 {
+	if got := dbtest.CountRows(t, db, "client_observers"); got != 1 {
 		t.Errorf("PruneClientReceptions must also remove stale client_observers: want 1 left, got %d", got)
 	}
 
@@ -427,7 +418,7 @@ func TestClientPruneMethodsDeleteBeforeCutoff_DB(t *testing.T) {
 		t.Errorf("want 1 rx observation left after the prune, got %d", count)
 	}
 	for _, table := range []string{"client_rf_samples", "node_declared_regions"} {
-		if got := countClientRows(t, db, table); got != 1 {
+		if got := dbtest.CountRows(t, db, table); got != 1 {
 			t.Errorf("%s: want 1 row left, got %d", table, got)
 		}
 	}

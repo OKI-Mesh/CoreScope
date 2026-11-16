@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/prunequeue"
 )
 
@@ -14,7 +15,7 @@ func TestRunPendingPruneRequests(t *testing.T) {
 	defer store.Close()
 
 	// Seed two nodes; one will be pruned, one will be kept.
-	count := testExec(t, store, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
+	count := dbtest.Exec(t, store.db, `INSERT INTO nodes (public_key, name, role, lat, lon, last_seen, first_seen)
 		VALUES ('aaaa', 'gone', 'companion', 1.0, 1.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
 		       ('bbbb', 'kept', 'companion', 2.0, 2.0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	if count != 2 {
@@ -49,11 +50,11 @@ func TestRunPendingPruneRequests(t *testing.T) {
 	}
 
 	// Verify DB state: aaaa gone, bbbb kept.
-	n := countWhere(t, store, "nodes", "public_key='aaaa'")
+	n := dbtest.CountWhere(t, store.db, "nodes", "public_key='aaaa'")
 	if n != 0 {
 		t.Errorf("expected 'aaaa' deleted, got count=%d", n)
 	}
-	n = countWhere(t, store, "nodes", "public_key='bbbb'")
+	n = dbtest.CountWhere(t, store.db, "nodes", "public_key='bbbb'")
 	if n != 1 {
 		t.Errorf("expected 'bbbb' kept, got count=%d", n)
 	}

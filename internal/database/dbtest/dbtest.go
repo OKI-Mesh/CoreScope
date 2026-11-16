@@ -58,14 +58,6 @@ func Observer(tb testing.TB, db *database.DB, pubkey, name, iata string, firstSe
 	return id
 }
 
-// EnsureObserver returns the id of the observer with this pubkey, creating it
-// (dated now) if it does not exist. Safe to call repeatedly.
-func EnsureObserver(tb testing.TB, db *database.DB, pubkey string) int64 {
-	tb.Helper()
-	now := time.Now().UTC()
-	return Observer(tb, db, pubkey, pubkey, "", now, now)
-}
-
 // ChannelTx creates a type-5 (channel) transmission first heard at firstSeen
 // and returns its id. channel is the bare channel hash ("#name" or "3A").
 func ChannelTx(tb testing.TB, db *database.DB, hash, channel, decodedJSON string, firstSeen time.Time) int64 {
@@ -147,7 +139,8 @@ func Observation(tb testing.TB, db *database.DB, txID, observerID int64, at time
 // Call it at most once per database: hashes are unique.
 func SeedTransmissions(tb testing.TB, db *database.DB, numTx int) {
 	tb.Helper()
-	observerID := EnsureObserver(tb, db, "obs1")
+	now := time.Now().UTC()
+	observerID := Observer(tb, db, "obs1", "obs1", "", now, now)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 1; i <= numTx; i++ {
 		TxWithObservation(tb, db, observerID, database.TransmissionInput{
@@ -166,8 +159,8 @@ func SeedTransmissions(tb testing.TB, db *database.DB, numTx int) {
 // by observer "obs1". For numRecent above 1800 the recent rows run into the future.
 func SeedAgedPackets(tb testing.TB, db *database.DB, numRecent, numOld int) {
 	tb.Helper()
-	observerID := EnsureObserver(tb, db, "obs1")
 	now := time.Now().UTC()
+	observerID := Observer(tb, db, "obs1", "obs1", "", now, now)
 
 	insert := func(hashPrefix, rawHex string, n int, start time.Time) {
 		tb.Helper()
@@ -212,10 +205,10 @@ func TxWithObservation(tb testing.TB, db *database.DB, observerIdx int64, in dat
 	return txID
 }
 
-// Node inserts a node through the real writer with last_seen = now.
-func Node(tb testing.TB, db *database.DB, pubkey string, name string, role types.NodeRole) {
+// Node inserts a node through the real writer with last_seen = lastSeen.
+func Node(tb testing.TB, db *database.DB, pubkey string, name string, role types.NodeRole, lastSeen time.Time) {
 	tb.Helper()
-	NodeWith(tb, db, database.NodeInput{PublicKey: pubkey, Name: name, Role: role})
+	NodeWith(tb, db, database.NodeInput{PublicKey: pubkey, Name: name, Role: role, RxTime: lastSeen})
 }
 
 // NodeWith inserts a node from a full NodeInput, for tests that need
@@ -227,20 +220,22 @@ func NodeWith(tb testing.TB, db *database.DB, in database.NodeInput) {
 	}
 }
 
-// NodeAt inserts a node with coordinates through the real writer.
-func NodeAt(tb testing.TB, db *database.DB, pubkey string, lat, lon float64) {
+// NodeAt inserts a node with coordinates through the real writer, with
+// last_seen = lastSeen.
+func NodeAt(tb testing.TB, db *database.DB, pubkey string, lat, lon float64, lastSeen time.Time) {
 	tb.Helper()
 	NodeWith(tb, db, database.NodeInput{
 		PublicKey: pubkey,
 		Lat:       &lat,
 		Lon:       &lon,
+		RxTime:    lastSeen,
 	})
 }
 
 // Advert inserts one ADVERT transmission (payload type 4) seen once by
-// observerIdx, through the real writers. Fixed SNR/RSSI; use TxWithObservation
-// directly when a test cares about those or needs hops.
-func Advert(tb testing.TB, db *database.DB, observerIdx int64, hash, rawHex string, route types.RouteType, decodedJSON string, at time.Time) int64 {
+// observerIdx with the given SNR and RSSI, through the real writers. Use
+// TxWithObservation directly when a test needs hops or other transmission fields.
+func Advert(tb testing.TB, db *database.DB, observerIdx int64, hash, rawHex string, route types.RouteType, decodedJSON string, at time.Time, snr, rssi float64) int64 {
 	tb.Helper()
 	return TxWithObservation(tb, db, observerIdx, database.TransmissionInput{
 		RawHex:      rawHex,
@@ -248,5 +243,5 @@ func Advert(tb testing.TB, db *database.DB, observerIdx int64, hash, rawHex stri
 		RouteType:   route,
 		PayloadType: types.PayloadType(4), // ADVERT
 		DecodedJSON: decodedJSON,
-	}, at, 10.0, -90)
+	}, at, snr, rssi)
 }

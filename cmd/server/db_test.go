@@ -45,8 +45,8 @@ func seedTestData(t *testing.T, db *database.DB) {
 	obs1 := dbtest.Observer(t, db, "obs1", "Observer One", "SJC", jan1, recent)
 	obs2 := dbtest.Observer(t, db, "obs2", "Observer Two", "SFO", jan1, yesterday)
 
-	dbtest.Node(t, db, "eeff00112233aabb", "TestCompanion", "companion")
-	dbtest.Node(t, db, "1122334455667788", "TestRoom", "room")
+	dbtest.Node(t, db, "eeff00112233aabb", "TestCompanion", "companion", dbtest.Ago(0))
+	dbtest.Node(t, db, "1122334455667788", "TestRoom", "room", dbtest.Ago(0))
 
 	const repeaterAdvert1 = `{"pubKey":"aabbccdd11223344","name":"TestRepeater","type":"ADVERT","timestamp":1700000000,"timestampISO":"2023-11-14T22:13:20.000Z","signature":"abcdef","flags":{"isRepeater":true},"lat":37.5,"lon":-122.0}`
 	const repeaterAdvert2 = `{"pubKey":"aabbccdd11223344","name":"TestRepeater","type":"ADVERT","timestamp":1700000100,"timestampISO":"2023-11-14T22:14:40.000Z","signature":"fedcba","flags":{"isRepeater":true},"lat":37.5,"lon":-122.0}`

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // staleObserver inserts an observer already soft-deleted (inactive = TRUE) with
@@ -14,17 +16,17 @@ func staleObserver(t *testing.T, s *Store, pubkey string) int64 {
 		t.Fatal(err)
 	}
 	old := time.Now().UTC().AddDate(0, 0, -90)
-	if n := testExec(t, s, `UPDATE observers SET last_seen = $1, inactive = TRUE WHERE pubkey = $2`, old, pubkey); n != 1 {
+	if n := dbtest.Exec(t, s.db, `UPDATE observers SET last_seen = $1, inactive = TRUE WHERE pubkey = $2`, old, pubkey); n != 1 {
 		t.Fatalf("stale update touched %d rows, want 1", n)
 	}
 	var id int64
-	mustScan(t, testRow(t, s, `SELECT id FROM observers WHERE pubkey = $1`, pubkey), &id)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT id FROM observers WHERE pubkey = $1`, pubkey), &id)
 	return id
 }
 
 func observerExists(t *testing.T, s *Store, pubkey string) bool {
 	t.Helper()
-	return countWhere(t, s, "observers", "pubkey = $1", pubkey) > 0
+	return dbtest.CountWhere(t, s.db, "observers", "pubkey = $1", pubkey) > 0
 }
 
 func TestPurgeStaleObserversDeletesUnreferencedRow(t *testing.T) {
@@ -54,9 +56,9 @@ func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 	now := time.Now().UTC()
 
 	var txID int64
-	mustScan(t, testRow(t, store,
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 		`INSERT INTO transmissions (raw_hex, hash, first_seen, last_seen) VALUES (decode('aa','hex'), 'h1', $1, $1) RETURNING id`, now), &txID)
-	if n := testExec(t, store,
+	if n := dbtest.Exec(t, store.db,
 		`INSERT INTO observations (transmission_id, observer_idx, timestamp) VALUES ($1, $2, $3)`,
 		txID, obsID, now); n != 1 {
 		t.Fatalf("inserted %d observations, want 1", n)
@@ -73,7 +75,7 @@ func TestPurgeStaleObserversKeepsObserverWithObservations(t *testing.T) {
 		t.Error("obs-referenced was deleted, want kept")
 	}
 
-	orphans := countWhere(t, store, "observations",
+	orphans := dbtest.CountWhere(t, store.db, "observations",
 		"observer_idx IS NOT NULL AND observer_idx NOT IN (SELECT id FROM observers)")
 	if orphans != 0 {
 		t.Errorf("orphaned observations=%d, want 0", orphans)
@@ -84,7 +86,7 @@ func TestPurgeStaleObserversKeepsObserverWithMetrics(t *testing.T) {
 	store := newTestStore(t)
 	staleObserver(t, store, "obs-metrics")
 	ctx := t.Context()
-	count := testExec(t, store, `INSERT INTO observer_metrics (observer_id, timestamp) VALUES ('obs-metrics', $1)`, time.Now().UTC())
+	count := dbtest.Exec(t, store.db, `INSERT INTO observer_metrics (observer_id, timestamp) VALUES ('obs-metrics', $1)`, time.Now().UTC())
 	if count != 1 {
 		t.Fatal("failed to insert observer metric")
 	}
@@ -107,7 +109,7 @@ func TestPurgeStaleObserversKeepsObserverWithDroppedPackets(t *testing.T) {
 	staleObserver(t, store, "obs-dropped")
 	staleObserver(t, store, "obs-unreferenced") // purged, proves the referenced one didn't block it
 
-	if n := testExec(t, store,
+	if n := dbtest.Exec(t, store.db,
 		`INSERT INTO dropped_packets (reason, observer_id, dropped_at) VALUES ('bad-sig', $1, $2)`,
 		"obs-dropped", time.Now().UTC()); n != 1 {
 		t.Fatalf("inserted %d dropped packets, want 1", n)
@@ -137,7 +139,7 @@ func TestPurgeStaleObserversKeepsActiveObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := time.Now().UTC().AddDate(0, 0, -90)
-	count := testExec(t, store, `UPDATE observers SET last_seen = $1 WHERE pubkey = $2`, old, "obs-active")
+	count := dbtest.Exec(t, store.db, `UPDATE observers SET last_seen = $1 WHERE pubkey = $2`, old, "obs-active")
 	if count != 1 {
 		t.Fatal("failed to update observer")
 	}
@@ -161,7 +163,7 @@ func TestPurgeStaleObserversKeepsObserverInsideWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	recent := time.Now().UTC().AddDate(0, 0, -20)
-	count := testExec(t, store, `UPDATE observers SET last_seen = $1, inactive = TRUE WHERE pubkey = $2`, recent, "obs-recent")
+	count := dbtest.Exec(t, store.db, `UPDATE observers SET last_seen = $1, inactive = TRUE WHERE pubkey = $2`, recent, "obs-recent")
 	if count != 1 {
 		t.Fatal("failed to update observer")
 	}

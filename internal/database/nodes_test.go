@@ -28,7 +28,7 @@ func TestGetNodeLocationsByKeys(t *testing.T) {
 		Lat:       ptr(37.77),
 		Lon:       ptr(-122.42),
 	})
-	dbtest.Node(t, db, "eeff00112233aabb", "No Location", "repeater")
+	dbtest.Node(t, db, "eeff00112233aabb", "No Location", "repeater", dbtest.Ago(0))
 
 	t.Run("known key, mixed-case input", func(t *testing.T) {
 		locs, err := db.GetNodeLocationsByKeys(ctx, []string{strings.ToUpper(pk)})

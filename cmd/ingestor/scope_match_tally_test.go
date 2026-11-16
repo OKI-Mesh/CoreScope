@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 // setScopeMatchCounters overwrites the process-wide counters. They are shared
@@ -29,7 +31,7 @@ func resetScopeMatchCounters(t *testing.T) {
 func TestScopeMatchTotalsSurviveRestart(t *testing.T) {
 	resetScopeMatchCounters(t)
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 
 	since := time.Now().Add(-72 * time.Hour).Unix()
 	const big = 3_000_000_000 // above int32, so a 32-bit column would fail here
@@ -41,7 +43,7 @@ func TestScopeMatchTotalsSurviveRestart(t *testing.T) {
 	if err := s.SaveScopeMatchTotals(ctx); err != nil { // an upsert, not an append
 		t.Fatal(err)
 	}
-	if n := countRows(t, s, "scope_match_totals"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "scope_match_totals"); n != 1 {
 		t.Fatalf("rows = %d, want 1", n)
 	}
 
@@ -63,13 +65,13 @@ func TestScopeMatchTotalsFirstRunAnchorsTheWindow(t *testing.T) {
 	s := newTestStore(t)
 
 	before := time.Now().Unix()
-	if err := s.LoadScopeMatchTotals(testCtx(t)); err != nil {
+	if err := s.LoadScopeMatchTotals(dbtest.TestCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	if got := scopeMatchCounters.sinceUnix.Load(); got < before {
 		t.Errorf("since = %d, want it anchored at or after %d", got, before)
 	}
-	if n := countRows(t, s, "scope_match_totals"); n != 1 {
+	if n := dbtest.CountRows(t, s.db, "scope_match_totals"); n != 1 {
 		t.Errorf("rows = %d, want 1 (the first load stores the anchored zeroes)", n)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/packetpath"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
@@ -21,7 +22,7 @@ const (
 func seedNeighborObservation(t *testing.T, s *Store, obsID int64, hash string, at time.Time,
 	from string, pt types.PayloadType, hops ...string) {
 	t.Helper()
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 
 	in := database.TransmissionInput{
 		Hash:        hash,
@@ -280,7 +281,7 @@ func newTestNeighborBuilder(s *Store, batch int) *neighborBuilder {
 
 func seedNeighborNode(t *testing.T, s *Store, pk string) {
 	t.Helper()
-	if err := upsertNode(testCtx(t), s, pk, "node-"+pk[:2], "repeater", nil, nil, time.Now().UTC()); err != nil {
+	if err := upsertNode(dbtest.TestCtx(t), s, pk, "node-"+pk[:2], "repeater", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -288,17 +289,17 @@ func seedNeighborNode(t *testing.T, s *Store, pk string) {
 // seedNeighborObserver creates the observer and returns its surrogate id.
 func seedNeighborObserver(t *testing.T, s *Store) int64 {
 	t.Helper()
-	if err := s.UpsertObserver(testCtx(t), nbObserver, ptr("observer-1"), "SJC", nil); err != nil {
+	if err := s.UpsertObserver(dbtest.TestCtx(t), nbObserver, ptr("observer-1"), "SJC", nil); err != nil {
 		t.Fatal(err)
 	}
 	var id int64
-	mustScan(t, testRow(t, s, `SELECT id FROM observers WHERE pubkey = $1`, nbObserver), &id)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT id FROM observers WHERE pubkey = $1`, nbObserver), &id)
 	return id
 }
 
 func TestNeighborBuilderPersistsEdges(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	for _, pk := range []string{nbNodeA, nbNodeB, nbObserver} {
 		seedNeighborNode(t, s, pk)
 	}
@@ -316,7 +317,7 @@ func TestNeighborBuilderPersistsEdges(t *testing.T) {
 
 	var count int32
 	var lastSeen time.Time
-	mustScan(t, testRow(t, s,
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 		`SELECT count, last_seen FROM neighbor_edges WHERE node_a = $1 AND node_b = $2`, nbNodeA, nbNodeB),
 		&count, &lastSeen)
 	if count != 1 || !lastSeen.Equal(at) {
@@ -330,7 +331,7 @@ func TestNeighborBuilderPersistsEdges(t *testing.T) {
 // rows catch it.
 func TestScanNeighborObservationsHandlesNulls(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	obsID := seedNeighborObserver(t, s)
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 
@@ -407,7 +408,7 @@ func TestWarmUpScansRowsSharingATimestampAcrossBatchesExactlyOnce(t *testing.T) 
 // each tick SCANS, which is deterministic.
 func TestNeighborBuilderDeltaScan(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	for _, pk := range []string{nbNodeA, nbNodeB, nbObserver} {
 		seedNeighborNode(t, s, pk)
 	}
@@ -422,7 +423,7 @@ func TestNeighborBuilderDeltaScan(t *testing.T) {
 	}
 	pairCount := func() int32 {
 		var n int32
-		mustScan(t, testRow(t, s,
+		dbtest.MustScan(t, dbtest.QueryRow(t, s.db,
 			`SELECT count FROM neighbor_edges WHERE node_a = $1 AND node_b = $2`, nbNodeA, nbNodeB), &n)
 		return n
 	}
@@ -481,10 +482,10 @@ func TestNeighborBuilderEdgeToObserverWithoutNodeRow(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	seedNeighborObservation(t, s, obsID, "h1", at, nbNodeA, types.PayloadADVERT, "bb")
 
-	if _, _, err := newTestNeighborBuilder(s, 0).build(testCtx(t)); err != nil {
+	if _, _, err := newTestNeighborBuilder(s, 0).build(dbtest.TestCtx(t)); err != nil {
 		t.Fatalf("an observer without a nodes row broke the whole batch: %v", err)
 	}
-	if n := countWhere(t, s, "neighbor_edges", "node_b = $1", nbObserver); n != 1 {
+	if n := dbtest.CountWhere(t, s.db, "neighbor_edges", "node_b = $1", nbObserver); n != 1 {
 		t.Errorf("observer edge rows = %d, want 1", n)
 	}
 }

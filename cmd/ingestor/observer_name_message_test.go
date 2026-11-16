@@ -2,12 +2,14 @@ package main
 
 import (
 	"testing"
+
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 )
 
 func storedObserverName(t *testing.T, store *Store, pubkey string) *string {
 	t.Helper()
 	var name *string
-	mustScan(t, testRow(t, store, `SELECT name FROM observers WHERE pubkey = $1`, pubkey), &name)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT name FROM observers WHERE pubkey = $1`, pubkey), &name)
 	return name
 }
 

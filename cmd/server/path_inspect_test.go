@@ -365,7 +365,6 @@ func BenchmarkBeamSearch(b *testing.B) {
 		nodeByPK[nodes[idx].PublicKey] = &nodes[idx]
 	}
 
-	
 	for b.Loop() {
 		store.beamSearch(prefixes, pm, graph, nodeByPK, now)
 	}

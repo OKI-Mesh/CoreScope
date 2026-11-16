@@ -73,7 +73,7 @@ func buildResolveTier1HotFixture(numCands, numContext int) (*prefixMap, *Neighbo
 func BenchmarkResolveWithContextTier1Hot(b *testing.B) {
 	pm, graph, contextPubkeys := buildResolveTier1HotFixture(8, 64)
 	b.ReportAllocs()
-	
+
 	for b.Loop() {
 		_, _, _ = pm.resolveWithContext("ab", contextPubkeys, graph)
 	}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/mbcapqueue"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
@@ -31,7 +32,7 @@ func TestRunMultibyteCapPersist_AppliesSnapshot(t *testing.T) {
 	             VALUES ($1, $2, 'repeater', $3, $3, $4, $5, $6)`
 	seed := func(key, name, lastSeen string, sup types.MultibyteSupport, evid *string, inactive bool) {
 		t.Helper()
-		if n := testExec(t, store, ins, key, name, lastSeen, int(sup), evid, inactive); n != 1 {
+		if n := dbtest.Exec(t, store.db, ins, key, name, lastSeen, int(sup), evid, inactive); n != 1 {
 			t.Fatalf("seed %s: inserted %d rows, want 1", key, n)
 		}
 	}
@@ -70,7 +71,7 @@ func TestRunMultibyteCapPersist_AppliesSnapshot(t *testing.T) {
 		t.Helper()
 		var sup int
 		var evid string
-		mustScan(t, testRow(t, store,
+		dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 			"SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key=$1", key), &sup, &evid)
 		if sup != int(wantSup) || evid != wantEvid {
 			t.Errorf("%s: sup=%d evid=%q, want sup=%d evid=%q", key, sup, evid, wantSup, wantEvid)
@@ -115,8 +116,8 @@ func TestRunMultibyteCapPersist_RoundTrip(t *testing.T) {
 
 	const ins = `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
 	             VALUES ($1, $2, $3, $4, $4, 0, NULL, $5)`
-	testExec(t, store, ins, "dd44", "Delta", "repeater", "2026-01-01T00:00:00Z", false)
-	testExec(t, store, ins, "ee55", "Echo", "companion", "2025-12-01T00:00:00Z", true)
+	dbtest.Exec(t, store.db, ins, "dd44", "Delta", "repeater", "2026-01-01T00:00:00Z", false)
+	dbtest.Exec(t, store.db, ins, "ee55", "Echo", "companion", "2025-12-01T00:00:00Z", true)
 
 	snap := mbcapqueue.Snapshot{Entries: []mbcapqueue.Entry{
 		{PublicKey: "dd44", Status: "confirmed", Evidence: "advert"},
@@ -134,7 +135,7 @@ func TestRunMultibyteCapPersist_RoundTrip(t *testing.T) {
 		var sup int
 		var evid string
 		var inactive bool
-		mustScan(t, testRow(t, store,
+		dbtest.MustScan(t, dbtest.QueryRow(t, store.db,
 			`SELECT multibyte_sup, COALESCE(multibyte_evidence,''), inactive FROM nodes WHERE public_key=$1`, key),
 			&sup, &evid, &inactive)
 		if sup != int(wantSup) || evid != wantEvid || inactive != wantInactive {
@@ -215,12 +216,12 @@ func TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown(t *testing.T) {
 	store.snapshotDir = filepath.Join(dir, "queue")
 	defer store.Close()
 
-	activeNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
+	activeNodeCount := dbtest.Exec(t, store.db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
 		VALUES ('gg77', 'Golf', 'repeater', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 2, 'advert', FALSE)`)
 	if activeNodeCount != 1 {
 		t.Fatalf("expected 1 active node, got %d", activeNodeCount)
 	}
-	inactiveNodeCount := testExec(t, store, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
+	inactiveNodeCount := dbtest.Exec(t, store.db, `INSERT INTO nodes (public_key, name, role, last_seen, first_seen, multibyte_sup, multibyte_evidence, inactive)
 		VALUES ('hh88', 'Hotel', 'companion', '2025-12-01T00:00:00Z', '2025-12-01T00:00:00Z', 1, 'path', TRUE)`)
 	if inactiveNodeCount != 1 {
 		t.Fatalf("expected 1 inactive node, got %d", inactiveNodeCount)
@@ -249,12 +250,12 @@ func TestRunMultibyteCapPersist_PreservesConfirmedOnUnknown(t *testing.T) {
 	// Verify the existing values were NOT clobbered.
 	var sup int
 	var evid string
-	mustScan(t, testRow(t, store, `SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='gg77'`), &sup, &evid)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='gg77'`), &sup, &evid)
 	if sup != 2 || evid != "advert" {
 		t.Errorf("gg77 was clobbered by unknown snapshot: sup=%d evid=%q, want sup=2 evid=advert", sup, evid)
 	}
 
-	mustScan(t, testRow(t, store, `SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='hh88'`), &sup, &evid)
+	dbtest.MustScan(t, dbtest.QueryRow(t, store.db, `SELECT multibyte_sup, COALESCE(multibyte_evidence,'') FROM nodes WHERE public_key='hh88'`), &sup, &evid)
 	if sup != 1 || evid != "path" {
 		t.Errorf("hh88 was clobbered by unknown snapshot: sup=%d evid=%q, want sup=1 evid=path", sup, evid)
 	}

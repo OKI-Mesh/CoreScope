@@ -350,7 +350,7 @@ func TestDeclaredRegionSourcesIgnoresWildcard(t *testing.T) {
 // wants the optional source has to bring it.
 func insertDeclaredRegions(t *testing.T, s *Store, target, observedAt, regionsCSV string) {
 	t.Helper()
-	count := testExec(t, s, `INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)
+	count := dbtest.Exec(t, s.db, `INSERT INTO node_declared_regions (target, rx_pubkey, observed_at, ingested_at, regions_csv, truncated)
 	 VALUES ($1, 'rx', $2, $3, $4, FALSE)`, target, observedAt, observedAt, regionsCSV)
 	if count != 1 {
 		t.Fatalf("expected 1 row to be inserted, got %d", count)
@@ -584,7 +584,7 @@ func TestDeclaredRegionSourcesCountsSpellingsOfOneRegionOnce(t *testing.T) {
 // shape handleNeighborsReport produces.
 func seedNodeWithConfiguredScope(t *testing.T, s *Store, pubkey string, scopes string, at time.Time) {
 	t.Helper()
-	dbtest.Node(t, s.db, pubkey, "", "")
+	dbtest.Node(t, s.db, pubkey, "", "", dbtest.Ago(0))
 	if err := s.db.UpdateNodeConfiguredScope(t.Context(), pubkey, scopes, &at); err != nil {
 		t.Fatalf("seed configured_scope: %v", err)
 	}

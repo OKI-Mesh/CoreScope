@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OKI-Mesh/CoreScope/internal/database"
+	"github.com/OKI-Mesh/CoreScope/internal/database/dbtest"
 	"github.com/OKI-Mesh/CoreScope/internal/types"
 )
 
@@ -140,7 +141,7 @@ func TestPruneInBatches(t *testing.T) {
 // and a small batch, so a fixture of a few hundred rows crosses several batches.
 func TestPruneBatchesRunAgainstRealSQL(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	const batch = 50
 	const aged = batch*2 + 37
 	seedAgedTransmissions(t, s, aged, 2, 10)
@@ -158,7 +159,7 @@ func TestPruneBatchesRunAgainstRealSQL(t *testing.T) {
 		t.Fatalf("total/batches = %d/%d, want %d/3 (the delete must be chunked)", total, batches, aged)
 	}
 	for _, tbl := range []string{"transmissions", "observations", "observation_frames"} {
-		if n := countRows(t, s, tbl); n != 0 {
+		if n := dbtest.CountRows(t, s.db, tbl); n != 0 {
 			t.Errorf("%s has %d rows left, want 0", tbl, n)
 		}
 	}
@@ -169,7 +170,7 @@ func TestPruneBatchesRunAgainstRealSQL(t *testing.T) {
 // several batches must still delete every aged row and no fresh one.
 func TestPruneOldPacketsSpansBatchesAndKeepsFreshRows(t *testing.T) {
 	s := newTestStore(t)
-	ctx := testCtx(t)
+	ctx := dbtest.TestCtx(t)
 	const batch = 50
 	const aged = batch + 11
 	const fresh = 17
@@ -184,14 +185,14 @@ func TestPruneOldPacketsSpansBatchesAndKeepsFreshRows(t *testing.T) {
 	if n != aged {
 		t.Fatalf("pruned %d, want %d", n, aged)
 	}
-	if got := countRows(t, s, "transmissions"); got != fresh {
+	if got := dbtest.CountRows(t, s.db, "transmissions"); got != fresh {
 		t.Errorf("transmissions = %d, want %d fresh kept", got, fresh)
 	}
-	if got := countRows(t, s, "observations"); got != fresh*obsPerTx {
+	if got := dbtest.CountRows(t, s.db, "observations"); got != fresh*obsPerTx {
 		t.Errorf("observations = %d, want %d", got, fresh*obsPerTx)
 	}
 	var hops int
-	mustScan(t, testRow(t, s, `SELECT COALESCE(SUM(cardinality(hop_prefixes)), 0)::int FROM observations`), &hops)
+	dbtest.MustScan(t, dbtest.QueryRow(t, s.db, `SELECT COALESCE(SUM(cardinality(hop_prefixes)), 0)::int FROM observations`), &hops)
 	if hops != fresh*obsPerTx {
 		t.Errorf("hops on surviving observations = %d, want %d", hops, fresh*obsPerTx)
 	}
@@ -205,7 +206,7 @@ func TestPruneOldPacketsDisabledDeletesNothing(t *testing.T) {
 	seedAgedTransmissions(t, s, 5, 1, 10)
 
 	for _, days := range []int{0, -1} {
-		n, err := s.PruneOldPackets(testCtx(t), days)
+		n, err := s.PruneOldPackets(dbtest.TestCtx(t), days)
 		if err != nil {
 			t.Fatalf("PruneOldPackets(%d): %v", days, err)
 		}
@@ -213,7 +214,7 @@ func TestPruneOldPacketsDisabledDeletesNothing(t *testing.T) {
 			t.Fatalf("PruneOldPackets(%d) = %d, want 0", days, n)
 		}
 	}
-	if got := countRows(t, s, "transmissions"); got != 5 {
+	if got := dbtest.CountRows(t, s.db, "transmissions"); got != 5 {
 		t.Fatalf("transmissions = %d, want 5 untouched", got)
 	}
 }
@@ -224,14 +225,14 @@ func TestPruneOldPacketsNothingAgedKeepsEverything(t *testing.T) {
 	s := newTestStore(t)
 	seedAgedTransmissions(t, s, 9, 2, 0)
 
-	n, err := s.PruneOldPackets(testCtx(t), 5)
+	n, err := s.PruneOldPackets(dbtest.TestCtx(t), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
 		t.Fatalf("pruned %d, want 0", n)
 	}
-	if got := countRows(t, s, "transmissions"); got != 9 {
+	if got := dbtest.CountRows(t, s.db, "transmissions"); got != 9 {
 		t.Fatalf("transmissions = %d, want 9 kept", got)
 	}
 }
@@ -249,7 +250,7 @@ func TestPruneOldPacketsNothingAgedKeepsEverything(t *testing.T) {
 // chooses it on production data (the post-cutover EXPLAIN ANALYZE covers that).
 func TestPruneBatchSelectCanUseFirstSeenIndex(t *testing.T) {
 	s := newTestStore(t)
-	plan := explainPlan(t, s, `SELECT id FROM transmissions
+	plan := dbtest.ExplainPlan(t, s.db, `SELECT id FROM transmissions
 		WHERE first_seen < '2026-01-01T00:00:00Z'::timestamptz
 		ORDER BY first_seen, id LIMIT 10000`)
 	if !strings.Contains(plan, "idx_transmissions_first_seen") {
